@@ -24,6 +24,17 @@ Fleet change is written once and appears in both places — nothing to build twi
 check below reaches the app without any separate work. The old native Fleet page is still in the
 repository, unused, so it can be brought back if it is ever wanted.
 
+### Every Fleet action is on the web page now
+Start or restart a Mac's services, turn on auto-start, rename it, pause or resume it, change Lite
+Mode, its work priorities, its network, look at or empty its Studio Hub Trash, install a model on it
+or on every Mac that can run it, set or remove a model, and switch remote final rendering per Mac —
+all from the **Machines** tab. **Locations** gains Credentials, Address (tested before it is
+re-pointed), Network, Refresh models, a Release card that publishes a Studio Hub build and rolls it
+out with Stop/Resume, and a warning-kind hide/show. **Jobs** can stop a whole batch and retry one
+failed item. **Story Studio** can ask a Mac to update now and publish a Story release. Everything
+confirms in the same words the app used, and one action is still the app's alone: permanently
+deleting a Mac's Trash Folder contents needs the app's own window and is not offered on the page.
+
 ### Hub batches still running for work that already finished
 When a site restarted, an old Hub batch could keep running on work the Gateway had already finished
 somewhere else. The **Jobs** tab lists those batches now: the site, the batch, how long it has been

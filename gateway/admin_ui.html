@@ -561,6 +561,8 @@
       <select id="fleet-location" aria-label="Location" onchange="fleetSetLocation(this.value)"></select>
       <input type="search" id="fleet-search" placeholder="Filter machines, models, jobs…"
              autocomplete="off" aria-label="Filter machines, models, jobs">
+      <!-- The native page's Refresh: the one read that waits for a real fan-out. -->
+      <button type="button" onclick="fleetRefresh(this)">Refresh</button>
     </div>
 
     <!-- Groups: the one list the browser page has always drawn, Macs and sites together. -->
@@ -569,18 +571,36 @@
       <div id="fleet-body"><div class="empty">Reading the fleet…</div></div>
     </div>
 
-    <!-- Machines: the native table, with the native columns and words. -->
+    <!-- Machines: the native table, with the native columns and words, and this Mac's own actions. -->
     <div class="fleet-pane" id="fleet-pane-machines" hidden>
       <div class="stat" id="fleet-status"></div>
       <div id="fleet-warnings"></div>
+      <div id="fleet-warning-settings"></div>
       <div class="row" id="fleet-threshold">
         <span>Problematic =</span>
         <select id="fleet-drops" aria-label="Drops in 24 hours" onchange="saveFleetThreshold()"></select>
         <span>or more drops in 24 hours</span>
         <span id="fleet-threshold-note" role="status" aria-live="polite"></span>
       </div>
+      <!-- The native page's bulk bar, for the two settings it can change on every Mac at once. -->
+      <div class="row" id="fleet-machine-bulk">
+        <button type="button" onclick="fleetEnableAutostartEverywhere(this)">Enable Auto-Start on All Macs</button>
+        <button type="button" onclick="fleetEnableMacTrashEverywhere(this)">Turn On macOS Trash on All Macs That Are Off</button>
+        <button type="button" onclick="fleetResetCounters(this)">Reset Job Counters…</button>
+      </div>
+      <div id="fleet-machine-action-note" role="status" aria-live="polite"></div>
+      <!-- Remote final rendering: one switch per Mac that publishes the final-render worker. Read when
+           opened, so a Mac nobody asked about costs nothing. -->
+      <details class="card" id="fleet-render-card">
+        <summary>Remote final rendering</summary>
+        <p class="hint">Choose which Macs may render final videos for Story Studio. The switch is kept here and
+          relayed to that Mac's Studio Hub; a Mac renders only when it is switched on here <b>and</b> its own Hub
+          has confirmed it accepts unqualified work.</p>
+        <div class="row"><button type="button" onclick="loadFleetRender()">Read the Macs</button></div>
+        <div id="fleet-render-note" role="status" aria-live="polite"></div>
+        <div id="fleet-render-body"><div class="empty">Choose “Read the Macs” to list them.</div></div>
+      </details>
       <div class="tablewrap" id="fleet-machines-wrap"></div>
-      <p class="hint">Auto-start, Lite Mode, the Trash setting and installing models stay in the Gateway app.</p>
     </div>
 
     <!-- Locations: the roster and its owner controls. -->
@@ -590,25 +610,51 @@
         <div>
           <label>Name <input id="fleet-add-label" autocomplete="off"></label>
           <label>Address <input id="fleet-add-url" type="url" required placeholder="http://10.0.0.5:47873"></label>
-          <label>Fleet token <input id="fleet-add-token" type="password" autocomplete="new-password"></label>
+          <label>Fleet token <span class="secret"><input id="fleet-add-token" type="password" autocomplete="new-password"><button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>
           <button type="button" onclick="addFleetLocation(this)">Add location</button>
         </div>
       </details>
       <div id="fleet-location-action-note" role="status" aria-live="polite"></div>
       <div class="tablewrap" id="fleet-locations-wrap"></div>
       <div id="fleet-issues"></div>
+      <!-- The Studio Hub app release this gateway signs and rolls out to its controllers. -->
+      <details class="card" id="fleet-release-card">
+        <summary>Release: publish a Studio Hub build and roll it out</summary>
+        <div class="stat" id="fleet-release-status"></div>
+        <div id="fleet-rollout"></div>
+        <p class="hint">"Held" is what each controller reports it has now — not what was pushed. A refusal is
+          the controller's own sentence, quoted exactly.</p>
+        <div class="row" id="fleet-release-form">
+          <label>Path on this Mac
+            <input id="fleet-release-path" placeholder="/Users/you/…/StudioHub-0.6.50-abc1234.dmg"></label>
+          <label>Version <input id="fleet-release-version" placeholder="0.6.50"></label>
+          <label>Build <input id="fleet-release-build" placeholder="abc1234"></label>
+          <label>File name <input id="fleet-release-filename" placeholder="StudioHub-0.6.50-abc1234.dmg"></label>
+        </div>
+        <div class="row">
+          <label class="check"><input type="checkbox" id="fleet-release-downgrade"> Publish over a newer release</label>
+          <label class="check"><input type="checkbox" id="fleet-release-all"> All at once (emergency): every controller now</label>
+          <label class="check"><input type="checkbox" id="fleet-release-full"> Send the whole app (not just the changed files)</label>
+          <button type="button" onclick="fleetPublishRelease(this)">Publish release</button>
+        </div>
+        <p class="hint">The version and build are asked for, not taken from the file name: they are what the
+          gateway signs, and a wrong one is signed exactly like a right one.</p>
+        <div id="fleet-release-note" role="status" aria-live="polite"></div>
+      </details>
     </div>
 
     <!-- Models: what each Hub location offers, pooled by model. -->
     <div class="fleet-pane" id="fleet-pane-models" hidden>
       <div class="stat" id="fleet-models-status"></div>
+      <div id="fleet-model-action-note" role="status" aria-live="polite"></div>
+      <div id="fleet-installs"></div>
       <div class="tablewrap" id="fleet-models-wrap"></div>
-      <p class="hint">Installing a model on every Mac stays in the Gateway app.</p>
     </div>
 
     <!-- Jobs: the batches in flight, and the ones that stopped. -->
     <div class="fleet-pane" id="fleet-pane-jobs" hidden>
       <div class="stat" id="fleet-jobs-status"></div>
+      <div id="fleet-jobs-note" role="status" aria-live="polite"></div>
       <div class="tablewrap" id="fleet-jobs-wrap"></div>
       <!-- A Hub batch still running at a site for work that already finished. -->
       <div id="fleet-orphans"></div>
@@ -625,16 +671,40 @@
         </div>
       </details>
       <div id="fleet-jobs-problems"></div>
-      <p class="hint">Cancelling a batch or retrying a failed item stays in the Gateway app.</p>
+      <p class="hint">Retry re-queues a failed item — the Hub accepts only an item in an error state, and
+        refuses a cancelled batch or an uncertain item (discard that first). Stop asks the Hub to stop the
+        batch; nothing is marked cancelled here.</p>
     </div>
 
     <!-- Story Studio: every Story Mac that checks in. -->
     <div class="fleet-pane" id="fleet-pane-story" hidden>
       <div class="stat" id="fleet-story-status"></div>
+      <div id="fleet-story-note" role="status" aria-live="polite"></div>
       <div class="tablewrap" id="fleet-story-wrap"></div>
-      <p class="hint">Publishing a Story Studio release and asking a Mac to update stay in the Gateway app.</p>
+      <details class="card" id="fleet-story-publish">
+        <summary>Publish a Story Studio release</summary>
+        <p class="hint">Signed with the same App Update Key as Studio Hub releases. A Story Mac checks in
+          every 30 minutes, so Update Now applies at that Mac's next check (30 minutes at most); a Mac that
+          has been silent for over 75 minutes shows as Offline.</p>
+        <div class="row">
+          <label>Path on this Mac
+            <input id="fleet-story-path" placeholder="/Users/you/…/Story Studio KH-1.4.363.dmg"></label>
+          <button type="button" onclick="fleetPublishStory(this)">Publish</button>
+        </div>
+      </details>
     </div>
   </section>
+  <!-- One dialog, filled by the action that opened it. The native page used a sheet per action
+       (Lite Mode, Work Priorities, Trash, credentials, an address, installing a model, a preset);
+       filling one element from the caller's own HTML keeps every one of them reachable without
+       eight copies of a window. -->
+  <dialog id="fleet-dialog" aria-labelledby="fleet-dialog-heading">
+    <h2 id="fleet-dialog-heading">Fleet</h2>
+    <p id="fleet-dialog-text" class="hint"></p>
+    <div id="fleet-dialog-body"></div>
+    <div id="fleet-dialog-note" class="stat" role="status" aria-live="polite"></div>
+    <div class="row" id="fleet-dialog-actions" style="margin-top:12px"></div>
+  </dialog>
   <!-- JOBS (browser only) -->
   <section id="view-jobs" style="display:none">
     <div class="heading">
@@ -5476,6 +5546,7 @@ function fleetMachineRow(m) {
       : `${esc(fleetGb(memoryFree) + ' free')}${fleetMeter(fleetFraction(memoryFree, m.memory_gb), fleetMemoryHealth(m))}`}</div></td>
     <td class="nowrap" data-label="Network" title="${esc(fleetConnectionTooltip(conn))}">
       <div>${fleetBadge(fleetConnectionDisplay(conn), fleetConnectionHealth(conn))}</div></td>
+    ${fleetMachineActionCell(m)}
   </tr>`;
 }
 
@@ -5500,13 +5571,9 @@ function renderFleetMachines(d) {
   if (warnings) warnings.innerHTML = fleetOrphanWarning(d) + fleetWarningsBox(d.machines || []);
   if (!wrap) return;
   wrap.innerHTML = rows.length
-    ? `<table class="ftable fixed">
-       <colgroup>
-         <col style="width:15%"><col style="width:10%"><col style="width:8%"><col style="width:8%">
-         <col style="width:12%"><col style="width:14%"><col style="width:10%">
-         <col style="width:8%"><col style="width:8%"><col style="width:7%">
-       </colgroup>
-       <thead><tr>${FLEET_MACHINE_COLUMNS.map(([key, title]) => fleetSortHeader(key, title)).join('')}</tr></thead>
+    ? `<table class="ftable">
+       <thead><tr>${FLEET_MACHINE_COLUMNS.map(([key, title]) => fleetSortHeader(key, title)).join('')}
+       <th scope="col">Actions</th></tr></thead>
        <tbody>${rows.map(fleetMachineRow).join('')}</tbody></table>`
     : `<div class="fleet-empty">No machine matches this filter — ${(d.machines || []).length} were read.</div>`;
 }
@@ -5676,6 +5743,10 @@ function fleetLocationRow(L) {
       <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
       <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
       <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'${L.paused_at != null ? 'resume' : 'pause'}')">${L.paused_at != null ? 'Resume' : 'Pause'}</button>
+      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationCredentials(this)">Credentials…</button>
+      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAddress(this)">Address…</button>
+      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationNetwork(this)">Network…</button>
+      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationRefresh(this)">Refresh models</button>
       ${L.id === 'local' ? '' : `<button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'remove')">Remove</button>`}
     </div></td>
   </tr>`;
@@ -5721,8 +5792,13 @@ async function fleetLocationAction(button, action) {
   } else if (action === 'remove') {
     if (!confirm(`Remove ${name}?\n\nThis gateway stops talking to that controller and forgets its credentials. Nothing on the controller itself changes, and its models stop being offered here until you add it again and paste a token.`)) return;
     method = 'DELETE'; body = null;
-  } else if (['test', 'pause', 'resume'].includes(action)) path += '/' + action;
-  else return;
+  } else if (action === 'test') {
+    path = `/fleet/controllers/${encodeURIComponent(location.id)}/test`;
+  } else if (action === 'pause') {
+    path = `/fleet/controllers/${encodeURIComponent(location.id)}/pause`;
+  } else if (action === 'resume') {
+    path = `/fleet/controllers/${encodeURIComponent(location.id)}/resume`;
+  } else return;
   button.disabled = true;
   fleetLocationNote(`Working on ${name}…`);
   try {
@@ -5743,6 +5819,1173 @@ async function fleetLocationAction(button, action) {
   finally { button.disabled = false; }
 }
 
+// ---- The one action dialog -------------------------------------------------
+//
+// The native page asks every change in a sheet. The web page asks them in one dialog, filled by the
+// caller: the heading, one sentence of context, the controls and the buttons it needs. `fleetDialog`
+// below is the only state, so a button's handler knows which Mac or location it belongs to without
+// reading anything out of the DOM that a redraw might have replaced.
+
+let fleetDialogState = null;
+
+function fleetNote(id, text) {
+  const node = document.getElementById(id);
+  if (node) node.textContent = text;
+}
+
+function fleetDialogNote(text) { fleetNote('fleet-dialog-note', text); }
+
+function fleetDialogOpen(state) {
+  fleetDialogState = state;
+  document.getElementById('fleet-dialog-heading').textContent = state.heading || 'Fleet';
+  document.getElementById('fleet-dialog-text').textContent = state.text || '';
+  document.getElementById('fleet-dialog-body').innerHTML = state.body || '';
+  document.getElementById('fleet-dialog-note').textContent = '';
+  document.getElementById('fleet-dialog-actions').innerHTML = state.actions
+    || '<button type="button" class="primary" onclick="fleetDialogConfirm(this)">Save</button>'
+      + '<button type="button" onclick="fleetDialogClose()">Cancel</button>';
+  const dialog = document.getElementById('fleet-dialog');
+  if (!dialog) return;
+  // WebKit before macOS 12.3 has no `<dialog>.showModal`; the same controls are shown with the
+  // `open` attribute rather than the owner's button doing nothing (the pack retire box does this too).
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', '');
+}
+
+function fleetDialogClose() {
+  const dialog = document.getElementById('fleet-dialog');
+  if (dialog) {
+    if (typeof dialog.close === 'function') dialog.close();
+    else dialog.removeAttribute('open');
+  }
+  fleetDialogState = null;
+}
+
+// A dialog's primary button says "Save" by default; the action that opened it decides what that
+// means. Each opener therefore supplies its own `kind`, and this is the one place they are routed.
+function fleetDialogConfirm(button) {
+  const state = fleetDialogState;
+  if (!state) return;
+  const handlers = {
+    lite: fleetLiteSave,
+    priority: fleetPrioritySave,
+    install: fleetInstallSave,
+    preset: fleetPresetSave,
+    remove: fleetRemoveSave,
+    credentials: fleetCredentialsSave,
+    address: fleetAddressChange,
+  };
+  const handler = handlers[state.kind];
+  if (handler) handler(button, state);
+}
+
+// `1,234 items, 12.3 GB` — the native page's size words, from the same bytes.
+function fleetBytes(bytes) {
+  const value = Number(bytes);
+  if (!isFinite(value) || value < 0) return 'size not reported';
+  const units = ['bytes', 'kB', 'MB', 'GB', 'TB'];
+  let size = value, unit = 0;
+  while (size >= 1000 && unit < units.length - 1) { size /= 1000; unit += 1; }
+  return unit === 0 ? `${Math.round(size)} bytes` : `${size.toFixed(1)} ${units[unit]}`;
+}
+
+function fleetStamp(epoch) {
+  const value = Number(epoch);
+  if (!isFinite(value) || value <= 0) return 'an unreported time';
+  return new Date(value * 1000).toLocaleString();
+}
+
+// Server ids are opaque: a location id or a machine id can carry a slash, so every one of them is
+// encoded before it becomes a path segment.
+function fleetSeg(value) { return encodeURIComponent(String(value ?? '')); }
+
+function fleetMachineById(locationId, machineId) {
+  return (lastFleetPayload?.machines || []).find(row =>
+    String(row.location_id) === String(locationId) && String(row.machine) === String(machineId)) || null;
+}
+
+function fleetLocationById(id) {
+  return (lastFleetPayload?.locations || []).find(row => String(row.id) === String(id)) || null;
+}
+
+function fleetPayload(write) {
+  return { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(write === undefined ? {} : write) };
+}
+
+// ---- One Mac's startup settings and services -------------------------------
+
+const FLEET_STARTUP_BODIES = {
+  'enable-autostart': { title: 'Enable Auto-Start', action: 'set_start_services_on_launch', value: true },
+  'start-services': { title: 'Start Services', action: 'start_services' },
+  'restart-services': { title: 'Restart Services', action: 'restart_services' },
+};
+
+// Which actions make sense for this Mac right now, from its own report — the native page's rule.
+// A Mac that is not answering gets none: its controller cannot pass anything on, and a Mac with no
+// Hub running needs its services started by hand once.
+function fleetStartupActions(m) {
+  const fact = m.startup;
+  if (m.reachable !== true || !fact || fact.stale === true) return [];
+  const out = [];
+  if (fact.start_services_on_launch === false) out.push(['enable-autostart', 'Enable Auto-Start']);
+  const running = fact.services_running || {};
+  if (typeof running.up === 'number' && typeof running.total === 'number' && running.up < running.total) {
+    out.push(['start-services', 'Start Services']);
+  }
+  out.push(['restart-services', 'Restart Services']);
+  return out;
+}
+
+function fleetStartupSentence(title, answer) {
+  switch (answer && answer.state) {
+    case 'applied': return `${title}: done.`;
+    case 'queued': return `${title}: sent. The Mac applies it on its next check.`;
+    case 'handed_to_app': return `${title}: the Mac is restarting its services.`;
+    case 'already_running': return 'Its services are already running.';
+    default: return (answer && answer.detail) || 'The Mac did not accept the request.';
+  }
+}
+
+async function fleetMachineStartup(button, locationId, machineId, key, forced) {
+  const spec = FLEET_STARTUP_BODIES[key];
+  const machine = fleetMachineById(locationId, machineId);
+  if (!spec || !machine) {
+    fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.');
+    return;
+  }
+  const name = machine.label || machine.machine;
+  if (!forced && (key === 'start-services' || key === 'restart-services')) {
+    if (!confirm(`${spec.title} on ${name}?\n\nIts Studio Hub restarts its Studios. It refuses if a job is `
+      + `running, and asks you again before interrupting one.`)) return;
+  }
+  const payload = { action: spec.action, force: forced === true };
+  if (spec.value != null) payload.value = spec.value;
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', `${spec.title} on ${name}…`);
+  let retryForced = false;
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/startup`, fleetPayload(payload));
+    fleetNote('fleet-machine-action-note', fleetStartupSentence(spec.title, answer));
+  } catch (e) {
+    // The Hub's refusal for running work is the one 409 that offers `force: true`.
+    if (!forced && /force: true/.test(e.message || '')) {
+      retryForced = true;
+      if (confirm(`${name} is busy\n\n${e.message}\n\nRestart anyway and interrupt that work?`)) {
+        button.disabled = false;
+        return fleetMachineStartup(button, locationId, machineId, key, true);
+      }
+      fleetNote('fleet-machine-action-note', `${name} was left alone; nothing was restarted.`);
+    } else {
+      fleetNote('fleet-machine-action-note', `${spec.title} failed on ${name} — ${e.message}`);
+    }
+  } finally {
+    button.disabled = false;
+  }
+  if (!retryForced) await loadFleet();
+}
+
+function fleetMachineRename(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const current = machine.label || machine.machine || '';
+  const value = prompt(`Rename ${current}\n\nThe new name is set on the Mac itself, so its own Studio Hub, its `
+    + `controller and this page all show it. Its machine ID (${machine.machine}) stays the same, so nothing `
+    + `re-joins and no work is re-routed.`, current);
+  if (value == null) return;
+  const name = value.trim();
+  if (!name || name.length > 120) {
+    fleetNote('fleet-machine-action-note', 'A name is required — use 1 to 120 characters. The Mac was not renamed.');
+    return;
+  }
+  if (name === (machine.label || '')) return;
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', `Renaming ${current}…`);
+  api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/name`,
+    fleetPayload({ name }))
+    .then(async () => { fleetNote('fleet-machine-action-note', `Renamed to “${name}”. Its machine ID is unchanged.`); await loadFleet(); })
+    .catch(e => fleetNote('fleet-machine-action-note', `Could not rename ${current} — ${e.message}`))
+    .finally(() => { button.disabled = false; });
+}
+
+async function fleetMachinePause(button, locationId, machineId, paused) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const name = machine.label || machine.machine;
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', `${paused ? 'Pausing' : 'Resuming'} ${name}…`);
+  try {
+    await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/pause`,
+      fleetPayload({ paused }));
+    fleetNote('fleet-machine-action-note', paused
+      ? `Paused ${name}. It gets no new work; jobs already running there finish.`
+      : `Resumed ${name}. It rejoins dispatch on its next check.`);
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Could not ${paused ? 'pause' : 'resume'} ${name} — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- Network names ---------------------------------------------------------
+
+// The gateway's spelling (`model_share._norm`): trimmed, inner spaces collapsed, upper case. Done
+// here too so a typo that only differs by case cannot start a second network.
+function fleetNetworkName(value) {
+  return String(value || '').split(/\s+/).filter(Boolean).join(' ').toUpperCase();
+}
+
+function fleetKnownNetworks() {
+  const names = new Set();
+  for (const row of (lastFleetPayload?.locations || [])) if (row.network) names.add(row.network);
+  for (const row of (lastFleetPayload?.machines || [])) if (row.network) names.add(row.network);
+  return [...names].sort();
+}
+
+async function fleetMachineNetwork(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const name = machine.label || machine.machine;
+  const known = fleetKnownNetworks();
+  const value = prompt(`Network for ${name}\n\nMacs copy models only from Macs on the same network. A shop iMac `
+    + `can be on any.\n\nKnown networks: ${known.join(', ') || 'none yet'}. Leave it empty to use its location's network.`,
+    machine.network_override || '');
+  if (value == null) return;
+  const network = fleetNetworkName(value);
+  button.disabled = true;
+  try {
+    await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/network`,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ network }) });
+    fleetNote('fleet-machine-action-note', network
+      ? `${name} is on network ${network}.`
+      : `${name} goes back to its location's network.`);
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Could not set ${name}'s network — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetLocationNetwork(button) {
+  const location = fleetLocationById(button.dataset.id);
+  if (!location) { fleetLocationNote('Location no longer available. Refresh and try again.'); return; }
+  const label = location.label || location.id;
+  const known = fleetKnownNetworks();
+  const value = prompt(`Network for ${label}\n\nMacs on the same network copy models from each other instead of `
+    + `each downloading them. A Mac can have its own network on Fleet → Machines.\n\nKnown networks: `
+    + `${known.join(', ') || 'none yet'}. Leave it empty to clear it.`, location.network || '');
+  if (value == null) return;
+  const network = fleetNetworkName(value);
+  button.disabled = true;
+  try {
+    await api(`/fleet/controllers/${fleetSeg(location.id)}/network`,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ network }) });
+    fleetLocationNote(network ? `${label}'s network is ${network}.` : `${label}'s network is cleared.`);
+    await loadFleet();
+  } catch (e) { fleetLocationNote(`Could not set ${label}'s network — ${e.message}`); }
+  finally { button.disabled = false; }
+}
+
+// ---- macOS's own 30-day Trash emptying -------------------------------------
+
+async function fleetMacTrashOn(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const name = machine.label || machine.machine;
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', `Turning on macOS's Trash setting for ${name}…`);
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/macos-trash-auto-empty/enable`, fleetPayload());
+    fleetNote('fleet-machine-action-note', answer && answer.macos_trash_auto_empty === true
+      ? `macOS Trash on ${name}: Finder will now remove items from the Trash after 30 days.`
+      : (answer && answer.detail) || 'The Mac wrote the setting but did not read it back as on.');
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Could not turn on macOS's Trash setting for ${name} — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// The Macs a bulk run would ask: the native page's rule. Unknown is never guessed at, and neither is
+// a stale reading — an older Hub cannot take the request at all.
+function fleetMacTrashTargets(machines) {
+  return machines.filter(m => m.reachable === true && m.startup && m.startup.stale !== true
+    && m.startup.macos_trash_auto_empty === false);
+}
+
+function fleetMacTrashSkipped(machines) {
+  return machines.filter(m => (m.reachable !== true || (m.startup && m.startup.stale === true))
+    && m.startup && m.startup.macos_trash_auto_empty === false);
+}
+
+async function fleetEnableMacTrashEverywhere(button) {
+  const machines = lastFleetPayload?.machines || [];
+  const asked = fleetMacTrashTargets(machines);
+  const away = fleetMacTrashSkipped(machines);
+  if (!asked.length) {
+    fleetNote('fleet-machine-action-note', away.length
+      ? `${away.length} Mac${away.length === 1 ? '' : 's'} report this setting off but are not answering now. `
+        + 'Nothing was sent to them — start their services once, then ask again.'
+      : 'Every Mac that reported this setting already empties its Trash after 30 days.');
+    return;
+  }
+  const lines = asked.map(m => `• ${m.label || m.machine}: will be turned on`)
+    .concat(away.map(m => `• ${m.label || m.machine}: skipped — not answering`)).join('\n');
+  if (!confirm(`Turn on macOS's 30-day Trash emptying for ${asked.length} Mac${asked.length === 1 ? '' : 's'}?\n\n`
+    + `Finder on those Macs will remove items from the Trash after 30 days. `
+    + (away.length ? `${away.length} more are not answering and will be skipped, not saved for. ` : '')
+    + `This is macOS's own setting. Nothing is emptied now, and nothing is turned off.\n\n${lines}`)) return;
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', 'Turning it on…');
+  try {
+    const answer = await api('/fleet/trash/enable-macos-auto-empty', fleetPayload());
+    const applied = (answer && answer.applied ? answer.applied.length : 0);
+    const missed = (answer && answer.skipped ? answer.skipped.length : 0);
+    const failed = (answer && answer.failed) || [];
+    let text = `${applied} Mac${applied === 1 ? '' : 's'} now empty their Trash after 30 days.`;
+    if (missed > 0) text += ` ${missed} not answering, skipped.`;
+    if (failed.length) {
+      text += ` ${failed.length} could not be changed: ` + failed.slice(0, 8)
+        .map(f => `${f.label || '?'} (${f.detail || f.code || 'refused'})`).join(', ');
+    }
+    fleetNote('fleet-machine-action-note', text);
+    await loadFleet();
+  } catch (e) { fleetNote('fleet-machine-action-note', `Could not turn it on — ${e.message}`); }
+  finally { button.disabled = false; }
+}
+
+// ---- Enable auto-start on every Mac that reported it off --------------------
+
+async function fleetEnableAutostartEverywhere(button) {
+  const machines = lastFleetPayload?.machines || [];
+  const targets = machines.filter(m => m.reachable === true && m.startup && m.startup.stale !== true
+    && m.startup.start_services_on_launch === false);
+  const away = machines.filter(m => (m.reachable !== true || (m.startup && m.startup.stale === true))
+    && m.startup && m.startup.start_services_on_launch === false);
+  if (!targets.length) {
+    fleetNote('fleet-machine-action-note', away.length
+      ? `${away.length} Mac${away.length === 1 ? '' : 's'} report auto-start off but are not answering now. `
+        + 'A Mac with no Studio Hub running needs its services started by hand once.'
+      : 'Every Mac that reported its setting already starts its services after a restart.');
+    return;
+  }
+  if (!confirm(`Turn on "Start services on startup" for ${targets.length} Mac${targets.length === 1 ? '' : 's'}?\n\n`
+    + `After a restart those Macs will bring Studio Hub's services up by themselves. `
+    + (away.length ? `${away.length} more are not answering and will be skipped. ` : '')
+    + 'Nothing is restarted now.')) return;
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', 'Turning it on…');
+  try {
+    const answer = await api('/fleet/startup/enable-autostart', fleetPayload());
+    const applied = (answer && answer.applied ? answer.applied.length : 0);
+    const skipped = (answer && answer.skipped ? answer.skipped.length : 0);
+    const failed = (answer && answer.failed) || [];
+    let text = `${applied} Mac${applied === 1 ? '' : 's'} will now start their services after a restart.`;
+    if (skipped > 0) text += ` ${skipped} not answering, skipped.`;
+    if (failed.length) {
+      text += ` ${failed.length} could not be changed: ` + failed.slice(0, 8)
+        .map(f => `${f.label || '?'} (${f.detail || f.code || 'refused'})`).join(', ');
+    }
+    fleetNote('fleet-machine-action-note', text);
+    await loadFleet();
+  } catch (e) { fleetNote('fleet-machine-action-note', `Enable auto-start failed — ${e.message}`); }
+  finally { button.disabled = false; }
+}
+
+// ---- Reset the job counters ------------------------------------------------
+
+async function fleetResetCounters(button) {
+  if (!confirm('Reset the job counters on every Mac?\n\nThe Machines tab will count done and failed jobs from '
+    + 'now on. Nothing is deleted: every Hub keeps its full job history. A Mac on an older Studio Hub keeps '
+    + 'counting everything until it updates, and says so.')) return;
+  button.disabled = true;
+  try {
+    const answer = await api('/fleet/counters/reset', fleetPayload());
+    fleetNote('fleet-machine-action-note', `Counters reset. Jobs are counted since ${fleetStamp(answer && answer.counters_since)}.`);
+    await loadFleet();
+  } catch (e) { fleetNote('fleet-machine-action-note', `Could not reset the counters — ${e.message}`); }
+  finally { button.disabled = false; }
+}
+
+// ---- Refresh ---------------------------------------------------------------
+
+async function fleetRefresh(button) {
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', 'Reading every location — this waits for each controller…');
+  try {
+    await loadFleet(true);
+    fleetNote('fleet-machine-action-note', `Read ${(lastFleetPayload?.machines || []).length} `
+      + `Mac${(lastFleetPayload?.machines || []).length === 1 ? '' : 's'} from every location.`);
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Could not read the fleet — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- One Mac's actions cell ------------------------------------------------
+
+// The native page's "…" menu, as a row of buttons: the startup actions that apply right now, then
+// everything else behind "More…". A Mac with no location or machine id has no actions at all.
+function fleetMachineActionCell(m) {
+  if (m.location_id == null || m.machine == null) return '<td data-label="Actions">—</td>';
+  const lid = esc(m.location_id), mid = esc(m.machine);
+  const buttons = fleetStartupActions(m).map(([key, title]) =>
+    `<button type="button" class="sm" onclick="fleetMachineStartup(this,'${lid}','${mid}','${key}')">${esc(title)}</button>`);
+  const more = [];
+  if (m.reachable === true) {
+    more.push(`<button type="button" onclick="fleetMachineRename(this,'${lid}','${mid}')">Rename…</button>`);
+  }
+  more.push(`<button type="button" onclick="fleetMachinePause(this,'${lid}','${mid}',${m.node_paused === true ? 'false' : 'true'})">${m.node_paused === true ? 'Resume This Mac' : 'Pause This Mac'}</button>`);
+  more.push(`<button type="button" onclick="fleetPriorityOpen(this,'${lid}','${mid}')">Work Priorities…</button>`);
+  more.push(`<button type="button" onclick="fleetLiteOpen(this,'${lid}','${mid}')">Lite Mode…</button>`);
+  more.push(`<button type="button" onclick="fleetMachineNetwork(this,'${lid}','${mid}')">Network…</button>`);
+  more.push(`<button type="button" onclick="fleetTrashOpen(this,'${lid}','${mid}')">Trash…</button>`);
+  if ((m.installable_models || []).some(model => model && model.package_id)) {
+    more.push(`<button type="button" onclick="fleetInstallOpen(this,'${lid}','${mid}')">Install a model…</button>`);
+  }
+  if (m.reachable === true) {
+    more.push(`<button type="button" onclick="fleetPresetOpen(this,'${lid}','${mid}')">Model Preset…</button>`);
+    more.push(`<button type="button" onclick="fleetRemoveOpen(this,'${lid}','${mid}')">Remove a Model…</button>`);
+  }
+  if (m.startup && m.startup.macos_trash_auto_empty === false
+      && m.reachable === true && m.startup.stale !== true) {
+    more.push(`<button type="button" onclick="fleetMacTrashOn(this,'${lid}','${mid}')">Turn on macOS Trash</button>`);
+  }
+  return `<td data-label="Actions"><div class="row">${buttons.join('')}
+    <details class="ft-more"><summary>More…</summary><div class="row">${more.join('')}</div></details></div></td>`;
+}
+
+// ---- Lite Mode (`workstation`) ---------------------------------------------
+
+// The native sheet's own words, so the same settings read the same way here.
+function fleetLiteInfo(m, current, pending) {
+  const offline = m.reachable === false || m.state === 'offline' || (current && current.stale === true);
+  let now = offline ? 'Offline' : current && current.enabled === true ? 'On' : 'Off';
+  if (current && current.enabled === true && current.reason && !offline) now += ` (${current.reason})`;
+  const pendingLine = pending ? `A change is saved here and will be applied when this Mac comes back.\n\n` : '';
+  const policy = fleetLitePolicy(current || {});
+  return `${pendingLine}${policy} Now: ${now}.`;
+}
+
+function fleetLitePolicy(settings) {
+  if (settings.enabled !== true) return 'Lite Mode is off, so this Mac takes fleet work whenever it is free.';
+  const minutes = settings.idle_minutes ?? 3;
+  const unit = minutes === 1 ? 'minute' : 'minutes';
+  const idleOnly = settings.idle_only === true, stepAside = settings.step_aside === true;
+  if (idleOnly && stepAside) {
+    return `This Mac takes fleet work only after ${minutes} ${unit} without input, and if someone starts using `
+      + 'it it finishes its current job, then pauses new work.';
+  }
+  if (idleOnly) return `This Mac takes fleet work only after ${minutes} ${unit} without input.`;
+  if (stepAside) {
+    return 'This Mac takes fleet work at background priority; while someone is using it, it finishes its '
+      + 'current job, then pauses new work.';
+  }
+  return 'This Mac takes fleet work at background priority, even while someone is using it.';
+}
+
+function fleetLiteOpen(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const current = machine.workstation || {};
+  const pending = (machine.lite_mode_pending && machine.lite_mode_pending.settings) || null;
+  const value = key => (pending && pending[key] != null ? pending[key] : current[key]);
+  const check = (id, label, on) =>
+    `<label class="check"><input type="checkbox" id="${id}"${on ? ' checked' : ''}> ${esc(label)}</label>`;
+  const startFree = value('start_free_gb');
+  const body = [
+    check('fleet-lite-enabled', 'Lite Mode', value('enabled') === true),
+    check('fleet-lite-idle-only', 'Only when idle', value('idle_only') === true),
+    `<div class="row"><span>Idle for</span><input type="number" id="fleet-lite-idle-minutes" min="1" max="60" `
+      + `style="width:88px" value="${esc(value('idle_minutes') ?? 3)}"><span>minutes</span></div>`,
+    `<p class="hint">Takes work only after this many minutes with no keyboard or mouse use, or while the screen is locked.</p>`,
+    check('fleet-lite-step-aside', 'Step aside when someone uses it', value('step_aside') === true),
+    `<div class="row"><span>Resume after</span><input type="number" id="fleet-lite-resume-minutes" min="1" max="60" `
+      + `style="width:88px" value="${esc(value('resume_after_minutes') ?? 2)}"><span>minutes without input</span></div>`,
+    `<p class="hint">When someone uses the keyboard or mouse, this Mac finishes its current job, then takes no `
+      + 'new work until it has had this many minutes without input.</p>',
+    `<div class="row"><span>Free memory needed to start a job</span>
+       <select id="fleet-lite-start-free" style="width:auto">
+         <option value=""${startFree == null ? ' selected' : ''}>Each model's own (about 2.8 GB)</option>
+         <option value="custom"${startFree != null ? ' selected' : ''}>Custom</option>
+       </select>
+       <input type="number" id="fleet-lite-start-free-gb" step="0.1" min="0.5" max="8" style="width:88px"
+         value="${esc(startFree ?? '')}" placeholder="2.8"><span>GB</span></div>`,
+    `<p class="hint">A job starts only when this much memory is free. A running job always finishes; it is stopped `
+      + 'only if macOS reports critical memory pressure for 20 seconds (very rare), and then moves to another Mac.</p>',
+    `<label>Quiet hours <input id="fleet-lite-quiet-hours" style="width:240px"
+       value="${esc((value('quiet_hours') || []).join(', '))}" placeholder="22:00-07:00"></label>`,
+    `<p class="hint">No work during these hours. Separate several with commas, like 22:00-07:00, 12:00-13:00.</p>`,
+    check('fleet-lite-hide-icon', 'Hide the Studio Hub menu-bar icon', value('hide_menu_bar_icon') === true),
+  ].join('');
+  fleetDialogOpen({
+    kind: 'lite',
+    locationId, machineId,
+    heading: `Lite Mode — ${machine.label || machine.machine}`,
+    text: fleetLiteInfo(machine, current, pending),
+    body,
+  });
+}
+
+async function fleetLiteSave(button, state) {
+  const machine = fleetMachineById(state.locationId, state.machineId);
+  if (!machine) { fleetDialogClose(); return; }
+  const value = id => document.getElementById(id)?.value;
+  const checked = id => document.getElementById(id)?.checked === true;
+  const minutes = (id, name) => {
+    const text = String(value(id) ?? '').trim();
+    const number = Number(text);
+    if (!/^\d+$/.test(text) || number < 1 || number > 60) return { error: `${name} must be a whole number of minutes from 1 to 60.` };
+    return { value: number };
+  };
+  const idle = minutes('fleet-lite-idle-minutes', 'Idle time');
+  if (idle.error) return fleetDialogNote(idle.error);
+  const resume = minutes('fleet-lite-resume-minutes', 'Resume time');
+  if (resume.error) return fleetDialogNote(resume.error);
+  let startFree = null;
+  if (value('fleet-lite-start-free') === 'custom') {
+    const gb = Number(String(value('fleet-lite-start-free-gb') ?? '').replace(',', '.'));
+    if (!isFinite(gb) || gb < 0.5 || gb > 8) {
+      return fleetDialogNote('Free memory needed to start a job must be from 0.5 to 8 GB.');
+    }
+    startFree = gb;
+  }
+  const hours = String(value('fleet-lite-quiet-hours') ?? '').split(',')
+    .map(part => part.trim()).filter(Boolean);
+  const bad = hours.find(hour => !/^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(hour));
+  if (bad) return fleetDialogNote(`“${bad}” is not a time range. Write quiet hours like 22:00-07:00.`);
+  if (hours.length > 6) return fleetDialogNote('Quiet hours can have at most 6 ranges.');
+  const body = {
+    enabled: checked('fleet-lite-enabled'), idle_only: checked('fleet-lite-idle-only'),
+    idle_minutes: idle.value, step_aside: checked('fleet-lite-step-aside'),
+    resume_after_minutes: resume.value, start_free_gb: startFree,
+    quiet_hours: hours, hide_menu_bar_icon: checked('fleet-lite-hide-icon'),
+  };
+  button.disabled = true;
+  fleetDialogNote('Saving…');
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/workstation`, fleetPayload(body));
+    fleetDialogState = null;
+    fleetDialogClose();
+    fleetNote('fleet-machine-action-note', answer && answer.pending === true
+      ? `Lite Mode saved for ${machine.label || machine.machine}: ${answer.detail || 'the Mac is offline, so the change is saved and applied when it comes back.'}`
+      : `Lite Mode saved for ${machine.label || machine.machine}.`);
+    await loadFleet();
+  } catch (e) {
+    fleetDialogNote(`Could not change Lite Mode — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- Work priorities -------------------------------------------------------
+
+// The Hub owns the function vocabulary: this page draws the ids and titles the Mac returned and sends
+// only `priority_order`. `render` is final video assembly and has no worker row, so a Hub that has not
+// named it still gets the owner's words rather than "Render".
+function fleetPriorityTitle(id, given) {
+  const text = String(given ?? '').trim();
+  if (text) return text;
+  return id === 'render' ? 'Final render' : String(id).charAt(0).toUpperCase() + String(id).slice(1);
+}
+
+// The Mac's policy as this page can edit it, or `null` when its Hub is too old or its answer is not a
+// policy (a duplicate id, an order naming a function it does not list) — read-only, never guessed at.
+function fleetPriorityModel(payload) {
+  if (!payload || !Array.isArray(payload.priority_functions) || !Array.isArray(payload.priority_order)) return null;
+  const studios = Array.isArray(payload.studios) ? payload.studios : [];
+  const functions = [];
+  for (const row of payload.priority_functions) {
+    if (!row || typeof row.id !== 'string' || !row.id) continue;
+    if (functions.some(known => known.id === row.id)) continue;
+    const matching = studios.filter(studio => studio && studio.modality === row.id);
+    functions.push({
+      id: row.id, title: fleetPriorityTitle(row.id, row.title),
+      enabled: matching.length ? matching.some(studio => studio.enabled === true) : null,
+    });
+  }
+  if (functions.length !== payload.priority_functions.length) return null;
+  const ids = new Set(functions.map(fn => fn.id));
+  const order = payload.priority_order;
+  if (new Set(order).size !== order.length || order.some(id => !ids.has(id))) return null;
+  const byId = new Map(functions.map(fn => [fn.id, fn]));
+  return {
+    functions: order.map(id => byId.get(id)).concat(functions.filter(fn => !order.includes(fn.id))),
+    order,
+    machineEnabled: typeof payload.machine_enabled === 'boolean' ? payload.machine_enabled : null,
+  };
+}
+
+let fleetPriorityState = null;
+
+function fleetPriorityHasNeighbour(index, direction) {
+  const functions = fleetPriorityState ? fleetPriorityState.functions : [];
+  for (let at = index + direction; at >= 0 && at < functions.length; at += direction) {
+    if (functions[at].enabled !== false) return true;
+  }
+  return false;
+}
+
+function fleetPriorityBody() {
+  const state = fleetPriorityState;
+  if (!state) return '';
+  const editable = state.custom;
+  const rows = state.functions.map((fn, index) => {
+    const disabled = fn.enabled === false;
+    const label = fn.title + (disabled ? ' — Disabled' : '');
+    const up = editable && !disabled && fleetPriorityHasNeighbour(index, -1);
+    const down = editable && !disabled && fleetPriorityHasNeighbour(index, 1);
+    return `<div class="row"><label class="check"><input type="checkbox" id="fleet-pri-${esc(fn.id)}"`
+      + `${state.included.has(fn.id) ? ' checked' : ''}${editable && !disabled ? '' : ' disabled'}`
+      + ` onchange="fleetPriorityToggle('${esc(fn.id)}', this.checked)"> ${esc(label)}</label>`
+      + `<span class="spacer"></span>`
+      + `<button type="button" class="sm" onclick="fleetPriorityMove('${esc(fn.id)}',-1)"${up ? '' : ' disabled'}`
+      + ` aria-label="Move ${esc(fn.title)} up">Up</button>`
+      + `<button type="button" class="sm" onclick="fleetPriorityMove('${esc(fn.id)}',1)"${down ? '' : ' disabled'}`
+      + ` aria-label="Move ${esc(fn.title)} down">Down</button></div>`;
+  }).join('');
+  return `<div class="row"><label class="check"><input type="radio" name="fleet-pri-mode" id="fleet-pri-none"`
+    + `${editable ? '' : ' checked'} onchange="fleetPriorityMode(false)"> No preference — all enabled functions are equal</label></div>`
+    + `<div class="row"><label class="check"><input type="radio" name="fleet-pri-mode" id="fleet-pri-custom"`
+    + `${editable ? ' checked' : ''} onchange="fleetPriorityMode(true)"> Custom order</label></div>`
+    + `<p class="hint">For a custom order, checked functions run first from top to bottom. Unchecked functions `
+    + `remain tied below them. A disabled function keeps its saved rank for when it is enabled.</p>`
+    + `<div id="fleet-pri-rows">${rows}</div>`;
+}
+
+function fleetPriorityRender() {
+  const body = document.getElementById('fleet-dialog-body');
+  if (body) body.innerHTML = fleetPriorityBody();
+}
+
+function fleetPriorityToggle(id, checked) {
+  if (!fleetPriorityState) return;
+  if (checked) fleetPriorityState.included.add(id); else fleetPriorityState.included.delete(id);
+}
+
+function fleetPriorityMode(custom) {
+  const state = fleetPriorityState;
+  if (!state) return;
+  state.custom = custom === true;
+  if (state.custom && !state.included.size) {
+    state.functions.forEach(fn => { if (fn.enabled !== false) state.included.add(fn.id); });
+  }
+  fleetPriorityRender();
+}
+
+function fleetPriorityMove(id, direction) {
+  const state = fleetPriorityState;
+  if (!state) return;
+  const index = state.functions.findIndex(fn => fn.id === id);
+  if (index < 0 || state.functions[index].enabled === false) return;
+  for (let at = index + direction; at >= 0 && at < state.functions.length; at += direction) {
+    if (state.functions[at].enabled === false) continue;
+    const moved = state.functions[index];
+    state.functions[index] = state.functions[at];
+    state.functions[at] = moved;
+    break;
+  }
+  fleetPriorityRender();
+}
+
+async function fleetPriorityOpen(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const name = machine.label || machine.machine;
+  button.disabled = true;
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/work-policy`);
+    const policy = fleetPriorityModel(answer);
+    if (!policy) {
+      const saved = (machine.priority_order || []).map(id => fleetPriorityTitle(id, null)).join(', ');
+      fleetNote('fleet-machine-action-note', 'Work Priorities are read-only — this Mac needs a newer Studio Hub '
+        + 'before the Gateway can edit its function order.' + (saved ? ` Saved order: ${saved}.` : ''));
+      return;
+    }
+    if (!policy.functions.length) {
+      fleetNote('fleet-machine-action-note', 'No local functions to rank — enable at least one Studio on this Mac, then open Work Priorities again.');
+      return;
+    }
+    fleetPriorityState = {
+      locationId, machineId, functions: policy.functions,
+      included: new Set(policy.order), custom: policy.order.length > 0,
+    };
+    fleetDialogOpen({
+      kind: 'priority', locationId, machineId,
+      heading: `Work Priorities — ${name}`,
+      text: (policy.machineEnabled === false ? 'This Mac is disabled now; its saved order is kept for when it is enabled. ' : '')
+        + 'The current job always finishes. This order applies when the Mac is free.',
+      body: fleetPriorityBody(),
+    });
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Work Priorities unavailable — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetPrioritySave(button, state) {
+  const current = fleetPriorityState;
+  if (!current) { fleetDialogClose(); return; }
+  const order = current.custom
+    ? current.functions.filter(fn => current.included.has(fn.id)).map(fn => fn.id) : [];
+  button.disabled = true;
+  fleetDialogNote('Saving…');
+  try {
+    await api(`/fleet/controllers/${fleetSeg(state.locationId)}/machines/${fleetSeg(state.machineId)}/work-policy`,
+      fleetPayload({ priority_order: order }));
+    fleetDialogClose();
+    fleetPriorityState = null;
+    fleetNote('fleet-machine-action-note', order.length
+      ? `Saved this Mac's function order: ${order.map(id => fleetPriorityTitle(id, null)).join(' → ')}.`
+      : 'Saved: no preference — all enabled functions are equal.');
+    await loadFleet();
+  } catch (e) {
+    fleetDialogNote(`Could not save Work Priorities — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- Install a model on one Mac, or on every Mac that can run it -----------
+
+function fleetInstallOpen(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const models = (machine.installable_models || []).filter(model => model && model.package_id);
+  const name = machine.label || machine.machine;
+  if (!models.length) {
+    fleetNote('fleet-machine-action-note', machine.installable_models == null
+      ? `Install a model on ${name}: needs a newer Studio Hub on this Mac.`
+      : `Every model ${name} can run is already on it.`);
+    return;
+  }
+  fleetDialogOpen({
+    kind: 'install', locationId, machineId,
+    heading: `Install a model on ${name}`,
+    text: `These are the models ${name} has the memory to run and does not have yet. It downloads the one you `
+      + `choose by itself; its controller checks the disk space first. “Every Mac” puts it on all the Macs that `
+      + `can run it: each network downloads it once, and its Macs copy it from each other.`,
+    body: `<label>Model <select id="fleet-install-package">${models.map(model =>
+      `<option value="${esc(model.package_id)}">${esc(model.label || model.model || model.package_id)}`
+      + `${model.size_gb != null ? ` — ${esc(model.size_gb)} GB` : ''}</option>`).join('')}</select></label>`,
+    actions: '<button type="button" class="primary" onclick="fleetInstallSave(this)">Install</button>'
+      + '<button type="button" onclick="fleetInstallEverywhere(this)">Install on Every Mac</button>'
+      + '<button type="button" onclick="fleetDialogClose()">Cancel</button>',
+  });
+}
+
+function fleetInstallChoice(state) {
+  const machine = fleetMachineById(state.locationId, state.machineId);
+  const select = document.getElementById('fleet-install-package');
+  const packageId = select && select.value;
+  if (!machine || !packageId) return null;
+  const model = (machine.installable_models || []).find(row => row && row.package_id === packageId) || {};
+  return { machine, packageId, name: model.label || model.model || packageId };
+}
+
+// The Mac's own sentence for one status read (the native row's line).
+function fleetDownloadSentence(name, run) {
+  const state = (run && run.state) || '';
+  if (state === 'done') return [`Installed ${name}`, true];
+  if (state === 'error' || state === 'interrupted') {
+    const tail = run && run.error_tail
+      ? ': ' + String(run.error_tail).split('\n').pop().trim() : '';
+    return [`Download of ${name} failed${tail}`, true];
+  }
+  if (state === 'cancelled') return [`Download of ${name} was cancelled`, true];
+  const total = Number(run && run.total_bytes) || 0;
+  const done = Number(run && run.bytes_done) || 0;
+  const percent = total > 0 ? ` — ${Math.min(99, Math.floor(done * 100 / total))}%` : '';
+  return [`Downloading ${name}${percent}`, false];
+}
+
+// Poll the download every few seconds until it ends. A status read that fails keeps the last
+// sentence and tries again (the Mac may be busy); 20 misses in a row is "lost track", said plainly.
+async function fleetFollowDownload(machine, name, runId, last) {
+  let current = last || {};
+  let misses = 0;
+  for (;;) {
+    const [text, finished] = fleetDownloadSentence(name, current);
+    fleetNote('fleet-model-action-note', `${text} (on ${machine.label || machine.machine})`);
+    if (finished) { await loadFleet(); return; }
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    try {
+      const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/model-downloads/${fleetSeg(runId)}`);
+      current = (answer && answer.run) || current;
+      misses = 0;
+    } catch (e) {
+      misses += 1;
+      if (misses >= 20) {
+        fleetNote('fleet-model-action-note', `Lost track of ${name}: ${e.message}`);
+        return;
+      }
+    }
+  }
+}
+
+async function fleetInstallSave(button, state) {
+  const choice = fleetInstallChoice(state || fleetDialogState || {});
+  if (!choice) return;
+  fleetDialogClose();
+  button.disabled = true;
+  fleetNote('fleet-model-action-note', `Starting the download of ${choice.name}…`);
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(choice.machine.location_id)}/machines/${fleetSeg(choice.machine.machine)}/model-packages/${fleetSeg(choice.packageId)}/download`, fleetPayload());
+    const run = (answer && answer.run) || {};
+    if (!run.id) { fleetNote('fleet-model-action-note', `Not installed: ${choice.machine.label || choice.machine.machine} did not say it started.`); return; }
+    await fleetFollowDownload(choice.machine, choice.name, run.id, run);
+  } catch (e) {
+    fleetNote('fleet-model-action-note', `Could not install ${choice.name} — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetInstallEverywhere(button) {
+  const choice = fleetInstallChoice(fleetDialogState || {});
+  if (!choice) return;
+  if (!confirm(`Install ${choice.name} on every Mac that can run it?\n\nEach network downloads it from the `
+    + `internet once; the other Macs on that network copy it from each other. Macs that cannot run it (memory, `
+    + `Lite Mode), This Mac while it is paused and Macs that are offline are skipped. Progress shows on the `
+    + `Models tab, per network.`)) return;
+  fleetDialogClose();
+  button.disabled = true;
+  fleetNote('fleet-model-action-note', `Installing ${choice.name} on every Mac that can run it…`);
+  try {
+    await api('/fleet/model-installs', fleetPayload({ package_id: choice.packageId }));
+    fleetNote('fleet-model-action-note', `Installing ${choice.name} on every Mac that can run it. Progress is on the Models tab.`);
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-model-action-note', `Could not install ${choice.name} everywhere — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- A Mac's model preset and its installed models -------------------------
+
+function fleetPresetTitle(preset) {
+  const name = preset.name || preset.presetId || 'A preset';
+  const installed = Number(preset.installedCount) || 0;
+  const total = Number(preset.packageCount) || 0;
+  if (preset.complete === true) return `${name} — installed`;
+  if (installed > 0) return `${name} — ${installed} of ${total}`;
+  const toCopy = preset.projection && preset.projection.toCopyBytes;
+  const gb = toCopy != null ? `${(Number(toCopy) / 1e9).toFixed(1)} GB` : 'an unknown size';
+  return `${name} — copies ${gb}`;
+}
+
+async function fleetPresetOpen(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const name = machine.label || machine.machine;
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', `Reading ${name}'s models…`);
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/model-presets`);
+    const presets = (answer && answer.presets) || [];
+    if (!presets.length) {
+      fleetNote('fleet-machine-action-note', `This Mac's Studio Hub reported no presets. Update Studio Hub on it, then try again.`);
+      return;
+    }
+    const facts = [];
+    if (answer.memoryGb != null) facts.push(`${answer.memoryGb} GB of memory`);
+    if (answer.disk && answer.disk.freeBytes != null) facts.push(`${(Number(answer.disk.freeBytes) / 1e9).toFixed(1)} GB free on its models' drive`);
+    const starting = presets.findIndex(preset => preset.presetId === answer.startingPreset);
+    fleetDialogOpen({
+      kind: 'preset', locationId, machineId,
+      heading: `Model preset for ${name}`,
+      text: (facts.length ? facts.join(', ') + '. ' : '')
+        + 'A preset decides what this Mac installs and what its one-time cleanup moves. Every model outside it '
+        + 'is chosen by hand on the Mac itself, and a model too big for it is greyed out with the reason rather '
+        + 'than hidden.',
+      body: `<label>Preset <select id="fleet-preset-id">${presets.map(preset =>
+        `<option value="${esc(preset.presetId || '')}"${presets[starting] === preset ? ' selected' : ''}>`
+        + `${esc(fleetPresetTitle(preset))}</option>`).join('')}</select></label>`,
+      actions: '<button type="button" class="primary" onclick="fleetPresetSave(this)">Set</button>',
+    });
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Could not read ${name}'s models — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetPresetSave(button, state) {
+  const select = document.getElementById('fleet-preset-id');
+  const preset = select && select.value;
+  if (!preset) return;
+  const machine = fleetMachineById(state.locationId, state.machineId);
+  if (!machine) { fleetDialogClose(); return; }
+  button.disabled = true;
+  fleetDialogNote('Setting the preset…');
+  try {
+    // `requested_by` is the Gateway's own name for the actor: this route is owner-only, so the owner
+    // pressing the button IS the request, and the Mac records that it came from here.
+    const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/model-preset`,
+      fleetPayload({ preset_id: preset, requested_by: 'gateway-fleet' }));
+    fleetDialogClose();
+    fleetNote('fleet-machine-action-note', `Preset set to ${(answer && answer.preset_id) || preset}.`);
+    await loadFleet();
+  } catch (e) {
+    fleetDialogNote(`Preset not set: ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetRemoveOpen(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const name = machine.label || machine.machine;
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', `Reading ${name}'s models…`);
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/model-presets`);
+    const installed = ((answer && answer.models) || []).filter(model => model && model.installed === true && model.packageId);
+    if (!installed.length) {
+      fleetNote('fleet-machine-action-note', `This Mac's Studio Hub reported no installed models, so there is nothing to remove.`);
+      return;
+    }
+    fleetDialogOpen({
+      kind: 'remove', locationId, machineId,
+      heading: `Remove a model from ${name}`,
+      text: 'It is moved into that Mac\'s model-library trash, not deleted, and can be restored there for 30 '
+        + 'days. A model a job is using, or one another installed model needs, is refused and says which.',
+      body: `<label>Model <select id="fleet-remove-package">${installed.map(model => {
+        const label = model.label || model.packageId || 'A model';
+        const gb = model.bytes != null ? ` — ${(Number(model.bytes) / 1e9).toFixed(1)} GB` : '';
+        return `<option value="${esc(model.packageId)}">${esc(label)}${esc(gb)}</option>`;
+      }).join('')}</select></label>`,
+      actions: '<button type="button" class="primary" onclick="fleetRemoveSave(this)">Remove</button>',
+    });
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Could not read ${name}'s models — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetRemoveSave(button, state) {
+  const select = document.getElementById('fleet-remove-package');
+  const packageId = select && select.value;
+  const machine = fleetMachineById(state.locationId, state.machineId);
+  if (!packageId || !machine) { fleetDialogClose(); return; }
+  const name = machine.label || machine.machine;
+  if (!confirm(`Remove ${packageId} from ${name}?\n\nIt is moved into that Mac's model-library trash, not deleted, `
+    + `and can be restored there for 30 days.`)) return;
+  button.disabled = true;
+  fleetDialogNote('Removing…');
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/model-packages/${fleetSeg(packageId)}`,
+      { method: 'DELETE' });
+    fleetDialogClose();
+    fleetNote('fleet-machine-action-note', (answer && answer.detail) || `Removed ${packageId}; it is in that Mac's trash.`);
+    await loadFleet();
+  } catch (e) {
+    fleetDialogNote(`Not removed: ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- One Mac's Studio Hub Trash Folder -------------------------------------
+
+// The gateway labels every reading: fresh, stale, unreachable or unknown. Only a fresh reading is a
+// measurement now; the others say so rather than reading as an empty (or full) folder.
+function fleetTrashSummary(report) {
+  if (!report) return 'No answer.';
+  if (report.supported !== true) {
+    if (report.status === 'unreachable') return `Unreachable — ${report.detail || 'it did not answer'}`;
+    return `Needs Hub ${report.needs_hub || '0.6.182'}`;
+  }
+  const count = Number(report.count) || 0;
+  const bytes = Number(report.bytes) || 0;
+  const free = report.disk && report.disk.free_bytes != null ? ` · this Mac has ${fleetBytes(report.disk.free_bytes)} free` : '';
+  const checked = report.measured_at ? `checked ${fleetStamp(report.measured_at)}` : 'checked time unknown';
+  const status = report.status || 'unknown';
+  const lines = [`${count} item${count === 1 ? '' : 's'}, ${fleetBytes(bytes)}${free}`, status === 'fresh'
+    ? checked : `${status.toUpperCase()}, ${checked}`];
+  for (const [title, key] of [['By kind', 'by_kind'], ['By age', 'by_age']]) {
+    const table = report[key] || {};
+    const rows = Object.entries(table)
+      .sort((a, b) => (Number(b[1] && b[1].bytes) || 0) - (Number(a[1] && a[1].bytes) || 0));
+    if (!rows.length) continue;
+    lines.push(`${title}: ` + rows.map(([label, row]) =>
+      `${label}: ${(row && row.count) ?? 0}, ${fleetBytes(row && row.bytes)}`).join(' · '));
+  }
+  if (status !== 'fresh') lines.push('Not counted as fresh.');
+  return lines.join('\n');
+}
+
+async function fleetTrashOpen(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const name = machine.label || machine.machine;
+  fleetDialogOpen({
+    kind: 'trash', locationId, machineId, deletable: false,
+    heading: `Trash Folder on ${name}`,
+    text: 'Studio Hub never empties it by itself. “Move to macOS Trash” is recoverable there. Permanently '
+      + 'deleting stays in the Gateway app on its own Mac — it is the one action only the app may take.',
+    body: '<div class="stat" id="fleet-trash-report" style="white-space:pre-line">Reading the Trash Folder…</div>',
+    actions: '<button type="button" class="primary" id="fleet-trash-move" onclick="fleetTrashMove(this)" disabled>'
+      + 'Move to macOS Trash</button><button type="button" onclick="fleetDialogClose()">Close</button>',
+  });
+  try {
+    const report = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/trash`);
+    if (fleetDialogState && fleetDialogState.kind === 'trash'
+        && String(fleetDialogState.machineId) === String(machineId)) {
+      fleetDialogState.report = report;
+      fleetDialogState.deletable = report.supported === true && (Number(report.count) || 0) > 0;
+      const move = document.getElementById('fleet-trash-move');
+      if (move) move.disabled = !fleetDialogState.deletable;
+    }
+    const box = document.getElementById('fleet-trash-report');
+    if (box) box.textContent = fleetTrashSummary(report);
+  } catch (e) {
+    const box = document.getElementById('fleet-trash-report');
+    if (box) box.textContent = `Could not read it — ${e.message}`;
+  }
+}
+
+async function fleetTrashMove(button) {
+  const state = fleetDialogState;
+  if (!state || state.kind !== 'trash' || !state.deletable) return;
+  const machine = fleetMachineById(state.locationId, state.machineId);
+  if (!machine) { fleetDialogClose(); return; }
+  const name = machine.label || machine.machine;
+  button.disabled = true;
+  fleetDialogNote('Moving…');
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}/trash/move-to-macos-trash`,
+      fleetPayload({ items: 'all' }));
+    const failed = (answer && answer.failed) || [];
+    fleetDialogClose();
+    fleetNote('fleet-machine-action-note', `Moved ${(answer && answer.moved_count) ?? 0} item(s) from ${name}'s `
+      + 'Trash Folder to macOS Trash.' + (failed.length ? ` ${failed.length} could not be moved.` : ''));
+    await loadFleet();
+  } catch (e) {
+    fleetDialogNote(`Could not move them — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- A location's credentials ----------------------------------------------
+
+function fleetLocationCredentials(button) {
+  const location = fleetLocationById(button.dataset.id);
+  if (!location) { fleetLocationNote('Location no longer available. Refresh and try again.'); return; }
+  fleetDialogOpen({
+    kind: 'credentials', locationId: location.id,
+    heading: `Credentials for ${location.label || location.id}`,
+    text: "Leave a field empty to keep what is already stored. This does not disturb the location's name, address or models.",
+    body: '<label>Fleet token <span class="secret"><input type="password" id="fleet-cred-token" autocomplete="new-password"><button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>'
+      + '<label>Hub token for shared voices <span class="secret"><input type="password" id="fleet-cred-hub" autocomplete="new-password"><button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>'
+      + '<p class="hint">The Hub token is kept for shared-voice administration only: it creates, lists or removes '
+      + 'shared voices on that controller. Never used to run work. Leave it empty if you do not share voices.</p>',
+  });
+}
+
+async function fleetCredentialsSave(button, state) {
+  const value = id => String(document.getElementById(id)?.value ?? '').trim();
+  const fleetToken = value('fleet-cred-token');
+  const hubToken = value('fleet-cred-hub');
+  if (!fleetToken && !hubToken) { fleetDialogClose(); return; }
+  button.disabled = true;
+  fleetDialogNote('Saving…');
+  try {
+    if (fleetToken) {
+      const answer = await api(`/fleet/controllers/${fleetSeg(state.locationId)}/credential`,
+        { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: fleetToken }) });
+      const detail = (answer && answer.credential && answer.credential.detail) || '';
+      const discovered = answer && answer.discovered != null ? ` Discovered ${answer.discovered} models.` : '';
+      fleetDialogNote(`Saved the fleet token. ${detail}${discovered}`.trim());
+    }
+    if (hubToken) {
+      try {
+        await api(`/fleet/controllers/${fleetSeg(state.locationId)}/hub-token`,
+          { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: hubToken }) });
+        fleetDialogNote('Saved the fleet token and the Hub token. It can now be given shared voices.');
+      } catch (e) {
+        fleetDialogNote(`Saved the fleet token, but not the Hub token — ${e.message}`);
+      }
+    }
+    fleetDialogClose();
+    await loadFleet();
+  } catch (e) {
+    fleetDialogNote(`Could not save it — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- A location's address (handover, not Remove + Add) ---------------------
+
+function fleetLocationAddress(button) {
+  const location = fleetLocationById(button.dataset.id);
+  if (!location) { fleetLocationNote('Location no longer available. Refresh and try again.'); return; }
+  fleetDialogOpen({
+    kind: 'address', locationId: location.id, testedOK: null,
+    heading: `Change the address of ${location.label || location.id}`,
+    text: 'Use this when a controller is replaced (for example a node promoted to head). Its credential, its '
+      + 'models and every enable decision stay with the location; the old identity is dropped and the next probe '
+      + 'reads the new one.',
+    body: `<label>Address <input id="fleet-addr-url" value="${esc(location.url || '')}" placeholder="http://100.64.0.9:47873"></label>`
+      + '<label>Fleet token (optional — empty keeps the stored one) <span class="secret"><input type="password" id="fleet-addr-token" autocomplete="new-password"><button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>'
+      + '<div class="stat" id="fleet-addr-result" role="status" aria-live="polite">Not tested yet.</div>',
+    actions: '<button type="button" onclick="fleetAddressTest(this)">Test This Address</button>'
+      + '<button type="button" class="primary" onclick="fleetAddressChange(this)">Change Address</button>'
+      + '<button type="button" onclick="fleetDialogClose()">Cancel</button>',
+  });
+}
+
+function fleetAddressBody() {
+  const url = String(document.getElementById('fleet-addr-url')?.value ?? '').trim();
+  const token = String(document.getElementById('fleet-addr-token')?.value ?? '').trim();
+  return token ? { url, token } : { url };
+}
+
+async function fleetAddressTest(button) {
+  const state = fleetDialogState;
+  if (!state || state.kind !== 'address') return;
+  const sent = fleetAddressBody();
+  fleetNote('fleet-addr-result', 'Testing…');
+  button.disabled = true;
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(state.locationId)}/test`, fleetPayload(sent));
+    if (answer && answer.reachable === true) {
+      state.testedOK = sent.url;
+      fleetNote('fleet-addr-result', `Answered as ${answer.role || 'unknown role'} on Hub ${answer.version || 'unknown version'}: `
+        + `${answer.machines ?? 0} machines, ${answer.nodes ?? 0} nodes.`);
+    } else {
+      fleetNote('fleet-addr-result', `No answer — ${(answer && answer.error) || 'unknown reason'}`);
+    }
+  } catch (e) {
+    fleetNote('fleet-addr-result', `Test failed — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetAddressChange(button, state) {
+  state = state || fleetDialogState;
+  if (!state || state.kind !== 'address') return;
+  const body = fleetAddressBody();
+  if (!body.url) { fleetDialogNote('An address is required. The address was not changed.'); return; }
+  const location = fleetLocationById(state.locationId);
+  const label = (location && location.label) || state.locationId;
+  if (state.testedOK !== body.url) {
+    if (!confirm(`This address has not answered a test\n\nChange ${label} to ${body.url} anyway? Routing to it `
+      + 'will fail until that Mac answers.')) return;
+  }
+  button.disabled = true;
+  fleetDialogNote('Changing the address…');
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(state.locationId)}/address`,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const tail = answer && answer.discovered != null ? ` It now offers ${answer.discovered} model${answer.discovered === 1 ? '' : 's'}.`
+      : answer && answer.discovery_error ? ` Its models could not be read yet — ${answer.discovery_error}` : '';
+    fleetDialogClose();
+    fleetLocationNote(`${label} now answers at ${body.url}. Credential and enable decisions kept.${tail}`);
+    await loadFleet();
+  } catch (e) {
+    fleetDialogNote(`Could not change the address — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- Refresh one location's models -----------------------------------------
+
+async function fleetLocationRefresh(button) {
+  const location = fleetLocationById(button.dataset.id);
+  if (!location) { fleetLocationNote('Location no longer available. Refresh and try again.'); return; }
+  const label = location.label || location.id;
+  if (!location.provider_id) { fleetLocationNote(`${label} has no provider id yet — read the fleet again.`); return; }
+  button.disabled = true;
+  fleetLocationNote(`Refreshing ${label}'s models…`);
+  try {
+    const answer = await api(`/providers/${fleetSeg(location.provider_id)}/refresh`, { method: 'POST' });
+    fleetLocationNote(answer && answer.error ? `${label}: discovery failed — ${answer.error}`
+      : `${label}: discovered ${answer && answer.discovered != null ? answer.discovered : 'an unreported number of'} models.`);
+    await loadFleet();
+  } catch (e) {
+    fleetLocationNote(`Could not refresh ${label} — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
 function fleetMembersTooltip(L) {
   const summary = L.node_summary || null;
   if (!summary && !(L.nodes || []).length) return '';
@@ -5755,6 +6998,330 @@ function fleetMembersTooltip(L) {
     lines.push(head);
   }
   return lines.join('\n');
+}
+
+// ---- Remote final rendering -----------------------------------------------
+
+async function loadFleetRender() {
+  const box = document.getElementById('fleet-render-body');
+  if (box) box.innerHTML = '<div class="empty">Reading the Macs that can render final videos…</div>';
+  try {
+    const answer = await api('/fleet/remote-rendering');
+    renderFleetRender(answer || {});
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="empty">Could not read remote rendering — ${esc(e.message)}</div>`;
+  }
+}
+
+function fleetRenderNetwork(row) {
+  if (row.owner_network) return `Network ${row.owner_network}`;
+  switch (row.network) {
+    case 'same_network': return 'Same network';
+    case 'other_lan': return 'Another local network';
+    case 'tailscale': return 'Tailscale';
+    default: return 'Network unknown';
+  }
+}
+
+function fleetRenderIdle(row) {
+  switch (row.idle_state) {
+    case 'idle': return 'Idle';
+    case 'busy': return 'Busy';
+    case 'offline': return 'Offline';
+    default: return 'Not ready';
+  }
+}
+
+// **The switch is not the whole story.** A Mac renders only when it is switched on here AND its own
+// Studio Hub has confirmed it accepts unqualified work — "On here, waiting for the Mac" is a real state.
+function fleetRenderStatus(row) {
+  if (row.authority === 'production') return 'Already qualified';
+  if (row.opted_in === true && row.hub_accepting === true) return 'On, confirmed by the Mac';
+  if (row.opted_in === true) return "On here, waiting for the Mac's Studio Hub";
+  return 'Off';
+}
+
+function renderFleetRender(answer) {
+  const box = document.getElementById('fleet-render-body');
+  if (!box) return;
+  const workers = answer.workers || [];
+  if (!workers.length) {
+    box.innerHTML = '<div class="empty">No Mac publishes final rendering, so there is nothing to switch on.</div>';
+    return;
+  }
+  box.innerHTML = `<div class="tablewrap"><table class="ftable"><thead><tr><th>Mac</th><th>Details</th>
+    <th>Status</th><th>Allow remote rendering (untested)</th><th>Renders while paused</th></tr></thead><tbody>${
+    workers.map(row => {
+      const controller = esc(row.controller_id || '');
+      const node = esc(row.machine_id || '');
+      const qualified = row.authority === 'production';
+      const speed = Number(row.render_speed) > 0
+        ? `${Number(row.render_speed).toFixed(2)}× realtime measured`
+          + (row.render_speed_renders != null
+            ? ` over ${row.render_speed_renders} render${row.render_speed_renders === 1 ? '' : 's'}` : '')
+        : '';
+      const details = [row.chip, row.memory_gb != null ? `${Math.round(Number(row.memory_gb))} GB` : '',
+        fleetRenderIdle(row), fleetRenderNetwork(row), row.address || ''].filter(Boolean).join(' · ');
+      return `<tr>
+        <td class="ft-lead" data-label="Mac"><div class="ft-name">${esc(row.machine || row.machine_id || '—')}</div></td>
+        <td data-label="Details">${esc(details)}</td>
+        <td data-label="Status">${esc(fleetRenderStatus(row))}${speed ? `<div class="ft-sub">${esc(speed)}</div>` : ''}</td>
+        <td data-label="Allow"><label class="check"><input type="checkbox"${row.opted_in === true ? ' checked' : ''}${
+          qualified ? ' disabled' : ''} onchange="fleetRenderToggle(this,'${controller}','${node}',&#39;optin&#39;)"></label></td>
+        <td data-label="Paused"><label class="check"><input type="checkbox"${
+          row.render_while_paused === true ? ' checked' : ''} onchange="fleetRenderToggle(this,'${controller}','${node}',&#39;paused&#39;)"></label></td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+async function fleetRenderToggle(input, controllerId, machineId, kind) {
+  const enabled = input.checked === true;
+  const what = kind === 'paused' ? 'render while paused' : 'remote rendering';
+  input.disabled = true;
+  fleetNote('fleet-render-note', `Switching ${enabled ? 'on' : 'off'} ${what} for ${machineId}…`);
+  const route = kind === 'paused'
+    ? `/fleet/controllers/${fleetSeg(controllerId)}/machines/${fleetSeg(machineId)}/render-while-paused`
+    : `/fleet/controllers/${fleetSeg(controllerId)}/machines/${fleetSeg(machineId)}/render-optin`;
+  try {
+    const answer = await api(route, fleetPayload({ enabled }));
+    // Switching off always takes effect on the Gateway; only the Mac's own copy may lag.
+    fleetNote('fleet-render-note', !enabled && answer && answer.relayed === false && answer.detail
+      ? `${machineId}: ${answer.detail}`
+      : `${machineId}: ${what} is ${enabled ? 'on' : 'off'}.`);
+    await loadFleetRender();
+  } catch (e) {
+    input.checked = !enabled;
+    input.disabled = false;
+    fleetNote('fleet-render-note', `${machineId}: not changed — ${e.message}`);
+  }
+}
+
+// ---- Release: publish, and the paced rollout -------------------------------
+
+function fleetVersionParts(version) {
+  const text = String(version ?? '').trim();
+  if (!text) return null;
+  const parts = text.split('.');
+  if (parts.some(part => !/^\d+$/.test(part))) return null;
+  return parts.map(Number);
+}
+
+// Mirrors `release_publisher.is_downgrade`: the backend guard is the enforcement, and this only
+// powers the warning. A version with no dotted-number order is never treated as a downgrade.
+function fleetIsNewer(held, target) {
+  const left = fleetVersionParts(held), right = fleetVersionParts(target);
+  if (!left || !right) return false;
+  const count = Math.max(left.length, right.length);
+  for (let at = 0; at < count; at += 1) {
+    const a = left[at] ?? 0, b = right[at] ?? 0;
+    if (a !== b) return a > b;
+  }
+  return false;
+}
+
+function fleetDowngrades(version) {
+  return (lastFleetPayload?.locations || []).filter(location =>
+    location.local !== true && location.reachable !== false
+    && location.release && fleetIsNewer(location.release.version, version));
+}
+
+function fleetRolloutStepText(step, version) {
+  const detail = String(step && step.detail || '').trim();
+  let text;
+  switch (step && step.state) {
+    case 'sending': text = 'sending the release…'; break;
+    case 'sent': text = 'sent; finishing its current work, then installing'; break;
+    case 'installing': text = 'installing and restarting'; break;
+    case 'updated': text = 'updated'; break;
+    case 'failed': text = detail || `did not come back on ${version}`; break;
+    case 'skipped': text = 'skipped' + (detail ? `: ${detail}` : ''); break;
+    default: text = detail ? `waiting: ${detail}` : 'waiting'; break;
+  }
+  if (Number(step.nodes_total) > 0 && ['sent', 'installing', 'updated'].includes(step.state)) {
+    text += ` · ${step.nodes_updated ?? 0} of ${step.nodes_total} Macs on ${version}`;
+  }
+  return text;
+}
+
+function renderFleetRelease(d) {
+  const release = (d && d.release) || {};
+  const status = document.getElementById('fleet-release-status');
+  if (status) {
+    const identity = release.identity || null;
+    const push = release.last_push || null;
+    const bits = [];
+    if (identity && identity.fingerprint) bits.push(`This gateway's publisher key: ${identity.fingerprint}`);
+    else if (release.error) bits.push(`Publisher key unavailable — ${release.error}`);
+    if (push && push.release && push.release.version) {
+      bits.push(`Last push: ${push.release.version} (${push.release.build || 'build not stated'})`);
+    } else {
+      bits.push('No release has been pushed from this gateway yet.');
+    }
+    status.textContent = bits.join(' · ');
+  }
+  const box = document.getElementById('fleet-rollout');
+  if (!box) return;
+  const rollout = release.rollout || null;
+  if (!rollout) { box.innerHTML = ''; return; }
+  const version = rollout.version || 'the release';
+  const running = rollout.state === 'running';
+  const canResume = rollout.state === 'stopped' || rollout.state === 'failed';
+  const steps = (rollout.order || []).map(id => {
+    const step = (rollout.steps || {})[id];
+    if (!step) return '';
+    return `<div class="stat">${esc(step.label || id)} — ${esc(fleetRolloutStepText(step, version))}</div>`;
+  }).join('');
+  box.innerHTML = `<div class="card"><div class="row"><b>Rollout of ${esc(version)}: ${esc(rollout.summary || rollout.state || '')}</b>
+    ${running ? '<button type="button" class="sm" onclick="fleetRollout(this,\'stop\')">Stop Rollout</button>' : ''}
+    ${canResume ? '<button type="button" class="sm" onclick="fleetRollout(this,\'resume\')">Resume Rollout</button>' : ''}</div>
+    ${!running && rollout.reason ? `<div class="stat">Stopped: ${esc(rollout.reason)}</div>` : ''}
+    ${steps}</div>`;
+}
+
+function fleetPushSentence(answer, version, build) {
+  if (answer && answer.rollout) {
+    return `Rolling out ${version} (${build}) — ${answer.rollout.summary || 'one location at a time; progress is below.'}`;
+  }
+  const outcomes = Object.values((answer && answer.locations) || {});
+  if (!outcomes.length) return `Published ${version} (${build}); the answer named no controllers.`;
+  const refusals = outcomes.filter(outcome => !outcome || outcome.ok !== true);
+  if (!refusals.length) {
+    return `Published ${version} (${build}) to all ${outcomes.length} controller${outcomes.length === 1 ? '' : 's'}; `
+      + 'each read back the same release.';
+  }
+  return `Published ${version} (${build}) to ${outcomes.length - refusals.length} of ${outcomes.length} controllers. Refused: `
+    + refusals.map(outcome => `${(outcome && outcome.label) || '?'} (${(outcome && (outcome.detail || outcome.code)) || 'no reason given'})`).join('; ') + '.';
+}
+
+async function fleetPublishRelease(button) {
+  const value = id => String(document.getElementById(id)?.value ?? '').trim();
+  const artifactPath = value('fleet-release-path');
+  const version = value('fleet-release-version');
+  const build = value('fleet-release-build');
+  const filename = value('fleet-release-filename') || artifactPath.split('/').pop();
+  const allAtOnce = document.getElementById('fleet-release-all')?.checked === true;
+  const forceFull = document.getElementById('fleet-release-full')?.checked === true;
+  if (!artifactPath) {
+    fleetNote('fleet-release-note', 'A path is required — the Gateway signs the file on its own Mac.');
+    return;
+  }
+  if (!version || !build) {
+    fleetNote('fleet-release-note', 'A version and a build are required. Enter both, then publish again. Nothing was pushed.');
+    return;
+  }
+  let allowDowngrade = document.getElementById('fleet-release-downgrade')?.checked === true;
+  const older = fleetDowngrades(version);
+  if (older.length && !allowDowngrade) {
+    const lines = older.map(location => `• ${location.label || location.id} holds ${location.release.version}`).join('\n');
+    if (!confirm(`Publish ${version} over a newer release?\n\nThese controllers already hold a newer version:\n${lines}\n\n`
+      + `Publishing ${version} would take them backwards. Continue only if that is what you want.`)) return;
+    allowDowngrade = true;
+  }
+  if (!confirm(`Publish ${filename}?\n\nThis gateway signs the DMG and rolls it out one location at a time: this `
+    + `Mac's Studio Hub, then each controller in turn, waiting for each to come back on the new version. Each `
+    + `group's Macs then update themselves one by one, after finishing their current work.`
+    + (allAtOnce ? '\n\nAll at once: every controller is sent it now, in parallel.' : ''))) return;
+  const body = { artifact_path: artifactPath, version, build, filename };
+  if (allowDowngrade) body.allow_downgrade = true;
+  if (allAtOnce) body.mode = 'all_at_once';
+  if (forceFull) body.force_full = true;
+  button.disabled = true;
+  fleetNote('fleet-release-note', `Signing and pushing ${filename}…`);
+  try {
+    const answer = await api('/release/publish', fleetPayload(body));
+    fleetNote('fleet-release-note', fleetPushSentence(answer, version, build));
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-release-note', `Could not publish the release — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetRollout(button, action) {
+  const verb = action === 'stop' ? 'Stop' : 'Resume';
+  if (!confirm(`${verb} the rollout?\n\n` + (action === 'stop'
+    ? 'The push in flight finishes; nothing already done is undone, and Resume carries on from here.'
+    : 'It carries on from the controller it stopped at.'))) return;
+  button.disabled = true;
+  try {
+    const answer = await api(`/release/rollout/${action}`, fleetPayload());
+    const summary = answer && answer.rollout ? (answer.rollout.summary || '') : '';
+    fleetNote('fleet-release-note', `Rollout ${action === 'stop' ? 'stopped' : 'resumed'}${summary ? ' — ' + summary : '.'}`);
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-release-note', `Could not ${action} the rollout — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- Hiding whole kinds of warning ----------------------------------------
+
+// Hiding a kind is saved on the gateway (`PUT /settings/fleet-warnings`) and is never done silently:
+// the button names the kind, and a Show button names how many are hidden.
+function renderFleetWarningSettings(d) {
+  const box = document.getElementById('fleet-warning-settings');
+  if (!box) return;
+  const setting = (d && d.fleet_warnings) || {};
+  const hideable = setting.hideable || [];
+  const hidden = setting.hidden || [];
+  const present = new Set();
+  for (const machine of (d && d.machines) || []) {
+    for (const item of ((machine.disk || {}).warning_items) || []) present.add(item.kind);
+  }
+  const parts = [];
+  for (const kind of hideable) {
+    if (!present.has(kind.kind) || hidden.includes(kind.kind)) continue;
+    parts.push(`<button type="button" class="sm" onclick="fleetHideWarning(this,'${esc(kind.kind)}')">`
+      + `Hide ${esc(kind.title)} warnings</button>`);
+  }
+  if (hidden.length) {
+    parts.push(`<button type="button" class="sm" onclick="fleetHideWarning(this)">`
+      + `Show ${hidden.length} hidden warning kind${hidden.length === 1 ? '' : 's'}</button>`);
+  }
+  box.innerHTML = parts.length ? `<div class="row">${parts.join('')}</div>` : '';
+}
+
+async function fleetHideWarning(button, kind) {
+  const setting = (lastFleetPayload && lastFleetPayload.fleet_warnings) || {};
+  const hidden = (setting.hidden || []).slice();
+  const next = kind == null ? [] : (hidden.includes(kind) ? hidden : hidden.concat([kind]));
+  button.disabled = true;
+  try {
+    await api('/settings/fleet-warnings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hidden: next }) });
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Could not save that — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// ---- Installing a model on every Mac: the plans ---------------------------
+
+function renderFleetInstalls(d) {
+  const box = document.getElementById('fleet-installs');
+  if (!box) return;
+  const plans = (d && d.model_installs) || [];
+  if (!plans.length) { box.innerHTML = ''; return; }
+  box.innerHTML = plans.map(plan => {
+    const running = plan.state === 'running';
+    const networks = (plan.networks || []).map(group => `${group.title}: ${group.done} of ${group.total}`).join(' · ');
+    return `<div class="card"><div class="row"><b>${esc(plan.label || plan.package_id)}</b>
+      ${fleetBadge(running ? 'Running' : String(plan.state || 'unknown'), running ? 'info' : '')}
+      <span class="stat">${esc(plan.done ?? 0)} of ${esc(plan.total ?? 0)} Macs</span>
+      ${running ? `<button type="button" class="sm" onclick="fleetStopInstall(this,'${esc(plan.id)}')">Stop</button>` : ''}</div>
+      <div class="stat">${esc(networks)}</div></div>`;
+  }).join('');
+}
+
+async function fleetStopInstall(button, planId) {
+  if (!confirm('Stop installing this model on every Mac?\n\nNothing new starts; a copy or download already '
+    + 'running on a Mac finishes there.')) return;
+  button.disabled = true;
+  try {
+    await api(`/fleet/model-installs/${fleetSeg(planId)}/stop`, fleetPayload());
+    fleetNote('fleet-model-action-note', 'Stopped: nothing new will start.');
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-model-action-note', `Could not stop it — ${e.message}`);
+  } finally { button.disabled = false; }
 }
 
 function renderFleetLocations(d) {
@@ -5883,8 +7450,11 @@ function renderFleetJobs(d) {
   if (wrap) {
     wrap.innerHTML = rows.length
       ? `<table class="ftable"><thead><tr><th>Location</th><th>Type</th><th>Model</th><th>Batch</th>
-         <th>Progress</th><th>State</th></tr></thead><tbody>${rows.map(job => {
+         <th>Progress</th><th>State</th><th>Actions</th></tr></thead><tbody>${rows.map(job => {
           const state = fleetJobState(job);
+          // A batch is stopped on the Hub that holds it: the location's id and the Hub's batch id are
+          // what the route addresses — a label is not an identity.
+          const stoppable = job.location_id != null && job.batch_id != null;
           return `<tr>
             <td class="ft-lead" data-label="Location"><div class="ft-name">${esc(job.location || job.location_id || '—')}</div>
               <div class="ft-sub">${esc(job.batch_id || '')}</div></td>
@@ -5894,6 +7464,8 @@ function renderFleetJobs(d) {
             <td data-label="Progress">${esc(fleetJobProgress(job))}
               ${job.no_progress_s > 0 ? `<div class="ft-sub">no progress for ${job.no_progress_s}s</div>` : ''}</td>
             <td class="nowrap" data-label="State">${fleetBadge(state.text, state.health)}</td>
+            <td data-label="Actions">${stoppable ? `<button type="button" class="sm" data-id="${esc(job.location_id)}"`
+              + ` data-batch="${esc(job.batch_id)}" onclick="fleetCancelBatch(this)">Stop</button>` : '—'}</td>
           </tr>`;
         }).join('')}</tbody></table>`
       : '<div class="fleet-empty">No batch is running on the fleet.</div>';
@@ -5904,9 +7476,74 @@ function renderFleetJobs(d) {
       ? `<div class="card">${broken.map(job => `<div class="fleet-issue"><b>${esc(
           [job.location, job.modality, job.label || job.model].filter(Boolean).join(' · '))}</b> — ${
           esc(job.governor_note || (job.errors && job.errors[0] && (job.errors[0].message || job.errors[0].text))
-            || `${job.error ?? 0} item${(job.error ?? 0) === 1 ? '' : 's'} failed.`)}</div>`).join('')}</div>`
+            || `${job.error ?? 0} item${(job.error ?? 0) === 1 ? '' : 's'} failed.`)}`
+          // The failed items, named and retryable: only an item in state `error` is accepted, and the
+          // Hub refuses the rest in its own sentence.
+          + (((job.errors || []).filter(item => item && item.item_index != null)).map(item =>
+            `<div class="row"><span class="stat">Item ${esc(item.item_index)} · ${esc(item.message || item.code || 'failed')}</span>`
+            + `<button type="button" class="sm" data-id="${esc(job.location_id ?? '')}" data-batch="${esc(job.batch_id ?? '')}"`
+            + ` data-modality="${esc(job.modality ?? '')}" data-index="${esc(item.item_index)}"`
+            + ` onclick="fleetRetryItem(this)">Retry</button></div>`).join(''))
+          + `</div>`).join('')}</div>`
       : `<p class="hint">No stalled or failed batches. A batch that stops making progress appears here with the Hub's own reason.</p>`;
   }
+}
+
+// Ask a location's Hub to stop a batch. **The Hub owns the work, so this reports a request, not a
+// result**: its answer counts what was still queued and got cancelled, what worker was signalled, and
+// what is still pending — "a worker was told" and "it stopped" are different facts.
+async function fleetCancelBatch(button) {
+  const job = (lastFleetPayload?.running || []).find(row =>
+    String(row.batch_id) === button.dataset.batch && String(row.location_id) === String(button.dataset.id));
+  const what = `${fleetJobWords(job ? job.modality : '')} · ${(job && (job.model || job.label)) || button.dataset.batch}`;
+  if (!confirm(`Stop ${what}?\n\n${job?.running ?? 0} running, ${job?.queued ?? 0} queued at ${job?.location || 'this location'}. `
+    + `Queued items are cancelled; a worker that already took its item cannot be promised to stop.`)) return;
+  button.disabled = true;
+  fleetNote('fleet-jobs-note', `Asking the Hub to stop ${what}…`);
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(button.dataset.id)}/jobs/${fleetSeg(button.dataset.batch)}/cancel`,
+      fleetPayload({ modality: (job && job.modality) || '' }));
+    // The adapter wraps the Hub's answer: `result` is `{ok, status, route, answer}`, and the counts
+    // come from `answer` — reading them off `result` reported zeros while the Hub did the work.
+    const result = (answer && answer.result) || {};
+    const hub = result.answer || {};
+    if (result.ok === false) {
+      fleetNote('fleet-jobs-note', `Could not stop it — ${result.error || hub.detail || 'the Hub did not accept the request'}`);
+    } else {
+      fleetNote('fleet-jobs-note', `Asked the Hub to stop ${what} — ${hub.queued_cancelled ?? 0} queued cancelled, `
+        + `${hub.running_signalled ?? 0} worker(s) signalled, ${hub.running_pending ?? 0} still pending.`);
+    }
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-jobs-note', `Could not ask the Hub to stop it — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+function fleetJobWords(modality) {
+  return modality === 'tts' ? 'TTS' : String(modality || 'work');
+}
+
+// Ask a location's Hub to re-queue one failed item. **The Hub is the authority on whether it may be
+// retried**: only an item in state `error` is accepted, and its refusal is shown as it wrote it.
+async function fleetRetryItem(button) {
+  const { id, batch, modality, index } = button.dataset;
+  const what = `${fleetJobWords(modality)} item ${index}`;
+  button.disabled = true;
+  fleetNote('fleet-jobs-note', `Asking the Hub to retry ${what}…`);
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(id)}/jobs/${fleetSeg(batch)}/items/${fleetSeg(index)}/retry`,
+      fleetPayload({ modality }));
+    const result = (answer && answer.result) || {};
+    const hub = result.answer || {};
+    if (result.ok === false) {
+      fleetNote('fleet-jobs-note', `The Hub refused the retry — ${result.error || hub.detail || hub.message || 'no reason given'}`);
+    } else {
+      fleetNote('fleet-jobs-note', `Asked the Hub to retry ${what}; it is ${hub.state || 'queued'} again.`);
+    }
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-jobs-note', `Could not ask the Hub to retry it — ${e.message}`);
+  } finally { button.disabled = false; }
 }
 
 // ---- Story Studio ----------------------------------------------------------
@@ -5940,23 +7577,75 @@ function renderFleetStory() {
   if (fleetStoryRows == null) { wrap.innerHTML = '<div class="fleet-empty">Reading Story Studio…</div>'; return; }
   wrap.innerHTML = fleetStoryRows.length
     ? `<table class="ftable"><thead><tr><th>Mac</th><th>Version</th><th>Status</th><th>Channels</th>
-       <th>Story queue</th><th>Checked in</th></tr></thead><tbody>${fleetStoryRows.map(instance => {
+       <th>Story queue</th><th>Checked in</th><th>Actions</th></tr></thead><tbody>${fleetStoryRows.map(instance => {
         const state = fleetStoryStatusText(instance);
         const queue = instance.queue || {};
         const count = value => (value == null ? '—' : value);
+        const update = instance.update || {};
+        // "Next check by ~HH:MM" while an Update Now is waiting for the Mac's next 30-minute check-in.
+        const nextCheck = instance.update_requested_at != null && instance.next_check_by > Date.now() / 1000
+          ? 'Next check by ~' + new Date(instance.next_check_by * 1000)
+            .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+        const caption = update.error || nextCheck;
+        const actionable = instance.status === 'update_available' || instance.status === 'failed';
         return `<tr>
           <td class="ft-lead" data-label="Mac"><div class="ft-name">${esc(instance.machine || instance.instance_id || '—')}</div></td>
           <td class="nowrap" data-label="Version">${esc(instance.version || '—')}</td>
-          <td data-label="Status" title="${esc((instance.update && instance.update.error) || '')}">${
-            fleetBadge(state.text, state.health)}</td>
+          <td data-label="Status" title="${esc(caption || '')}">${
+            fleetBadge(state.text, state.health)}${caption ? `<div class="ft-sub">${esc(caption)}</div>` : ''}</td>
           <td data-label="Channels">${count(instance.channels)}</td>
           <td data-label="Story queue">${count(queue.running)} running · ${count(queue.queued)} queued${
             queue.held ? ' · paused' : ''}</td>
           <td data-label="Checked in">${esc(fleetSeenText(instance.age_seconds != null
             ? Date.now() / 1000 - instance.age_seconds : null))}</td>
+          <td data-label="Actions">${actionable ? `<button type="button" class="sm"`
+            + ` data-id="${esc(instance.instance_id)}" onclick="fleetStoryUpdate(this)">Update Now</button>` : '—'}</td>
         </tr>`;
       }).join('')}</tbody></table>`
     : '<div class="fleet-empty">No Story Studio Mac has checked in yet.</div>';
+}
+
+// "Update now": the Mac installs on its next check-in (at most 30 minutes away), after draining.
+async function fleetStoryUpdate(button) {
+  const id = button.dataset.id;
+  const instance = (fleetStoryRows || []).find(row => String(row.instance_id) === String(id)) || {};
+  const machine = instance.machine || id;
+  button.disabled = true;
+  fleetNote('fleet-story-note', `Asking ${machine} to update…`);
+  try {
+    const answer = await api(`/story/instances/${fleetSeg(id)}/update`, fleetPayload());
+    const by = (answer && answer.instance && answer.instance.next_check_by) || null;
+    const when = by && by > Date.now() / 1000
+      ? `at its next check (within 30 minutes), ~${new Date(by * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+      : 'at its next check (within 30 minutes)';
+    fleetNote('fleet-story-note', `${machine} updates ${when}; it pauses its queue, waits for running jobs, installs and restarts.`);
+    await loadFleetStory();
+  } catch (e) {
+    fleetNote('fleet-story-note', `Could not ask ${machine} to update — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+// Publishing never pushes: each Mac fetches on its next check-in, verifies the signature, and installs
+// once its queue has drained. The file is on the Gateway's own Mac, so its path is typed here.
+async function fleetPublishStory(button) {
+  const path = String(document.getElementById('fleet-story-path')?.value ?? '').trim();
+  if (!path) {
+    fleetNote('fleet-story-note', 'A path is required — the Story release is signed on the Gateway\'s own Mac.');
+    return;
+  }
+  const filename = path.split('/').pop();
+  if (!confirm(`Publish ${filename} to every Story Studio Mac?\n\nThe version is read from the app inside. `
+    + 'Each Mac installs it after its queue drains, unless its owner turned automatic updates off.')) return;
+  button.disabled = true;
+  fleetNote('fleet-story-note', `Signing ${filename}…`);
+  try {
+    const answer = await api('/story/release/publish', fleetPayload({ artifact_path: path }));
+    const version = (answer && answer.descriptor && answer.descriptor.version) || '?';
+    fleetNote('fleet-story-note', `Published Story Studio ${version}. Each Story Mac picks it up at its next check-in, within 30 minutes.`);
+    await loadFleetStory();
+  } catch (e) {
+    fleetNote('fleet-story-note', `Could not publish the Story Studio release — ${e.message}`);
+  } finally { button.disabled = false; }
 }
 
 async function loadFleetStory() {
@@ -6263,16 +7952,20 @@ function renderFleet(d) {
   if (!d) return;
   renderFleetGroups(d);
   renderFleetMachines(d);
+  renderFleetWarningSettings(d);
   renderFleetLocations(d);
+  renderFleetRelease(d);
   renderFleetModels(d);
+  renderFleetInstalls(d);
   renderFleetJobs(d);
   renderFleetOrphans(d);
 }
 
-async function loadFleet() {
+async function loadFleet(force) {
   renderFleetTabs();
   let d;
-  try { d = await api('/fleet'); }
+  // `force` is the Refresh button: the one read that waits for a real fan-out of every controller.
+  try { d = await api(force ? '/fleet?force=1' : '/fleet'); }
   catch (e) {
     const box = document.getElementById('fleet-body');
     if (box) box.innerHTML = `<div class="empty">Could not read the fleet: ${esc(e.message)}</div>`;
