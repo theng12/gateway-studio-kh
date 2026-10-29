@@ -629,6 +629,13 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
     return indexed or None
 
 
+#: A **separate, short** timeout for the capability snapshot. It is guidance, not the catalogue:
+#: an old Hub that never answers this route must not add the full `TIMEOUT` (12 s) per location to
+#: every discovery — the catalogue list beside it is the call that decides whether a location can
+#: be served at all (review 2026-10-29f, finding 4).
+CAPABILITIES_TIMEOUT = httpx.Timeout(3.0, connect=2.0)
+
+
 def _hub_controls(base: str, token: str, *, local: bool = False) -> dict[str, dict[str, Any]] | None:
     """Per-model `controls` from the Hub's capability snapshot (`/api/hub/capabilities`).
 
@@ -644,6 +651,12 @@ def _hub_controls(base: str, token: str, *, local: bool = False) -> dict[str, di
     `None` when the read did not answer — "unread" is not "publishes nothing". A Hub without the
     route (or an older one) leaves every model's guidance absent, and the catalogue then
     publishes the control with no guidance rather than an invented one.
+
+    **A route that cannot be read is guidance missing, never a location failing to refresh.** It
+    is one optional request beside the two that carry the catalogue, so a hang, an error status,
+    a 200 that is not JSON or a payload of the wrong shape all answer `None` here: the location's
+    models still discover, and only the guidance is absent (review 2026-10-29f, finding 4 — an
+    unguarded `response.json()` took the whole location's discovery down with it).
     """
     from ..hub import hub_headers  # local import: avoids a cycle
 
@@ -651,15 +664,21 @@ def _hub_controls(base: str, token: str, *, local: bool = False) -> dict[str, di
         response = httpx.get(
             f"{base.rstrip('/')}/api/hub/capabilities",
             headers=hub_headers(token, local=local),
-            timeout=TIMEOUT,
+            timeout=CAPABILITIES_TIMEOUT,
         )
     except httpx.HTTPError:
         return None
     if response.status_code >= 400:
         return None
-    payload = response.json() or {}
+    try:
+        payload = response.json()
+    except ValueError:  # includes JSONDecodeError: a 200 that is a page of HTML
+        return None
+    if not isinstance(payload, dict):
+        return None
     index: dict[str, dict[str, Any]] = {}
-    for row in payload.get("models") or []:
+    rows = payload.get("models")
+    for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
             continue
         controls = row.get("controls")

@@ -174,6 +174,67 @@ class DiscoveryCarriesTheControls(unittest.TestCase):
         with patch.object(discovery.httpx, "get", return_value=httpx.Response(404)):
             self.assertIsNone(discovery._hub_controls("http://hub.test", "tok", local=False))
 
+    def test_a_route_that_is_not_json_is_guidance_missing_not_a_broken_location(self) -> None:
+        """An old Hub answering 200 with a page, or a payload of the wrong shape.
+
+        This is guidance beside the catalogue, not the catalogue: the unguarded `response.json()`
+        took the whole location's discovery down with it (review 2026-10-29f, finding 4).
+        """
+        from gateway.providers import discovery
+
+        html = httpx.Response(200, text="<html>no capabilities here</html>",
+                              headers={"content-type": "text/html"})
+        with patch.object(discovery.httpx, "get", return_value=html):
+            self.assertIsNone(discovery._hub_controls("http://hub.test", "tok", local=False))
+        for payload in ([], "text", 7, {"models": {"not": "a list"}}):
+            with patch.object(discovery.httpx, "get",
+                              return_value=httpx.Response(200, json=payload)):
+                self.assertIsNone(discovery._hub_controls("http://hub.test", "tok", local=False))
+
+    def test_a_broken_snapshot_does_not_stop_the_location_refreshing(self) -> None:
+        from gateway.providers import discovery
+
+        packages = {"packages": [{
+            "package_id": "breeze", "model_id": "mlx-community/Breeze-TTS-2-mlx-4bit",
+            "engine": "voice-mlx", "files_state": "files_verified",
+            "dispatch_state": "eligible", "type": "model"}]}
+        catalogue = {"models": [{
+            "repo": "mlx-community/Breeze-TTS-2-mlx-4bit", "hub_modality": "voice",
+            "capabilities": ["tts", "delivery-instruction"]}]}
+
+        def router(url, **_kwargs):
+            if str(url).endswith("/api/hub/model-packages"):
+                return httpx.Response(200, json=packages)
+            if str(url).endswith("/api/hub/catalog"):
+                return httpx.Response(200, json=catalogue)
+            return httpx.Response(200, text="<html>an old Hub</html>")
+
+        definition = SimpleNamespace(id="studio-hub-test", display_name="Studio Hub",
+                                     kind=defs.KIND_STUDIO_HUB, base_url="http://hub.test")
+        with patch.object(discovery.httpx, "get", side_effect=router):
+            result = discovery._studio_hub(definition, {"hub_token": "tok"})
+        self.assertFalse(result.error, result.error)
+        model = next(m for m in result.models
+                     if m.model_id == "mlx-community/Breeze-TTS-2-mlx-4bit")
+        self.assertIn("delivery-instruction", model.raw["capabilities"])
+        self.assertNotIn("hub_controls", model.raw, "no guidance is better than invented guidance")
+
+    def test_the_snapshot_has_its_own_short_timeout(self) -> None:
+        # An old Hub that never answers this route must not add the catalogue's 12 s per location.
+        from gateway.providers import discovery
+
+        seen: dict = {}
+
+        def fake_get(url, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return httpx.Response(200, json={"models": []})
+
+        with patch.object(discovery.httpx, "get", fake_get):
+            discovery._hub_controls("http://hub.test", "tok", local=False)
+        self.assertLessEqual(seen["timeout"].read, 5.0,
+                             f"a hanging Hub must not cost the catalogue's timeout: {seen['timeout']!r}")
+        self.assertLess(seen["timeout"].read, discovery.TIMEOUT.read)
+
     def test_a_discovered_model_carries_its_controls(self) -> None:
         from gateway.providers import discovery
 

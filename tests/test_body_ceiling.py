@@ -574,16 +574,56 @@ class ThePublishedUploadLimit(unittest.TestCase):
         self.assertNotIn("upload_limit_bytes", payload["by_modality"]["chat"][0])
 
 
-class ReleasedWhenTheBodyIsIn(_PoolCase):
-    """Finding 3: the **slot** is freed when the body has been received, the **bytes** are not.
+def _drive_upload(results: list, lock: threading.Lock, size: int, route_seconds: float) -> None:
+    """One upload through the real middleware: 12 MiB in 256 KiB chunks, a route that answers late.
 
-    The early release fixed Story's back-to-back 503s and went one step too far: it also freed the
-    byte reservation, so five back-to-back 100 MB transcriptions could all be admitted while the
-    first was still being parsed and answered — resident memory was no longer bounded by the pool
-    (review 2026-10-29f, finding 1).
+    The chunks arrive all at once (a LAN or a fast fibre), which is what makes "is the budget held
+    while the route answers?" a question the pool's own numbers can answer.
+    """
+    chunk = b"x" * (256 * 1024)
+    state = {"left": size}
+
+    async def receive() -> dict:
+        if state["left"] <= 0:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        body = chunk[: state["left"]]
+        state["left"] -= len(body)
+        return {"type": "http.request", "body": body, "more_body": True}
+
+    status = {"code": None}
+
+    async def send(message: dict) -> None:
+        if message["type"] == "http.response.start":
+            status["code"] = message["status"]
+
+    async def route(_scope: dict, read: Any, push: Any) -> None:
+        while (await read()).get("more_body"):
+            pass
+        await asyncio.sleep(route_seconds)      # the route is answering
+        await push({"type": "http.response.start", "status": 200, "headers": []})
+        await push({"type": "http.response.body", "body": b"ok"})
+
+    scope = {"type": "http", "method": "POST", "path": "/v1/images/source-images",
+             "headers": [(b"content-length", str(size).encode()),
+                         (b"authorization", b"Bearer " + os.environ["GATEWAY_API_KEY"].encode())],
+             "client": ("100.100.1.1", 5555)}
+    asyncio.run(api.BoundedUploadBody(route)(scope, receive, send))
+    with lock:
+        results.append(status["code"])
+
+
+class ReleasedWhenTheBodyIsIn(_PoolCase):
+    """The pool bounds **how much is being received at once**, not what a route is parsing.
+
+    0.2.207 freed the slot on the last body byte and fixed Story's back-to-back 503s. Holding the
+    *bytes* until the route returned was tried next and refused a second wave of 8 × 12 MiB with
+    503 while every route simply answered for a second — and Story does not retry an upload, so a
+    scene fails. The owner's decision (2026-10-29): production traffic beats the memory concern,
+    which only an authenticated caller could exploit. Slot and bytes are freed together.
     """
 
-    def test_the_slot_is_free_while_the_route_runs_and_the_bytes_are_not(self) -> None:
+    def test_the_pool_is_free_while_the_route_is_still_running(self) -> None:
+        # The route has read every byte and is busy answering: the next wave must not be refused.
         seen: dict = {}
 
         async def slow_route(_scope: dict, read: Any, _send: Any) -> None:
@@ -591,7 +631,7 @@ class ReleasedWhenTheBodyIsIn(_PoolCase):
             with api._SPOOL_LOCK:
                 seen["in_flight"] = api._spool_state["in_flight"]
                 seen["bytes"] = api._spool_state["bytes"]
-            await asyncio.sleep(0.2)          # "answering": the route is holding its copy
+            await asyncio.sleep(0.2)          # "answering" — the pool must already be free
 
         sent: list[dict] = []
 
@@ -608,66 +648,10 @@ class ReleasedWhenTheBodyIsIn(_PoolCase):
                 patch.object(api, "_upload_credentials_ok", lambda scope: True), \
                 patch.object(api, "_SPOOL_BUDGET_MIN_BYTES", 64):
             asyncio.run(api.BoundedUploadBody(slow_route)(scope, receive, send))
-        self.assertEqual(seen, {"in_flight": 0, "bytes": 100},
-                         "the slot frees when the body is in; the bytes wait for the route")
-        self.assertEqual(api._spool_state["bytes"], 0, "and are freed once it has answered")
-        self.assertEqual(api._spool_state["in_flight"], 0)
+        self.assertEqual(seen, {"in_flight": 0, "bytes": 0},
+                         "both are freed when the body is in, not when the reply is out")
 
-    def test_a_second_maximum_upload_while_the_first_is_processed_is_refused(self) -> None:
-        """The finding, end to end: one 100 MB body being parsed and a second one arriving."""
-        inside = threading.Event()
-        finish = threading.Event()
-        second_read: list[dict] = []
-
-        async def slow_route(_scope: dict, read: Any, _send: Any) -> None:
-            await read()
-            inside.set()
-            await asyncio.get_running_loop().run_in_executor(None, finish.wait)
-
-        async def never_read(_scope: dict, read: Any, _send: Any) -> None:
-            second_read.append(await read())   # must never be reached
-
-        async def send(_message: dict) -> None:
-            return None
-
-        async def receive() -> dict:
-            return {"type": "http.request", "body": b"x" * 100, "more_body": False}
-
-        def scope_for() -> dict:
-            return {"type": "http", "method": "POST", "path": "/alright/anywhere",
-                    "headers": [(b"content-length", str(100 * MB).encode())],
-                    "client": ("host-a", 1)}
-
-        answered: list[dict] = []
-
-        async def note(message: dict) -> None:
-            answered.append(message)
-
-        def first() -> None:
-            asyncio.run(api.BoundedUploadBody(slow_route)(scope_for(), receive, send))
-
-        with patch.object(api, "body_ceiling_for", lambda path: (200 * MB, "route")), \
-                patch.object(api, "upload_door", lambda path: (200 * MB, "an upload", True)), \
-                patch.object(api, "_upload_credentials_ok", lambda scope: True):
-            thread = threading.Thread(target=first)
-            thread.start()
-            try:
-                self.assertTrue(inside.wait(10), "the first upload never reached its route")
-                asyncio.run(api.BoundedUploadBody(never_read)(
-                    scope_for(), receive, note))
-            finally:
-                finish.set()
-                thread.join(timeout=10)
-        status = next(m["status"] for m in answered if m["type"] == "http.response.start")
-        body = next(m["body"] for m in answered if m["type"] == "http.response.body")
-        self.assertEqual(status, 503)
-        self.assertEqual(json.loads(body)["code"], "UPLOAD_BUDGET_BUSY")
-        # Two 100 MB bodies against a 118 MB budget: the whole budget is what refused it, and
-        # the host share (102 MB) would have refused it a moment later.
-        self.assertEqual(json.loads(body)["limit"], "bytes")
-        self.assertEqual(second_read, [], "the second body was never read")
-
-    def test_a_chunked_body_also_holds_its_bytes_until_the_route_is_done(self) -> None:
+    def test_a_chunked_body_frees_both_when_it_has_arrived(self) -> None:
         seen: dict = {}
 
         async def slow_route(_scope: dict, read: Any, _send: Any) -> None:
@@ -693,9 +677,37 @@ class ReleasedWhenTheBodyIsIn(_PoolCase):
                 patch.object(api, "_upload_credentials_ok", lambda scope: True), \
                 patch.object(api, "_SPOOL_BUDGET_MIN_BYTES", 1024):
             asyncio.run(api.BoundedUploadBody(slow_route)(scope, receive, send))
-        self.assertEqual(seen, {"in_flight": 0, "bytes": 4096},
-                         "chunked: the slot frees when the body ends, the bytes wait for the route")
-        self.assertEqual(api._spool_state["bytes"], 0, "and are freed once it has answered")
+        self.assertEqual(seen, {"in_flight": 0, "bytes": 0},
+                         "chunked: both are freed when the body ends")
+
+    def test_two_waves_of_eight_twelve_megabyte_uploads_all_reach_the_route(self) -> None:
+        """The review's probe_wave.py: 8 × 12 MiB, a 1 s route, and a second wave 0.3 s in.
+
+        Wave 1 is 96 MiB — under the 102 MiB per-host share. Wave 2 arriving while wave 1's routes
+        are still answering is another 96 MiB; holding the bytes through the route refused every
+        one of them with 503, and Story does not retry, so sixteen scene references would fail.
+        """
+        with api._SPOOL_LOCK:
+            api._spool_state.update({"bytes": 0, "in_flight": 0, "hosts": {}})
+        results: list = []
+        lock = threading.Lock()
+
+        def one() -> None:
+            _drive_upload(results, lock, 12 * MB, 1.0)
+
+        first = [threading.Thread(target=one) for _ in range(8)]
+        for thread in first:
+            thread.start()
+        threading.Event().wait(0.3)          # wave 2 arrives while wave 1 is answering
+        second = [threading.Thread(target=one) for _ in range(8)]
+        for thread in second:
+            thread.start()
+        for thread in first + second:
+            thread.join(timeout=120)
+        self.assertEqual(len(results), 16, results)
+        self.assertEqual(sorted(set(results)), [200], f"a 503 fails a scene: {sorted(results)}")
+        self.assertEqual(api._spool_state["bytes"], 0)
+        self.assertEqual(api._spool_state["in_flight"], 0)
 
     def test_ten_rounds_of_eight_parallel_uploads_never_meet_503(self) -> None:
         # Story sends references with `Promise.all` and does not retry, so a spurious 503 fails

@@ -314,6 +314,23 @@ class PoolMemberWaitTest(_Base):
         self.assertIn("waiting for a Magpie slot", waits[0]["reason"])
         self.assertIsNone(waits[-1], "the job is told the wait is over")
 
+    def test_the_published_wait_since_is_wall_clock(self) -> None:
+        """`waiting.since` is rendered as a date beside the job (`api._iso`), so it must be one.
+
+        A monotonic reading is seconds since an arbitrary boot: the page would print a time in
+        1970 or drop the field. The worker's own waiting reason uses wall clock for the same
+        reason (review 2026-10-29f, finding 3).
+        """
+        self.pool._member_calls["magpie"] = 1
+        waits: list[object] = []
+        began = time.time()
+        with self.assertRaises(BackendError):
+            self.pool._acquire_member(self._definition(), self._request(waits.append))
+        since = waits[0]["since"]
+        self.assertIsInstance(since, float)
+        self.assertLess(abs(since - began), 60.0,
+                        f"a monotonic reading is not a date: {since!r}")
+
     def test_the_wait_takes_the_slot_as_soon_as_it_frees(self) -> None:
         self.budget = 30.0  # a busy machine may delay the timer; this must not become the test
         self.pool._member_calls["magpie"] = 1
@@ -512,6 +529,54 @@ class RunningJobLivenessTest(_Base):
         self.assertTrue(row["retryable"])
         self.assertFalse(row["recovery_required"], "a retryable failure is not an unknown-outcome hold")
         self.assertIn("never reported a job id", row["error_detail"])
+
+    def test_a_job_the_restart_re_sent_is_not_failed_by_the_sweep(self) -> None:
+        """The review's `probe_resend_race.py`: the restart re-sends without refreshing the stamp.
+
+        `_resume_interrupted` stamps `restart_resent_at` and leaves `dispatch_started_at` as it was
+        before the shutdown, so measuring silence from the old stamp failed a job the restart had
+        just re-sent — while its own send was in flight. A *retryable* failure there makes Story
+        submit again, and a re-sent Hub job can be charged twice.
+        """
+        self.sites = [_site("img1", macs=4, supply={IMAGE_MODEL: {"eligible": 4, "available": 4}},
+                            models=[IMAGE_MODEL])]
+        worker = Worker(self.store, interval_s=10.0, pool_size=0)
+        ids = []
+        for index, age in enumerate((2 * 3600, 20 * 60)):   # both past the 720 s media deadline
+            job_id = self.job(IMAGE_MODEL)
+            with self.store._lock:
+                self.store._conn.execute(
+                    "UPDATE jobs SET state = 'running', dispatch_started_at = ?, "
+                    "upstream_job_id = NULL WHERE id = ?", (time.time() - age, job_id))
+                self.store._conn.commit()
+            self.store.note_restart_resend(job_id)          # what the restart replay does
+            worker._running[job_id] = self.store.get(job_id)
+            ids.append(job_id)
+
+        out = worker._check_running_liveness()
+        self.assertEqual({"checked": 2, "said_something": 0, "failed": 0}, out,
+                         "a re-sent job is not silent: its own send began just now")
+        for job_id in ids:
+            row = self.store.get(job_id)
+            self.assertEqual("running", row["state"])
+            self.assertIsNone(row["error_code"])
+
+    def test_a_job_the_restart_re_sent_that_then_goes_silent_still_fails(self) -> None:
+        # The other half: the later stamp is used, not blindly ignored, so the sweep still ends a
+        # re-send that really does go quiet past the lane's ceiling.
+        self.sites = [_site("img1", macs=2)]
+        worker = Worker(self.store, interval_s=10.0, pool_size=0)
+        job_id = self.job(IMAGE_MODEL)
+        with self.store._lock:
+            self.store._conn.execute(
+                "UPDATE jobs SET state = 'running', dispatch_started_at = ?, "
+                "restart_resent_at = ?, upstream_job_id = NULL WHERE id = ?",
+                (time.time() - 4 * 3600, time.time() - 4 * 3600, job_id))
+            self.store._conn.commit()
+        worker._running[job_id] = self.store.get(job_id)
+        out = worker._check_running_liveness()
+        self.assertEqual(1, out["failed"])
+        self.assertEqual("PROVIDER_TIMEOUT", self.store.get(job_id)["error_code"])
 
     def test_the_deadline_is_the_lanes_own_ceiling(self) -> None:
         self.assertEqual(CHAT_DEADLINE_CEILING_S + worker_module._LANE_DEADLINE_GRACE_S,

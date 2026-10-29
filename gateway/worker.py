@@ -189,6 +189,26 @@ def _where(row: dict[str, Any], job: dict[str, Any]) -> str:
     return "the provider"
 
 
+def _silent_since(row: dict[str, Any]) -> float | None:
+    """When this job's current attempt began waiting — **the restart's own re-send included**.
+
+    `_check_running_liveness` measures silence from here, and the stamp it reads is the one the
+    attempt that is *live now* wrote. **A restart re-sends without refreshing `dispatch_started_at`**:
+    `_resume_interrupted` calls `store.note_restart_resend`, which stamps `restart_resent_at` and
+    nothing else. Measuring from the pre-restart stamp therefore failed a job that the restart had
+    just re-sent (probe `probe_resend_race.py`: a job stamped two hours before the shutdown failed
+    `PROVIDER_TIMEOUT` 20 s into its re-send) — and a *retryable* failure on work that may be live
+    upstream is what makes Story submit it again, which can be charged twice. The later of the two
+    stamps is when the wait actually began; `updated_at` covers a resumed row with neither.
+    """
+    stamps = [row.get("dispatch_started_at"), row.get("restart_resent_at")]
+    values = [float(value) for value in stamps if isinstance(value, (int, float))]
+    if values:
+        return max(values)
+    fallen = row.get("updated_at")
+    return float(fallen) if isinstance(fallen, (int, float)) else None
+
+
 def lane_deadline_s(modality: str) -> float:
     """The longest one call on this lane can legitimately take, from **the lane's own ceiling**.
 
@@ -2294,10 +2314,10 @@ class Worker:
                 if not row or row.get("state") != "running" or row.get("upstream_job_id"):
                     continue
                 out["checked"] += 1
-                started = row.get("dispatch_started_at") or row.get("updated_at")
-                if not isinstance(started, (int, float)):
+                started = _silent_since(row)
+                if started is None:
                     continue
-                age = moment - float(started)
+                age = moment - started
                 modality = str(row.get("modality") or job.get("modality") or "")
                 where = _where(row, job)
                 if age > lane_deadline_s(modality):
@@ -2320,7 +2340,7 @@ class Worker:
                                   f"({int(age // 60)} min)"
                                   if age >= 60 else
                                   f"waiting for {where} to accept the job - no job id yet",
-                        "since": float(started),
+                        "since": started,
                     })
                     out["said_something"] += 1
             except Exception:  # noqa: BLE001 - a watchdog must never end the dispatch loop

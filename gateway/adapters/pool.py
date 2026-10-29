@@ -102,7 +102,12 @@ def _acquire_member(definition: Any, request: BackendRequest) -> None:
     provider_id = str(definition.id)
     label = str(getattr(definition, "display_name", "") or provider_id)
     ceiling_s = float(_member_budget()["member_wait_seconds"])
-    started = _clock()
+    started = _clock()               # monotonic: the deadline's arithmetic only
+    #: **Wall clock, because it is published.** `waiting.since` is rendered as an ISO time beside
+    #: the job (`api._iso`), and a monotonic reading is a number of seconds since an arbitrary
+    #: boot — not a date. The worker's own waiting reason uses `time.time()` for the same reason
+    #: (`worker._check_running_liveness`); review 2026-10-29f, finding 3.
+    announced_at = time.time()
     deadline = started + ceiling_s
     announced = False
     try:
@@ -123,7 +128,7 @@ def _acquire_member(definition: Any, request: BackendRequest) -> None:
                     code="POOL_MEMBER_BUSY", retryable=True,
                     upstream_accepted=False, upstream_settled=True)
             if request.on_wait is not None and not announced:
-                request.on_wait({"reason": f"waiting for a {label} slot", "since": started})
+                request.on_wait({"reason": f"waiting for a {label} slot", "since": announced_at})
                 announced = True
             with _member_cond:
                 _member_cond.wait(min(WAIT_STEP_S, left))  # re-read the limit: the owner may raise it live

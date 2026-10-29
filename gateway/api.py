@@ -413,6 +413,9 @@ class BoundedUploadBody:
     * A chunked body is counted as it arrives, spooled only up to its ceiling, and cut there.
     * The budget is shared: bytes, concurrent uploads and a per-host share are reserved before
       anything is read, and a sender that goes quiet for `_SPOOL_IDLE_TIMEOUT_S` loses its slot.
+      **It bounds how much is being received at once, not how much a route has parsed**: both are
+      freed once the body is in, so a wave of uploads whose routes are still answering does not
+      refuse the next wave (owner's decision, 2026-10-29).
     """
 
     #: Only these can carry a body; a GET is never spooled.
@@ -529,19 +532,15 @@ class BoundedUploadBody:
                         budgeted: bool) -> None:
         """A body whose length is known: reserve it, then let the route read it.
 
-        **Two releases, at two different moments, and both are load-bearing.**
+        **The budget bounds how much is being received at once, not how much a route has parsed.**
+        The slot and the byte reservation are both released the moment the last byte is in, so a
+        wave of uploads whose routes are still answering does not make the next wave meet 503 —
+        Story does not retry an upload and a 503 fails a scene (owner's decision, 2026-10-29:
+        production traffic beats the memory concern, which only an authenticated caller could
+        exploit).
 
-        * The **slot** is given back the moment the last byte is in. The request is no longer
-          receiving anything, and holding the slot through a route that takes seconds to answer
-          made back-to-back batches of eight meet 503 on most rounds — Story's image upload does
-          not retry, so that fails a scene (review 2026-10-29e, finding 3).
-        * The **byte reservation** is held until the route has finished with the body. The route
-          is holding its parsed copy in memory while it answers, so freeing the bytes early let
-          five back-to-back 100 MB transcriptions be admitted at once and left resident memory
-          unbounded — which is the thing this budget exists to bound (review 2026-10-29f,
-          finding 1).
-
-        A body under `_SPOOL_BUDGET_MIN_BYTES` is not an upload and takes nothing.
+        The reservation still does its real job: a burst of large bodies *arriving together* cannot
+        exceed the budget, because each is reserved before a byte is read.
         """
         if not budgeted or size < _SPOOL_BUDGET_MIN_BYTES:
             # Parsed into memory and dropped, or too small to be an upload: bounded by the
@@ -557,21 +556,17 @@ class BoundedUploadBody:
             await self._busy(refused)(scope, receive, send)
             return
         stalled = {"hit": False}
-        held = {"slot": True, "bytes": True}
+        released = {"done": False}
 
-        def release_slot() -> None:
-            """The slot, as soon as nothing more is being received."""
-            if not held["slot"]:
-                return
-            held["slot"] = False
-            _spool_release(host, 0)
+        def release() -> None:
+            """The slot **and** the bytes, when the body has been received.
 
-        def release_bytes() -> None:
-            """The bytes, once the route is done with the body it was given."""
-            if not held["bytes"]:
+            Idempotent, so the `finally` still covers a body that was never read.
+            """
+            if released["done"]:
                 return
-            held["bytes"] = False
-            _spool_release(host, size, slot=False)
+            released["done"] = True
+            _spool_release(host, size)
 
         def note_stall() -> None:
             stalled["hit"] = True
@@ -583,7 +578,7 @@ class BoundedUploadBody:
             if message.get("type") == "http.request":
                 received["n"] += len(message.get("body") or b"")
                 if received["n"] >= size or not message.get("more_body"):
-                    release_slot()
+                    release()
             return message
 
         async def guarded_send(message: dict[str, Any]) -> None:
@@ -598,8 +593,7 @@ class BoundedUploadBody:
         except _Stalled:
             pass
         finally:
-            release_slot()
-            release_bytes()
+            release()
         if stalled["hit"]:
             await self._stalled()(scope, receive, send)
 
@@ -607,9 +601,8 @@ class BoundedUploadBody:
                               what: str, host: str, budgeted: bool) -> None:
         """No declared length (a chunked upload): count as it arrives, spool what is kept.
 
-        The slot is released when the body is complete; the **byte reservation is held until the
-        route has finished** — see `_declared` for why the two are different moments (review
-        2026-10-29f, finding 1).
+        Slot and bytes are both freed when the body is complete — the budget bounds simultaneous
+        reception, not what a route is still parsing (see `_declared`).
         """
         received = 0
         reserved = 0
@@ -658,10 +651,10 @@ class BoundedUploadBody:
                     spool.write(body)
                     if not message.get("more_body"):
                         break
-                # **The slot is freed here, before the route runs**: nothing more is arriving.
-                # **The bytes are not** — the route holds its parsed copy while it answers, and
-                # freeing them early is what let several maximum uploads be resident at once.
-                _spool_release(host, 0, slot=slot)
+                # **Freed here, before the route runs**: the body is complete, and the route
+                # reading its copy from the spool is not an upload any more.
+                _spool_release(host, reserved, slot=slot)
+                reserved = 0
                 slot = False
                 spool.seek(0)
 
