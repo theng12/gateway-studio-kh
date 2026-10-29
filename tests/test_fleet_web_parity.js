@@ -42,7 +42,8 @@ const ALLOW = new Map([
   ['/fleet/controllers/*/machines/*/trash/delete',
     "the route demands the Gateway app's own per-launch owner-console secret (require_owner_console, "
     + "X-Gateway-Owner-Console), which only the native client holds. A web page cannot present it. The "
-    + "recoverable move to macOS Trash is on the page; the permanent delete stays in the app."],
+    + "recoverable move to macOS Trash is on the page; the permanent delete is in the app, at "
+    + "View → Fleet Trash… (AppDelegate.openFleetTrash), which opens the kept native FleetTrash sheet."],
 ]);
 
 // Routes assembled from a helper argument, so no single Swift literal contains them. The prefix is

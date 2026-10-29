@@ -1248,6 +1248,14 @@ enum MainMenuBuilder {
             action: #selector(AppDelegate.openConsoleInBrowser),
             keyEquivalent: "b"
         ).target = target
+        // **The one Fleet action a web page cannot take.** A permanent Trash Folder delete needs
+        // this app's own per-launch owner-console secret, so the web Fleet page offers the
+        // recoverable move and says the permanent delete is in the app. This is its entrance.
+        viewMenu.addItem(
+            withTitle: "Fleet Trash…",
+            action: #selector(AppDelegate.openFleetTrash),
+            keyEquivalent: ""
+        ).target = target
 
         // ---- Window ------------------------------------------------------
         let windowItem = NSMenuItem()
@@ -1540,6 +1548,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openModels() { MainWindow.shared.show(section: "models") }
 
     @objc func openFleet() { MainWindow.shared.show(section: "fleet") }
+
+    /// **Where the permanent delete lives now that the Fleet row is a web page.** The page can move
+    /// a Mac's Studio Hub Trash Folder to the macOS Trash (recoverable); the permanent delete takes
+    /// the owner-console secret only this app holds, and a web page cannot send it. The page says
+    /// so and points here — so this has to exist.
+    @objc func openFleetTrash() {
+        GatewayAPI.get("/admin/api/fleet", timeout: 45) { result in
+            DispatchQueue.main.async {
+                guard case .success(let payload) = result,
+                      let snapshot = FleetSnapshot.from(payload) else {
+                    let alert = NSAlert()
+                    alert.messageText = "Could not read the fleet"
+                    alert.informativeText = "The Gateway did not answer with a fleet this app can "
+                        + "read, so no Mac was chosen and nothing was changed. Start the Gateway, "
+                        + "then try again."
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                    return
+                }
+                let machines = snapshot.machines.filter { $0.locationId != nil && $0.machine != nil }
+                guard !machines.isEmpty else {
+                    let alert = NSAlert()
+                    alert.messageText = "No Mac reported a Trash Folder"
+                    alert.informativeText = "No Mac on the fleet answered with a machine id, so "
+                        + "there is nothing to open. Refresh the fleet, then try again."
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                    return
+                }
+                let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 340, height: 26),
+                                           pullsDown: false)
+                picker.addItems(withTitles: machines.map { machine in
+                    let name = machine.label ?? machine.machine ?? "this Mac"
+                    return machine.location.map { "\(name) — \($0)" } ?? name
+                })
+                let alert = NSAlert()
+                alert.messageText = "Trash Folder…"
+                alert.informativeText = "Choose a Mac. Its Studio Hub Trash Folder opens here, "
+                    + "where the permanent delete lives: only this app holds the secret it needs, "
+                    + "so the web page can only move items to the macOS Trash."
+                alert.accessoryView = picker
+                alert.addButton(withTitle: "Open")
+                alert.addButton(withTitle: "Cancel")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                let index = picker.indexOfSelectedItem
+                guard index >= 0 && index < machines.count else { return }
+                // The "Trash on All Macs…" entry inside the sheet reads this list.
+                FleetTrash.everyMac = machines
+                FleetTrash.show(machines[index], done: {})
+            }
+        }
+    }
 
     @objc func openConsole() { MainWindow.shared.show(section: "providers") }
 

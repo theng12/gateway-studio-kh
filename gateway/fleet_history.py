@@ -489,29 +489,36 @@ def _drop_facts(drops: list, events: list, subject: dict, now: float) -> dict:
     """
     ordered = sorted(events, key=lambda event: float(event[0]))
     facts: list[dict] = []
+    ended_at: list[float | None] = []
     for drop in sorted(drops, key=lambda event: float(event[0])):
         at = float(drop[0])
         recovery = next((event for event in ordered if float(event[0]) > at and event[1]), None)
         ended = float(recovery[0]) if recovery is not None else None
         duration = round(ended - at, 1) if ended is not None else None
-        facts.append({
-            "at": at,
-            "duration_seconds": duration,
-            "ongoing": ended is None,
-            "recovered_by": _recovered_by(subject, at, ended) if ended is not None else "unknown",
-        })
+        facts.append({"at": at, "duration_seconds": duration, "ongoing": ended is None})
+        ended_at.append(ended)
     completed = [fact for fact in facts if fact["duration_seconds"] is not None]
     durations = [fact["duration_seconds"] for fact in completed]
     gaps = [round(facts[index + 1]["at"] - facts[index]["at"], 1)
             for index in range(len(facts) - 1)
             if facts[index + 1]["at"] > facts[index]["at"]]
+    # **Only the last drop publishes its recovery cause**, so ask the startup audit once for it
+    # rather than once per drop: that audit is a 500-row read on every Fleet read.
+    last = None
+    if facts:
+        ended = ended_at[-1]
+        last = {
+            "duration_seconds": facts[-1]["duration_seconds"],
+            "ongoing": facts[-1]["ongoing"],
+            "recovered_by": _recovered_by(subject, facts[-1]["at"], ended) if ended is not None
+                            else "unknown",
+        }
     return {
         "median_seconds": _median(durations),
         "longest_seconds": max(durations) if durations else None,
         "gap_seconds": _median(gaps),
         "completed": len(completed),
-        "last": {key: facts[-1][key] for key in ("duration_seconds", "ongoing", "recovered_by")}
-                if facts else None,
+        "last": last,
     }
 
 
@@ -950,5 +957,7 @@ def _basis(history: dict, threshold: int) -> str | None:
         return None
     longest = _length_text(history.get("drop_longest_seconds"))
     median = _length_text(history.get("drop_median_seconds"))
+    # The drop count is a 24 h figure; the lengths are the recorded drops of the last 7 days. Say
+    # which window each number belongs to rather than letting one clock stand for both.
     return (f"{drops} drop{'s' if drops != 1 else ''} in 24 h (threshold {threshold}) · "
-            f"longest {longest} · median {median}")
+            f"longest {longest} · median {median} in {WINDOW_DAYS} days")

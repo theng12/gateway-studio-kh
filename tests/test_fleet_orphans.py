@@ -373,14 +373,22 @@ class OwnerOnly(unittest.TestCase):
         self.assertEqual(caught.exception.status, 403)
 
     def test_the_new_doors_declare_require_admin(self) -> None:
-        paths = {"/admin/api/fleet", "/admin/api/fleet-orphans",
-                 "/admin/api/settings/fleet-orphans"}
+        # **The routes the Fleet page actually calls**, not a path somebody imagined: the Fleet
+        # read that carries the orphan rows, the settings door its auto-stop switch writes, and
+        # the cancel route Stop (and auto-stop) post to. An unknown path is a failure, so a
+        # renamed route cannot quietly leave this check covering nothing.
+        paths = {
+            "/admin/api/fleet",
+            "/admin/api/settings/fleet-orphans",
+            "/admin/api/fleet/controllers/{controller_id}/jobs/{batch_id}/cancel",
+        }
+        served = {route.path for route in admin.router.routes}
         wired = {route.path for route in admin.router.routes
                  if any(getattr(dep, "dependency", None) is admin.require_admin
                         for dep in (route.dependencies or []))}
         for path in paths:
-            if any(route.path == path for route in admin.router.routes):
-                self.assertIn(path, wired)
+            self.assertIn(path, served, f"{path} is not a route this Gateway serves")
+            self.assertIn(path, wired, f"{path} does not declare require_admin")
 
 
 class RecordingAdapter:

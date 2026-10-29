@@ -465,6 +465,10 @@
   /* A short fact must not wrap into three lines while the wide columns have space: the native
      table gives each of these one line. Machine, Likely cause and the strip may wrap. */
   .ftable td.nowrap { white-space: nowrap; }
+  /* A button's label stays on ONE line; the buttons wrap between each other. `nowrap` on the cell
+     was the wrong lever — it pushed the whole Actions column past the pane at the app's 1100pt
+     width, so the last buttons were clipped instead of wrapping. */
+  .ftable td .row > button { white-space: nowrap; }
   /* The Machines table has the native column widths, so a long caption is clipped with its
      full text in the tooltip instead of stretching the row or the page. */
   .ftable.fixed { table-layout: fixed; }
@@ -5123,7 +5127,8 @@ function fleetMac(m) {
     m.location ? 'Site: ' + m.location : '',
     version, m.chip, m.memory_gb ? Math.round(m.memory_gb) + ' GB' : '',
     m.disk_free_gb != null ? Math.round(m.disk_free_gb) + ' GB free' : '',
-    `${m.completed ?? 0} done · ${m.failed ?? 0} failed`,
+    `${m.completed == null && m.failed == null ? 'job counts not reported'
+      : `${m.completed ?? 'not reported'} done · ${m.failed ?? 'not reported'} failed`}`,
     !m.reachable && m.node_last_seen_at ? 'seen ' + ago(m.node_last_seen_at) : '',
   ].filter(Boolean);
   // **How this Mac is wired**, from its own Hub (the Gateway's sentence, so every surface agrees).
@@ -5605,8 +5610,16 @@ function fleetStatusLine(rows, machines) {
 // A batch still running for finished work is a fleet warning too, so the Machines tab says so
 // where the other warnings are and points at the Jobs tab for the rows and the Stop button.
 function fleetOrphanWarning(d) {
-  const count = Number.isFinite(d && d.orphan_batches) ? d.orphan_batches : 0;
+  // **An absent count is "not checked", never zero.** A Gateway from before this read publishes no
+  // `orphan_batches`; saying nothing (or "0") would read as "nothing is running", which that read
+  // never established.
+  const known = Number.isFinite(d && d.orphan_batches);
+  const count = known ? d.orphan_batches : 0;
   const unchecked = ((d && d.locations) || []).filter(L => L.orphans_checked === false).length;
+  if (!known) {
+    return `<div class="card" style="border-color:color-mix(in srgb, var(--warn) 35%, var(--line));background:color-mix(in srgb, var(--warn) 8%, var(--panel))">
+    <div class="fleet-warn">${fleetWarnIcon('warn')}<span>Orphaned Hub batches were not checked — this Gateway does not report them.</span></div></div>`;
+  }
   if (!count && !unchecked) return '';
   const text = count
     ? `${count} Hub batch${count === 1 ? '' : 'es'} still running for work that already finished — see Jobs`
@@ -5730,7 +5743,7 @@ function fleetLocationRow(L) {
     <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">${fleetBadge(verdict.text, verdict.health)}</td>
     <td data-label="Likely cause" title="${esc(fleetCauseTooltip(L.causes))}">${esc(fleetCauseLine(L.causes) || '—')}</td>
     <td class="nowrap" data-label="Network">${esc(L.network || '—')}</td>
-    <td data-label="Hub">${esc(fleetLocationHub(L))}</td>
+    <td class="nowrap" data-label="Hub">${esc(fleetLocationHub(L))}</td>
     <td data-label="Members" title="${esc(fleetMembersTooltip(L))}"
       style="${members.refused > 0 ? 'color:var(--bad-text)' : ''}">${esc(members.text)}</td>
     <td data-label="Models">${esc(fleetLocationModels(L))}</td>
@@ -5740,14 +5753,16 @@ function fleetLocationRow(L) {
       <div><div>${esc(status.main || '—')}</div>
       ${status.sub ? `<div class="ft-sub">${esc(status.sub)}</div>` : ''}</div></td>
     <td data-label="Actions"><div class="row">
-      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
-      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
-      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'${L.paused_at != null ? 'resume' : 'pause'}')">${L.paused_at != null ? 'Resume' : 'Pause'}</button>
-      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationCredentials(this)">Credentials…</button>
-      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAddress(this)">Address…</button>
-      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationNetwork(this)">Network…</button>
-      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationRefresh(this)">Refresh models</button>
-      ${L.id === 'local' ? '' : `<button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'remove')">Remove</button>`}
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'${L.paused_at != null ? 'resume' : 'pause'}')">${L.paused_at != null ? 'Resume' : 'Pause'}</button>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationCredentials(this)">Credentials…</button>
+      <details class="ft-more"><summary>More…</summary><div class="row">
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAddress(this)">Address…</button>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationNetwork(this)">Network…</button>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationRefresh(this)">Refresh models</button>
+      ${L.id === 'local' ? '' : `<button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'remove')">Remove</button>`}
+      </div></details>
     </div></td>
   </tr>`;
 }
@@ -6224,28 +6239,33 @@ async function fleetRefresh(button) {
 // everything else behind "More…". A Mac with no location or machine id has no actions at all.
 function fleetMachineActionCell(m) {
   if (m.location_id == null || m.machine == null) return '<td data-label="Actions">—</td>';
-  const lid = esc(m.location_id), mid = esc(m.machine);
+  // **A Hub-supplied id never goes inside an inline handler.** `esc()` is *HTML* escaping: the
+  // browser turns `&#39;` back into a quote before the JavaScript is parsed, so an id containing
+  // one broke out of a quoted argument. The ids ride in `data-*` attributes and the handler reads
+  // `this.dataset`, where a decoded quote is just data.
+  const ids = ` data-lid="${esc(m.location_id)}" data-mid="${esc(m.machine)}"`;
   const buttons = fleetStartupActions(m).map(([key, title]) =>
-    `<button type="button" class="sm" onclick="fleetMachineStartup(this,'${lid}','${mid}','${key}')">${esc(title)}</button>`);
+    `<button type="button" class="sm"${ids} data-key="${esc(key)}"`
+    + ` onclick="fleetMachineStartup(this, this.dataset.lid, this.dataset.mid, this.dataset.key)">${esc(title)}</button>`);
   const more = [];
   if (m.reachable === true) {
-    more.push(`<button type="button" onclick="fleetMachineRename(this,'${lid}','${mid}')">Rename…</button>`);
+    more.push(`<button type="button"${ids} onclick="fleetMachineRename(this, this.dataset.lid, this.dataset.mid)">Rename…</button>`);
   }
-  more.push(`<button type="button" onclick="fleetMachinePause(this,'${lid}','${mid}',${m.node_paused === true ? 'false' : 'true'})">${m.node_paused === true ? 'Resume This Mac' : 'Pause This Mac'}</button>`);
-  more.push(`<button type="button" onclick="fleetPriorityOpen(this,'${lid}','${mid}')">Work Priorities…</button>`);
-  more.push(`<button type="button" onclick="fleetLiteOpen(this,'${lid}','${mid}')">Lite Mode…</button>`);
-  more.push(`<button type="button" onclick="fleetMachineNetwork(this,'${lid}','${mid}')">Network…</button>`);
-  more.push(`<button type="button" onclick="fleetTrashOpen(this,'${lid}','${mid}')">Trash…</button>`);
+  more.push(`<button type="button"${ids} data-paused="${m.node_paused === true ? '0' : '1'}" onclick="fleetMachinePause(this, this.dataset.lid, this.dataset.mid, Number(this.dataset.paused) === 1)">${m.node_paused === true ? 'Resume This Mac' : 'Pause This Mac'}</button>`);
+  more.push(`<button type="button"${ids} onclick="fleetPriorityOpen(this, this.dataset.lid, this.dataset.mid)">Work Priorities…</button>`);
+  more.push(`<button type="button"${ids} onclick="fleetLiteOpen(this, this.dataset.lid, this.dataset.mid)">Lite Mode…</button>`);
+  more.push(`<button type="button"${ids} onclick="fleetMachineNetwork(this, this.dataset.lid, this.dataset.mid)">Network…</button>`);
+  more.push(`<button type="button"${ids} onclick="fleetTrashOpen(this, this.dataset.lid, this.dataset.mid)">Trash…</button>`);
   if ((m.installable_models || []).some(model => model && model.package_id)) {
-    more.push(`<button type="button" onclick="fleetInstallOpen(this,'${lid}','${mid}')">Install a model…</button>`);
+    more.push(`<button type="button"${ids} onclick="fleetInstallOpen(this, this.dataset.lid, this.dataset.mid)">Install a model…</button>`);
   }
   if (m.reachable === true) {
-    more.push(`<button type="button" onclick="fleetPresetOpen(this,'${lid}','${mid}')">Model Preset…</button>`);
-    more.push(`<button type="button" onclick="fleetRemoveOpen(this,'${lid}','${mid}')">Remove a Model…</button>`);
+    more.push(`<button type="button"${ids} onclick="fleetPresetOpen(this, this.dataset.lid, this.dataset.mid)">Model Preset…</button>`);
+    more.push(`<button type="button"${ids} onclick="fleetRemoveOpen(this, this.dataset.lid, this.dataset.mid)">Remove a Model…</button>`);
   }
   if (m.startup && m.startup.macos_trash_auto_empty === false
       && m.reachable === true && m.startup.stale !== true) {
-    more.push(`<button type="button" onclick="fleetMacTrashOn(this,'${lid}','${mid}')">Turn on macOS Trash</button>`);
+    more.push(`<button type="button"${ids} onclick="fleetMacTrashOn(this, this.dataset.lid, this.dataset.mid)">Turn on macOS Trash</button>`);
   }
   return `<td data-label="Actions"><div class="row">${buttons.join('')}
     <details class="ft-more"><summary>More…</summary><div class="row">${more.join('')}</div></details></div></td>`;
@@ -6431,11 +6451,11 @@ function fleetPriorityBody() {
     const down = editable && !disabled && fleetPriorityHasNeighbour(index, 1);
     return `<div class="row"><label class="check"><input type="checkbox" id="fleet-pri-${esc(fn.id)}"`
       + `${state.included.has(fn.id) ? ' checked' : ''}${editable && !disabled ? '' : ' disabled'}`
-      + ` onchange="fleetPriorityToggle('${esc(fn.id)}', this.checked)"> ${esc(label)}</label>`
+      + ` data-fn="${esc(fn.id)}" onchange="fleetPriorityToggle(this.dataset.fn, this.checked)"> ${esc(label)}</label>`
       + `<span class="spacer"></span>`
-      + `<button type="button" class="sm" onclick="fleetPriorityMove('${esc(fn.id)}',-1)"${up ? '' : ' disabled'}`
+      + `<button type="button" class="sm" data-fn="${esc(fn.id)}" onclick="fleetPriorityMove(this.dataset.fn,-1)"${up ? '' : ' disabled'}`
       + ` aria-label="Move ${esc(fn.title)} up">Up</button>`
-      + `<button type="button" class="sm" onclick="fleetPriorityMove('${esc(fn.id)}',1)"${down ? '' : ' disabled'}`
+      + `<button type="button" class="sm" data-fn="${esc(fn.id)}" onclick="fleetPriorityMove(this.dataset.fn,1)"${down ? '' : ' disabled'}`
       + ` aria-label="Move ${esc(fn.title)} down">Down</button></div>`;
   }).join('');
   return `<div class="row"><label class="check"><input type="radio" name="fleet-pri-mode" id="fleet-pri-none"`
@@ -7067,9 +7087,9 @@ function renderFleetRender(answer) {
         <td data-label="Details">${esc(details)}</td>
         <td data-label="Status">${esc(fleetRenderStatus(row))}${speed ? `<div class="ft-sub">${esc(speed)}</div>` : ''}</td>
         <td data-label="Allow"><label class="check"><input type="checkbox"${row.opted_in === true ? ' checked' : ''}${
-          qualified ? ' disabled' : ''} onchange="fleetRenderToggle(this,'${controller}','${node}',&#39;optin&#39;)"></label></td>
+          qualified ? ' disabled' : ''} data-controller="${controller}" data-node="${node}" onchange="fleetRenderToggle(this, this.dataset.controller, this.dataset.node, 'optin')"></label></td>
         <td data-label="Paused"><label class="check"><input type="checkbox"${
-          row.render_while_paused === true ? ' checked' : ''} onchange="fleetRenderToggle(this,'${controller}','${node}',&#39;paused&#39;)"></label></td>
+          row.render_while_paused === true ? ' checked' : ''} data-controller="${controller}" data-node="${node}" onchange="fleetRenderToggle(this, this.dataset.controller, this.dataset.node, 'paused')"></label></td>
       </tr>`;
     }).join('')}</tbody></table></div>`;
 }
@@ -7306,12 +7326,13 @@ function renderFleetInstalls(d) {
     return `<div class="card"><div class="row"><b>${esc(plan.label || plan.package_id)}</b>
       ${fleetBadge(running ? 'Running' : String(plan.state || 'unknown'), running ? 'info' : '')}
       <span class="stat">${esc(plan.done ?? 0)} of ${esc(plan.total ?? 0)} Macs</span>
-      ${running ? `<button type="button" class="sm" onclick="fleetStopInstall(this,'${esc(plan.id)}')">Stop</button>` : ''}</div>
+      ${running ? `<button type="button" class="sm" data-plan="${esc(plan.id)}" onclick="fleetStopInstall(this)">Stop</button>` : ''}</div>
       <div class="stat">${esc(networks)}</div></div>`;
   }).join('');
 }
 
-async function fleetStopInstall(button, planId) {
+async function fleetStopInstall(button) {
+  const planId = button.dataset.plan;
   if (!confirm('Stop installing this model on every Mac?\n\nNothing new starts; a copy or download already '
     + 'running on a Mac finishes there.')) return;
   button.disabled = true;
@@ -7841,8 +7862,16 @@ function fleetOrphanRow(L, o) {
 }
 
 function fleetOrphans(d) {
-  const count = Number.isFinite(d.orphan_batches) ? d.orphan_batches : null;
   const unchecked = (d.locations || []).filter(L => L.orphans_checked === false);
+  // No count at all is not a clean fleet: this Gateway did not answer the question.
+  if (!Number.isFinite(d.orphan_batches)) {
+    return `<details class="card" open><summary class="fleet-issue">
+      <b>Orphaned Hub batches were not checked — this Gateway does not report them.</b></summary>
+      ${unchecked.map(L => `<div class="fleet-issue"><span class="badge">Not checked</span>
+        ${esc(L.label || L.id)} — ${esc(L.orphans_note || 'not read on this pass')}</div>`).join('')}
+      </details>`;
+  }
+  const count = d.orphan_batches;
   if (!count && !unchecked.length) return '';
   const rows = (d.locations || []).flatMap(L => {
     if (L.orphans_checked === false) {
@@ -7872,6 +7901,10 @@ function fleetOrphans(d) {
 async function stopOrphan(button) {
   const key = `${button.dataset.site}/${button.dataset.batch}`;
   const slot = button.parentElement.querySelector('[data-answer]');
+  // The same question every other Stop asks: the Hub is signalled, not interrupted, and a batch
+  // that keeps working for a moment is not a failure.
+  if (!confirm('Stop this Hub batch?\n\nThe Gateway signals the Hub and the batch stops when it '
+    + 'reaches the request. Work already finished on that Mac is kept.')) return;
   button.disabled = true;
   try {
     const answer = await api(`/fleet/controllers/${encodeURIComponent(button.dataset.site)}`

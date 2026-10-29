@@ -231,6 +231,29 @@ class ADropHasALengthAndARecoveryCause(HistoryCase):
         self.assertIn("threshold 4", basis)
         self.assertIn("longest 2 min", basis)
         self.assertIn("median 2 min", basis)
+        # The count is a 24 h figure and the lengths are the last 7 days' drops; each number says
+        # which window it belongs to.
+        self.assertIn("in 7 days", basis)
+
+    def test_the_startup_audit_is_read_once_per_fleet_read(self) -> None:
+        # Only the last drop's recovery cause is published, so the 500-row audit is read once
+        # rather than once per recorded drop.
+        calls = []
+
+        def audit():
+            calls.append(1)
+            return []
+
+        with mock.patch.object(fleet_history, "_startup_events", side_effect=audit):
+            self.observe([machine()])
+            for _ in range(3):
+                self.advance(600)
+                self.observe([machine(up=False, reach_reason="unreachable")])
+                self.advance(120)
+                self.observe([machine()])
+            history = fleet_history.summary("m:L1/m1")
+        self.assertEqual(history["drops_completed"], 3)
+        self.assertEqual(len(calls), 1)
 
     def test_an_unmeasured_length_says_so_and_is_not_zero(self) -> None:
         snapshot = {"locations": [location()], "machines": [machine()]}

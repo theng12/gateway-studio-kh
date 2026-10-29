@@ -144,6 +144,20 @@ function writes(calls) {
   return calls.filter(call => call.route);
 }
 
+// Every inline handler's value. The injection being tested is an HTML-escaped quote (`&#39;`)
+// inside one: the browser decodes it back to `'` before the JavaScript parses, which closed the
+// string the id sat in. Code literals (`'optin'`) are fine — escaped data is not.
+function inlineHandlers(html) {
+  return [...html.matchAll(/\son[a-z]+="([^"]*)"/g)].map(match => match[1]);
+}
+
+function assertNoEscapedQuoteInHandlers(html, where) {
+  for (const handler of inlineHandlers(html)) {
+    assert.doesNotMatch(handler, /&#39;|&#x27;/i,
+      `${where}: an escaped quote in an inline handler is a decoded quote in its JavaScript`);
+  }
+}
+
 test('a Mac offers exactly the startup actions its own report supports', () => {
   const ctx = context(payload([machine()]));
   const html = ctx.fleetMachineActionCell(machine());
@@ -164,6 +178,43 @@ test('a Mac offers exactly the startup actions its own report supports', () => {
   const away = ctx.fleetMachineActionCell(machine({ reachable: false, state: 'offline' }));
   assert.doesNotMatch(away, /Restart Services/);
   assert.doesNotMatch(away, /Start Services/);
+});
+
+test('a Hub-supplied id cannot break out of an inline handler', () => {
+  // `esc()` is *HTML* escaping, and the browser decodes `&#39;` back into a quote before the
+  // JavaScript in an inline handler is parsed — so an id placed inside `onclick='…'` was
+  // injectable. The ids ride in data attributes now, where a decoded quote is only data.
+  const hostileLocation = "L1'</script><script>alert(1)</script>";
+  const hostileMachine = "m'2\"3";
+  const ctx = context(payload([]));
+  const html = ctx.fleetMachineActionCell(machine({
+    location_id: hostileLocation, machine: hostileMachine,
+    installable_models: [{ package_id: "p'1" }],
+    startup: { open_at_login: true, start_services_on_launch: true, stale: false,
+      services_running: { up: 3, total: 3 }, macos_trash_auto_empty: false },
+  }));
+  assert.doesNotMatch(html, /<script>/, 'the hostile text is escaped, not live markup');
+  assertNoEscapedQuoteInHandlers(html, 'the machine actions');
+  assert.match(html, /data-lid="L1&#39;&lt;\/script&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;"/);
+  assert.match(html, /data-mid="m&#39;2&quot;3"/);
+
+  // The same rule on the priority rows, the remote-render switches and the install Stop.
+  vm.runInContext(
+    'fleetPriorityState = { custom: true, included: new Set(["f\'1"]),'
+    + ' functions: [{ id: "f\'1", title: "Voice", enabled: true }] };', ctx);
+  const priority = ctx.fleetPriorityBody();
+  assertNoEscapedQuoteInHandlers(priority, 'the priority rows');
+  assert.match(priority, /data-fn="f&#39;1"/);
+
+  ctx.renderFleetRender({ workers: [{ controller_id: "L'1", machine_id: "m'1", machine: "m'1" }] });
+  const render = ctx.nodes.get('fleet-render-body').innerHTML;
+  assertNoEscapedQuoteInHandlers(render, 'the remote-render switches');
+  assert.match(render, /data-controller="L&#39;1" data-node="m&#39;1"/);
+
+  ctx.renderFleetInstalls({ model_installs: [{ id: "plan'1", package_id: 'x', state: 'running', done: 1, total: 2 }] });
+  const installs = ctx.nodes.get('fleet-installs').innerHTML;
+  assertNoEscapedQuoteInHandlers(installs, 'the install Stop');
+  assert.match(installs, /data-plan="plan&#39;1"/);
 });
 
 test('Enable Auto-Start on one Mac sends the native body and reads the Mac\'s answer', async () => {
@@ -596,7 +647,7 @@ test('Remote final rendering lists each Mac and sends one switch per Mac', async
   });
   await ctx.loadFleetRender();
   const html = node(ctx, 'fleet-render-body').innerHTML;
-  assert.match(html, /fleetRenderToggle\(this,'L1','1301'/);
+  assert.match(html, /fleetRenderToggle\(this, this\.dataset\.controller, this\.dataset\.node, 'optin'\)/);
   assert.match(html, /On here, waiting for the Mac's Studio Hub|Off/);
   assert.match(html, /Already qualified/);
   assert.match(html, /2\.40× realtime measured/);

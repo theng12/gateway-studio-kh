@@ -42,7 +42,7 @@ function element(extra = {}) {
     querySelector: () => null, ...extra };
 }
 
-function context(snapshot, answer = { ok: true, answer: { queued_cancelled: 2, running_signalled: 1, running_pending: 0 } }) {
+function context(snapshot, answer = { ok: true, answer: { queued_cancelled: 2, running_signalled: 1, running_pending: 0 } }, options = {}) {
   const nodes = new Map([
     ['fleet-body', element()], ['fleet-summary', element()], ['fleet-issues', element()],
     ['fleet-filter', element()], ['fleet-sort', element()], ['fleet-threshold', element()],
@@ -67,6 +67,7 @@ function context(snapshot, answer = { ok: true, answer: { queued_cancelled: 2, r
       calls.push({ path, opts });
       return /\/cancel$/.test(path) ? { result: answer } : snapshot;
     },
+    confirm: text => { calls.push({ confirm: text }); return options.confirm !== false; },
     Date, Number, Math,
   });
   vm.runInContext(between("let fleetFilter = 'all';", 'async function loadJobs()'), ctx);
@@ -181,6 +182,36 @@ test('a site that timed out reads "not checked", never "no orphaned batches"', a
   assert.match(html, /Not checked/);
   assert.match(html, /did not answer/);
   assert.doesNotMatch(html, /No orphaned Hub batches/);
+});
+
+test('a Gateway that publishes no orphan count reads "not checked", never 0', async () => {
+  // An older Gateway answers the Fleet read without this field. An absent count is not a claim
+  // that nothing is running, so neither tab may draw a clean fleet.
+  const snapshot = payload([site([])]);
+  delete snapshot.orphan_batches;
+  delete snapshot.orphans_checked_sites;
+  delete snapshot.orphans_unchecked_sites;
+  const ctx = context(snapshot);
+  await ctx.loadFleet();
+  assert.match(ctx.nodes.get('fleet-orphans').innerHTML, /not checked/);
+  assert.match(ctx.nodes.get('fleet-warnings').innerHTML, /not checked/);
+  assert.doesNotMatch(ctx.nodes.get('fleet-orphans').innerHTML, /0 Hub batch/);
+});
+
+test('Stop asks before it signals the Hub, and a declined question sends nothing', async () => {
+  const declined = context(payload([site([orphan()])]), undefined, { confirm: false });
+  await declined.loadFleet();
+  await declined.stopOrphan({ dataset: { site: 'L1', batch: 'b-old', modality: 'image' },
+    parentElement: { querySelector: () => null }, disabled: false });
+  assert.ok(declined.calls.some(call => call.confirm), 'the question was asked');
+  assert.equal(declined.calls.filter(call => /\/cancel$/.test(call.path)).length, 0,
+    'a declined Stop must reach nothing');
+
+  const allowed = context(payload([site([orphan()])]));
+  await allowed.loadFleet();
+  await allowed.stopOrphan({ dataset: { site: 'L1', batch: 'b-old', modality: 'image' },
+    parentElement: { querySelector: () => null }, disabled: false });
+  assert.equal(allowed.calls.filter(call => /\/cancel$/.test(call.path)).length, 1);
 });
 
 test('the page says automatic stop is off unless the Gateway says otherwise', async () => {

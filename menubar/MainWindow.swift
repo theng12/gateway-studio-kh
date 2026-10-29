@@ -335,6 +335,31 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         }
     }
 
+    /// **The injected key never leaves the console's origin.** The key is a user script on this
+    /// web view, so a main-frame navigation to another site would hand that site the key. Only the
+    /// console (and the page's own `about:`/`data:` documents) may load here; any other web link
+    /// opens in the browser, which was never given a key. A subframe never receives user scripts,
+    /// so it is left alone — embeds (a docs page, a video) keep working.
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard navigationAction.targetFrame?.isMainFrame != false else {
+            decisionHandler(.allow)
+            return
+        }
+        let url = navigationAction.request.url
+        if ConsoleNavigation.allowsMainFrame(url, console: GatewayController.shared.consoleURL) {
+            decisionHandler(.allow)
+            return
+        }
+        if ConsoleNavigation.opensInBrowser(url), let url {
+            NSWorkspace.shared.open(url)
+        }
+        decisionHandler(.cancel)
+    }
+
     // MARK: JavaScript dialogs
 
     /// The page asks before acting; this is what makes that question appear.
