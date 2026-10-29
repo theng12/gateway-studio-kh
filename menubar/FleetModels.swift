@@ -35,10 +35,12 @@ struct FleetSnapshot: Decodable {
     var modelInstalls: [FleetModelSpread] = []
     /// This Gateway's own queue with background work (0.2.165) apart; nil from an older gateway.
     var gatewayQueue: FleetGatewayQueue?
+    /// The flapping threshold behind every "Problematic" on this page, with its bounds.
+    var fleetHealth: FleetHealthSetting?
 
     private enum CodingKeys: String, CodingKey {
         case generatedAt, summary, locations, machines, running, issues, models, release, fleetWarnings, modelInstalls,
-             gatewayQueue
+             gatewayQueue, fleetHealth
     }
 
     /// An empty snapshot, for the "could not read the fleet" case: every table is
@@ -75,6 +77,7 @@ struct FleetSnapshot: Decodable {
         fleetWarnings = try? c.decode(FleetWarningSetting.self, forKey: .fleetWarnings)
         modelInstalls = lenientArray(c, forKey: .modelInstalls)
         gatewayQueue = try? c.decode(FleetGatewayQueue.self, forKey: .gatewayQueue)
+        fleetHealth = try? c.decode(FleetHealthSetting.self, forKey: .fleetHealth)
     }
 }
 
@@ -267,6 +270,11 @@ struct FleetLocation: Decodable {
     var slow: Bool?
     /// The network its Macs are on unless one says otherwise (LAN model sharing); `nil` is not set.
     var network: String?
+    /// The controller's own reachability history and what it means (see `FleetHistory`); `nil` from an
+    /// older Gateway.
+    var history: FleetHistory?
+    /// Why this site is not answering, in the Gateway's words, with its evidence. Empty from an older Gateway.
+    var causes: [FleetCause]?
 
     private enum CodingKeys: String, CodingKey {
         case drained, membersFrom, membersStaleSeconds, pending, slow, network
@@ -276,6 +284,7 @@ struct FleetLocation: Decodable {
         case modelsDiscovered, modelsEnabled, modelsPublishable, release, trustedPublisher
         case nodes, nodeSummary
         case pausedAt, pausedBy, pauseReason, unreachableSince
+        case history, causes
     }
 
     init(from decoder: Decoder) throws {
@@ -309,6 +318,8 @@ struct FleetLocation: Decodable {
         pending = try? c.decode(Bool.self, forKey: .pending)
         slow = try? c.decode(Bool.self, forKey: .slow)
         network = try? c.decode(String.self, forKey: .network)
+        history = try? c.decode(FleetHistory.self, forKey: .history)
+        causes = try? c.decode([FleetCause].self, forKey: .causes)
         if let count = try? c.decode(Int.self, forKey: .runningJobs) {
             runningJobs = count
         } else if let rows = try? c.decode([Lenient<FleetJob>].self, forKey: .runningJobs) {
@@ -886,6 +897,77 @@ struct FleetConnection: Decodable {
     }
 }
 
+/// The owner's threshold for calling a Mac *problematic* (`/admin/api/settings/fleet-health`).
+///
+/// Published with the bounds beside the value, so the page can offer the numbers the Gateway will
+/// accept instead of guessing a range. `nil` from a Gateway older than 0.2.209.
+struct FleetHealthSetting: Decodable {
+    /// Drops in 24 h at which a Mac is called problematic.
+    var flappingDropsDay: Int?
+    var `default`: Int?
+    var min: Int?
+    var max: Int?
+    var windowDays: Int?
+}
+
+/// One day of the seven-day strip. `offlineFraction` is `nil` for a day nobody observed — which is
+/// **not** `0`: "nobody looked" and "it was up all day" must not draw the same bar.
+struct FleetHistoryDay: Decodable {
+    var date: String?
+    var offlineFraction: Double?
+}
+
+/// What the Gateway saw when it last lost this Mac or site, in its own words.
+struct FleetHistoryDrop: Decodable {
+    var at: Double?
+    /// `no_hub`, `unreachable`, `site_down`, `refused`, `timeout` … — the Gateway's vocabulary.
+    var reason: String?
+    /// The same reason as a sentence, or `nil` when it had none.
+    var text: String?
+}
+
+/// One likely cause, **with the evidence it came from**. `evidence` is never empty for a real hint:
+/// a cause a reader cannot check is the thing the owner asked not to be given.
+struct FleetCause: Decodable {
+    var code: String?
+    var text: String?
+    var evidence: String?
+}
+
+/// A Mac's (or a site's) reachability over the last seven days, read by the Gateway on every
+/// fan-out and derived fresh for each read.
+///
+/// Every figure is optional on purpose: `nil` means **not measured** and is drawn as an em dash,
+/// never as a zero. `problematic` is the Gateway's verdict against the owner's own threshold, and
+/// the app draws it as sent rather than deciding again from a number.
+struct FleetHistory: Decodable {
+    var observed: Bool?
+    var online: Bool?
+    var observedSince: Double?
+    var observedAt: Double?
+    var since: Double?
+    var onlineSince: Double?
+    var offlineSince: Double?
+    /// Drops (up → down) in the last 24 hours and the last seven days. **A drop caused by the whole
+    /// site being unreachable is not counted here** — that is the controller's fault, not this Mac's.
+    var dropsDay: Int?
+    var dropsWeek: Int?
+    /// Every transition, both directions, over the same two windows.
+    var flipsDay: Int?
+    var flipsWeek: Int?
+    var offlineSecondsDay: Double?
+    var offlineSecondsWeek: Double?
+    var days: [FleetHistoryDay]?
+    /// A recurring shape in the drops ("at about the same time every day"), or nil when there is none.
+    var pattern: FleetCause?
+    /// `true`, `false`, or `nil` for a subject nobody has observed yet.
+    var problematic: Bool?
+    var lastDrop: FleetHistoryDrop?
+
+    /// Has the Gateway ever observed this subject? `false` means every figure is unknown.
+    var measured: Bool { observed == true }
+}
+
 struct FleetMachine: Decodable {
     var locationId: String?
     var location: String?
@@ -978,6 +1060,12 @@ struct FleetMachine: Decodable {
     /// (not answering), or nil when nothing was published.
     var hubVersion: String?
     var versionStatus: String?
+    /// This Mac's reachability over the last seven days: offline since, drops, a 7-day strip, and the
+    /// `problematic` verdict (see `FleetHealth.swift`). `nil` from a Gateway older than 0.2.209 — which
+    /// is unknown, never "fine".
+    var history: FleetHistory?
+    /// The likely cause, strongest first, each citing its evidence. Empty or absent from an older Gateway.
+    var causes: [FleetCause]?
     /// Studios the controller lists for this Mac that the Mac does not run at all (an old roster entry).
     var notInstalledStudios: [String]?
 

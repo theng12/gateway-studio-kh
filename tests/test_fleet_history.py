@@ -1,0 +1,503 @@
+#!/usr/bin/env python3
+"""Fleet reachability history, and the likely cause a reader can actually check.
+
+The owner, 2026-10-29: *"there's no enough detail for me to sort through, i want to be able to sort
+for the offline site. and also 'problematic' machine, that goes in and out over a period of time or
+sth. like a bad pattern. and also a way for me to see which ones could be the likely cause or sth
+too."*
+
+What this file pins, in the order it matters:
+
+* a transition is recorded **once**, from the fan-out the Gateway already does, and survives a
+  restart (`observe` → file → a fresh process);
+* the store is **bounded** — old events go, and the caps hold;
+* *problematic* is the owner's **threshold**, not a constant: the same history reads both ways when
+  the number changes;
+* a **site outage is never its members flapping**: one dead controller must not produce five
+  problematic Macs;
+* every cause **cites its evidence**, and where nothing supports one the answer is "No evidence
+  yet" — never a plausible-sounding guess;
+* a figure nobody measured is `None`, never `0` (`"no data" is not zero`).
+
+Run with::
+
+    .venv/bin/python -m unittest tests.test_fleet_history
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+_TEMP_ROOT = Path(tempfile.mkdtemp(prefix="gateway-fleet-history-"))
+os.environ.update({
+    "GATEWAY_APP_SUPPORT": str(_TEMP_ROOT),
+    "GATEWAY_DATA": str(_TEMP_ROOT / "data"),
+    "GATEWAY_DB": str(_TEMP_ROOT / "data" / "jobs.sqlite3"),
+    "GATEWAY_CREDENTIALS": str(_TEMP_ROOT / "data" / "credentials.json"),
+    "GATEWAY_MODEL_CACHE": str(_TEMP_ROOT / "data" / "models_cache.json"),
+    "GATEWAY_ENV_FILE": str(_TEMP_ROOT / ".env"),
+    "GATEWAY_NO_MIGRATE": "1",
+    "STUDIOHUB_READY_FILE": str(_TEMP_ROOT / "no-hub-ready.json"),
+})
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from gateway import fleet_history  # noqa: E402
+
+#: A fixed instant, so a test never depends on when it runs.
+T0 = 1_760_000_000.0
+
+
+def local_epoch(year: int, month: int, day: int, hour: int, minute: int = 0) -> float:
+    """`time.mktime` on the reader's own timezone: the pattern hint reads local clock time."""
+    return time.mktime((year, month, day, hour, minute, 0, 0, 0, -1))
+
+
+def machine(machine_id: str = "m1", up: bool = True, **extra) -> dict:
+    row = {"machine": machine_id, "label": machine_id, "reachable": up,
+           "location_id": "L1", "location": "Blue Room", "location_reachable": True}
+    row.update(extra)
+    return row
+
+
+def location(up: bool = True, **extra) -> dict:
+    row = {"id": "L1", "label": "Blue Room", "reachable": up, "error": None, "error_kind": None}
+    row.update(extra)
+    return row
+
+
+class HistoryCase(unittest.TestCase):
+    """A fresh store and settings file per test, and a clock the test drives."""
+
+    def setUp(self) -> None:
+        self.work = Path(tempfile.mkdtemp(prefix="history-", dir=_TEMP_ROOT))
+        self.history_path = self.work / "fleet_history.json"
+        self.settings_path = self.work / "fleet_health.json"
+        self._old_path, self._old_settings, self._old_clock = (
+            fleet_history.HISTORY_PATH, fleet_history.SETTINGS_PATH, fleet_history._clock)
+        fleet_history.HISTORY_PATH = self.history_path
+        fleet_history.SETTINGS_PATH = self.settings_path
+        self.now = T0
+        fleet_history._clock = lambda: self.now
+        fleet_history.reset_for_tests()
+        self.addCleanup(self.restore)
+
+    def restore(self) -> None:
+        fleet_history.HISTORY_PATH = self._old_path
+        fleet_history.SETTINGS_PATH = self._old_settings
+        fleet_history._clock = self._old_clock
+        fleet_history.reset_for_tests()
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    def observe(self, machines: list[dict], sites: list[dict] | None = None) -> None:
+        fleet_history.observe(sites if sites is not None else [location()], machines)
+
+
+class ATranstionIsRecordedOnce(HistoryCase):
+    def test_the_first_observation_is_not_a_drop(self) -> None:
+        self.observe([machine("m1", up=False)])
+        history = fleet_history.summary("m:L1/m1")
+        self.assertTrue(history["observed"])
+        self.assertEqual(history["drops_day"], 0)
+        self.assertEqual(history["flips_day"], 0)
+        self.assertFalse(history["online"])
+        self.assertEqual(history["since"], T0)
+
+    def test_a_drop_and_a_recovery_are_recorded_with_the_reason(self) -> None:
+        self.observe([machine()])
+        self.advance(600)
+        self.observe([machine(up=False, reach_reason="no_hub")])
+        self.advance(600)
+        self.observe([machine()])
+        history = fleet_history.summary("m:L1/m1")
+        self.assertEqual(history["drops_day"], 1)
+        self.assertEqual(history["flips_day"], 2)
+        self.assertEqual(history["offline_seconds_day"], 600)
+        self.assertEqual(history["last_drop"]["reason"], "no_hub")
+        self.assertIn("Studio Hub is not listening", history["last_drop"]["text"])
+
+    def test_an_unchanged_state_writes_nothing(self) -> None:
+        self.observe([machine()])
+        written = self.history_path.read_text(encoding="utf-8")
+        stamp = self.history_path.stat().st_mtime_ns
+        for _ in range(5):
+            self.advance(15)
+            self.observe([machine()])
+        self.assertEqual(self.history_path.stat().st_mtime_ns, stamp,
+                         "an unchanged fleet rewrote the history file")
+        self.assertEqual(self.history_path.read_text(encoding="utf-8"), written)
+
+    def test_an_unknown_machine_state_is_not_a_state(self) -> None:
+        # `reachable: None` means the Hub said nothing about this Mac. That is not "offline".
+        self.observe([machine()])
+        self.advance(60)
+        self.observe([{**machine(), "reachable": None}])
+        history = fleet_history.summary("m:L1/m1")
+        self.assertTrue(history["online"])
+        self.assertEqual(history["drops_day"], 0)
+
+
+class TheStoreIsBounded(HistoryCase):
+    def test_the_history_survives_a_restart(self) -> None:
+        self.observe([machine()])
+        self.advance(600)
+        self.observe([machine(up=False, reach_reason="unreachable")])
+        self.advance(600)
+        self.observe([machine()])
+        before = fleet_history.summary("m:L1/m1")
+        # A new process: the module's memory is gone, the file is not.
+        fleet_history.reset_for_tests()
+        after = fleet_history.summary("m:L1/m1")
+        self.assertEqual(after["drops_day"], before["drops_day"])
+        self.assertEqual(after["flips_day"], before["flips_day"])
+        self.assertEqual(after["offline_seconds_day"], before["offline_seconds_day"])
+        self.assertTrue(after["online"])
+
+    def test_events_older_than_the_window_are_pruned(self) -> None:
+        self.observe([machine()])
+        for _ in range(3):
+            self.advance(600)
+            self.observe([machine(up=False, reach_reason="unreachable")])
+            self.advance(600)
+            self.observe([machine()])
+        self.assertEqual(fleet_history.summary("m:L1/m1")["drops_week"], 3)
+        # Eight days later a single new transition is all that is left.
+        self.advance(8 * 86400)
+        self.observe([machine(up=False, reach_reason="unreachable")])
+        stored = json.loads(self.history_path.read_text(encoding="utf-8"))
+        events = stored["subjects"]["m:L1/m1"]["events"]
+        self.assertLessEqual(len(events), 2, f"old events survived the window: {events}")
+        self.assertEqual(fleet_history.summary("m:L1/m1")["drops_week"], 1)
+
+    def test_each_subject_keeps_a_bounded_number_of_events(self) -> None:
+        self.observe([machine()])
+        for index in range(2 * fleet_history.MAX_EVENTS_PER_SUBJECT + 40):
+            self.advance(30)
+            self.observe([machine(up=index % 2 == 1)])
+        stored = json.loads(self.history_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(stored["subjects"]["m:L1/m1"]["events"]),
+                         fleet_history.MAX_EVENTS_PER_SUBJECT)
+
+    def test_the_number_of_subjects_is_capped(self) -> None:
+        original = fleet_history.MAX_SUBJECTS
+        fleet_history.MAX_SUBJECTS = 3
+        try:
+            for index in range(6):
+                self.advance(1)
+                self.observe([machine(f"m{index}")])
+            stored = json.loads(self.history_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(stored["subjects"]), 3)
+            # The newest are kept: an old Mac is less interesting than the one just seen.
+            self.assertIn("m:L1/m5", stored["subjects"])
+        finally:
+            fleet_history.MAX_SUBJECTS = original
+
+
+class ProblematicIsTheOwnersThreshold(HistoryCase):
+    def flapping_machine(self, drops: int) -> None:
+        self.observe([machine()])
+        for _ in range(drops):
+            self.advance(300)
+            self.observe([machine(up=False, reach_reason="unreachable")])
+            self.advance(300)
+            self.observe([machine()])
+        self.advance(30)
+
+    def verdict(self, drops: int) -> bool | None:
+        snapshot = {"locations": [location()], "machines": [machine()], "summary": {}}
+        fleet_history.annotate(snapshot)
+        return snapshot["machines"][0]["history"]["problematic"]
+
+    def test_the_default_is_four_drops_in_a_day(self) -> None:
+        self.assertEqual(fleet_history.settings()["flapping_drops_day"], 4)
+        self.flapping_machine(3)
+        self.assertIs(self.verdict(3), False)
+        self.flapping_machine(1)
+        self.assertIs(self.verdict(4), True)
+
+    def test_the_threshold_can_be_changed_and_shows_on_the_next_read(self) -> None:
+        self.flapping_machine(4)
+        self.assertIs(self.verdict(4), True)
+        fleet_history.set_settings({"flapping_drops_day": 10})
+        self.assertIs(self.verdict(4), False, "the new threshold did not reach the read")
+        fleet_history.set_settings({"flapping_drops_day": 2})
+        self.assertIs(self.verdict(4), True)
+        self.assertEqual(fleet_history.settings()["default"], 4)
+
+    def test_a_threshold_outside_the_range_is_refused_not_clamped(self) -> None:
+        for value in (0, -3, 10_000):
+            with self.assertRaises(ValueError):
+                fleet_history.set_settings({"flapping_drops_day": value})
+        with self.assertRaises(ValueError):
+            fleet_history.set_settings({"flapping_drops_day": "4"})
+        with self.assertRaises(ValueError):
+            fleet_history.set_settings({"flapping_drops_day": True})
+        self.assertEqual(fleet_history.settings()["flapping_drops_day"], 4)
+
+    def test_a_never_observed_machine_has_no_verdict(self) -> None:
+        # "Not checked" must not read as "fine".
+        snapshot = {"locations": [], "machines": [machine("ghost")], "summary": {}}
+        fleet_history.annotate(snapshot)
+        history = snapshot["machines"][0]["history"]
+        self.assertIsNone(history["problematic"])
+        self.assertIsNone(history["drops_day"])
+        self.assertIsNone(history["offline_seconds_day"])
+        self.assertTrue(all(day["offline_fraction"] is None for day in history["days"]))
+
+
+class ASiteOutageIsNotItsMembersFlapping(HistoryCase):
+    def test_one_dead_controller_does_not_make_five_problematic_macs(self) -> None:
+        members = [machine(f"m{index}") for index in range(5)]
+        self.observe(members)
+        failing = location(up=False, error_kind="timeout", error="No answer within 6s.")
+        down = [{**member, "reachable": False, "location_reachable": False} for member in members]
+        # Five outages of the whole site: every member reads unreachable each time, because the
+        # controller cannot be reached. That is the site's fault, not each Mac's.
+        for _ in range(5):
+            self.advance(600)
+            self.observe(down, [failing])
+            self.advance(600)
+            self.observe(members)
+        # And the site is down now, which is the read a person actually has in front of them.
+        self.advance(600)
+        self.observe(down, [failing])
+        self.advance(30)
+        snapshot = {"locations": [failing], "machines": down, "summary": {}}
+        fleet_history.annotate(snapshot)
+        for row in snapshot["machines"]:
+            history = row["history"]
+            self.assertEqual(history["drops_day"], 0, f"{row['machine']} blamed for the site")
+            self.assertIs(history["problematic"], False)
+            # The gap is still drawn — the Mac really was unreachable — it is just not its fault.
+            self.assertGreater(history["offline_seconds_day"], 0)
+            codes = [cause["code"] for cause in row["causes"]]
+            self.assertIn("site_down", codes)
+        site = snapshot["locations"][0]
+        self.assertIs(site["history"]["problematic"], True, "the site itself is the flapping thing")
+        self.assertEqual(site["history"]["drops_day"], 6)
+
+    def test_the_site_cause_blames_the_controller_and_quotes_it(self) -> None:
+        self.observe([machine("m1")])
+        self.advance(600)
+        failing = location(up=False, error_kind="refused",
+                           error="Nothing is listening on that address.")
+        self.observe([{**machine("m1"), "reachable": False, "location_reachable": False}], [failing])
+        snapshot = {"locations": [failing], "machines": [{**machine("m1"), "reachable": False,
+                                                         "location_reachable": False}],
+                    "summary": {}}
+        fleet_history.annotate(snapshot)
+        cause = snapshot["machines"][0]["causes"][0]
+        self.assertEqual(cause["code"], "site_down")
+        self.assertIn("Blue Room", cause["text"])
+        self.assertIn("controller, not the Mac", cause["text"])
+        self.assertIn("Nothing is listening", cause["evidence"])
+        site_cause = snapshot["locations"][0]["causes"][0]
+        self.assertEqual(site_cause["code"], "controller_refused")
+        self.assertIn("listening", site_cause["evidence"])
+
+
+class ACauseCitesItsEvidence(HistoryCase):
+    def causes(self, row: dict, sites: list[dict] | None = None) -> list[dict]:
+        snapshot = {"locations": sites or [location()], "machines": [row], "summary": {}}
+        fleet_history.annotate(snapshot)
+        return snapshot["machines"][0]["causes"]
+
+    def test_no_hub_says_the_mac_answered(self) -> None:
+        cause = self.causes(machine(up=False, reach_reason="no_hub", node_detail="(no_hub)"))[0]
+        self.assertEqual(cause["code"], "hub_not_running")
+        self.assertIn("not running", cause["text"])
+        self.assertIn("no_hub", cause["evidence"])
+
+    def test_unreachable_says_asleep_or_off_and_how_long(self) -> None:
+        self.now = T0
+        cause = self.causes(machine(up=False, reach_reason="unreachable",
+                                    node_last_seen_at=T0 - 7200))[0]
+        self.assertEqual(cause["code"], "asleep_or_off")
+        self.assertIn("2 h ago", cause["evidence"])
+
+    def test_unauthorized_is_a_credential_not_a_network(self) -> None:
+        cause = self.causes(machine(up=False, node_state="unauthorized",
+                                    node_detail="Hub token rejected"))[0]
+        self.assertEqual(cause["code"], "unauthorized")
+        self.assertIn("credential", cause["text"])
+        self.assertIn("Hub token rejected", cause["evidence"])
+
+    def test_never_connected_names_the_address(self) -> None:
+        cause = self.causes(machine(up=False, node_never_connected=True,
+                                    node_last_seen_at=T0 - 3 * 86400,
+                                    node_address="100.82.91.7"))[0]
+        self.assertEqual(cause["code"], "never_connected")
+        self.assertIn("100.82.91.7", cause["evidence"])
+
+    def test_a_slow_link_is_named_with_its_speed(self) -> None:
+        cause = self.causes(machine(connection={
+            "status": "measured", "kind": "ethernet", "speed_mbps": 100, "duplex": "full",
+            "slow": True, "text": "Ethernet 100 Mb/s full"}))[0]
+        self.assertEqual(cause["code"], "slow_link")
+        self.assertIn("100 Mb/s", cause["text"])
+        self.assertIn("Ethernet 100 Mb/s full", cause["evidence"])
+
+    def test_wifi_is_named_when_it_drops(self) -> None:
+        self.observe([machine()])
+        self.advance(300)
+        self.observe([machine(up=False, reach_reason="unreachable")])
+        self.advance(300)
+        self.observe([machine()])
+        self.advance(30)
+        cause = self.causes(machine(connection={
+            "status": "measured", "kind": "wifi", "speed_mbps": None, "wifi_rate_mbps": 432,
+            "slow": False, "text": "Wi-Fi 432 Mb/s"}))[0]
+        self.assertEqual(cause["code"], "on_wifi")
+        self.assertIn("Wi-Fi 432 Mb/s", cause["evidence"])
+        self.assertIn("1 time in the last 24 h", cause["evidence"])
+
+    def test_startup_flags_are_quoted_from_the_macs_own_report(self) -> None:
+        causes = self.causes(machine(up=False, reach_reason="no_hub", startup={
+            "start_services_on_launch": False, "open_at_login": False}))
+        codes = [cause["code"] for cause in causes]
+        self.assertIn("services_not_starting", codes)
+        self.assertIn("not_open_at_login", codes)
+        for cause in causes:
+            if cause["code"] in {"services_not_starting", "not_open_at_login"}:
+                self.assertIn("startup report", cause["evidence"])
+
+    def test_studios_down_while_the_hub_is_up(self) -> None:
+        cause = self.causes(machine(startup={
+            "services_running": {"up": 2, "total": 5, "studios": {}}}))[0]
+        self.assertEqual(cause["code"], "studios_down")
+        self.assertIn("2 of 5", cause["evidence"])
+
+    def test_a_hub_behind_names_both_versions(self) -> None:
+        snapshot = {"locations": [location()],
+                    "machines": [machine(up=False, reach_reason="unreachable",
+                                         version_status="behind", hub_version="0.6.190")],
+                    "summary": {"hub_latest": {"version": "0.6.206"}}}
+        fleet_history.annotate(snapshot)
+        cause = next(c for c in snapshot["machines"][0]["causes"] if c["code"] == "hub_behind")
+        self.assertIn("0.6.190", cause["evidence"])
+        self.assertIn("0.6.206", cause["evidence"])
+
+    def test_a_nightly_pattern_is_named_with_its_window(self) -> None:
+        night = [local_epoch(2026, 10, 20, 23, 5), local_epoch(2026, 10, 21, 23, 12),
+                 local_epoch(2026, 10, 22, 22, 58), local_epoch(2026, 10, 23, 23, 20)]
+        self.observe([machine()])
+        for at in night:
+            self.now = at
+            self.observe([machine(up=False, reach_reason="unreachable")])
+            self.now = at + 3600
+            self.observe([machine()])
+        self.now += 60
+        snapshot = {"locations": [location()], "machines": [machine()], "summary": {}}
+        fleet_history.annotate(snapshot)
+        pattern = snapshot["machines"][0]["history"]["pattern"]
+        self.assertIsNotNone(pattern, "four drops at the same time of night is a pattern")
+        self.assertEqual(pattern["code"], "nightly_drops")
+        self.assertIn("22:", pattern["text"] + pattern["evidence"])
+        self.assertIn("4 of 4", pattern["evidence"])
+
+    def test_no_evidence_yet_rather_than_a_guess(self) -> None:
+        causes = self.causes(machine(up=False))
+        self.assertEqual([cause["code"] for cause in causes], ["no_evidence"])
+        self.assertEqual(causes[0]["text"], "No evidence yet")
+
+    def test_a_healthy_mac_does_not_read_as_a_mystery(self) -> None:
+        causes = self.causes(machine())
+        self.assertEqual([cause["code"] for cause in causes], ["fine"])
+
+
+class TheSnapshotCarriesIt(HistoryCase):
+    def test_annotate_publishes_history_causes_and_the_threshold(self) -> None:
+        self.observe([machine()])
+        snapshot = {"locations": [location()],
+                    "machines": [machine(), machine("m2", up=False, reach_reason="no_hub")],
+                    "summary": {}}
+        returned = fleet_history.annotate(snapshot)
+        self.assertIs(returned, snapshot)
+        self.assertEqual(snapshot["fleet_health"]["flapping_drops_day"], 4)
+        for row in snapshot["machines"]:
+            self.assertIn("history", row)
+            self.assertIn("causes", row)
+            self.assertIn("days", row["history"])
+            self.assertEqual(len(row["history"]["days"]), fleet_history.WINDOW_DAYS)
+        for row in snapshot["locations"]:
+            self.assertIn("history", row)
+            self.assertIn("causes", row)
+
+    def test_the_route_publishes_it_and_does_not_poison_the_cache(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from gateway import admin, api, fleet
+
+        cached = {"locations": [location()],
+                  "machines": [machine(up=False, reach_reason="no_hub")],
+                  "running": [], "summary": {}, "issues": [], "generated_at": T0}
+        self.observe([machine()])
+        self.advance(60)
+        self.observe([machine(up=False, reach_reason="no_hub")])
+        with mock.patch.object(fleet, "snapshot", lambda **_: cached), \
+                mock.patch.object(admin.release_rollout, "status", lambda *a, **k: {}), \
+                mock.patch.object(admin.model_share, "stamp_networks", lambda *a, **k: None), \
+                mock.patch.object(admin.store, "stats", lambda: {"by_state": {}, "background": 0}):
+            client = TestClient(api.app, client=("127.0.0.1", 1234))
+            answer = client.get("/admin/api/fleet")
+        self.assertEqual(answer.status_code, 200, answer.text)
+        body = answer.json()
+        self.assertIn("fleet_health", body)
+        row = body["machines"][0]
+        self.assertEqual(row["history"]["drops_day"], 1)
+        self.assertEqual(row["causes"][0]["code"], "hub_not_running")
+        # **The cached snapshot the router reads must not gain these.**
+        self.assertNotIn("history", cached["machines"][0])
+        self.assertNotIn("causes", cached["machines"][0])
+        self.assertNotIn("fleet_health", cached)
+
+    def test_the_threshold_route_reads_and_writes_and_refuses_a_bad_number(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from gateway import api
+
+        client = TestClient(api.app, client=("127.0.0.1", 1234))
+        self.assertEqual(client.get("/admin/api/settings/fleet-health").json()["flapping_drops_day"], 4)
+        answer = client.put("/admin/api/settings/fleet-health", json={"flapping_drops_day": 7})
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(answer.json()["flapping_drops_day"], 7)
+        bad = client.put("/admin/api/settings/fleet-health", json={"flapping_drops_day": 0})
+        self.assertEqual(bad.status_code, 422)
+        self.assertEqual(bad.json()["code"], "FLEET_HEALTH_SETTING_INVALID")
+        self.assertEqual(client.get("/admin/api/settings/fleet-health").json()["flapping_drops_day"], 7)
+
+
+class TheProbeSaysWhichKindOfFailure(HistoryCase):
+    def test_each_probe_failure_carries_a_kind(self) -> None:
+        import httpx
+
+        from gateway import fleet
+
+        class Refused:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def get(self, *a, **k): raise httpx.ConnectError("refused")
+            def stream(self, *a, **k): raise httpx.ConnectError("refused")
+
+        class Silent:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def get(self, *a, **k): raise httpx.ReadTimeout("timed out")
+            def stream(self, *a, **k): raise httpx.ReadTimeout("timed out")
+
+        for fake, expected in ((Refused(), "refused"), (Silent(), "timeout")):
+            with mock.patch.object(fleet.httpx, "Client", lambda *a, **k: fake):
+                result = fleet._probe("http://127.0.0.1:47873", "token")
+            self.assertEqual(result["error_kind"], expected, result.get("error"))
+            self.assertFalse(result["reachable"])
+
+
+if __name__ == "__main__":
+    unittest.main()

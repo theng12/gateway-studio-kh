@@ -41,6 +41,7 @@ from .activity import story_activity
 from .adapters import BackendError, BackendRequest, adapter_for, serves, support_status
 from .catalog import MODALITIES, catalog, decode_model_id
 from . import fleet
+from . import fleet_history
 from . import price_evidence
 from . import pricing
 from .pricing import row_price
@@ -1573,6 +1574,21 @@ def set_fleet_warnings(payload: dict[str, Any]) -> Any:
     except ValueError as exc:
         return _error(422, str(exc), "WARNING_NOT_HIDEABLE")
     return fleet.warnings_setting()
+
+
+@router.get("/api/settings/fleet-health", dependencies=[Depends(require_admin)])
+def get_fleet_health() -> dict[str, Any]:
+    """When a Mac counts as *problematic*: drops in 24 h, with the bounds the page draws."""
+    return fleet_history.settings()
+
+
+@router.put("/api/settings/fleet-health", dependencies=[Depends(require_admin)])
+def set_fleet_health(payload: dict[str, Any]) -> Any:
+    """Change the flapping threshold. A number outside the range is a 422 naming the range."""
+    try:
+        return fleet_history.set_settings(payload)
+    except ValueError as exc:
+        return _error(422, str(exc), "FLEET_HEALTH_SETTING_INVALID")
 
 
 @router.get("/api/settings/concurrency", dependencies=[Depends(require_admin)])
@@ -3884,6 +3900,15 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     # row touched are copied instead.
     out = dict(data)
     out["locations"] = [_enrich_location(row) for row in data.get("locations") or []]
+    # **The machine rows are copied too, because the reachability history is annotated onto them.**
+    # `fleet.snapshot()` returns the cached dict that routing and admission read; writing a
+    # settings-dependent verdict into it would make this page's threshold leak into the router and
+    # survive until the next fan-out.
+    out["machines"] = [dict(row) for row in data.get("machines") or [] if isinstance(row, dict)]
+    # Uptime history and the evidence-cited likely cause, read live (a changed flapping threshold
+    # shows on this read, not on the next 15 s fan-out). `fleet_history` is the one place both
+    # surfaces get them, so the web page and the app cannot say different things.
+    fleet_history.annotate(out)
     # Read live, never from the cache: hiding a warning kind must show on the next read.
     out["fleet_warnings"] = fleet.warnings_setting()
     # **What the fleet should hold, and what it does.** The publisher identity and

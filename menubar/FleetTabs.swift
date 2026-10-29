@@ -344,6 +344,9 @@ final class FleetTableController: NSObject, NSTableViewDataSource, NSTableViewDe
 struct FleetFilter {
     var locationID: String?
     var query: String = ""
+    /// Offline now / problematic / everything — the owner's own filter (FleetHealth.swift decides what
+    /// each word means, so the page, the browser console and the Gateway cannot disagree).
+    var health: FleetHealth.Filter = .all
 
     func matchesLocation(_ id: String?) -> Bool {
         guard let locationID else { return true }
@@ -405,7 +408,9 @@ func fleetWrappingCell(_ text: String, colour: NSColor = .labelColor, lines: Int
 }
 
 /// Pin `content` inside a table cell: leading edge, vertically centred, never wider than the cell.
-private func fleetPinned(_ content: NSView) -> NSTableCellView {
+// Not private: `FleetHealth.swift` builds the history cell with the same two helpers, so a
+// change to the inset or the stacking lands in one place.
+func fleetPinned(_ content: NSView) -> NSTableCellView {
     let cell = NSTableCellView()
     content.translatesAutoresizingMaskIntoConstraints = false
     cell.addSubview(content)
@@ -417,7 +422,7 @@ private func fleetPinned(_ content: NSView) -> NSTableCellView {
     return cell
 }
 
-private func fleetColumnStack(_ views: [NSView]) -> NSStackView {
+func fleetColumnStack(_ views: [NSView]) -> NSStackView {
     let stack = NSStackView(views: views)
     stack.orientation = .vertical
     stack.alignment = .leading
@@ -734,6 +739,39 @@ final class FleetLocationsTab: FleetTabView {
                         : row.slow == true ? "Slow to answer"
                         : [role, machines].compactMap { $0 }.joined(separator: " · ")
                     return fleetTwoLineCell(row.label ?? "—", caption)
+                }
+            ),
+            // **A site's own history**, so "the whole site is down" is a fact on the site's row rather than
+            // something the owner has to infer from every Mac under it reading offline (owner, 2026-10-29).
+            FleetColumn(
+                id: "lhealth", title: "Health", width: 104, minWidth: 92, hideBelow: 640,
+                text: { row in
+                    guard let row = location(row) else { return "—" }
+                    return FleetHealth.verdict(row.history, offline: row.reachable == false).text
+                },
+                sortValue: { row in
+                    guard let row = location(row) else { return .none }
+                    return .number(Double(FleetHealth.rank(row.history)))
+                },
+                cell: { any in
+                    guard let row = location(any) else { return NSView() }
+                    let verdict = FleetHealth.verdict(row.history, offline: row.reachable == false)
+                    return fleetBadgeCell(verdict.text, verdict.health, tooltip: verdict.tooltip)
+                }
+            ),
+            FleetColumn(
+                id: "lcause", title: "Likely cause", width: 200, minWidth: 140, flex: 2, hideBelow: 780,
+                text: { row in location(row).flatMap { FleetHealth.causeLine($0.causes) } ?? "—" },
+                sortValue: { row in
+                    guard let text = location(row).flatMap({ FleetHealth.causeLine($0.causes) }) else { return .none }
+                    return .text(text)
+                },
+                cell: { any in
+                    guard let row = location(any) else { return NSView() }
+                    let colour = FleetHealth.causeHealth(row.causes)
+                    return fleetTwoLineCell(FleetHealth.causeLine(row.causes) ?? "—", nil,
+                                            titleColour: colour == .ok || colour == .off ? .labelColor : colour.text,
+                                            tooltip: FleetHealth.causeTooltip(row.causes))
                 }
             ),
             // The network its Macs are on (LAN model sharing, 2026-10-05); a Mac can override it on Machines.
@@ -1313,8 +1351,11 @@ final class FleetMachinesTab: NSView {
             detailCard.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -pad),
             detailCard.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -pad),
             // A low floor keeps the table from collapsing without ever being the
-            // reason the window wants to grow.
-            controller.container.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
+            // reason the window wants to grow. It came down from 120 to 90 when the Machines tab's
+            // accessory strip gained the Show filter and the Problematic threshold: two more rows
+            // made the page's minimum height 1 pt taller than the shell's, and `test_window_size`
+            // caught the window growing by that point on every section.
+            controller.container.heightAnchor.constraint(greaterThanOrEqualToConstant: 90),
         ])
         controller.emptyText = "No machines are reporting. Add a location on the Locations tab."
         controller.onSelection = { [weak self] any in self?.showDetail(any as? FleetMachine) }
@@ -1360,6 +1401,73 @@ final class FleetMachinesTab: NSView {
                                           caption: row.liteModePending != nil ? "Lite Mode waiting"
                                               : row.isNode ? "seen \(row.nodeLastSeenText)" : nil,
                                           tooltip: tips.isEmpty ? nil : tips.joined(separator: "\n\n"))
+                }
+            ),
+            // **The history's verdict**, not a second way of saying State: `Problematic` is the Gateway's
+            // own threshold decision (owner, 2026-10-29), a Mac that drops less often says how often, and
+            // one nobody has observed says "—" rather than "stable" (`FleetHealth.swift`).
+            FleetColumn(
+                id: "health", title: "Health", width: 104, minWidth: 92, hideBelow: 520,
+                text: { row in
+                    guard let row = machine(row) else { return "—" }
+                    return FleetHealth.verdict(row.history, offline: FleetHealth.offlineNow(row)).text
+                },
+                sortValue: { row in
+                    // Worst first when sorted ascending: problematic, then dropping, then stable.
+                    guard let row = machine(row) else { return .none }
+                    return .number(Double(FleetHealth.rank(row.history)))
+                },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    let verdict = FleetHealth.verdict(row.history, offline: FleetHealth.offlineNow(row))
+                    return fleetBadgeCell(verdict.text, verdict.health, tooltip: verdict.tooltip)
+                }
+            ),
+            // **When it was last seen up.** Ascending puts the longest unseen first — the owner asked
+            // to sort by it, and "which of these has been away longest?" is the question behind it.
+            FleetColumn(
+                id: "seen", title: "Seen", width: 96, minWidth: 84, hideBelow: 820,
+                text: { row in machine(row).map { FleetHealth.seenText(FleetHealth.lastSeen($0)) } ?? "—" },
+                sortValue: { row in
+                    guard let seen = machine(row).flatMap({ FleetHealth.lastSeen($0) }) else { return .none }
+                    return .number(seen)
+                },
+                tooltip: { row in
+                    guard let machine = machine(row) else { return nil }
+                    return "Last seen up: " + FleetHealth.seenText(FleetHealth.lastSeen(machine))
+                }
+            ),
+            // **The last seven days, and the figures behind the verdict.** Dropping Macs first when
+            // sorted ascending, because the point of the column is to find them.
+            FleetColumn(
+                id: "week", title: "Drops · 7 days", width: 138, minWidth: 118, hideBelow: 760,
+                text: { row in machine(row).map { FleetHealth.summary($0.history) } ?? "—" },
+                sortValue: { row in
+                    guard let drops = machine(row)?.history?.dropsDay else { return .none }
+                    return .number(Double(drops))
+                },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    return fleetHistoryCell(row.history)
+                }
+            ),
+            // **The likely cause, in plain words, with the evidence in the tooltip.** Every word of it
+            // comes from the Gateway, which builds it only from fields it already fetched and says "No
+            // evidence yet" when nothing supports one.
+            FleetColumn(
+                id: "cause", title: "Likely cause", width: 300, minWidth: 160, flex: 6, hideBelow: 560,
+                text: { row in machine(row).flatMap { FleetHealth.causeLine($0.causes) } ?? "—" },
+                sortValue: { row in
+                    guard let text = machine(row).flatMap({ FleetHealth.causeLine($0.causes) }) else { return .none }
+                    return .text(text)
+                },
+                cell: { any in
+                    guard let row = machine(any) else { return NSView() }
+                    let line = FleetHealth.causeLine(row.causes)
+                    let colour = FleetHealth.causeHealth(row.causes)
+                    return fleetTwoLineCell(line ?? "—", nil,
+                                            titleColour: colour == .ok || colour == .off ? .labelColor : colour.text,
+                                            tooltip: FleetHealth.causeTooltip(row.causes))
                 }
             ),
             FleetColumn(
@@ -1585,8 +1693,10 @@ final class FleetMachinesTab: NSView {
         self.studios = studios
         let rows = machines.filter { row in
             filter.matchesLocation(row.locationId)
+                && FleetHealth.matches(filter.health, machine: row)
                 && filter.matchesSearch([
                     row.label, row.machine, row.location, row.state, row.chip, row.limitation,
+                    FleetHealth.causeLine(row.causes),
                 ])
         }
         controller.setRows(rows)

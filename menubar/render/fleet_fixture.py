@@ -614,6 +614,7 @@ def build() -> dict:
         "ctrl-garage", "Garage", "http://100.64.0.31:47873", reachable=False,
         error="No answer within 5s. The address is reachable but nothing replied — check the machine is awake and "
               "that Tailscale is up at both ends.",
+        error_kind="timeout",
         nodes=[node("g-1", "unreachable", address="http://100.64.0.32:47873", seen=4 * DAY),
                node("g-2", "unreachable", address="http://100.64.0.33:47873", seen=4 * DAY)],
         unreachable_since=NOW - 4 * DAY, members_from="last_known", members_stale_seconds=4 * DAY,
@@ -694,5 +695,64 @@ def build() -> dict:
     }
 
 
+def seed_history(snapshot: dict) -> None:
+    """Give the synthetic fleet a plausible week, so the Health column and the 7-day strip draw something.
+
+    The real Gateway records a transition per fan-out (`fleet_history.observe`) and derives the figures
+    at read time. This drives that same function over a fake week with a fake clock — **the module's own
+    code, not a second implementation of it** — so the picture on the rendered page is what the real
+    one would say:
+      * the Shops site is down for the last two days (every Mac there reads `site_down`, blamed on the
+        controller rather than on each Mac);
+      * one Blue Room Mac flaps four times a week and is *problematic*;
+      * one drops at 23:00 every night, which the pattern hint names;
+      * the rest are stable, and Studio 2's Mac has no history at all ("Not measured yet").
+    """
+    from gateway import fleet_history
+
+    machines = [row for row in snapshot.get("machines") or [] if isinstance(row, dict)]
+    locations = [row for row in snapshot.get("locations") or [] if isinstance(row, dict)]
+    if not machines or not locations:
+        return
+    down_site = next((row["id"] for row in locations
+                      if row.get("reachable") is False and not (row.get("machines") or [])), None)
+    flappy = machines[1]["machine"] if len(machines) > 1 else None
+    nightly = machines[2]["machine"] if len(machines) > 2 else None
+    unmeasured = machines[-1]["machine"] if machines else None
+    real_clock = fleet_history._clock
+    try:
+        for step in range(7 * 24):
+            at = NOW - 7 * DAY + step * HOUR
+            fleet_history._clock = lambda at=at: at
+            site_rows = []
+            for row in locations:
+                up = True
+                if down_site and row.get("id") == down_site:
+                    up = at < NOW - 6 * HOUR
+                site_rows.append({**row, "reachable": up})
+            flat = []
+            for row in machines:
+                # Its history has to agree with what the row says now: a Mac offline today was not
+                # up all week, and seeding it otherwise draws a strip that contradicts its State.
+                up = row.get("reachable") is not False
+                if unmeasured and row.get("machine") == unmeasured:
+                    continue  # never observed: the column says so rather than drawing a healthy week
+                if down_site and row.get("location_id") == down_site:
+                    up = at < NOW - 6 * HOUR
+                elif flappy and row.get("machine") == flappy:
+                    # In and out: down for one hour in every four, all week.
+                    up = (int((NOW - at) // HOUR) % 4) != 0
+                elif nightly and row.get("machine") == nightly:
+                    up = time.localtime(at).tm_hour != 23
+                flat.append({**row, "reachable": up})
+            fleet_history.observe(site_rows, flat)
+    finally:
+        fleet_history._clock = real_clock
+    # The cause hints are read off the live rows, exactly as the admin route does it.
+    fleet_history.annotate(snapshot)
+
+
 if __name__ == "__main__":
-    json.dump(build(), sys.stdout, default=str)
+    document = build()
+    seed_history(document)
+    json.dump(document, sys.stdout, default=str)

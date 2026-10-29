@@ -59,7 +59,7 @@ function context(payload = null) {
     // `loadFleet` reads `/fleet` through the page's own `api()`; the stub stands in for the gateway.
     api: async () => payload,
   });
-  vm.runInContext(between('function fleetMac(m)', 'async function loadJobs()'), ctx);
+  vm.runInContext(between("let fleetFilter = 'all';", 'async function loadJobs()'), ctx);
   return ctx;
 }
 
