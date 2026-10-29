@@ -374,16 +374,39 @@
   }
   .recent .item:last-child { border-bottom: 0; }
 
-  /* ---- Plain-browser navigation (a phone over Tailscale) ----------------------
-     In the app the window's sidebar is the navigation, so this bar stays hidden
-     there (`__GATEWAY_IN_APP__`). In a browser it is the only way between pages. */
+  /* ---- App shell ------------------------------------------------------------
+     The same frame the native window has: a 220 pt sidebar on the left, one page
+     beside it, and the page's own title at 28 pt margins. In the app
+     (`__GATEWAY_IN_APP__`) the window already owns that sidebar, so this one steps
+     aside and the page fills the pane. On a phone the sidebar becomes one top bar
+     with the same entries in a picker, so nothing scrolls sideways. */
+  .shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
+  .shell.in-app { display: block; }
   #web-nav {
-    position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: var(--s8);
-    padding: var(--s8) var(--s16); background: var(--bg); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; align-self: start; height: 100vh; overflow: auto; z-index: 10;
+    padding: var(--s8); background: var(--panel2); border-right: 1px solid var(--line);
   }
   #web-nav[hidden] { display: none; }
-  #web-nav .web-title { font-weight: 600; font-size: 15px; }
-  #web-nav select { width: auto; min-width: 150px; font-size: 15px; }
+  .nav-bar { display: none; align-items: center; gap: var(--s8); }
+  .nav-bar select { flex: 1 1 auto; min-width: 0; }
+  .nav-title { margin: 0 var(--s8) var(--s4); font-weight: 600; font-size: 13px; }
+  .nav-group { margin: var(--s12) 0 0; }
+  .nav-head { margin: 0 0 var(--s4); padding: 0 var(--s8); font-size: 11px; font-weight: 600; color: var(--dim); }
+  .nav-row {
+    display: flex; align-items: center; gap: var(--s8); width: 100%;
+    padding: var(--s4) var(--s8); border: 0; background: transparent;
+    border-radius: var(--r-ctl); font-size: 13px; color: var(--text); text-align: left;
+  }
+  .nav-row:hover:not(:disabled) { background: color-mix(in srgb, CanvasText 7%, transparent); }
+  .nav-row[aria-current="page"] { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+  .nav-row svg { flex: 0 0 auto; width: 15px; height: 15px; color: var(--accent); }
+  .nav-row .nav-note { margin-left: auto; font-size: 10px; color: var(--tertiary); }
+  .nav-foot { margin: var(--s16) 0 0; padding: var(--s8) var(--s8) 0; border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--dim); overflow-wrap: anywhere; }
+  .nav-foot .row { margin-top: var(--s6); }
+  .nav-status::before { content: ''; display: inline-block; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--ok); margin-right: var(--s6); vertical-align: middle; }
+  .nav-status.off::before { background: var(--off); }
   /* Fleet: one card per location, a grid of Mac tiles inside it that folds to one
      column on a phone, so nothing on the page scrolls sideways. */
   .fleet-macs {
@@ -400,19 +423,86 @@
   .fleet-day { display: inline-block; width: 9px; height: 12px; border-radius: 2px;
     background: var(--panel2); border: 1px solid var(--line); overflow: hidden; }
   .fleet-day i { display: block; height: 100%; }
+  /* ---- Fleet ----------------------------------------------------------------
+     Two levels, like the native page: the tab strip, then one pane. The Machines
+     and Locations tables are the native tables, so they share the native words —
+     "Health" is the history's verdict, "Drops · 7 days" is the strip, and a figure
+     nobody measured draws "—". On a phone the header row goes away and each row
+     becomes a block of labelled lines rather than scrolling sideways. */
   #fleet-controls { gap: var(--s12); align-items: center; margin: 0 0 var(--s12); flex-wrap: wrap; }
   #fleet-controls label { display: inline-flex; gap: var(--s6); align-items: center; font-size: 12px;
     color: color-mix(in srgb, CanvasText 70%, Canvas); }
-  #fleet-controls select { width: auto; min-width: 120px; }
-  #fleet-threshold { margin: 0 0 var(--s12); }
-  #fleet-threshold summary { cursor: pointer; font-size: 12px; padding: var(--s8) var(--s16);
+  #fleet-controls select { width: auto; min-width: 130px; }
+  #fleet-search { flex: 1 1 220px; min-width: 0; }
+  #fleet-status { margin: 0 0 var(--s12); overflow-wrap: anywhere; }
+  .fleet-pane[hidden] { display: none; }
+  #fleet-threshold { gap: var(--s8); align-items: center; margin: 0 0 var(--s12); font-size: 12px;
     color: color-mix(in srgb, CanvasText 70%, Canvas); }
-  #fleet-threshold .row { gap: var(--s8); align-items: center; padding: 0 var(--s16) var(--s12); }
-  #fleet-threshold input { width: 70px; }
+  #fleet-threshold select { width: auto; min-width: 64px; }
+  #fleet-threshold-note { font-size: 12px; color: var(--dim); }
   #fleet-summary { gap: var(--s12); margin: 0 0 var(--s12); }
   .fleet-issue { padding: var(--s6) var(--s16); border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
   .fleet-issue:first-child { border-top: 0; }
   summary.fleet-issue { cursor: pointer; padding: var(--s8) var(--s16); }
+  /* Warning lines: the native banner's icon-and-sentence rows, one per kind. */
+  .fleet-warn { display: flex; gap: var(--s8); align-items: flex-start; padding: var(--s6) var(--s16);
+    border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+  .fleet-warn:first-child { border-top: 0; }
+  .fleet-warn .dot { flex: 0 0 auto; margin-top: 4px; width: 7px; height: 7px; border-radius: 50%; }
+  .ftable { width: 100%; }
+  .ftable th { white-space: nowrap; }
+  .ftable th .sort {
+    display: inline-flex; align-items: center; gap: var(--s4); padding: 0; border: 0;
+    background: transparent; font: inherit; font-size: 11px; font-weight: 600; color: var(--dim);
+  }
+  .ftable th .sort:hover { color: var(--text); }
+  .ftable th .arrow { font-size: 9px; color: var(--accent); }
+  .ftable td { vertical-align: top; }
+  .ftable .ft-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+  .ftable .ft-sub { color: var(--dim); font-size: 11px; }
+  .ftable .ft-lead .badge { margin-left: var(--s4); }
+  .ftable .cell-line { display: flex; align-items: center; gap: var(--s6); flex-wrap: wrap; }
+  /* A short fact must not wrap into three lines while the wide columns have space: the native
+     table gives each of these one line. Machine, Likely cause and the strip may wrap. */
+  .ftable td.nowrap { white-space: nowrap; }
+  /* The Machines table has the native column widths, so a long caption is clipped with its
+     full text in the tooltip instead of stretching the row or the page. */
+  .ftable.fixed { table-layout: fixed; }
+  .ftable.fixed td { overflow-wrap: anywhere; }
+  .ftable.fixed td.nowrap { overflow: hidden; text-overflow: ellipsis; }
+  .ftable .ft-cause { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; }
+  /* The Machine caption is one line in the native table; its full text stays in the tooltip. */
+  .ftable td.ft-lead .ft-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .ftable td .ft-sub.nowrap { white-space: nowrap; }
+  .meter { height: 4px; border-radius: 2px; margin-top: 4px; width: 100%; max-width: 96px;
+    background: color-mix(in srgb, CanvasText 12%, Canvas); overflow: hidden; }
+  .meter i { display: block; height: 100%; border-radius: 2px; }
+  .fleet-empty { color: var(--dim); font-size: 13px; padding: var(--s24); text-align: center; }
+  @media (max-width: 760px) {
+    .ftable thead { display: none; }
+    .ftable, .ftable tbody, .ftable tr, .ftable td { display: block; width: 100%; }
+    .ftable tr { border-top: 1px solid var(--line); padding: var(--s8) 0; }
+    .ftable tr:first-child { border-top: 0; }
+    .ftable td { border: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: var(--s8);
+      padding: 2px var(--s8); align-items: start; }
+    .ftable td > div { min-width: 0; }
+    /* A badge names a value; it must not stretch across the value column. */
+    .ftable .badge { width: fit-content; }
+    .ftable td::before { content: attr(data-label); font-size: 11px; font-weight: 600; color: var(--dim); }
+    .ftable td.nowrap, .ftable td .ft-sub.nowrap,
+    .ftable td.ft-lead .ft-sub { white-space: normal; }
+    .ftable td.ft-lead { display: block; padding-bottom: var(--s4); }
+    .ftable td.ft-lead::before { content: none; }
+  }
+  @media (max-width: 760px) {
+    .shell { display: block; }
+    #web-nav { position: sticky; height: auto; padding: var(--s8) var(--s12);
+      border-right: 0; border-bottom: 1px solid var(--line); }
+    .nav-list, .nav-title, .nav-foot { display: none; }
+    .nav-bar { display: flex; }
+    .nav-bar button { white-space: nowrap; }
+  }
   @media (max-width: 640px) {
     main { padding: var(--s16); }
     h1 { font-size: 22px; }
@@ -420,19 +510,18 @@
 </style>
 </head>
 <body>
-<nav id="web-nav" hidden>
-  <span class="web-title">Gateway</span>
-  <select id="web-page" aria-label="Page" onchange="location.hash = this.value">
-    <option value="fleet">Fleet</option>
-    <option value="jobs">Jobs</option>
-    <option value="models">Models</option>
-    <option value="providers">Providers</option>
-    <option value="create">Create</option>
-    <option value="packs">Content Packs</option>
-    <option value="guests">Guests</option>
-  </select>
-  <span class="spacer"></span>
-  <button class="sm" onclick="signOut()">Sign Out</button>
+<div class="shell" id="shell">
+<nav id="web-nav" hidden aria-label="Sections">
+  <div class="nav-bar">
+    <select id="web-page" aria-label="Page" onchange="openNav(this.value)"></select>
+    <button class="sm" onclick="signOut()">Sign Out</button>
+  </div>
+  <div class="nav-title">Gateway</div>
+  <div class="nav-list" id="nav-list"></div>
+  <div class="nav-foot">
+    <div class="nav-status" id="nav-status">Reading the gateway…</div>
+    <div class="row"><button class="sm" onclick="signOut()">Sign Out</button></div>
+  </div>
 </nav>
 <main>
   <!-- Shown only when the gateway refuses a request for want of a key. It appears
@@ -451,43 +540,92 @@
       </div>
     </div>
   </div>
-  <!-- FLEET (browser only; the app has its own native Fleet page) -->
+  <!-- A page the Mac app still owns. One shared note, so a sidebar row is never a dead link. -->
+  <section id="view-missing" style="display:none">
+    <div class="heading">
+      <h1 id="missing-title">Page</h1>
+      <p id="missing-note">This page is in the Gateway app.</p>
+    </div>
+  </section>
+  <!-- FLEET — the same page the native app shows: one tab strip, then one pane. -->
   <section id="view-fleet" style="display:none">
     <div class="heading">
       <h1>Fleet</h1>
-      <p>Which Macs are online and what each one is doing. Read-only here: pausing, updates
-         and installs stay in the Gateway app's Fleet page.</p>
+      <p>Every group of Macs this gateway can send work to, and how each one is doing.</p>
     </div>
-    <div class="row stat" id="fleet-summary"></div>
-    <!-- Two plain controls over one list: what to show, and in what order. Fixed markup, so a
-         15 s poll redraws the list and never the control under the owner's hand. -->
+    <div class="tabs" id="fleet-tabs" role="group" aria-label="Fleet section"></div>
+    <!-- One filter row over every tab, exactly where the native page puts it. Fixed markup, so
+         the 15 s poll redraws the list and never the control under the owner's hand. -->
     <div class="row" id="fleet-controls">
       <label>Show <select id="fleet-filter" onchange="fleetSetFilter(this.value)"></select></label>
-      <label>Sort <select id="fleet-sort" onchange="fleetSetSort(this.value)"></select></label>
+      <select id="fleet-location" aria-label="Location" onchange="fleetSetLocation(this.value)"></select>
+      <input type="search" id="fleet-search" placeholder="Filter machines, models, jobs…"
+             autocomplete="off" aria-label="Filter machines, models, jobs">
     </div>
-    <details class="card" id="fleet-threshold">
-      <summary>Problematic: 4 or more drops in 24 hours — change</summary>
-      <div class="row">
-        <label for="fleet-drops">Drops in 24 h</label>
-        <input type="number" id="fleet-drops" value="4" min="1" max="100" step="1">
-        <button class="primary" onclick="saveFleetThreshold()">Save</button>
-        <span class="hint" id="fleet-threshold-note">A Mac that drops this often is called problematic. It is a starting point, not a rule: change it any time.</span>
+
+    <!-- Groups: the one list the browser page has always drawn, Macs and sites together. -->
+    <div class="fleet-pane" id="fleet-pane-groups">
+      <div class="row stat" id="fleet-summary"></div>
+      <div id="fleet-body"><div class="empty">Reading the fleet…</div></div>
+    </div>
+
+    <!-- Machines: the native table, with the native columns and words. -->
+    <div class="fleet-pane" id="fleet-pane-machines" hidden>
+      <div class="stat" id="fleet-status"></div>
+      <div id="fleet-warnings"></div>
+      <div class="row" id="fleet-threshold">
+        <span>Problematic =</span>
+        <select id="fleet-drops" aria-label="Drops in 24 hours" onchange="saveFleetThreshold()"></select>
+        <span>or more drops in 24 hours</span>
+        <span id="fleet-threshold-note" role="status" aria-live="polite"></span>
       </div>
-    </details>
-    <!-- One switch, off by default: an automatic action is the owner's deliberate choice. It uses
-         the same guard as the Stop button, and a batch no Gateway job knows is never touched. -->
-    <details class="card" id="fleet-orphan-setting">
-      <summary>Orphaned Hub batches: automatic stop is off</summary>
-      <div class="row">
-        <label><input type="checkbox" id="fleet-orphan-auto" onchange="saveOrphanAutoStop(this.checked)">
-          Stop them automatically when the work is already kept</label>
-        <span class="hint" id="fleet-orphan-note">The same check as Stop: the Gateway job succeeded
-          with its artifacts on disk, or failed or was cancelled with nothing left to collect. A
-          batch no Gateway job knows is never stopped automatically.</span>
-      </div>
-    </details>
-    <div id="fleet-issues"></div>
-    <div id="fleet-body"><div class="empty">Reading the fleet…</div></div>
+      <div class="tablewrap" id="fleet-machines-wrap"></div>
+      <p class="hint">Auto-start, Lite Mode, the Trash setting and installing models stay in the Gateway app.</p>
+    </div>
+
+    <!-- Locations: the roster, read-only. -->
+    <div class="fleet-pane" id="fleet-pane-locations" hidden>
+      <div class="stat" id="fleet-locations-status"></div>
+      <div class="tablewrap" id="fleet-locations-wrap"></div>
+      <div id="fleet-issues"></div>
+      <p class="hint">Adding, testing, renaming, pausing and removing a location stay in the Gateway app.</p>
+    </div>
+
+    <!-- Models: what each Hub location offers, pooled by model. -->
+    <div class="fleet-pane" id="fleet-pane-models" hidden>
+      <div class="stat" id="fleet-models-status"></div>
+      <div class="tablewrap" id="fleet-models-wrap"></div>
+      <p class="hint">Installing a model on every Mac stays in the Gateway app.</p>
+    </div>
+
+    <!-- Jobs: the batches in flight, and the ones that stopped. -->
+    <div class="fleet-pane" id="fleet-pane-jobs" hidden>
+      <div class="stat" id="fleet-jobs-status"></div>
+      <div class="tablewrap" id="fleet-jobs-wrap"></div>
+      <!-- A Hub batch still running at a site for work that already finished. -->
+      <div id="fleet-orphans"></div>
+      <!-- One switch, off by default: an automatic action is the owner's deliberate choice. It uses
+           the same guard as the Stop button, and a batch no Gateway job knows is never touched. -->
+      <details class="card" id="fleet-orphan-setting">
+        <summary>Orphaned Hub batches: automatic stop is off</summary>
+        <div class="row">
+          <label><input type="checkbox" id="fleet-orphan-auto" onchange="saveOrphanAutoStop(this.checked)">
+            Stop them automatically when the work is already kept</label>
+          <span class="hint" id="fleet-orphan-note">The same check as Stop: the Gateway job succeeded
+            with its artifacts on disk, or failed or was cancelled with nothing left to collect. A
+            batch no Gateway job knows is never stopped automatically.</span>
+        </div>
+      </details>
+      <div id="fleet-jobs-problems"></div>
+      <p class="hint">Cancelling a batch or retrying a failed item stays in the Gateway app.</p>
+    </div>
+
+    <!-- Story Studio: every Story Mac that checks in. -->
+    <div class="fleet-pane" id="fleet-pane-story" hidden>
+      <div class="stat" id="fleet-story-status"></div>
+      <div class="tablewrap" id="fleet-story-wrap"></div>
+      <p class="hint">Publishing a Story Studio release and asking a Mac to update stay in the Gateway app.</p>
+    </div>
   </section>
   <!-- JOBS (browser only) -->
   <section id="view-jobs" style="display:none">
@@ -905,6 +1043,7 @@
     <div id="guests-body"><div class="empty">Reading guests…</div></div>
   </section>
 </main>
+</div>
 
 <script>
 const state = {
@@ -1071,31 +1210,190 @@ function downloadBlob(url, filename) {
   link.remove();
 }
 
-function setView(view) {
-  // No view-level tab strip here: Models and Providers are each their own page in
-  // this window's sidebar, so a second switcher for *that* decision was two controls
-  // for one thing. The Providers page carries its own strip for a different reason —
-  // it stacks four unrelated subjects, and splitting them is not a decision the
-  // sidebar can express.
-  if (typeof GUEST !== 'undefined' && GUEST && view !== 'create') view = 'create';
-  state.view = view;
+// ---------------------------------------------------------------------------
+// The shell's navigation.
+//
+// **The same groups the native window uses** — Overview; Create; Library; Connection;
+// App — from ONE list, because the desktop sidebar and the phone picker are two drawings
+// of the same navigation: a new page is one entry, never a row in each. In the app this
+// sidebar stays hidden (`__GATEWAY_IN_APP__`): the window already has one, so the page is
+// just its content and every page still draws its own title.
+//
+// A page the Mac app still owns is a real row, not a dead link: it opens a plain note
+// saying where the page lives. A guest is offered one page, because the server refuses
+// every other route — drawing those doors would offer what it cannot open.
+const NAV = [
+  { items: [{ view: 'overview', label: 'Overview', icon: 'info' }] },
+  { group: 'Create', items: [
+    { view: 'create', create: 'audio', label: 'Audio', icon: 'audio' },
+    { view: 'create', create: 'subtitle', label: 'Subtitle', icon: 'subtitle' },
+    { view: 'create', create: 'image', label: 'Image', icon: 'image' },
+    { view: 'create', create: 'music', label: 'Music', icon: 'music' },
+    { view: 'create', create: 'video', label: 'Video', icon: 'video' },
+    { view: 'create', create: 'chat', label: 'Chat', icon: 'chat' },
+  ] },
+  { group: 'Library', items: [
+    { view: 'jobs', label: 'Jobs', icon: 'jobs' },
+    { view: 'voices', label: 'Voices', icon: 'voices', app: true },
+    { view: 'models', label: 'Models', icon: 'models' },
+    { view: 'analytics', label: 'Analytics', icon: 'analytics', app: true },
+    { view: 'packs', label: 'Content Packs', icon: 'packs' },
+  ] },
+  { group: 'Connection', items: [
+    { view: 'providers', label: 'Providers', icon: 'providers' },
+    { view: 'fleet', label: 'Fleet', icon: 'fleet' },
+  ] },
+  { group: 'App', items: [
+    { view: 'whatsnew', label: "What's New", icon: 'sparkle', app: true },
+    { view: 'guests', label: 'Guests', icon: 'person' },
+    { view: 'settings', label: 'Settings', icon: 'settings', app: true },
+  ] },
+];
+
+// One line-icon per row, drawn here rather than fetched: a page with no icons reads as a
+// list of links, and the native sidebar has one per row.
+const NAV_PATHS = {
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.4v.6"/>',
+  audio: '<path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/>',
+  subtitle: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6 14h5M14 14h4"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="M4 17l5-5 4 4 3-3 4 4"/>',
+  music: '<path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/>',
+  video: '<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/>',
+  jobs: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  voices: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
+  models: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 16l9 5 9-5"/>',
+  analytics: '<path d="M4 20V12M10 20V6M16 20v-9M22 20H2"/>',
+  packs: '<path d="M3 7l9-4 9 4-9 4z"/><path d="M3 7v10l9 4 9-4V7"/>',
+  providers: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  fleet: '<circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M10.5 7L6.5 15.5M13.5 7l4 8.5M7.5 18h9"/>',
+  sparkle: '<path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/>',
+  person: '<circle cx="12" cy="8" r="3.5"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
+  settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+};
+
+function navIcon(name) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${NAV_PATHS[name] || ''}</svg>`;
+}
+
+//: Pages this console does not carry yet: a real note, never an empty page.
+const APP_ONLY = {
+  overview: 'Overview is in the Gateway app.',
+  voices: 'Voices are browsed and managed in the Gateway app.',
+  analytics: 'Analytics is in the Gateway app.',
+  whatsnew: "What's New is in the Gateway app.",
+  settings: 'Settings is in the Gateway app.',
+};
+
+function navEntries() {
+  return NAV.flatMap(section => section.items);
+}
+
+function navEntryFor(view, createKey) {
+  const entries = navEntries();
+  return (createKey ? entries.find(e => e.view === view && e.create === createKey) : null)
+    || entries.find(e => e.view === view) || null;
+}
+
+function renderNav() {
+  const guest = typeof GUEST !== 'undefined' && GUEST;
+  const list = document.getElementById('nav-list');
   const pick = document.getElementById('web-page');
-  if (pick) pick.value = view;
-  document.getElementById('view-fleet').style.display = view === 'fleet' ? '' : 'none';
-  document.getElementById('view-jobs').style.display = view === 'jobs' ? '' : 'none';
-  document.getElementById('view-models').style.display = view === 'models' ? '' : 'none';
-  document.getElementById('view-providers').style.display = view === 'providers' ? '' : 'none';
-  document.getElementById('view-create').style.display = view === 'create' ? '' : 'none';
-  document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
-  const guests = document.getElementById('view-guests');
-  if (guests) guests.style.display = view === 'guests' ? '' : 'none';
+  if (list) {
+    list.innerHTML = guest
+      ? `<div class="nav-group"><button type="button" class="nav-row" onclick="openNav('create')"
+           >${navIcon('audio')}<span>Create</span></button></div>`
+      : NAV.map(section => {
+          const rows = section.items.map(entry => {
+            const value = entry.create ? `${entry.view}:${entry.create}` : entry.view;
+            return `<button type="button" class="nav-row" data-value="${esc(value)}"
+              onclick="openNav('${esc(value)}')">${navIcon(entry.icon)}<span>${esc(entry.label)}</span>${
+              entry.app ? '<span class="nav-note">app</span>' : ''}</button>`;
+          }).join('');
+          return `<div class="nav-group">${section.group
+            ? `<div class="nav-head">${esc(section.group)}</div>` : ''}${rows}</div>`;
+        }).join('');
+  }
+  if (pick) {
+    pick.innerHTML = guest ? '<option value="create">Create</option>' : NAV.map(section => {
+      const options = section.items.map(entry => {
+        const value = entry.create ? `${entry.view}:${entry.create}` : entry.view;
+        return `<option value="${esc(value)}">${esc(entry.label)}${entry.app ? ' (in the app)' : ''}</option>`;
+      }).join('');
+      return section.group ? `<optgroup label="${esc(section.group)}">${options}</optgroup>` : options;
+    }).join('');
+  }
+}
+
+//: Which Create lane a `#create:audio` link (or the sidebar) asks for.
+let pendingCreateTab = null;
+
+function openNav(value) {
+  const [view, createKey] = String(value || '').split(':');
+  if (createKey) pendingCreateTab = createKey;
+  const hash = '#' + view;
+  if ((location.hash || '') === hash) setView(view);
+  else location.hash = hash;
+}
+
+// One argument on purpose: the Create lane a link asked for rides on `pendingCreateTab`, set by
+// `openNav` / `viewFromHash`, so every caller goes through the same door.
+function setView(view) {
+  if (typeof GUEST !== 'undefined' && GUEST && view !== 'create') view = 'create';
+  // A page this console has no content for is still a real destination: it names itself
+  // and says where it lives, so no sidebar row is a dead link.
+  // Guarded so the page's own code still runs against a partial document (the VM tests slice
+  // this function out on its own): a page that exists says its own name, and one that does not
+  // is a real note rather than a blank pane.
+  if (typeof APP_ONLY !== 'undefined' && APP_ONLY[view]) {
+    const title = document.getElementById('missing-title');
+    const note = document.getElementById('missing-note');
+    const entry = typeof navEntryFor === 'function' ? navEntryFor(view) : null;
+    if (title) title.textContent = entry ? entry.label : view;
+    if (note) note.textContent = APP_ONLY[view];
+    view = 'missing';
+  }
+  state.view = view;
+  const pending = typeof pendingCreateTab !== 'undefined' ? pendingCreateTab : null;
+  const pick = document.getElementById('web-page');
+  if (pick && pick.options) {
+    // The picker's values are the sidebar's `view` / `create:lane` values, so the active
+    // page is the active option without a second table of names.
+    const option = [...pick.options].find(o => o.value === view
+      || (view === 'create' && pending && o.value === `create:${pending}`));
+    if (option) pick.value = option.value;
+  }
+  const active = view === 'create' && pending ? `create:${pending}` : view;
+  const entry = typeof navEntryFor === 'function' ? navEntryFor(active.split(':')[0], pending) : null;
+  if (typeof IN_APP === 'undefined' || !IN_APP) {
+    document.title = 'gateway-kh — ' + (entry ? entry.label : view);
+  }
+  if (typeof document.querySelectorAll === 'function') {
+    document.querySelectorAll('.nav-row').forEach(row => {
+      if (row.dataset && row.dataset.value === active) row.setAttribute('aria-current', 'page');
+      else row.removeAttribute('aria-current');
+    });
+  }
+  for (const id of ['fleet', 'jobs', 'models', 'providers', 'create', 'packs', 'guests', 'missing']) {
+    const section = document.getElementById('view-' + id);
+    if (section) section.style.display = view === id ? '' : 'none';
+  }
   if (view === 'guests') loadGuests();
   else if (view === 'models') { loadModels(); loadFreshness(); }
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
   else if (view === 'packs') { loadContentShelf(); loadPreservedArchives(); }
   else if (view === 'fleet') loadFleet();
   else if (view === 'jobs') loadJobs();
-  else loadCreate();
+  else if (view === 'create') {
+    // The lane a link asked for is applied before the form is drawn, so a `#create:audio`
+    // bookmark lands on Audio rather than on the default page.
+    if (pending && typeof CREATE_TABS !== 'undefined'
+        && CREATE_TABS.some(t => t.key === pending)) {
+      createTab = pending;
+    }
+    loadCreate();
+  }
   // A `#queue` link opens the Providers page **on the queue tab**. It used to scroll the
   // queue section into view, which only worked while every section shared one column; now
   // the section is behind a tab, so the link selects the tab. Scrolling is not needed and
@@ -1608,15 +1906,27 @@ async function loadStatus() {
     const s = await api('/status');
     const m = s.models.by_modality || {};
     const parts = Object.entries(m).map(([k,v]) => `${v} ${k === 'tts' ? 'TTS' : k}`).join(' · ') || 'no models enabled';
-    document.getElementById('stats').innerHTML =
+    const stats = document.getElementById('stats');
+    if (stats) stats.innerHTML =
       `<b>${s.providers.enabled}</b>/${s.providers.total} providers on · <b>${s.models.publishable_models}</b> models offered${s.models.withheld_models ? ` · ${s.models.withheld_models} withheld` : ''} · ${esc(parts)}`;
     const h = s.hub;
     const el = document.getElementById('hubline');
     if (el) el.innerHTML = h.running
       ? `<span class="badge ok">Studio Hub running</span> <code>${esc(h.base_url)}</code>`
       : `<span class="badge warn">Studio Hub not running</span>`;
+    // The sidebar's own status line, in the place the native window puts it: the state of
+    // the thing you are driving is on screen whichever page you are on.
+    const foot = document.getElementById('nav-status');
+    if (foot) foot.className = 'nav-status';
+    if (foot) foot.innerHTML = `<b>${s.providers.enabled}</b>/${s.providers.total} providers on · `
+      + `<b>${s.models.publishable_models}</b> models offered<br>`
+      + (h.running ? 'Studio Hub running' : 'Studio Hub not running');
   } catch (e) {
-    document.getElementById('stats').textContent = 'status error: ' + e.message;
+    const stats = document.getElementById('stats');
+    if (stats) stats.textContent = 'status error: ' + e.message;
+    const foot = document.getElementById('nav-status');
+    if (foot) foot.className = 'nav-status off';
+    if (foot) foot.textContent = 'Could not read the gateway: ' + e.message;
   }
 }
 
@@ -3772,6 +4082,11 @@ function viewFromHash() {
   // an owner's view it would be refused anyway.
   if (typeof GUEST !== 'undefined' && GUEST) return 'create';
   const hash = (location.hash || '').replace(/^#/, '');
+  // A Create lane has its own address: `#create:audio`, and the bare lane names people
+  // bookmark (`#audio`) mean the same thing.
+  const lane = hash.startsWith('create:') ? hash.slice('create:'.length)
+    : ['audio', 'subtitle', 'image', 'music', 'video', 'chat'].includes(hash) ? hash : null;
+  if (lane) pendingCreateTab = lane;
   if (hash.startsWith('providers')) return 'providers';
   // The Queue is a section of the Providers page — the live half of the same
   // ceilings — so its own hash lands there and `setView` scrolls to it once the
@@ -3780,17 +4095,35 @@ function viewFromHash() {
   if (hash.startsWith('queue')) return 'providers';
   // The SFX pane is a section of the Providers page too — a key in the same place as the others.
   if (hash.startsWith('sfx')) return 'providers';
-  if (hash.startsWith('create')) return 'create';
+  if (hash.startsWith('create') || lane) return 'create';
   if (hash.startsWith('packs')) return 'packs';
   if (hash.startsWith('guests')) return 'guests';
   if (hash.startsWith('fleet')) return 'fleet';
   if (hash.startsWith('jobs')) return 'jobs';
   if (hash.startsWith('models')) return 'models';
+  if (hash.startsWith('overview')) return 'overview';
+  if (hash.startsWith('voices')) return 'voices';
+  if (hash.startsWith('analytics')) return 'analytics';
+  if (hash.startsWith('whatsnew') || hash.startsWith("what's")) return 'whatsnew';
+  if (hash.startsWith('settings')) return 'settings';
   // The app always names its page; a browser with no hash opens on Fleet.
   return IN_APP ? 'models' : 'fleet';
 }
 
-window.addEventListener('hashchange', () => setView(viewFromHash()));
+// `#fleet:machines` is the Fleet page on one of its tabs: a bookmark, a link, and what the
+// render harness asks for when it photographs a tab.
+function applyFleetHashTab() {
+  const match = /^#fleet:([a-z-]+)$/.exec(location.hash || '');
+  if (!match || typeof selectFleetTab !== 'function') return;
+  if (match[1] === 'groups-problems') {
+    selectFleetTab('groups');
+    if (typeof fleetSetFilter === 'function') fleetSetFilter('problematic');
+    return;
+  }
+  selectFleetTab(match[1]);
+}
+
+window.addEventListener('hashchange', () => { setView(viewFromHash()); applyFleetHashTab(); });
 
 // ---------------------------------------------------------------------------
 // Create — generate an asset without Story Studio in the loop.
@@ -4532,7 +4865,11 @@ const FLEET_STATES = {
 // Two plain controls, one list. A filter that hides everything is a page nobody can read, so
 // "Problematic" with nothing in it says so and still says how many Macs it looked at.
 let fleetFilter = 'all';    // all | offline | problematic
-let fleetSort = 'offline';  // offline | problematic | site | lastseen | drops | name
+let fleetLocation = 'all';  // a location id, or all
+let fleetQuery = '';
+let fleetSort = 'offline';  // the Groups list's order: offline | problematic | site | lastseen | drops | name
+let fleetTab = 'groups';    // groups | locations | machines | models | jobs | story
+let machineSort = { key: null, ascending: true };   // a header click starts the sort
 // The last read, kept so changing a control re-sorts what is already on screen instead of asking
 // the Gateway again (and so the poll never loses the owner's choice).
 let lastFleetPayload = null;
@@ -4542,9 +4879,11 @@ let fleetOrphanAutoStop = false;
 // What the Hub said for a batch we just asked to stop, kept across the 15 s redraw so the answer
 // does not vanish under the person reading it. "Signalled" is not "stopped".
 let fleetOrphanAnswers = {};
-const FLEET_FILTERS = [['all', 'Everything'], ['offline', 'Offline now'], ['problematic', 'Problematic']];
-const FLEET_SORTS = [['offline', 'Offline first'], ['problematic', 'Problematic first'], ['site', 'Site'],
-  ['lastseen', 'Last seen, longest ago'], ['drops', 'Drops in 24 h'], ['name', 'Name']];
+const FLEET_FILTERS = [['all', 'All machines'], ['offline', 'Offline now'], ['problematic', 'Problematic']];
+const FLEET_TABS = [['groups', 'Groups'], ['locations', 'Locations'], ['machines', 'Machines'],
+  ['models', 'Models'], ['jobs', 'Jobs'], ['story', 'Story Studio']];
+const FLEET_STATE_WORDS = { working: 'Working', ready: 'Ready', long_idle: 'Idle',
+  offline: 'Offline', needs_attention: 'Needs attention', just_finished: 'Just finished' };
 
 // A duration in words, because "2 days offline" is the question and "172800 s" is not an answer.
 function fleetDuration(seconds) {
@@ -4553,6 +4892,21 @@ function fleetDuration(seconds) {
   if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
   if (seconds < 172800) return `${Math.round(seconds / 3600)} h`;
   return `${Math.round(seconds / 86400)} days`;
+}
+
+// The same span in a badge: "45s", "12m", "3h", "7d".
+function fleetCompact(seconds) {
+  if (seconds == null) return '—';
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
+// Sizes the way the native page writes them: one decimal below 100, whole numbers above.
+function fleetGb(value) {
+  if (value == null || !isFinite(value)) return '—';
+  return value >= 100 ? `${Math.round(value)} GB` : `${value.toFixed(1)} GB`;
 }
 
 // One item per machine **and** per site, so a down controller is a row the owner can see rather
@@ -4583,14 +4937,41 @@ function fleetLastSeen(item) {
   return h.observed_at ?? null;
 }
 
+// "3 h ago", "2 days ago", or "—" when nobody said. The native page's own words.
+function fleetSeenText(epoch) {
+  if (epoch == null || epoch <= 0) return '—';
+  const seconds = Date.now() / 1000 - epoch;
+  if (seconds < 90) return 'just now';
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)} h ago`;
+  return `${Math.round(seconds / 86400)} days ago`;
+}
+
+function fleetMatchesSearch(fields, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  return fields.some(value => String(value ?? '').toLowerCase().includes(q));
+}
+
+function fleetInLocation(row) {
+  return fleetLocation === 'all' || String(row.location_id ?? row.id ?? '') === fleetLocation;
+}
+
+function fleetItemMatches(item) {
+  if (!fleetInLocation(item.row)) return false;
+  if (fleetFilter === 'offline' && !fleetOfflineNow(item)) return false;
+  if (fleetFilter === 'problematic' && !fleetProblematic(item)) return false;
+  if (item.kind === 'site') {
+    return fleetMatchesSearch([item.row.label, item.row.id, item.row.error, fleetCauseLine(item.row.causes)], fleetQuery);
+  }
+  return fleetMatchesSearch([item.row.label, item.row.machine, item.row.location, item.row.state,
+    item.row.chip, item.row.limitation, fleetCauseLine(item.row.causes)], fleetQuery);
+}
+
 function fleetVisible(items) {
-  const filtered = items.filter(item => {
-    if (fleetFilter === 'offline') return fleetOfflineNow(item);
-    if (fleetFilter === 'problematic') return fleetProblematic(item);
-    return true;
-  });
+  const filtered = items.filter(fleetItemMatches);
   const byName = (a, b) => String(a.label).localeCompare(String(b.label));
-  const sorted = filtered.slice().sort((a, b) => {
+  return filtered.slice().sort((a, b) => {
     switch (fleetSort) {
       case 'site':
         return String(a.site).localeCompare(String(b.site)) || byName(a, b);
@@ -4615,7 +4996,6 @@ function fleetVisible(items) {
       }
     }
   });
-  return sorted;
 }
 
 // The likely cause in plain words, with its evidence kept in the tooltip so the row stays one line.
@@ -4633,69 +5013,29 @@ function fleetCause(item) {
     : body;
 }
 
-// The 7-day strip: one bar a day, filled by how much of it the Gateway saw it unreachable. A day
-// with no observation is hatched, never empty — "nobody looked" is not "it was up".
-function fleetStrip(history) {
-  const days = (history && history.days) || [];
-  if (!days.length) return '';
-  const bars = days.map(day => {
-    const name = day.date || '';
-    if (day.offline_fraction == null) {
-      return `<span class="fleet-day" title="${esc(name)}: not recorded" style="background:repeating-linear-gradient(45deg,var(--line) 0 2px,transparent 2px 4px)"></span>`;
-    }
-    const percent = Math.round(day.offline_fraction * 100);
-    const colour = percent >= 50 ? 'var(--bad)' : percent > 0 ? 'var(--warn)' : 'var(--ok)';
-    return `<span class="fleet-day" title="${esc(name)}: ${percent}% offline"><i style="width:${Math.max(percent, percent > 0 ? 8 : 0)}%;background:${colour}"></i></span>`;
-  }).join('');
-  const dropLine = fleetDropEvidence(history);
-  const title = 'The last 7 days, oldest on the left. A filled bar is time this was unreachable.'
-    + (dropLine ? '\n' + dropLine : '');
-  return `<span class="fleet-week" title="${esc(title)}">${bars}</span>`;
+// The cause helpers the Machines and Locations tables share. The Gateway decides what the
+// cause is and supplies its evidence; nothing here works one out from a number.
+function fleetCauseLine(causes) {
+  const first = (causes || [])[0];
+  return first && first.text ? first.text : '';
 }
-
-function fleetHistoryLine(item) {
-  const h = item.row.history;
-  if (!h || h.observed === false || h.drops_day == null) {
-    return 'Not measured yet — this Gateway has no history for it.';
-  }
-  // **Each number says its own window.** This read "5 drops in 24 h · 5 in 7 days · 42 h offline
-  // in 7 days", where the unlabelled middle figure could be read either way (Production,
-  // 2026-10-30).
-  const parts = [
-    `${h.drops_day} drop${h.drops_day === 1 ? '' : 's'} in 24 h`,
-    `${h.drops_week} drops in 7 days`,
-    h.offline_seconds_week == null ? 'offline time not measured'
-      : `${fleetDuration(h.offline_seconds_week)} offline in 7 days`,
-  ];
-  if (fleetProblematic(item)) parts.unshift('Problematic');
-  return parts.join(' · ');
+function fleetCauseHealth(causes) {
+  const code = ((causes || [])[0] || {}).code;
+  if (code === 'fine') return 'ok';
+  if (!code || code === 'no_evidence') return '';
+  return 'warn';
 }
-
-// How long this thing's drops lasted, and how often they come — one line, for the strip tooltip.
-// A length nobody measured says so, never "0 s" and never treated as short.
-function fleetDropEvidence(history) {
-  if (!history || history.observed === false) return '';
-  if (!(history.drops_day > 0 || history.drops_week > 0)) return '';
-  const length = (seconds) => seconds == null ? 'length not measured' : fleetDuration(seconds);
-  const parts = [];
-  if (history.drop_longest_seconds != null) {
-    const median = history.drop_median_seconds != null
-      ? `, median ${fleetDuration(history.drop_median_seconds)}` : '';
-    parts.push(`Drops up to ${fleetDuration(history.drop_longest_seconds)}${median}`);
-  } else {
-    parts.push('Drop length not measured');
-  }
-  if (history.drop_gap_seconds != null) parts.push(`about every ${fleetDuration(history.drop_gap_seconds)}`);
-  const recovery = history.last_drop && history.last_drop.recovered_by;
-  if (recovery) {
-    parts.push('last recovery: ' + (recovery === 'after_startup_action' ? 'after a startup action'
-      : recovery === 'by_itself' ? 'by itself' : 'unknown'));
-  }
-  return parts.join(' · ');
+function fleetCauseTooltip(causes) {
+  const lines = (causes || []).filter(c => c.text).map(c =>
+    c.evidence ? `${c.text}\n   Evidence: ${c.evidence}` : c.text);
+  return lines.length ? lines.join('\n\n') : '';
 }
 
 function fleetMac(m) {
-  const [cls, word] = FLEET_STATES[m.state] || ['', m.state || (m.reachable ? 'Online' : 'Offline')];
+  const word = typeof fleetStateLabel === 'function'
+    ? fleetStateLabel(m) : (FLEET_STATES[m.state] || ['', m.state || (m.reachable ? 'Online' : 'Offline')])[1];
+  const cls = typeof fleetBadgeHealth === 'function'
+    ? fleetBadgeHealth(m) : (FLEET_STATES[m.state] || ['', ''])[0];
   const cur = m.current || null;
   const doing = cur ? [cur.studio, String(cur.model || '').split('/').pop(), cur.started_at ? 'started ' + ago(cur.started_at) : '']
     .filter(Boolean).join(' · ') : '';
@@ -4752,26 +5092,845 @@ function fleetSite(L) {
 
 function fleetCard(item) { return item.kind === 'site' ? fleetSite(item.row) : fleetMac(item.row); }
 
-// The two controls, drawn once into the page and only ever re-read — a poll that rebuilt them would
-// close the list under the owner's hand every 15 s.
+// The 7-day strip: one bar a day, filled by how much of it the Gateway saw it unreachable. A day
+// with no observation is hatched, never empty — "nobody looked" is not "it was up".
+function fleetStrip(history) {
+  const days = (history && history.days) || [];
+  if (!days.length) return '';
+  const bars = days.map(day => {
+    const name = day.date || '';
+    if (day.offline_fraction == null) {
+      return `<span class="fleet-day" title="${esc(name)}: not recorded" style="background:repeating-linear-gradient(45deg,var(--line) 0 2px,transparent 2px 4px)"></span>`;
+    }
+    const percent = Math.round(day.offline_fraction * 100);
+    const colour = percent >= 50 ? 'var(--bad)' : percent > 0 ? 'var(--warn)' : 'var(--ok)';
+    return `<span class="fleet-day" title="${esc(name)}: ${percent}% offline"><i style="width:${Math.max(percent, percent > 0 ? 8 : 0)}%;background:${colour}"></i></span>`;
+  }).join('');
+  const dropLine = fleetDropEvidence(history);
+  const title = 'The last 7 days, oldest on the left. A filled bar is time this was unreachable.'
+    + (dropLine ? '\n' + dropLine : '');
+  return `<span class="fleet-week" title="${esc(title)}">${bars}</span>`;
+}
+
+function fleetHistoryLine(item) {
+  const h = item.row.history;
+  if (!h || h.observed === false || h.drops_day == null) {
+    return 'Not measured yet — this Gateway has no history for it.';
+  }
+  const parts = [
+    `${h.drops_day} drop${h.drops_day === 1 ? '' : 's'} in 24 h`,
+    `${h.drops_week} drop${h.drops_week === 1 ? '' : 's'} in 7 days`,
+    h.offline_seconds_week == null ? 'offline time not measured'
+      : `${fleetDuration(h.offline_seconds_week)} offline in 7 days`,
+  ];
+  if (fleetProblematic(item)) parts.unshift('Problematic');
+  return parts.join(' · ');
+}
+
+// How long this thing's drops lasted, and how often they come — one line, for the strip tooltip.
+// A length nobody measured says so, never "0 s" and never treated as short.
+function fleetDropEvidence(history) {
+  if (!history || history.observed === false) return '';
+  if (!(history.drops_day > 0 || history.drops_week > 0)) return '';
+  const length = (seconds) => seconds == null ? 'length not measured' : fleetDuration(seconds);
+  const parts = [];
+  if (history.drop_longest_seconds != null) {
+    const median = history.drop_median_seconds != null
+      ? `, median ${fleetDuration(history.drop_median_seconds)}` : '';
+    parts.push(`Drops up to ${fleetDuration(history.drop_longest_seconds)}${median}`);
+  } else {
+    parts.push('Drop length not measured');
+  }
+  if (history.drop_gap_seconds != null) parts.push(`about every ${fleetDuration(history.drop_gap_seconds)}`);
+  const recovery = history.last_drop && history.last_drop.recovered_by;
+  if (recovery) {
+    parts.push('last recovery: ' + (recovery === 'after_startup_action' ? 'after a startup action'
+      : recovery === 'by_itself' ? 'by itself' : 'unknown'));
+  }
+  return parts.join(' · ');
+}
+
+// The one-line caption under a strip: the 24 h figure and the week's offline time.
+//
+// **Every number names its own window.** A 24 h count and a 7-day duration are different
+// questions, and "5 in 24 h · 42 h off" leaves a reader to guess which is which. The Gateway's
+// own sentence is the model: "5 drops in 24 h · 42 h offline in 7 days".
+function fleetShortSummary(history) {
+  if (!history || history.observed === false || history.drops_day == null) return 'Not measured yet';
+  const parts = [`${history.drops_day} drop${history.drops_day === 1 ? '' : 's'} in 24 h`];
+  if (history.offline_seconds_week > 0) {
+    parts.push(`${fleetDuration(history.offline_seconds_week)} offline in 7 days`);
+  }
+  return parts.join(' · ');
+}
+
+// Is it offline now? The controller's answer and the Hub's word each count; `null` is unknown.
+function fleetOfflineMachine(m) {
+  if (m.reachable === false) return true;
+  return String(m.state || '').toLowerCase() === 'offline';
+}
+
+function fleetIsNode(m) {
+  return m.node_state != null || m.node_role != null || m.node_address != null
+    || m.node_detail != null || m.node_last_seen_at != null;
+}
+
+// The state word on a badge: Title Case, and a refused credential is not "offline" — a
+// different fault with a different fix.
+function fleetStateLabel(m) {
+  if (m.node_paused === true) return 'Paused';
+  if (m.lite_off === true) return 'Off';
+  if (String(m.node_state || '').toLowerCase() === 'unauthorized') return 'Credential refused';
+  if (m.reachable === false) return 'Offline';
+  const word = String(m.state || '').toLowerCase();
+  if (word === 'long_idle') return 'Idle';
+  if (!word) return m.reachable === true ? 'Ready' : 'Unknown';
+  return FLEET_STATE_WORDS[word] || word.replace(/_/g, ' ').replace(/(^|\s)\S/g, c => c.toUpperCase());
+}
+
+// The colour of the State badge: a working Mac runs a job so it is blue like any running state;
+// everything else follows the fault verdict.
+function fleetBadgeHealth(m) {
+  const word = String(m.state || '').toLowerCase();
+  if (word === 'working' && m.node_paused !== true && m.reachable !== false) return 'info';
+  if (m.node_paused === true) return '';
+  if (m.lite_off === true) return '';
+  if (String(m.node_state || '').toLowerCase() === 'unauthorized'
+      || word === 'offline' || m.reachable === false) return 'bad';
+  if (word === 'needs_attention') return 'warn';
+  if (word === 'long_idle' || !word) return '';
+  return 'ok';
+}
+
+// What the Health cell says: the history's verdict, **not** a restatement of State. A Mac that
+// is down right now says how long for; one nobody has observed says "—", which is not "stable".
+function fleetVerdict(history, offline) {
+  if (!history || history.observed !== true) {
+    return { text: '—', health: '', tip: 'This Gateway has no history for it yet — it cannot say whether it drops, so it does not claim it is fine.' };
+  }
+  const lines = [fleetHistoryLine({ row: { history } })];
+  if (history.flips_day != null) {
+    lines.push(`${history.flips_day} up/down change${history.flips_day === 1 ? '' : 's'} in 24 h`
+      + (history.flips_week != null ? `, ${history.flips_week} in 7 days` : '') + '.');
+  }
+  if (history.last_drop && history.last_drop.text && history.last_drop.at != null) {
+    lines.push(`Last drop ${fleetClock(history.last_drop.at)}: ${history.last_drop.text}.`);
+  }
+  if (history.pattern && history.pattern.text) {
+    lines.push(history.pattern.text + (history.pattern.evidence ? ` (${history.pattern.evidence})` : ''));
+  }
+  const tip = lines.join('\n');
+  if (history.problematic === true) return { text: 'Problematic', health: 'warn', tip };
+  if (offline) {
+    if (history.offline_since == null) {
+      return { text: 'Offline now', health: 'bad',
+        tip: tip + '\nIt is offline now; this Gateway has not recorded how long yet.' };
+    }
+    const away = Date.now() / 1000 - history.offline_since;
+    return { text: `Offline ${fleetCompact(away)}`, health: 'bad',
+      tip: tip + `\nOffline for ${fleetDuration(away)}, since ${fleetClock(history.offline_since)}.` };
+  }
+  const drops = history.drops_day ?? 0;
+  if (drops > 0) return { text: `${drops} drop${drops === 1 ? '' : 's'}`, health: '', tip };
+  return { text: 'Stable', health: 'ok', tip };
+}
+
+// A clock time for a tooltip: "18:40" today, "29 Oct 18:40" otherwise.
+function fleetClock(epoch) {
+  if (!epoch) return 'an unknown time';
+  const date = new Date(epoch * 1000);
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (sameDay) return time;
+  return `${date.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${time}`;
+}
+
+// Sort rank for the Health column, worst first: problematic, then anything that dropped, then
+// stable, and the unmeasured last — never sorted as if it were healthy.
+function fleetHealthRank(history) {
+  if (!history || history.observed !== true) return 3;
+  if (history.problematic === true) return 0;
+  return (history.drops_day ?? 0) > 0 ? 1 : 2;
+}
+
+function fleetLastSeenEpoch(m) {
+  if (fleetOfflineMachine(m)) {
+    if (m.history && m.history.offline_since != null) return m.history.offline_since;
+    return m.node_last_seen_at ?? null;
+  }
+  return (m.history && m.history.observed_at != null) ? m.history.observed_at : (m.node_last_seen_at ?? null);
+}
+
+function fleetHardwareText(m) {
+  return [(m.chip || '').trim(), m.memory_gb != null ? fleetGb(m.memory_gb) : ''].filter(Boolean).join(' · ');
+}
+
+function fleetDiskFree(m) {
+  if (m.disk && m.disk.free_gb != null) return m.disk.free_gb;
+  return m.disk_free_gb ?? null;
+}
+function fleetDiskTotal(m) {
+  if (m.disk && m.disk.total_gb != null) return m.disk.total_gb;
+  return m.disk_total_gb ?? null;
+}
+function fleetDiskHealth(m) {
+  const free = fleetDiskFree(m), total = fleetDiskTotal(m);
+  if (free == null || !total) return '';
+  if (free < 5 || free / total < 0.06) return 'bad';
+  if (free / total < 0.12) return 'warn';
+  return 'ok';
+}
+function fleetMemoryHealth(m) {
+  if (m.available_gb == null || !m.memory_gb) return '';
+  if (m.available_gb < 1.5 || m.available_gb / m.memory_gb < 0.10) return 'bad';
+  if (m.available_gb / m.memory_gb < 0.20) return 'warn';
+  return 'ok';
+}
+function fleetFraction(free, total) {
+  if (free == null || !total || total <= 0) return null;
+  return Math.max(0, Math.min(1, 1 - free / total));
+}
+
+// A 4 pt used-share bar, in the health's own colour. No bar when either number is unknown.
+function fleetMeter(fraction, health) {
+  if (fraction == null) return '';
+  const width = Math.round(fraction * 100);
+  const colour = health === 'bad' ? 'var(--bad)' : health === 'warn' ? 'var(--warn)' : 'var(--ok)';
+  return `<div class="meter" aria-hidden="true"><i style="width:${width}%;background:${colour}"></i></div>`;
+}
+
+function fleetConnectionDisplay(c) {
+  if (!c || c.status !== 'measured') return '—';
+  const text = String(c.text || '').trim();
+  return !text || text === '—' ? '—' : text;
+}
+function fleetConnectionHealth(c) {
+  if (!c || c.status !== 'measured') return '';
+  if (c.slow === true) return 'warn';
+  if (c.kind === 'wifi') return '';
+  return 'ok';
+}
+function fleetConnectionSort(c) {
+  if (!c) return 4;
+  if (c.status !== 'measured') return 3;
+  if (c.slow === true) return 0;
+  if (c.kind === 'wifi') return 2;
+  return 1;
+}
+function fleetConnectionTooltip(c) {
+  if (!c) return "This Mac's Hub did not report its link.";
+  if (c.status !== 'measured') return c.reason || "This Mac's Hub did not report its link.";
+  const lines = [];
+  if (c.kind && c.interface) {
+    const kind = c.kind === 'ethernet' ? 'Ethernet' : c.kind === 'wifi' ? 'Wi-Fi' : 'Connection';
+    lines.push(`${kind} on ${c.interface}.`);
+  }
+  if (c.speed_mbps != null && c.kind === 'ethernet') {
+    lines.push(`The port negotiated ${c.speed_mbps} Mb/s${c.duplex ? ` ${c.duplex} duplex` : ''}.`);
+  }
+  if (c.media) lines.push(`Media: ${c.media}.`);
+  if (c.reason) lines.push(c.reason);
+  if (c.slow === true) lines.push('Below 1000 Mb/s on Ethernet or at half duplex — check the cable and the switch port.');
+  return lines.join('\n');
+}
+
+// The Version badge against the newest release this Gateway published.
+function fleetVersionBadge(m, summary) {
+  const status = String(m.version_status || '').toLowerCase();
+  const mine = m.hub_version || 'an unstated version';
+  const latest = summary && summary.hub_latest;
+  const newest = latest ? `Studio Hub ${latest}` : 'the newest release';
+  switch (status) {
+    case 'latest':
+      return { text: 'Latest', health: 'ok', tip: `Studio Hub ${mine}: the newest release this Gateway published.` };
+    case 'updating':
+      return { text: 'Updating…', health: 'info', tip: `Studio Hub ${mine}. Its controller holds ${newest}; the Mac installs it by itself as soon as it is idle.` };
+    case 'behind':
+      return { text: `Behind — ${m.hub_version || '?'}`, health: 'warn',
+        tip: `Studio Hub ${mine}, behind ${newest}, and not updating by itself. Open Studio Hub on that Mac.` };
+    case 'unknown':
+      return { text: 'Unknown', health: '', tip: 'This Mac is not answering, so its version is not known.' };
+    default:
+      return null;
+  }
+}
+
+function fleetBadge(text, health) {
+  return `<span class="badge ${health || ''}">${esc(text)}</span>`;
+}
+
+// ---- Machines --------------------------------------------------------------
+
+const FLEET_MACHINE_COLUMNS = [
+  ['machine', 'Machine'], ['state', 'State'], ['health', 'Health'], ['seen', 'Seen'],
+  ['week', 'Drops · 7 days'], ['cause', 'Likely cause'], ['version', 'Version'],
+  ['disk', 'Disk'], ['memory', 'Memory'], ['network', 'Network'],
+];
+
+function fleetMachineName(m) { return m.label || m.machine || '—'; }
+
+function fleetMachineSortValue(key, m) {
+  switch (key) {
+    case 'machine': return fleetMachineName(m);
+    case 'state': return fleetStateLabel(m);
+    case 'health': return fleetHealthRank(m.history);
+    case 'seen': return fleetLastSeenEpoch(m);
+    case 'week': return (m.history && m.history.drops_day != null) ? m.history.drops_day : null;
+    case 'cause': return fleetCauseLine(m.causes) || null;
+    case 'version': return ({ behind: 0, unknown: 1, updating: 2, latest: 3 })[m.version_status] ?? 4;
+    case 'disk': return fleetDiskFree(m);
+    case 'memory': return m.available_gb ?? null;
+    case 'network': return fleetConnectionSort(m.connection);
+    default: return null;
+  }
+}
+
+// Unknown sorts last whichever way the header points: a Mac nobody measured is not the best.
+function fleetCompareValues(a, b) {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b));
+}
+
+function fleetMachineRowsFor(d) {
+  const rows = (d.machines || []).filter(m =>
+    fleetInLocation(m)
+    && (fleetFilter === 'all'
+      || (fleetFilter === 'offline' && fleetOfflineMachine(m))
+      || (fleetFilter === 'problematic' && m.history && m.history.problematic === true))
+    && fleetMatchesSearch([m.label, m.machine, m.location, fleetStateLabel(m), m.chip,
+      m.limitation, fleetCauseLine(m.causes)], fleetQuery));
+  if (!machineSort.key) return rows;
+  return rows.slice().sort((a, b) => {
+    const result = fleetCompareValues(
+      fleetMachineSortValue(machineSort.key, a), fleetMachineSortValue(machineSort.key, b));
+    return machineSort.ascending ? result : -result;
+  });
+}
+
+function fleetSortBy(key) {
+  if (machineSort.key === key) machineSort.ascending = !machineSort.ascending;
+  else machineSort = { key, ascending: true };
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
+}
+
+function fleetSortHeader(key, title) {
+  const active = machineSort.key === key;
+  const arrow = active ? `<span class="arrow">${machineSort.ascending ? '▲' : '▼'}</span>` : '';
+  return `<th scope="col"><button type="button" class="sort" onclick="fleetSortBy('${esc(key)}')"
+    title="Sort by ${esc(title)}">${esc(title)}${arrow}</button></th>`;
+}
+
+function fleetMachineRow(m) {
+  const name = fleetMachineName(m);
+  const facts = [m.location && m.location !== name ? m.location : '',
+    m.network ? `Network ${m.network}` : '', fleetHardwareText(m),
+    fleetIsNode(m) ? '' : 'controller'].filter(Boolean).join(' · ');
+  const stateWord = fleetStateLabel(m);
+  const stateCaption = m.lite_mode_pending != null ? 'Lite Mode waiting'
+    : fleetIsNode(m) ? 'seen ' + fleetSeenText(fleetLastSeenEpoch(m)) : '';
+  const verdict = fleetVerdict(m.history, fleetOfflineMachine(m));
+  const version = fleetVersionBadge(m, lastFleetPayload && lastFleetPayload.summary);
+  const versionCaption = version && m.hub_version && !version.text.includes(m.hub_version) ? m.hub_version : '';
+  const cause = fleetCauseLine(m.causes) || '—';
+  const causeTip = fleetCauseTooltip(m.causes);
+  const diskFree = fleetDiskFree(m);
+  const memoryFree = m.available_gb;
+  const conn = m.connection || null;
+  const seen = fleetSeenText(fleetLastSeenEpoch(m));
+  // Each cell's content is ONE child, so the phone's two-column row (label, value) keeps the
+  // value together instead of splitting a badge from its caption.
+  return `<tr>
+    <td class="ft-lead" data-label="Machine">
+      <div class="ft-name">${esc(name)}</div>
+      ${facts ? `<div class="ft-sub" title="${esc(facts)}">${esc(facts)}</div>` : ''}
+    </td>
+    <td class="nowrap" data-label="State"><div>${fleetBadge(stateWord, fleetBadgeHealth(m))}${
+      stateCaption ? `<div class="ft-sub">${esc(stateCaption)}</div>` : ''}</div></td>
+    <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">
+      <div>${fleetBadge(verdict.text, verdict.health)}</div></td>
+    <td class="nowrap" data-label="Seen" title="Last seen up: ${esc(seen)}"><div>${esc(seen)}</div></td>
+    <td data-label="Drops · 7 days" title="${esc(fleetStripTooltip(m.history))}">
+      <div><div class="cell-line">${fleetStrip(m.history)}</div>
+      <div class="ft-sub">${esc(fleetShortSummary(m.history))}</div></div></td>
+    <td data-label="Likely cause" title="${esc(causeTip)}">
+      <div class="ft-cause" title="${esc(cause)}"
+        style="${fleetCauseHealth(m.causes) === 'warn' ? 'color:var(--warn-text)' : ''}">${esc(cause)}</div></td>
+    <td class="nowrap" data-label="Version"><div>${version
+      ? fleetBadge(version.text, version.health) : esc(m.hub_version || '—')}${
+      versionCaption ? `<div class="ft-sub">${esc(versionCaption)}</div>` : ''}</div></td>
+    <td class="nowrap" data-label="Disk"><div>${m.reachable === false ? '—'
+      : `${esc(fleetGb(diskFree) + ' free')}${fleetMeter(fleetFraction(diskFree, fleetDiskTotal(m)), fleetDiskHealth(m))}`}</div></td>
+    <td class="nowrap" data-label="Memory"><div>${m.reachable === false ? '—'
+      : `${esc(fleetGb(memoryFree) + ' free')}${fleetMeter(fleetFraction(memoryFree, m.memory_gb), fleetMemoryHealth(m))}`}</div></td>
+    <td class="nowrap" data-label="Network" title="${esc(fleetConnectionTooltip(conn))}">
+      <div>${fleetBadge(fleetConnectionDisplay(conn), fleetConnectionHealth(conn))}</div></td>
+  </tr>`;
+}
+
+function fleetStripTooltip(history) {
+  const days = (history && history.days) || [];
+  if (!days.length) return 'The last 7 days. This Gateway has no history for it yet.';
+  const lines = days.map(day => day.offline_fraction == null
+    ? `${day.date || '—'}: not recorded`
+    : `${day.date || '—'}: ${Math.round(day.offline_fraction * 100)}% of the day offline`);
+  const head = ['The last 7 days, oldest on the left. A filled bar is time this was unreachable.'];
+  const evidence = fleetDropEvidence(history);
+  if (evidence) head.push(evidence);
+  return head.concat(lines).join('\n');
+}
+
+function renderFleetMachines(d) {
+  const rows = fleetMachineRowsFor(d);
+  const wrap = document.getElementById('fleet-machines-wrap');
+  const status = document.getElementById('fleet-status');
+  const warnings = document.getElementById('fleet-warnings');
+  if (status) status.innerHTML = fleetStatusLine(rows, d.machines || []);
+  if (warnings) warnings.innerHTML = fleetOrphanWarning(d) + fleetWarningsBox(d.machines || []);
+  if (!wrap) return;
+  wrap.innerHTML = rows.length
+    ? `<table class="ftable fixed">
+       <colgroup>
+         <col style="width:15%"><col style="width:10%"><col style="width:8%"><col style="width:8%">
+         <col style="width:12%"><col style="width:14%"><col style="width:10%">
+         <col style="width:8%"><col style="width:8%"><col style="width:7%">
+       </colgroup>
+       <thead><tr>${FLEET_MACHINE_COLUMNS.map(([key, title]) => fleetSortHeader(key, title)).join('')}</tr></thead>
+       <tbody>${rows.map(fleetMachineRow).join('')}</tbody></table>`
+    : `<div class="fleet-empty">No machine matches this filter — ${(d.machines || []).length} were read.</div>`;
+}
+
+// "8 machines. On latest 5/7 (Studio Hub 0.6.126) · 2 behind · 1 not answering."
+function fleetStatusLine(rows, machines) {
+  const count = rows.length === machines.length
+    ? `${machines.length} machine${machines.length === 1 ? '' : 's'}.`
+    : `${rows.length} of ${machines.length} machines match the filter.`;
+  const s = (lastFleetPayload && lastFleetPayload.summary) || {};
+  const parts = [esc(count)];
+  if (s.hub_latest) {
+    const version = [`On latest ${s.on_latest ?? 0}/${s.version_known ?? 0} (Studio Hub ${s.hub_latest})`];
+    if (s.hub_updating > 0) version.push(`${s.hub_updating} updating`);
+    if (s.hub_behind > 0) version.push(`${s.hub_behind} behind`);
+    if (s.hub_unknown > 0) version.push(`${s.hub_unknown} not answering`);
+    parts.push(`<span style="${s.hub_behind > 0 ? 'color:var(--warn-text)' : ''}">${esc(version.join(' · '))}</span>`);
+  }
+  const conn = s.connections || null;
+  if (conn && conn.slow_ethernet > 0) {
+    parts.push(`<span class="badge warn" title="${esc((conn.slow_machines || []).join(', '))}">`
+      + `${conn.slow_ethernet} on slow Ethernet</span>`);
+  } else if (conn && conn.unmeasured > 0 && conn.total > 0) {
+    parts.push(`<span>${conn.unmeasured} of ${conn.total} Mac${conn.total === 1 ? '' : 's'} did not report a network link.</span>`);
+  }
+  return parts.join(' ');
+}
+
+// A batch still running for finished work is a fleet warning too, so the Machines tab says so
+// where the other warnings are and points at the Jobs tab for the rows and the Stop button.
+function fleetOrphanWarning(d) {
+  const count = Number.isFinite(d && d.orphan_batches) ? d.orphan_batches : 0;
+  const unchecked = ((d && d.locations) || []).filter(L => L.orphans_checked === false).length;
+  if (!count && !unchecked) return '';
+  const text = count
+    ? `${count} Hub batch${count === 1 ? '' : 'es'} still running for work that already finished — see Jobs`
+    : `${unchecked} site${unchecked === 1 ? '' : 's'} not checked for orphaned batches`;
+  return `<div class="card" style="border-color:color-mix(in srgb, var(--warn) 35%, var(--line));background:color-mix(in srgb, var(--warn) 8%, var(--panel))">
+    <div class="fleet-warn">${fleetWarnIcon('warn')}<span>${esc(text)}</span></div></div>`;
+}
+
+// The warnings box: one line per kind, grouped exactly as the native banner groups them, with
+// the Gateway's own sentences. A Mac that is not answering has no disk worth reporting.
+function fleetWarningsBox(machines) {
+  const lines = fleetWarningLines(machines);
+  if (!lines.length) return '';
+  const worst = lines.some(l => l.health === 'bad') ? 'bad' : 'warn';
+  return `<div class="card" style="border-color:color-mix(in srgb, var(--${worst}) 35%, var(--line));background:color-mix(in srgb, var(--${worst}) 8%, var(--panel))">
+    ${lines.map(l => `<div class="fleet-warn">${fleetWarnIcon(l.health)}`
+      + `<span>${esc(l.text)}</span></div>`).join('')}</div>`;
+}
+
+// The native banner's own icon: a red octagon for an error, an amber triangle for a warning.
+function fleetWarnIcon(health) {
+  const bad = health === 'bad';
+  const path = bad
+    ? '<path d="M8 2h8l6 6v8l-6 6H8l-6-6V8z"/><path d="M12 8v5M12 16v.01"/>'
+    : '<path d="M12 3l9 17H3z"/><path d="M12 10v4M12 17v.01"/>';
+  return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="var(--${bad ? 'bad' : 'warn'})"
+    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+    style="flex:0 0 auto;margin-top:2px">${path}</svg>`;
+}
+
+function fleetWarningLines(machines) {
+  const out = [];
+  const low = machines.filter(m => m.disk && ['stop', 'red', 'amber'].includes(String(m.disk.state || '').toLowerCase())
+      && m.reachable !== false)
+    .sort((a, b) => (fleetDiskFree(a) ?? 0) - (fleetDiskFree(b) ?? 0));
+  for (const state of ['stop', 'red', 'amber']) {
+    const group = low.filter(m => String((m.disk || {}).state || '').toLowerCase() === state);
+    if (!group.length) continue;
+    const consequence = state === 'stop' ? '. Not being sent work' : '';
+    const text = group.length === 1
+      ? `${fleetMachineName(group[0])}: disk ${state}, ${fleetGb(fleetDiskFree(group[0]))} free${consequence}`
+      : `${group.length} Macs: disk ${state}, ${fleetGb(fleetDiskFree(group[0]))} to `
+        + `${fleetGb(fleetDiskFree(group[group.length - 1]))} free${consequence}`;
+    out.push({ health: state === 'amber' ? 'warn' : 'bad', text });
+  }
+  const groups = new Map();
+  for (const m of machines) {
+    for (const item of ((m.disk || {}).warning_items) || []) {
+      // A Hub's own low-disk sentence restates the disk line already drawn for this Mac.
+      if (m.disk && ['stop', 'red', 'amber'].includes(String(m.disk.state || '').toLowerCase())
+          && item.kind === 'disk_space') continue;
+      const key = `${item.kind}|${item.text}`;
+      if (!groups.has(key)) groups.set(key, { kind: item.kind, text: item.text, who: [] });
+      const group = groups.get(key);
+      const who = fleetMachineName(m);
+      if (!group.who.includes(who)) group.who.push(who);
+    }
+  }
+  const extra = [...groups.values()].map(group => {
+    const sentence = String(group.text || '').replace(/\.$/, '');
+    return {
+      health: 'warn',
+      count: group.who.length,
+      text: group.who.length === 1 ? `${group.who[0]}: ${sentence}` : `${group.who.length} Macs: ${sentence}`,
+    };
+  }).sort((a, b) => b.count - a.count || a.text.localeCompare(b.text));
+  return out.concat(extra.map(({ health, text }) => ({ health, text })));
+}
+
+// ---- Locations -------------------------------------------------------------
+
+function fleetLocationMembers(L) {
+  const summary = L.node_summary || null;
+  if (!summary || summary.total == null || summary.reachable == null) return { text: '—', refused: 0, known: false };
+  const refused = summary.unauthorized || 0;
+  return {
+    text: refused > 0 ? `${summary.reachable} / ${summary.total} · ${refused} refused`
+      : `${summary.reachable} / ${summary.total}`,
+    refused, known: true,
+  };
+}
+
+function fleetLocationModels(L) {
+  const offered = L.models_publishable ?? L.models_enabled ?? null;
+  const discovered = L.models_discovered ?? null;
+  if (offered == null && discovered == null) return '—';
+  return `${offered ?? '—'} / ${discovered ?? '—'}`;
+}
+
+function fleetLocationHub(L) {
+  const stated = L.version || '—';
+  switch (String(L.version_status || '').toLowerCase()) {
+    case 'latest': return `${stated} · Latest`;
+    case 'updating': return `${stated} · Updating…`;
+    case 'behind': return `${stated} · Behind`;
+    default: return stated;
+  }
+}
+
+function fleetLocationStatus(L) {
+  const address = L.url || '';
+  if (L.paused_at != null) return { main: address, sub: L.pause_reason || 'Paused: unreachable.', bad: true };
+  if (L.reachable === true) return { main: address, sub: '', bad: false };
+  if (L.pending === true) return { main: address, sub: 'Just added — reading its Macs…', bad: false };
+  return { main: address, sub: L.error || 'Not reachable', bad: true };
+}
+
+function fleetLocationRow(L) {
+  const count = (L.machine_summary && L.machine_summary.total) ?? (L.machines || []).length;
+  const role = L.role ? String(L.role).replace(/_/g, ' ') : '';
+  const caption = L.pending === true ? 'Just added'
+    : L.slow === true ? 'Slow to answer'
+    : [role, L.reachable === true ? `${count} machine${count === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+  const verdict = fleetVerdict(L.history, L.reachable === false);
+  const members = fleetLocationMembers(L);
+  const status = fleetLocationStatus(L);
+  return `<tr>
+    <td class="ft-lead" data-label="Location">
+      <div class="ft-name">${esc(L.label || L.id || '—')}</div>
+      ${caption ? `<div class="ft-sub">${esc(caption)}</div>` : ''}</td>
+    <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">${fleetBadge(verdict.text, verdict.health)}</td>
+    <td data-label="Likely cause" title="${esc(fleetCauseTooltip(L.causes))}">${esc(fleetCauseLine(L.causes) || '—')}</td>
+    <td class="nowrap" data-label="Network">${esc(L.network || '—')}</td>
+    <td data-label="Hub">${esc(fleetLocationHub(L))}</td>
+    <td data-label="Members" title="${esc(fleetMembersTooltip(L))}"
+      style="${members.refused > 0 ? 'color:var(--bad-text)' : ''}">${esc(members.text)}</td>
+    <td data-label="Models">${esc(fleetLocationModels(L))}</td>
+    <td data-label="Release">${esc((L.release && L.release.version_build) || '—')}</td>
+    <td data-label="Status" title="${esc(L.error || '')}"
+      style="${status.bad ? 'color:var(--warn-text)' : 'color:var(--dim)'}">
+      <div><div>${esc(status.main || '—')}</div>
+      ${status.sub ? `<div class="ft-sub">${esc(status.sub)}</div>` : ''}</div></td>
+  </tr>`;
+}
+
+function fleetMembersTooltip(L) {
+  const summary = L.node_summary || null;
+  if (!summary && !(L.nodes || []).length) return '';
+  const lines = [];
+  if (summary && summary.total != null) {
+    let head = `${summary.reachable ?? 0} of ${summary.total} joined `
+      + (summary.total === 1 ? 'Mac is' : 'Macs are') + ' reachable now.';
+    if (summary.unauthorized > 0) head += ` ${summary.unauthorized} answered and refused this controller's credential.`;
+    if (summary.removed > 0) head += ` ${summary.removed} removed from the group.`;
+    lines.push(head);
+  }
+  return lines.join('\n');
+}
+
+function renderFleetLocations(d) {
+  const wrap = document.getElementById('fleet-locations-wrap');
+  const status = document.getElementById('fleet-locations-status');
+  const rows = (d.locations || []).filter(L => fleetLocation === 'all' || String(L.id) === fleetLocation)
+    .filter(L => fleetFilter === 'all'
+      || (fleetFilter === 'offline' && L.reachable === false)
+      || (fleetFilter === 'problematic' && L.history && L.history.problematic === true))
+    .filter(L => fleetMatchesSearch([L.label, L.id, L.url, L.error, fleetCauseLine(L.causes)], fleetQuery));
+  if (status) {
+    const all = (d.locations || []).length;
+    status.textContent = rows.length === all
+      ? `${all} location${all === 1 ? '' : 's'}.`
+      : `${rows.length} of ${all} locations match the filter.`;
+  }
+  if (wrap) {
+    wrap.innerHTML = rows.length
+      ? `<table class="ftable fixed">
+         <colgroup>
+           <col style="width:14%"><col style="width:9%"><col style="width:15%"><col style="width:7%">
+           <col style="width:11%"><col style="width:12%"><col style="width:7%"><col style="width:8%"><col style="width:17%">
+         </colgroup>
+         <thead><tr><th>Location</th><th>Health</th><th>Likely cause</th>
+         <th>Network</th><th>Hub</th><th>Members</th><th>Models</th><th>Release</th><th>Status</th></tr></thead>
+         <tbody>${rows.map(fleetLocationRow).join('')}</tbody></table>`
+      : '<div class="fleet-empty">No location matches this filter.</div>';
+  }
+  // The Gateway's own issues about locations. Folded, like the native page's banner.
+  const box = document.getElementById('fleet-issues');
+  if (box) {
+    const issues = (d.issues || []).filter(i => i.severity === 'error' || i.severity === 'warning');
+    box.innerHTML = issues.length ? `<details class="card"><summary class="fleet-issue">
+        <b>${issues.length} warning${issues.length === 1 ? '' : 's'}</b></summary>${issues.map(i =>
+      `<div class="fleet-issue"><span class="badge ${i.severity === 'error' ? 'bad' : 'warn'}">${
+        esc(i.location || i.severity)}</span> ${esc(i.message)}</div>`).join('')}</details>` : '';
+  }
+}
+
+// ---- Models ----------------------------------------------------------------
+
+function fleetModelRows(d) {
+  const by = new Map();
+  for (const L of d.locations || []) {
+    for (const m of L.local_models || []) {
+      const key = m.model || m.model_id;
+      if (!key) continue;
+      if (!by.has(key)) {
+        by.set(key, { model: key, label: m.label || key, studio: m.studio || m.modality || '—',
+          locations: [], serving: 0, reporting: 0, bestFit: '', memoryFloor: null, dispatch: '', issues: 0 });
+      }
+      const row = by.get(key);
+      const where = L.label || L.id;
+      if (where && !row.locations.includes(where)) row.locations.push(where);
+      row.reporting += 1;
+      if (m.available === true || m.dispatch_state === 'eligible') row.serving += 1;
+      if (m.fit && m.fit.label) row.bestFit = m.fit.label;
+      if (m.min_unified_memory_gb != null) {
+        row.memoryFloor = row.memoryFloor == null ? m.min_unified_memory_gb
+          : Math.min(row.memoryFloor, m.min_unified_memory_gb);
+      }
+      if (m.dispatch_state) row.dispatch = m.dispatch_state;
+      if (m.catalog_error) row.issues += 1;
+    }
+  }
+  return [...by.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function renderFleetModels(d) {
+  const wrap = document.getElementById('fleet-models-wrap');
+  const status = document.getElementById('fleet-models-status');
+  const rows = fleetModelRows(d).filter(row =>
+    fleetMatchesSearch([row.label, row.model, row.studio], fleetQuery)
+    && (fleetLocation === 'all' || row.locations.includes(
+      String(((d.locations || []).find(L => String(L.id) === fleetLocation) || {}).label || ''))));
+  if (status) {
+    const s = d.summary || {};
+    status.innerHTML = `${s.local_models_total ?? '—'} local model${s.local_models_total === 1 ? '' : 's'} `
+      + `across the fleet · <b>${s.models_available ?? '—'}</b> available now.`;
+  }
+  if (!wrap) return;
+  wrap.innerHTML = rows.length
+    ? `<table class="ftable"><thead><tr><th>Model</th><th>Studio</th><th>Locations</th><th>Serving</th>
+       <th>Best fit</th><th>Memory floor</th><th>Dispatch</th><th>Issues</th></tr></thead>
+       <tbody>${rows.map(row => `<tr>
+         <td class="ft-lead" data-label="Model"><div class="ft-name">${esc(row.label)}</div>
+           <div class="ft-sub">${esc(row.model)}</div></td>
+         <td data-label="Studio">${esc(row.studio)}</td>
+         <td data-label="Locations" title="${esc(row.locations.join(', '))}">${row.locations.length}</td>
+         <td data-label="Serving" title="Machines that can serve this model right now, of the machines that report it."
+           style="${row.serving > 0 ? '' : 'color:var(--warn-text)'}">${row.serving} of ${row.reporting}</td>
+         <td data-label="Best fit">${esc(row.bestFit || '—')}</td>
+         <td data-label="Memory floor">${esc(row.memoryFloor != null ? fleetGb(row.memoryFloor) : '—')}</td>
+         <td data-label="Dispatch">${esc(row.dispatch ? row.dispatch.replace(/_/g, ' ') : '—')}</td>
+         <td data-label="Issues" style="${row.issues > 0 ? 'color:var(--bad-text)' : ''}">${row.issues}</td>
+       </tr>`).join('')}</tbody></table>`
+    : '<div class="fleet-empty">No Hub location is reporting local models.</div>';
+}
+
+// ---- Jobs ------------------------------------------------------------------
+
+function fleetQueueLine(d) {
+  const q = d.gateway_queue || null;
+  if (!q) return '';
+  const background = q.background ? ` (${q.background} background)` : '';
+  return `This Gateway's own queue: ${q.waiting ?? 0} waiting, ${q.running ?? 0} running${background}.`;
+}
+
+function fleetJobProgress(job) {
+  return `${job.running ?? 0} running, ${job.queued ?? 0} queued, ${job.retrying ?? 0} retrying, `
+    + `${job.done ?? 0} of ${job.total ?? 0} done`;
+}
+
+function fleetJobState(job) {
+  if (job.stalled === true) return { text: 'Stalled', health: 'warn' };
+  if ((job.uncertain ?? 0) > 0) return { text: `${job.uncertain} uncertain`, health: 'bad' };
+  if ((job.error ?? 0) > 0) return { text: `${job.error} failed`, health: 'bad' };
+  if (job.cancelled === true) return { text: 'Cancelled', health: '' };
+  return { text: 'Running', health: 'info' };
+}
+
+function renderFleetJobs(d) {
+  const wrap = document.getElementById('fleet-jobs-wrap');
+  const problems = document.getElementById('fleet-jobs-problems');
+  const status = document.getElementById('fleet-jobs-status');
+  const rows = (d.running || []).filter(job =>
+    fleetInLocation({ location_id: job.location_id, id: job.location_id })
+    && fleetMatchesSearch([job.location, job.modality, job.model, job.label, job.batch_id], fleetQuery));
+  if (status) status.textContent = fleetQueueLine(d);
+  if (wrap) {
+    wrap.innerHTML = rows.length
+      ? `<table class="ftable"><thead><tr><th>Location</th><th>Type</th><th>Model</th><th>Batch</th>
+         <th>Progress</th><th>State</th></tr></thead><tbody>${rows.map(job => {
+          const state = fleetJobState(job);
+          return `<tr>
+            <td class="ft-lead" data-label="Location"><div class="ft-name">${esc(job.location || job.location_id || '—')}</div>
+              <div class="ft-sub">${esc(job.batch_id || '')}</div></td>
+            <td data-label="Type">${esc(job.modality ? (job.modality === 'tts' ? 'TTS' : job.modality) : '—')}</td>
+            <td data-label="Model">${esc(job.label || job.model || '—')}</td>
+            <td data-label="Batch">${esc(job.batch_id || '—')}</td>
+            <td data-label="Progress">${esc(fleetJobProgress(job))}
+              ${job.no_progress_s > 0 ? `<div class="ft-sub">no progress for ${job.no_progress_s}s</div>` : ''}</td>
+            <td class="nowrap" data-label="State">${fleetBadge(state.text, state.health)}</td>
+          </tr>`;
+        }).join('')}</tbody></table>`
+      : '<div class="fleet-empty">No batch is running on the fleet.</div>';
+  }
+  if (problems) {
+    const broken = rows.filter(job => job.stalled === true || (job.error ?? 0) > 0 || (job.uncertain ?? 0) > 0);
+    problems.innerHTML = broken.length
+      ? `<div class="card">${broken.map(job => `<div class="fleet-issue"><b>${esc(
+          [job.location, job.modality, job.label || job.model].filter(Boolean).join(' · '))}</b> — ${
+          esc(job.governor_note || (job.errors && job.errors[0] && (job.errors[0].message || job.errors[0].text))
+            || `${job.error ?? 0} item${(job.error ?? 0) === 1 ? '' : 's'} failed.`)}</div>`).join('')}</div>`
+      : `<p class="hint">No stalled or failed batches. A batch that stops making progress appears here with the Hub's own reason.</p>`;
+  }
+}
+
+// ---- Story Studio ----------------------------------------------------------
+
+let fleetStoryRows = null;
+let fleetStoryRelease = null;
+
+function fleetStoryStatusText(instance) {
+  switch (instance.status) {
+    case 'up_to_date': return { text: 'Up to date', health: 'ok' };
+    case 'update_available': return { text: 'Update available', health: 'warn' };
+    case 'updating': return { text: (instance.update && instance.update.phase) === 'draining'
+      ? 'Updating… (waiting for jobs)' : 'Updating…', health: 'info' };
+    case 'failed': return { text: (instance.update && instance.update.phase) === 'rolled_back'
+      ? 'Update rolled back' : 'Update failed', health: 'bad' };
+    case 'offline': return { text: 'Offline', health: '' };
+    default: return { text: instance.status || '—', health: '' };
+  }
+}
+
+function renderFleetStory() {
+  const wrap = document.getElementById('fleet-story-wrap');
+  const status = document.getElementById('fleet-story-status');
+  if (status) {
+    const release = fleetStoryRelease;
+    status.textContent = fleetStoryRows == null ? 'Reading Story Studio…'
+      : release && release.version ? `Published: Story Studio ${release.version}${release.filename ? ` (${release.filename})` : ''}.`
+      : 'No Story Studio release is published yet.';
+  }
+  if (!wrap) return;
+  if (fleetStoryRows == null) { wrap.innerHTML = '<div class="fleet-empty">Reading Story Studio…</div>'; return; }
+  wrap.innerHTML = fleetStoryRows.length
+    ? `<table class="ftable"><thead><tr><th>Mac</th><th>Version</th><th>Status</th><th>Channels</th>
+       <th>Story queue</th><th>Checked in</th></tr></thead><tbody>${fleetStoryRows.map(instance => {
+        const state = fleetStoryStatusText(instance);
+        const queue = instance.queue || {};
+        const count = value => (value == null ? '—' : value);
+        return `<tr>
+          <td class="ft-lead" data-label="Mac"><div class="ft-name">${esc(instance.machine || instance.instance_id || '—')}</div></td>
+          <td class="nowrap" data-label="Version">${esc(instance.version || '—')}</td>
+          <td data-label="Status" title="${esc((instance.update && instance.update.error) || '')}">${
+            fleetBadge(state.text, state.health)}</td>
+          <td data-label="Channels">${count(instance.channels)}</td>
+          <td data-label="Story queue">${count(queue.running)} running · ${count(queue.queued)} queued${
+            queue.held ? ' · paused' : ''}</td>
+          <td data-label="Checked in">${esc(fleetSeenText(instance.age_seconds != null
+            ? Date.now() / 1000 - instance.age_seconds : null))}</td>
+        </tr>`;
+      }).join('')}</tbody></table>`
+    : '<div class="fleet-empty">No Story Studio Mac has checked in yet.</div>';
+}
+
+async function loadFleetStory() {
+  try {
+    const answer = await api('/story/instances');
+    fleetStoryRows = answer.instances || [];
+    fleetStoryRelease = answer.release || null;
+  } catch (e) {
+    fleetStoryRows = [];
+    fleetStoryRelease = null;
+    const wrap = document.getElementById('fleet-story-wrap');
+    if (wrap) wrap.innerHTML = `<div class="fleet-empty">Could not read Story Studio: ${esc(e.message)}</div>`;
+    return;
+  }
+  renderFleetStory();
+}
+
+// ---- The page --------------------------------------------------------------
+
+// The two controls, drawn once into the page and only ever re-read — a poll that rebuilt them
+// would close the list under the owner's hand every 15 s.
 function fleetControls() {
   const pick = (options, value) => options.map(([k, title]) =>
     `<option value="${esc(k)}"${k === value ? ' selected' : ''}>${esc(title)}</option>`).join('');
   const filter = document.getElementById('fleet-filter');
-  const sort = document.getElementById('fleet-sort');
   if (filter && !filter.options.length) filter.innerHTML = pick(FLEET_FILTERS, fleetFilter);
-  if (sort && !sort.options.length) sort.innerHTML = pick(FLEET_SORTS, fleetSort);
+  const location = document.getElementById('fleet-location');
+  if (location && lastFleetPayload) {
+    const options = [['all', 'All locations']].concat(
+      (lastFleetPayload.locations || []).map(L => [String(L.id), L.label || L.id]));
+    if (location.options.length !== options.length) location.innerHTML = pick(options, fleetLocation);
+  }
   const health = fleetHealthSetting;
-  const box = document.getElementById('fleet-threshold');
-  const summary = box && box.querySelector('summary');
-  if (summary && health && !summary.dataset.done) {
-    summary.textContent =
-      `Problematic = ${health.flapping_drops_day} or more drops in 24 hours — change`;
-    const input = box.querySelector('input');
-    if (input && document.activeElement !== input) {
-      input.min = health.min; input.max = health.max; input.value = health.flapping_drops_day;
+  const input = typeof document.querySelector === 'function'
+    ? document.querySelector('#fleet-threshold select') : null;
+  if (input && health) {
+    // The numbers the Gateway will accept, not a range typed by hand.
+    if (!input.options || !input.options.length) {
+      const low = health.min ?? 1, high = health.max ?? 100;
+      let options = '';
+      for (let value = low; value <= high; value += 1) options += `<option value="${value}">${value}</option>`;
+      input.innerHTML = options;
     }
-    summary.dataset.done = '1';
+    if (document.activeElement !== input && input.dataset.saved !== '1') {
+      input.value = String(health.flapping_drops_day);
+    }
   }
   const orphanBox = document.getElementById('fleet-orphan-setting');
   const orphanSummary = orphanBox && orphanBox.querySelector('summary');
@@ -4783,18 +5942,52 @@ function fleetControls() {
   }
 }
 
-function fleetSetFilter(value) { fleetFilter = value; if (lastFleetPayload) renderFleet(lastFleetPayload); }
-// The summary's "N problematic" is a shortcut to the filter, so the figure and the list agree in one
-// click. A button, not a span with an onclick: a span is not focusable and a keyboard cannot reach it.
-function fleetOnlyProblematic() {
-  fleetSetFilter('problematic');
+function fleetSetFilter(value) {
+  fleetFilter = value;
   const pick = document.getElementById('fleet-filter');
-  if (pick) pick.value = 'problematic';
+  if (pick) pick.value = value;
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
 }
+
+function fleetSetLocation(value) {
+  fleetLocation = value || 'all';
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
+}
+
+let fleetSearchTimer = null;
+function fleetSetSearch(value) {
+  fleetQuery = value || '';
+  if (fleetSearchTimer) clearTimeout(fleetSearchTimer);
+  fleetSearchTimer = setTimeout(() => { if (lastFleetPayload) renderFleet(lastFleetPayload); }, 120);
+}
+
 function fleetSetSort(value) { fleetSort = value; if (lastFleetPayload) renderFleet(lastFleetPayload); }
 
+function fleetOnlyProblematic() {
+  fleetSetFilter('problematic');
+}
+
+function selectFleetTab(tab) {
+  if (!FLEET_TABS.some(([key]) => key === tab)) tab = 'groups';
+  fleetTab = tab;
+  renderFleetTabs();
+  document.querySelectorAll('.fleet-pane').forEach(pane => {
+    pane.hidden = pane.id !== 'fleet-pane-' + tab;
+  });
+  if (tab === 'story') loadFleetStory();
+}
+
+function renderFleetTabs() {
+  const box = document.getElementById('fleet-tabs');
+  if (!box) return;
+  box.innerHTML = FLEET_TABS.map(([key, title]) =>
+    `<button type="button" data-tab="${esc(key)}" aria-pressed="${key === fleetTab}"
+       onclick="selectFleetTab('${esc(key)}')">${esc(title)}</button>`).join('');
+}
+
 async function saveFleetThreshold() {
-  const input = document.querySelector('#fleet-threshold input');
+  const input = typeof document.querySelector === 'function'
+    ? document.querySelector('#fleet-threshold select') : null;
   const value = Number(input && input.value);
   const note = document.getElementById('fleet-threshold-note');
   try {
@@ -4803,15 +5996,15 @@ async function saveFleetThreshold() {
       body: JSON.stringify({ flapping_drops_day: value }),
     });
     if (note) note.textContent = `Saved: problematic from ${answer.flapping_drops_day} drops in 24 h.`;
+    if (input) input.dataset.saved = '1';
     fleetHealthSetting = answer;
-    const box = document.getElementById('fleet-threshold');
-    if (box) box.querySelector('summary').dataset.done = '';
     await loadFleet();
   } catch (e) {
     if (note) note.textContent = e.message;
   }
 }
 
+// The Groups list: the one list the browser page has always drawn, unchanged in its words.
 // ---------------------------------------------------------------------------
 // Orphaned Hub batches — a batch still running at a site for work that already finished.
 //
@@ -4927,7 +6120,7 @@ async function stopOrphan(button) {
   } catch (e) {
     fleetOrphanAnswers[key] = e.message;
   }
-  if (lastFleetPayload) renderFleetIssues(lastFleetPayload);
+  if (lastFleetPayload) renderFleetOrphans(lastFleetPayload);
   else if (slot) slot.textContent = fleetOrphanAnswers[key] || '';
 }
 
@@ -4954,44 +6147,29 @@ async function saveOrphanAutoStop(enabled) {
   }
 }
 
-function renderFleet(d) {
+// The Jobs tab draws what the Gateway classified: the warning line, each batch with what it has
+// produced, and the Stop button its guard allows. A site that did not answer says "not checked",
+// never "no orphaned batches".
+function renderFleetOrphans(d) {
+  const box = document.getElementById('fleet-orphans');
+  if (!box) return;
+  box.innerHTML = fleetOrphans(d);
+}
+
+function renderFleetGroups(d) {
   const items = fleetItems(d);
   const visible = fleetVisible(items);
-  const box = document.getElementById('fleet-body');
-  // One list; a filter with nothing in it says so rather than looking like an empty fleet.
-  box.innerHTML = visible.length ? `<div class="fleet-macs">${visible.map(fleetCard).join('')}</div>`
-    : `<div class="empty">Nothing matches “${esc((FLEET_FILTERS.find(f => f[0] === fleetFilter) || [])[1] || fleetFilter)}”
-       — ${items.length} machine${items.length === 1 ? '' : 's'} and site${items.length === 1 ? '' : 's'} were read.</div>`;
-}
-
-function renderFleetIssues(d) {
-  const issues = d.issues || [];
-  // Folded by default: on a phone a dozen warnings would push every Mac off the first screen.
-  const issuesBox = document.getElementById('fleet-issues');
-  if (!issuesBox) return;
-  const open = issuesBox.querySelector('details')?.open ? ' open' : '';
-  const orphans = fleetOrphans(d);
-  issuesBox.innerHTML = orphans + (issues.length ? `<details class="card"${open}><summary class="fleet-issue">
-      <b>${issues.length} warning${issues.length === 1 ? '' : 's'}</b></summary>${issues.map(i =>
-    `<div class="fleet-issue"><span class="badge ${i.severity === 'error' ? 'bad' : 'warn'}">${esc(i.location || i.severity)}</span> ${esc(i.message)}</div>`
-  ).join('')}</details>` : '');
-}
-
-async function loadFleet() {
-  const box = document.getElementById('fleet-body');
-  let d;
-  try { d = await api('/fleet'); }
-  catch (e) { box.innerHTML = `<div class="empty">Could not read the fleet: ${esc(e.message)}</div>`; return; }
-  if (state.view !== 'fleet') return;
-  lastFleetPayload = d;
-  fleetMachineRows = d.machines || [];
-  fleetHealthSetting = d.fleet_health || fleetHealthSetting;
-  fleetOrphanAutoStop = d.orphans_auto_stop === true;
-  fleetControls();
+  const body = document.getElementById('fleet-body');
+  if (body) {
+    body.innerHTML = visible.length ? `<div class="fleet-macs">${visible.map(fleetCard).join('')}</div>`
+      : `<div class="empty">Nothing matches “${esc((FLEET_FILTERS.find(f => f[0] === fleetFilter) || [])[1] || fleetFilter)}”
+         — ${items.length} machine${items.length === 1 ? '' : 's'} and site${items.length === 1 ? '' : 's'} were read.</div>`;
+  }
+  const summary = document.getElementById('fleet-summary');
+  if (!summary) return;
   const s = d.summary || {}, q = d.gateway_queue || {};
-  const items = fleetItems(d);
   const problematic = items.filter(fleetProblematic).length;
-  document.getElementById('fleet-summary').innerHTML = [
+  summary.innerHTML = [
     `<span><b>${s.machines_online ?? '?'}</b> of ${s.machines ?? '?'} Macs online</span>`,
     `<span><b>${s.pulse?.working ?? 0}</b> working</span>`,
     `<span><b>${s.locations_up ?? '?'}</b> of ${s.locations ?? '?'} locations up</span>`,
@@ -5005,9 +6183,36 @@ async function loadFleet() {
       ? `<span class="badge warn" title="${esc((s.connections.slow_machines || []).join(', '))}">` +
         `${s.connections.slow_ethernet} on slow Ethernet</span>` : '',
   ].join('');
-  // Folded by default: on a phone a dozen warnings would push every Mac off the first screen.
-  renderFleetIssues(d);
+}
+
+function renderFleet(d) {
+  if (!d) return;
+  renderFleetGroups(d);
+  renderFleetMachines(d);
+  renderFleetLocations(d);
+  renderFleetModels(d);
+  renderFleetJobs(d);
+  renderFleetOrphans(d);
+}
+
+async function loadFleet() {
+  renderFleetTabs();
+  let d;
+  try { d = await api('/fleet'); }
+  catch (e) {
+    const box = document.getElementById('fleet-body');
+    if (box) box.innerHTML = `<div class="empty">Could not read the fleet: ${esc(e.message)}</div>`;
+    return;
+  }
+  if (state.view !== 'fleet') return;
+  lastFleetPayload = d;
+  fleetMachineRows = d.machines || [];
+  fleetHealthSetting = d.fleet_health || fleetHealthSetting;
+  fleetOrphanAutoStop = d.orphans_auto_stop === true;
+  fleetControls();
+  renderFleetTabs();
   renderFleet(d);
+  if (fleetTab === 'story') loadFleetStory();
 }
 
 async function loadJobs() {
@@ -5169,23 +6374,30 @@ async function signOut() {
 }
 
 (async function init() {
-  if (!IN_APP) {
-    document.getElementById('web-nav').hidden = false;
+  // The sidebar and the phone's picker are drawn from the same NAV list, so a page is one
+  // entry. In the app the window already has a sidebar: this one steps aside and the page
+  // fills the pane.
+  renderNav();
+  if (IN_APP) {
+    const shell = document.getElementById('shell');
+    if (shell) shell.classList.add('in-app');
+  } else {
+    const nav = document.getElementById('web-nav');
+    if (nav) nav.hidden = false;
     localStorage.removeItem('gatewayAdminToken');
   }
   if (typeof GUEST !== 'undefined' && GUEST) {
     // One page, and no status line to poll: `/admin/api/status` is the owner's and refuses a
     // guest, so asking would draw an error nobody can act on. The server is the boundary; this
     // keeps the page from offering what it has not got.
-    const pick = document.getElementById('web-page');
-    if (pick) pick.innerHTML = '<option value="create">Create</option>';
-    const title = document.querySelector('.web-title');
-    if (title) title.textContent = `Gateway · ${GUEST.name || 'Guest'}`;
+    const foot = document.getElementById('nav-status');
+    if (foot) foot.textContent = `Signed in as ${GUEST.name || 'Guest'}`;
     await setView('create');
     return;
   }
   await loadStatus();
   await setView(viewFromHash());
+  applyFleetHashTab();
   // The queue is live state, so it refreshes with the status line while it is the
   // page in front of the operator — and never while another view is open, where it
   // would re-render a section nobody is reading.

@@ -63,6 +63,20 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
     static let packs = ConsoleSection(
         title: "Content Packs", symbol: "archivebox", viewName: "packs"
     )
+    /// **Fleet is a web page now, drawn here exactly as it is in a browser.**
+    ///
+    /// The owner, 2026-10-30: *"can i view the fleet on the web and have it look like this? i
+    /// mean story studio's control look like it's own app. why can't gateway?"* — and then:
+    /// *"make sure anything built or updated in the future instantly appears [in both], like a
+    /// mirror, instead of something we keep building each time."* So a section switches to its
+    /// web page once that page is verified, and from then on there is one implementation.
+    ///
+    /// The native Fleet page (`FleetSection.swift`, and the Fleet*.swift views it builds) is
+    /// **left in the repository, unused, so it can be restored** — not deleted. A new Fleet
+    /// feature is a change to `gateway/admin_ui.html`, never to a Swift view.
+    static let fleet = ConsoleSection(
+        title: "Fleet", symbol: "network", viewName: "fleet"
+    )
 
     let title: String
     let symbol: String
@@ -85,6 +99,7 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         models.refreshCredentialIfLoaded()
         providers.refreshCredentialIfLoaded()
         packs.refreshCredentialIfLoaded()
+        fleet.refreshCredentialIfLoaded()
     }
 
     /// Lazy so the web view can be built by a closure on self.
@@ -555,7 +570,10 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             VoicesSection.shared,
             ConsoleSection.models,
             ConsoleSection.providers,
-            FleetSection.shared,
+            // **The web Fleet page, not `FleetSection.shared`.** The native page is still in the
+            // repository (kept, unused, restorable), but the fleet is one web page now — see
+            // `ConsoleSection.fleet`. A change to it needs no native work.
+            ConsoleSection.fleet,
             SettingsSection.shared,
             ConsoleSection.packs,
             // Index 14, and the last entry: the sidebar order is the `order` list, and this has to

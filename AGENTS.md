@@ -50,6 +50,28 @@ changes**, only `genstudio_url` and an API key.
 
 Read `README.md` for the design; this file is the part that is expensive to
 rediscover.
+
+## Gateway UI is built once, as a web page
+
+**The browser console is the Gateway's UI; the Mac app shows it.** The owner, 2026-10-30:
+*"make sure anything built or updated in the future instantly appears [in both], like a mirror,
+instead of something we keep building each time."*
+
+- A page is built once, in `gateway/admin_ui.html` (and the routes around it), and appears in a
+  browser and in the app's window with no native work. The app loads it through
+  `ConsoleSection`, which injects its own key at document start and sets `__GATEWAY_IN_APP__` so
+  the page hides its sidebar — **never a key in a URL**.
+- **New or changed UI goes into the web page, never into a new native Swift view.** When a
+  section's web page is verified, the app's sidebar row is pointed at it and the native page is
+  **switched off but kept in the repository, unused, so it can be restored** — never deleted.
+- The only exceptions are the things a web page cannot do, and they stay native: the **menu-bar
+  icon** and its menu, the app menu and keyboard shortcuts, **notifications and alerts**,
+  **launching / quitting / restarting the gateway**, the file panels (`NSOpenPanel`) and macOS
+  permissions. This list is the whole list; "a web page cannot do it" is not a reason to add a
+  native view without adding it here.
+- **Retired, kept for restoration:** the native Fleet page (`FleetSection.swift` and the
+  `Fleet*.swift` views it builds). Fleet is `gateway/admin_ui.html` now.
+
 ## Contract traps — each cost real debugging time
 
 - **Never return 402.** Story Studio holds a credit lock keyed on the API key. If

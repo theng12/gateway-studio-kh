@@ -47,7 +47,16 @@ function context(snapshot, answer = { queued_cancelled: 2, running_signalled: 1,
     ['fleet-body', element()], ['fleet-summary', element()], ['fleet-issues', element()],
     ['fleet-filter', element()], ['fleet-sort', element()], ['fleet-threshold', element()],
     ['fleet-orphan-setting', element()], ['fleet-orphan-auto', element()],
-    ['fleet-orphan-note', element()],
+    ['fleet-orphan-note', element()], ['fleet-orphans', element()],
+    // The merged Fleet page is one tab strip over several panes; every renderer writes its own
+    // node on each load, so the harness holds them all.
+    ['fleet-tabs', element()], ['fleet-warnings', element()], ['fleet-machines-wrap', element()],
+    ['fleet-status', element()], ['fleet-locations-wrap', element()],
+    ['fleet-locations-status', element()], ['fleet-models-wrap', element()],
+    ['fleet-models-status', element()], ['fleet-jobs-wrap', element()],
+    ['fleet-jobs-status', element()], ['fleet-jobs-problems', element()],
+    ['fleet-search', element()], ['fleet-location', element()], ['fleet-drops', element()],
+    ['fleet-threshold-note', element()],
   ]);
   const calls = [];
   const ctx = vm.createContext({
@@ -101,7 +110,7 @@ function payload(locations, extra = {}) {
 test('the warning line names the count and lists each orphan with its running time', async () => {
   const ctx = context(payload([site([orphan()])]));
   await ctx.loadFleet();
-  const html = ctx.nodes.get('fleet-issues').innerHTML;
+  const html = ctx.nodes.get('fleet-orphans').innerHTML;
   assert.match(html, /1 Hub batch still running for work that already finished/);
   assert.match(html, /Blue Room · batch b-old · image · running 10 min/);
   assert.match(html, /replaced by batch b-new/);
@@ -110,7 +119,7 @@ test('the warning line names the count and lists each orphan with its running ti
 test('a figure the Hub did not send reads "not reported", never 0', async () => {
   const ctx = context(payload([site([orphan()])]));
   await ctx.loadFleet();
-  const html = ctx.nodes.get('fleet-issues').innerHTML;
+  const html = ctx.nodes.get('fleet-orphans').innerHTML;
   assert.match(html, /1\/4 items done/);
   assert.match(html, /artifacts not reported/);
   assert.doesNotMatch(html, /0 artifacts/);
@@ -122,7 +131,7 @@ test('a guard that does not hold shows its reason and no Stop button', async () 
     stop: { allowed: false, reason: 'Its Gateway job succeeded but kept no artifact.' },
   })])]));
   await ctx.loadFleet();
-  const html = ctx.nodes.get('fleet-issues').innerHTML;
+  const html = ctx.nodes.get('fleet-orphans').innerHTML;
   assert.match(html, /kept no artifact/);
   assert.doesNotMatch(html, />Stop</);
 });
@@ -133,7 +142,7 @@ test('an unknown orphan gets no Stop, only a plain note', async () => {
     stop: { allowed: false, reason: 'No Gateway job names this batch, so the Gateway cannot prove its work was kept.' },
   })])]));
   await ctx.loadFleet();
-  const html = ctx.nodes.get('fleet-issues').innerHTML;
+  const html = ctx.nodes.get('fleet-orphans').innerHTML;
   assert.match(html, /No Gateway job/);
   assert.match(html, /cannot prove its work was kept/);
   assert.doesNotMatch(html, />Stop</);
@@ -150,7 +159,7 @@ test('Stop posts the orphan flag and says a signalled worker is not yet stopped'
   assert.match(sent[0].path, /^\/fleet\/controllers\/L1\/jobs\/b-old\/cancel$/);
   assert.equal(JSON.parse(sent[0].opts.body).orphan_stop, true);
   assert.equal(JSON.parse(sent[0].opts.body).modality, 'image');
-  const html = ctx.nodes.get('fleet-issues').innerHTML;
+  const html = ctx.nodes.get('fleet-orphans').innerHTML;
   assert.match(html, /running signalled — not yet stopped/);
 });
 
@@ -160,7 +169,7 @@ test('a site that timed out reads "not checked", never "no orphaned batches"', a
                  orphan_batches: null, orphans_note: 'not checked: the site did not answer.' }),
   ]));
   await ctx.loadFleet();
-  const html = ctx.nodes.get('fleet-issues').innerHTML;
+  const html = ctx.nodes.get('fleet-orphans').innerHTML;
   assert.match(html, /Not checked/);
   assert.match(html, /did not answer/);
   assert.doesNotMatch(html, /No orphaned Hub batches/);

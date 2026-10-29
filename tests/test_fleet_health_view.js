@@ -45,10 +45,19 @@ function element(extra = {}) {
 function context(payload = null) {
   const nodes = new Map([
     ['fleet-body', element()], ['fleet-summary', element()], ['fleet-issues', element()],
-    ['fleet-filter', element()], ['fleet-sort', element()], ['fleet-threshold', element()],
+    ['fleet-filter', element()], ['fleet-threshold', element()],
+    ['fleet-machines-wrap', element()], ['fleet-status', element()], ['fleet-warnings', element()],
+    ['fleet-locations-wrap', element()], ['fleet-locations-status', element()],
+    ['fleet-models-wrap', element()], ['fleet-models-status', element()],
+    ['fleet-jobs-wrap', element()], ['fleet-jobs-status', element()], ['fleet-jobs-problems', element()],
+    ['fleet-tabs', element()], ['fleet-search', element()], ['fleet-location', element()],
+    ['fleet-drops', element()], ['fleet-threshold-note', element()],
   ]);
   const ctx = vm.createContext({
-    document: { getElementById: id => nodes.get(id), querySelector: () => null, activeElement: null },
+    document: {
+      getElementById: id => nodes.get(id), querySelector: () => null, activeElement: null,
+      querySelectorAll: () => [],
+    },
     window: {},
     esc,
     ago: () => 'just now',
@@ -63,6 +72,9 @@ function context(payload = null) {
     Date,
     Number,
     Math,
+    isFinite,
+    setTimeout,
+    clearTimeout,
   });
   vm.runInContext(between("let fleetFilter = 'all';", 'async function loadJobs()'), ctx);
   return ctx;
@@ -287,15 +299,18 @@ test('the summary counts problematic from the rows below it', async () => {
   assert.match(ctx.nodes.get('fleet-summary').innerHTML, /1 problematic/);
 });
 
-test('the controls offer exactly the sorts the owner asked for', async () => {
-  const ctx = context(payload([]));
+test('the Machines tab is the native table, sorted from its own headers', async () => {
+  // The native page has no Sort dropdown: a header click is the sort. The browser page keeps
+  // that, so the columns and their order are the native ones.
+  const ctx = context(payload([machine(), machine({ machine: '1207', label: '1207' })]));
   await ctx.loadFleet();
-  const filter = ctx.nodes.get('fleet-filter').innerHTML;
-  assert.match(filter, /Offline now/);
-  assert.match(filter, /Problematic/);
-  const sort = ctx.nodes.get('fleet-sort').innerHTML;
-  for (const word of ['Offline first', 'Problematic first', 'Site', 'Last seen', 'Drops in 24 h']) {
-    assert.match(sort, new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const html = ctx.nodes.get('fleet-machines-wrap').innerHTML;
+  for (const heading of ['Machine', 'State', 'Health', 'Seen', 'Drops · 7 days',
+    'Likely cause', 'Version', 'Disk', 'Memory', 'Network']) {
+    assert.match(html, new RegExp(heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  for (const key of ['machine', 'health', 'week', 'cause', 'disk', 'memory', 'network']) {
+    assert.match(html, new RegExp(`fleetSortBy\\('${key}'\\)`));
   }
 });
 
