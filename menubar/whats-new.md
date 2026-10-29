@@ -14,6 +14,35 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.210 — 2026-10-30
+
+### The Fleet page is the web page now — one page, built once
+The browser console at `/admin` has the Gateway app's own shape: the groups sit in the left sidebar,
+and **Fleet** is one page with tabs — Groups, Locations, Machines, Models, Jobs and Story Studio. On
+a phone the sidebar becomes a top bar. The Mac app's **Fleet** row now shows this same page, so a
+Fleet change is written once and appears in both places — nothing to build twice — and the orphan
+check below reaches the app without any separate work. The old native Fleet page is still in the
+repository, unused, so it can be brought back if it is ever wanted.
+
+### Hub batches still running for work that already finished
+When a site restarted, an old Hub batch could keep running on work the Gateway had already finished
+somewhere else. The **Jobs** tab lists those batches now: the site, the batch, how long it has been
+running, what it has produced, and which Gateway job replaced it. **Stop** is offered only when the
+Gateway can prove the work is safe to drop — its job succeeded with every artifact on disk, or it
+failed or was cancelled with nothing left to collect — and the answer is the Hub's own: *running
+signalled — not yet stopped*, never a claim that the work is done. A batch no Gateway job names gets
+no Stop at all, only the reason. A site that did not answer says **Not checked**, never "none".
+**Automatic stop is off by default**; when you switch it on it uses the very same check, and a batch
+no Gateway job names is never stopped automatically.
+
+### Drop lengths — and every number names its own window
+The Drops cell's tooltip now says how long your drops lasted: the longest, the median, roughly how
+often they come, and whether it recovered by itself or after a startup action. A length nobody
+measured says so instead of reading as "0 s". The caption beside the strip now says **N drops in
+7 days** instead of a bare "N in 7 days", so a 24-hour count and a 7-day count can no longer be
+mistaken for each other, and offline time the Gateway did not measure says *offline time not
+measured*.
+
 ## 0.2.209 — 2026-10-29
 
 ### The Fleet page sorts itself out: what is offline, what keeps dropping, and the likely cause
