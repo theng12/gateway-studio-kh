@@ -245,8 +245,12 @@ def upload_door(path: str) -> tuple[int, str, bool]:
     return _BODY_CEILING_DEFAULT, "this request", False
 
 
-def _spool_take(host: str, count: int) -> bool:
-    """Reserve `count` bytes for `host`, or `False` when the budget has no room.
+def _spool_take(host: str, count: int) -> str | None:
+    """Reserve `count` bytes for `host`; `None` when it fits, or **the limit that refused it**.
+
+    The two byte limits are different facts — this host's share and the whole budget — and a
+    reader sent to the wrong one looks at a number that was fine (review 2026-10-29f, finding 3).
+    So the answer names which one tripped (`"host"` or `"bytes"`) instead of a bare `False`.
 
     **The slot count is not checked here.** `_spool_slot` already incremented it, so testing
     `in_flight >= _SPOOL_MAX_IN_FLIGHT` again refused the *eighth* upload on every run —
@@ -257,12 +261,12 @@ def _spool_take(host: str, count: int) -> bool:
     with _SPOOL_LOCK:
         held = _spool_state["hosts"].get(host, 0)
         if _spool_state["bytes"] + count > _SPOOL_BUDGET_BYTES:
-            return False
+            return "bytes"
         if held + count > _SPOOL_PER_HOST_BYTES:
-            return False
+            return "host"
         _spool_state["bytes"] += count
         _spool_state["hosts"][host] = held + count
-        return True
+        return None
 
 
 def _spool_slot(host: str) -> bool:
@@ -449,16 +453,31 @@ class BoundedUploadBody:
         )
 
     @staticmethod
-    def _busy() -> JSONResponse:
+    def _busy(limit: str) -> JSONResponse:
+        """503 naming **the limit that actually tripped**: the slots, this host's share, or the
+        whole budget.
+
+        One sentence that named all three sent an operator to the wrong number — the slots read
+        8 of 8 while the host share that refused them was "a quarter of the budget", and the
+        budget itself was half empty (review 2026-10-29f, finding 3). The figure that refused is
+        the figure quoted.
+        """
+        megabyte = 1024 * 1024
+        if limit == "slots":
+            detail = (f"{_SPOOL_MAX_IN_FLIGHT} uploads are already being received, and that is "
+                      f"the most this Gateway holds at once.")
+        elif limit == "host":
+            detail = (f"This caller already holds {_SPOOL_PER_HOST_BYTES // megabyte} MB of "
+                      f"uploads in flight, one host's share of the "
+                      f"{_SPOOL_BUDGET_BYTES // megabyte} MB budget.")
+        else:
+            detail = (f"Uploads in flight already hold the whole "
+                      f"{_SPOOL_BUDGET_BYTES // megabyte} MB budget.")
         return JSONResponse(
             status_code=503,
-            content={
-                "detail": (f"{_SPOOL_MAX_IN_FLIGHT} uploads are already being received "
-                           f"(up to {_SPOOL_BUDGET_BYTES // (1024 * 1024)} MB held, "
-                           f"{_SPOOL_PER_HOST_BYTES // (1024 * 1024)} MB per host). Try again "
-                           f"in a moment."),
-                "code": "UPLOAD_BUDGET_BUSY",
-            },
+            content={"detail": f"{detail} Try again in a moment.",
+                     "code": "UPLOAD_BUDGET_BUSY",
+                     "limit": limit},
             headers={"Retry-After": "1"},
         )
 
@@ -510,9 +529,19 @@ class BoundedUploadBody:
                         budgeted: bool) -> None:
         """A body whose length is known: reserve it, then let the route read it.
 
-        The reservation is what stops a burst of large uploads from all being in flight: the
-        bytes are held for the duration of the request, not just while a copy is made. A body
-        under `_SPOOL_BUDGET_MIN_BYTES` is not an upload and takes nothing.
+        **Two releases, at two different moments, and both are load-bearing.**
+
+        * The **slot** is given back the moment the last byte is in. The request is no longer
+          receiving anything, and holding the slot through a route that takes seconds to answer
+          made back-to-back batches of eight meet 503 on most rounds — Story's image upload does
+          not retry, so that fails a scene (review 2026-10-29e, finding 3).
+        * The **byte reservation** is held until the route has finished with the body. The route
+          is holding its parsed copy in memory while it answers, so freeing the bytes early let
+          five back-to-back 100 MB transcriptions be admitted at once and left resident memory
+          unbounded — which is the thing this budget exists to bound (review 2026-10-29f,
+          finding 1).
+
+        A body under `_SPOOL_BUDGET_MIN_BYTES` is not an upload and takes nothing.
         """
         if not budgeted or size < _SPOOL_BUDGET_MIN_BYTES:
             # Parsed into memory and dropped, or too small to be an upload: bounded by the
@@ -520,27 +549,29 @@ class BoundedUploadBody:
             await self.app(scope, receive, send)
             return
         if not _spool_slot(host):
-            await self._busy()(scope, receive, send)
+            await self._busy("slots")(scope, receive, send)
             return
-        if not _spool_take(host, size):
+        refused = _spool_take(host, size)
+        if refused is not None:
             _spool_release(host, 0)  # the slot, not the bytes: nothing was reserved
-            await self._busy()(scope, receive, send)
+            await self._busy(refused)(scope, receive, send)
             return
         stalled = {"hit": False}
-        released = {"done": False}
+        held = {"slot": True, "bytes": True}
 
-        def release() -> None:
-            """**The pool is freed when the body has been received, not when the reply is sent.**
-            A route can take seconds after its last byte (a transcription upload is queued,
-            parsed and answered), and holding the slot through that made back-to-back batches
-            of eight meet 503 on most rounds — Story's image upload does not retry
-            (review 2026-10-29e, finding 3). Idempotent, so the `finally` still covers a body
-            that was never read.
-            """
-            if released["done"]:
+        def release_slot() -> None:
+            """The slot, as soon as nothing more is being received."""
+            if not held["slot"]:
                 return
-            released["done"] = True
-            _spool_release(host, size)
+            held["slot"] = False
+            _spool_release(host, 0)
+
+        def release_bytes() -> None:
+            """The bytes, once the route is done with the body it was given."""
+            if not held["bytes"]:
+                return
+            held["bytes"] = False
+            _spool_release(host, size, slot=False)
 
         def note_stall() -> None:
             stalled["hit"] = True
@@ -552,7 +583,7 @@ class BoundedUploadBody:
             if message.get("type") == "http.request":
                 received["n"] += len(message.get("body") or b"")
                 if received["n"] >= size or not message.get("more_body"):
-                    release()
+                    release_slot()
             return message
 
         async def guarded_send(message: dict[str, Any]) -> None:
@@ -567,13 +598,19 @@ class BoundedUploadBody:
         except _Stalled:
             pass
         finally:
-            release()
+            release_slot()
+            release_bytes()
         if stalled["hit"]:
             await self._stalled()(scope, receive, send)
 
     async def _bounded_stream(self, scope: Any, receive: Any, send: Any, limit: int,
                               what: str, host: str, budgeted: bool) -> None:
-        """No declared length (a chunked upload): count as it arrives, spool what is kept."""
+        """No declared length (a chunked upload): count as it arrives, spool what is kept.
+
+        The slot is released when the body is complete; the **byte reservation is held until the
+        route has finished** — see `_declared` for why the two are different moments (review
+        2026-10-29f, finding 1).
+        """
         received = 0
         reserved = 0
         slot = False
@@ -601,28 +638,30 @@ class BoundedUploadBody:
                             # request opens: a chunked JSON call must not compete with one.
                             if budgeted and received >= _SPOOL_BUDGET_MIN_BYTES:
                                 if not _spool_slot(host):
-                                    await self._busy()(scope, receive, send)
+                                    await self._busy("slots")(scope, receive, send)
                                     return
-                                if not _spool_take(host, received):
+                                refused = _spool_take(host, received)
+                                if refused is not None:
                                     # The slot was taken and the bytes were not: give the
                                     # slot back, or a refused upload holds one for ever.
                                     _spool_release(host, 0)
-                                    await self._busy()(scope, receive, send)
+                                    await self._busy(refused)(scope, receive, send)
                                     return
                                 slot = True
                                 reserved = received
-                        elif not _spool_take(host, len(body)):
-                            await self._busy()(scope, receive, send)
-                            return
                         else:
+                            refused = _spool_take(host, len(body))
+                            if refused is not None:
+                                await self._busy(refused)(scope, receive, send)
+                                return
                             reserved += len(body)
                     spool.write(body)
                     if not message.get("more_body"):
                         break
-                # **Freed here, before the route runs**: the body is complete, and the route
-                # reading its copy from the spool is not an upload any more.
-                _spool_release(host, reserved, slot=slot)
-                reserved = 0
+                # **The slot is freed here, before the route runs**: nothing more is arriving.
+                # **The bytes are not** — the route holds its parsed copy while it answers, and
+                # freeing them early is what let several maximum uploads be resident at once.
+                _spool_release(host, 0, slot=slot)
                 slot = False
                 spool.seek(0)
 
