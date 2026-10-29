@@ -245,6 +245,39 @@ test('a machine this Gateway has no history for says so, not "fine"', async () =
   assert.match(html, /not recorded/);
 });
 
+test('every figure in the caption names its own window', async () => {
+  // Live bug in 0.2.209: "5 in 24 h · 42 h off", where the count covered 24 h and the offline
+  // time covered seven days, with nothing saying so (Production, 2026-10-30).
+  const ctx = context(payload([machine({ label: 'a',
+    history: history({ drops_day: 5, drops_week: 9, offline_seconds_week: 151200 }) })]));
+  await ctx.loadFleet();
+  const html = ctx.nodes.get('fleet-body').innerHTML;
+  assert.match(html, /5 drops in 24 h/);
+  assert.match(html, /9 drops in 7 days/);
+  assert.match(html, /42 h offline in 7 days/);
+  assert.doesNotMatch(html, /· 9 in 7 days/);
+});
+
+test('the strip tooltip carries how long its drops lasted, and how often they come', async () => {
+  const ctx = context(payload([machine({ label: 'a', history: history({
+    drops_day: 3, drops_week: 3, drop_median_seconds: 120, drop_longest_seconds: 600,
+    drop_gap_seconds: 480, drops_completed: 3,
+    last_drop: { at: 1, reason: 'timeout', text: 'the connection timed out',
+                 duration_seconds: 120, ongoing: false, recovered_by: 'by_itself' },
+  }) })]));
+  await ctx.loadFleet();
+  const html = ctx.nodes.get('fleet-body').innerHTML;
+  assert.match(html, /Drops up to 10 min, median 2 min/);
+  assert.match(html, /about every 8 min/);
+  assert.match(html, /last recovery: by itself/);
+});
+
+test('a drop length nobody measured says so instead of reading as short', async () => {
+  const ctx = context(payload([machine({ label: 'a', history: history({ drops_day: 2 }) })]));
+  await ctx.loadFleet();
+  assert.match(ctx.nodes.get('fleet-body').innerHTML, /Drop length not measured/);
+});
+
 test('the summary counts problematic from the rows below it', async () => {
   const ctx = context(payload([
     machine({ machine: 'a', label: 'a', history: history({ drops_day: 5, problematic: true }) }),

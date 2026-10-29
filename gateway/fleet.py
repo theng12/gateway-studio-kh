@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -46,6 +47,8 @@ from . import fleet_history
 from . import render_optin
 from .config import DATA_DIR
 from .hub import hub_base_url, hub_token
+
+log = logging.getLogger("gateway.fleet")
 
 #: The location roster: id, label, address. **No secrets.** The Hub service
 #: token for a location lives in the provider credential store under the
@@ -236,7 +239,7 @@ _OPTIONAL_PROBES: tuple[tuple[str, object], ...] = (
 )
 
 
-def _fetch_optional(client: "httpx.Client", base: str, token: str) -> dict:
+def _fetch_optional(client: "httpx.Client", base: str, token: str) -> tuple[dict, set[str]]:
     """Every `_OPTIONAL_PROBES` path, in parallel, each defaulting on failure.
 
     Sequentially these were the reason a busy Hub timed the page out. Every one
@@ -245,8 +248,14 @@ def _fetch_optional(client: "httpx.Client", base: str, token: str) -> dict:
     six locations: one snapshot took 22.7 s, against the app's 15 s request
     timeout -- so the page appeared only when the fleet was idle, which is exactly
     when nobody is looking at it.
+
+    **The second half of the answer is which reads failed**, and only one caller
+    needs it: the orphan check. `{"batches": []}` from a route that never answered
+    and from a controller with nothing running are the same dict, and a page that
+    read the first as "no batches" would report a clean fleet on a broken read.
     """
     out: dict = {}
+    failed: set[str] = set()
     # The owner's "Reset counters" baseline rides on the stats read; a Hub that predates the parameter
     # ignores it and says so through `fleet_activity.window.since_s` (see `counted_since`).
     since = counters_since()
@@ -263,7 +272,8 @@ def _fetch_optional(client: "httpx.Client", base: str, token: str) -> dict:
                 out[path] = future.result()
             except Exception:  # noqa: BLE001 - "best effort" is the contract
                 out[path] = empty
-    return out
+                failed.add(path)
+    return out, failed
 
 
 def _token_for(controller_id: str) -> str:
@@ -948,6 +958,26 @@ def _fetch(client: httpx.Client, base: str, token: str, path: str) -> dict:
     return parsed
 
 
+def _artifact_count(batch: dict) -> int | None:
+    """How many artifacts a batch says it made, or `None` when the Hub did not say.
+
+    `None` is the point: a batch row that names no artifacts is not a batch that made zero, and
+    the Fleet page prints "not reported" for it. A list the Hub sends is counted as it is; a
+    number the Hub states is passed through only when it is a real non-negative integer.
+    """
+    stated = batch.get("artifact_count")
+    if isinstance(stated, int) and not isinstance(stated, bool) and stated >= 0:
+        return stated
+    artifacts = batch.get("artifacts")
+    if isinstance(artifacts, list):
+        return len(artifacts)
+    items = batch.get("items")
+    if isinstance(items, list):
+        # Transcription batches publish `artifact_url` per done item (Studio Hub's own shape).
+        return sum(1 for item in items if isinstance(item, dict) and item.get("artifact_url"))
+    return None
+
+
 def _running_jobs(batches: list[dict]) -> list[dict]:
     """In-flight work only.
 
@@ -977,6 +1007,12 @@ def _running_jobs(batches: list[dict]) -> list[dict]:
             "running": batch.get("running"),
             "retrying": batch.get("retrying"),
             "done": batch.get("done"),
+            # **What it has produced, when the Hub says.** The list route publishes no per-batch
+            # output today; these read through if a newer Hub adds them, and arrive as `None`
+            # otherwise so a reader can say "not reported" instead of printing a zero. The
+            # artifact count is derived from a list when the Hub sends the list itself.
+            "artifact_count": _artifact_count(batch),
+            "output_path": batch.get("output_path"),
             # **The Hub's own `error` is a count, not a sentence.** Measured live:
             # `"error": 0` on a finished batch alongside `"queued"/"running"`. Read
             # as text it decoded to nothing, so the page's "Needs attention" card
@@ -1088,6 +1124,10 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "nodes": [],
         "node_summary": None,
         "running_jobs": [],
+        # **Did the in-flight read actually answer?** `running_jobs: []` cannot say whether a
+        # controller has nothing running or its jobs route failed — the orphan check must not
+        # report the second as a clean fleet (see `orphans.annotate`). `None` until measured.
+        "jobs_read": None,
         "activity": {"pulse": {}, "machines": [], "observed_at": None},
         "by_machine": {},
         "matrix": [],
@@ -1124,7 +1164,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             # measured on a loaded controller over Tailscale).
             pending = pool.submit(_fetch_optional, client, base, token)
             overview = _fetch(client, base, token, "/api/hub/fleet/overview")
-            optional = pending.result()
+            optional, failed_reads = pending.result()
             nodes = optional["/api/hub/fleet/nodes"]
             jobs = optional["/api/hub/jobs"]
             capabilities = optional["/api/hub/capabilities"]
@@ -1267,6 +1307,10 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "members_from": None,
         "members_stale_seconds": None,
         "running_jobs": _running_jobs(jobs.get("batches") or []),
+        # Whether the jobs read above answered. A failed optional read degrades to `{"batches":
+        # []}`, which is indistinguishable from an idle controller — and the orphan check has to
+        # tell them apart, so it reports "not checked" rather than "none".
+        "jobs_read": "/api/hub/jobs" not in failed_reads,
         "activity": {
             "pulse": activity.get("pulse") or {},
             "machines": real_activity,
@@ -1665,7 +1709,7 @@ def _unread_location(location_id: str, label: str, url: str, *, local: bool = Fa
         "reachable": None, "error": None, "error_kind": None,
         "role": None, "version": None, "hub_version_relation": None,
         "machines": [], "machine_summary": None,
-        "nodes": [], "node_summary": None, "running_jobs": [],
+        "nodes": [], "node_summary": None, "running_jobs": [], "jobs_read": None,
         "activity": {"pulse": {}, "machines": [], "observed_at": None},
         "by_machine": {}, "matrix": [], "jobs_total": None, "latency_ms": None,
         "site_id": None, "controller_id": None, "ready": None,
@@ -3889,6 +3933,16 @@ def _refresh() -> dict:
         "issues": sorted(_issues(rows) + lite_issues, key=_issue_order),
         "generated_at": time.time(),
     }
+    # **The one automatic action over a fan-out, and it is off unless the owner turned it on.**
+    # Piggybacks on this refresh rather than polling anything new; `orphans` filters to this
+    # Gateway's own labelled batches, refuses `orphan_unknown`, and applies the same guard the
+    # Stop button shows. Imported late: it reads the jobs store, which reads this module.
+    try:
+        from . import orphans
+
+        orphans.maybe_auto_stop(value)
+    except Exception:  # noqa: BLE001 - a fan-out is never failed by a convenience switch
+        log.warning("orphan auto-stop pass failed", exc_info=True)
     # **The one place the fleet's live capacity is computed for `/health`.** The probe reads the
     # summary this publishes rather than walking every location on every poll (see
     # `concurrency._capacity_cache`); a fan-out that has just run is exactly when the number

@@ -924,6 +924,14 @@ struct FleetHistoryDrop: Decodable {
     var reason: String?
     /// The same reason as a sentence, or `nil` when it had none.
     var text: String?
+    /// How long the Mac stayed unreachable, from the recorded up/down transitions. `nil` for a drop
+    /// nobody watched end — "length not measured", never a short one.
+    var durationSeconds: Double?
+    /// The drop has not ended yet (the Mac is still unreachable).
+    var ongoing: Bool?
+    /// `after_startup_action` when the startup audit proves one within the Gateway's window,
+    /// `by_itself` when it was watched come back without one, `unknown` when neither can be shown.
+    var recoveredBy: String?
 }
 
 /// One likely cause, **with the evidence it came from**. `evidence` is never empty for a real hint:
@@ -955,13 +963,24 @@ struct FleetHistory: Decodable {
     /// Every transition, both directions, over the same two windows.
     var flipsDay: Int?
     var flipsWeek: Int?
+    /// **Each figure carries its own window.** `...Day` covers the last 24 hours and `...Week` the
+    /// last seven days; they are never interchangeable, and the page prints the window beside each.
     var offlineSecondsDay: Double?
     var offlineSecondsWeek: Double?
+    /// How long its drops lasted (median and longest), and the typical gap between them, from
+    /// recorded transitions. `nil` when no drop has a measured end — never a zero.
+    var dropMedianSeconds: Double?
+    var dropLongestSeconds: Double?
+    var dropGapSeconds: Double?
+    var dropsCompleted: Int?
     var days: [FleetHistoryDay]?
     /// A recurring shape in the drops ("at about the same time every day"), or nil when there is none.
     var pattern: FleetCause?
     /// `true`, `false`, or `nil` for a subject nobody has observed yet.
     var problematic: Bool?
+    /// The evidence behind `problematic` in one line: "4 drops in 24 h (threshold 4) · longest 2 min
+    /// · median 1 min". A length nobody measured says so rather than reading as short.
+    var problematicBasis: String?
     var lastDrop: FleetHistoryDrop?
 
     /// Has the Gateway ever observed this subject? `false` means every figure is unknown.

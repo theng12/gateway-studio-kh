@@ -123,6 +123,11 @@ CREATE INDEX IF NOT EXISTS jobs_state_created ON jobs(state, created_at);
 CREATE INDEX IF NOT EXISTS jobs_modality_state ON jobs(modality, state);
 CREATE INDEX IF NOT EXISTS jobs_open ON jobs(created_at, id)
     WHERE state NOT IN ('succeeded', 'failed', 'cancelled');
+-- **"Is any of my jobs still the owner of this upstream batch?"** The Fleet page asks it on every
+-- read for each batch a site reports running (see `gateway/orphans.py`), and without an index that
+-- question walks the whole job table every 15 s.
+CREATE INDEX IF NOT EXISTS jobs_upstream ON jobs(upstream_job_id)
+    WHERE upstream_job_id IS NOT NULL;
 -- What the Analytics page needs of a job after `archive_old` removed it: six scalars, never
 -- the prompt or the generated text. `generation_analytics` reads this beside `jobs`.
 CREATE TABLE IF NOT EXISTS job_summaries (
@@ -2499,6 +2504,55 @@ class JobStore:
             ).fetchone()
         return [str(value) for value in _loads_list(row["attempted_locations"])] \
             if row is not None else []
+
+    #: How far back the attempt-log half of the orphan question looks. A batch a site still runs
+    #: days after the Gateway gave up on it is a runaway, but the job that named it will have been
+    #: updated at the move; seven days is many times the longest cloud render and keeps the scan on
+    #: `jobs_updated` rather than the whole table. A job older than this still answers as
+    #: `orphan_unknown` — reported, never silently treated as live.
+    _ATTEMPT_SCAN_DAYS = 7
+
+    def jobs_for_upstream_batches(self, batch_ids: list[str]) -> list[dict[str, Any]]:
+        """Jobs whose record names one of these upstream batch ids.
+
+        Two reads, because the two places an id lives answer different questions:
+
+        * `upstream_job_id` is the **current** attempt, matched exactly through `jobs_upstream`;
+        * `attempt_log` keeps a **superseded** id only inside its own prose (`"lost contact with
+          … while polling batch <id> …"`), so it is a substring scan bounded by `updated_at`.
+          Garbage in an attempt log costs a scan, never a claim.
+
+        Matching the id to a *word* inside the prose is the caller's job
+        (`orphans._job_references`): SQL `instr()` would also match a longer id that merely
+        contains this one.
+        """
+        ids = sorted({str(value).strip() for value in batch_ids if str(value or "").strip()})
+        if not ids:
+            return []
+        # ponytail: a cap rather than a paginated read. One fan-out over the owner's fleet lists
+        # tens of batches; a site reporting hundreds is already a defect the page names. If that
+        # changes, page this call instead of raising the number.
+        ids = ids[:500]
+        marks = ",".join("?" for _ in ids)
+        since = time.time() - self._ATTEMPT_SCAN_DAYS * 86400
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM jobs WHERE upstream_job_id IN ({marks})", ids
+            ).fetchall()
+            clauses = " OR ".join("instr(COALESCE(attempt_log, ''), ?) > 0" for _ in ids)
+            rows = list(rows) + self._conn.execute(
+                f"SELECT * FROM jobs WHERE updated_at >= ? AND attempt_log IS NOT NULL "
+                f"AND ({clauses})",
+                (since, *ids),
+            ).fetchall()
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if row["id"] in seen:
+                continue
+            seen.add(row["id"])
+            out.append(self._row_dict(row))
+        return out
 
     def defer(self, job_id: str, *, delay_s: float, reason: str, new_round: bool = False,
               unsent: bool = False) -> bool:
