@@ -70,6 +70,14 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     )
     private let banner = FleetBanner(frame: .zero)
     private let locationPopup = NSPopUpButton()
+    /// **The owner's own filter** (2026-10-29): everything, offline now, or the flapping Macs. The
+    /// words and what they mean live in `FleetHealth.swift`, so the browser console and this page
+    /// cannot decide them differently.
+    private let healthPopup = NSPopUpButton()
+    /// **The threshold every "Problematic" badge on this page is decided by**, shown with the control
+    /// that changes it. A rule the app applies but never states is the kind of hidden setting the owner
+    /// has to guess at; this one is a number he picked, so it sits on the page as a number.
+    private let thresholdPopup = NSPopUpButton()
     private let searchField = NSSearchField()
     private let content = NSView()
 
@@ -145,6 +153,25 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         machinesTab.macTrashCell = { row in
             FleetMacTrashCell(machine: row, done: reloadAfterStartup)
         }
+        // **The health filter and its threshold live on the tab they filter**, in the accessory strip the
+        // Startup and Trash bars already use. Putting them in the shell's own filter row widened the
+        // page's minimum, and `test_window_size` caught the window growing on every section.
+        machinesTab.startupAccessory.addArrangedSubview(PageKit.row([
+            PageKit.label("Show", .secondary, colour: .secondaryLabelColor),
+            healthPopup,
+            PageKit.label("machines", .secondary, colour: .secondaryLabelColor),
+        ], spacing: DS.Space.xs))
+        // "Problematic = [4] or more drops in 24 hours": the app's own verdict, and its knob, in one row.
+        thresholdPopup.target = self
+        thresholdPopup.action = #selector(thresholdChanged)
+        thresholdPopup.controlSize = .small
+        thresholdPopup.isEnabled = false
+        let thresholdRow = PageKit.row([
+            PageKit.label("Problematic =", .secondary, colour: .secondaryLabelColor),
+            thresholdPopup,
+            PageKit.label("or more drops in 24 hours", .secondary, colour: .secondaryLabelColor),
+        ], spacing: DS.Space.xs)
+        machinesTab.startupAccessory.addArrangedSubview(thresholdRow)
         let resetCounters = NSButton(title: "Reset Job Counters…", target: self, action: #selector(resetCounters))
         resetCounters.controlSize = .small
         resetCounters.toolTip = "Count every Mac's done and failed jobs from now on. Nothing is deleted."
@@ -198,6 +225,14 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         locationPopup.controlSize = .small
         locationPopup.addItem(withTitle: "All locations")
         locationPopup.widthAnchor.constraint(equalToConstant: 200).isActive = true
+
+        healthPopup.target = self
+        healthPopup.action = #selector(healthFilterChanged)
+        healthPopup.controlSize = .small
+        for filter in FleetHealth.Filter.allCases {
+            healthPopup.addItem(withTitle: filter.title)
+        }
+        healthPopup.widthAnchor.constraint(equalToConstant: 150).isActive = true
 
         searchField.placeholderString = "Filter machines, models, jobs…"
         searchField.delegate = self
@@ -575,6 +610,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         startupBar.update(machines: snapshot.machines)
         macTrashBar.update(machines: snapshot.machines)   // "Turn On for All Macs That Are Off"
         FleetTrash.everyMac = snapshot.machines   // "Trash on All Macs…" (FleetTrash.swift)
+        updateThreshold(snapshot.fleetHealth)
         modelsTab.update(
             models: snapshot.allLocalModels,
             workers: snapshot.locations.flatMap { $0.workers },
@@ -606,6 +642,54 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
 
     @objc private func locationFilterChanged() {
         filter.locationID = locationPopup.selectedItem?.representedObject as? String
+        applyFilter()
+    }
+
+    /// Offline now / problematic / everything. Read off the popup by tag-free index, because the words
+    /// are `FleetHealth.Filter`'s own and the order here is `allCases`.
+    /// Offer the numbers the Gateway will accept, and select the one it is using.
+    ///
+    /// A gateway older than 0.2.209 publishes no threshold: the popup then says so and stays disabled,
+    /// rather than offering a control that would be refused.
+    private func updateThreshold(_ setting: FleetHealthSetting?) {
+        guard let setting, let current = setting.flappingDropsDay,
+              let low = setting.min, let high = setting.max else {
+            if thresholdPopup.numberOfItems == 0 {
+                thresholdPopup.addItem(withTitle: "not reported")
+            }
+            thresholdPopup.isEnabled = false
+            return
+        }
+        // The range can be wide (`1…100`); the list offers a sensible band around it and keeps the
+        // current value even when it falls outside, so the popup never misreports what is in force.
+        let values = Array(Set([low, low + 1, low + 2, 3, 4, 5, 6, 8, 10, current]
+            .filter { $0 >= low && $0 <= high })).sorted()
+        if thresholdPopup.itemArray.compactMap({ $0.representedObject as? Int }) != values {
+            thresholdPopup.removeAllItems()
+            for value in values {
+                thresholdPopup.addItem(withTitle: "\(value)")
+                thresholdPopup.lastItem?.representedObject = value
+            }
+        }
+        thresholdPopup.isEnabled = true
+        if let index = values.firstIndex(of: current) { thresholdPopup.selectItem(at: index) }
+    }
+
+    @objc private func thresholdChanged() {
+        guard let value = thresholdPopup.selectedItem?.representedObject as? Int else { return }
+        GatewayAPI.put("/admin/api/settings/fleet-health", body: ["flapping_drops_day": value]) { [weak self] result in
+            switch result {
+            case .success: self?.reload(force: true)
+            // A refusal puts the popup back to what the Gateway really holds.
+            case .failure: self?.reload()
+            }
+        }
+    }
+
+    @objc private func healthFilterChanged() {
+        let index = healthPopup.indexOfSelectedItem
+        let filters = FleetHealth.Filter.allCases
+        filter.health = index >= 0 && index < filters.count ? filters[index] : .all
         applyFilter()
     }
 

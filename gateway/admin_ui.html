@@ -393,6 +393,22 @@
   .fleet-mac { background: var(--panel); padding: var(--s8) var(--s16); min-width: 0; }
   .fleet-mac .name { font-size: 13px; }
   .fleet-mac .cat, .fleet-mac .hint { overflow-wrap: anywhere; }
+  /* The 7-day strip: one bar a day, oldest on the left, filled by how much of that day this Mac or
+     site was unreachable. A day nobody observed is hatched, not empty — "nobody looked" must not
+     draw like "it was up all day". */
+  .fleet-week { display: inline-flex; gap: 2px; vertical-align: middle; }
+  .fleet-day { display: inline-block; width: 9px; height: 12px; border-radius: 2px;
+    background: var(--panel2); border: 1px solid var(--line); overflow: hidden; }
+  .fleet-day i { display: block; height: 100%; }
+  #fleet-controls { gap: var(--s12); align-items: center; margin: 0 0 var(--s12); flex-wrap: wrap; }
+  #fleet-controls label { display: inline-flex; gap: var(--s6); align-items: center; font-size: 12px;
+    color: color-mix(in srgb, CanvasText 70%, Canvas); }
+  #fleet-controls select { width: auto; min-width: 120px; }
+  #fleet-threshold { margin: 0 0 var(--s12); }
+  #fleet-threshold summary { cursor: pointer; font-size: 12px; padding: var(--s8) var(--s16);
+    color: color-mix(in srgb, CanvasText 70%, Canvas); }
+  #fleet-threshold .row { gap: var(--s8); align-items: center; padding: 0 var(--s16) var(--s12); }
+  #fleet-threshold input { width: 70px; }
   #fleet-summary { gap: var(--s12); margin: 0 0 var(--s12); }
   .fleet-issue { padding: var(--s6) var(--s16); border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
   .fleet-issue:first-child { border-top: 0; }
@@ -443,6 +459,21 @@
          and installs stay in the Gateway app's Fleet page.</p>
     </div>
     <div class="row stat" id="fleet-summary"></div>
+    <!-- Two plain controls over one list: what to show, and in what order. Fixed markup, so a
+         15 s poll redraws the list and never the control under the owner's hand. -->
+    <div class="row" id="fleet-controls">
+      <label>Show <select id="fleet-filter" onchange="fleetSetFilter(this.value)"></select></label>
+      <label>Sort <select id="fleet-sort" onchange="fleetSetSort(this.value)"></select></label>
+    </div>
+    <details class="card" id="fleet-threshold">
+      <summary>Problematic: 4 or more drops in 24 hours — change</summary>
+      <div class="row">
+        <label for="fleet-drops">Drops in 24 h</label>
+        <input type="number" id="fleet-drops" value="4" min="1" max="100" step="1">
+        <button class="primary" onclick="saveFleetThreshold()">Save</button>
+        <span class="hint" id="fleet-threshold-note">A Mac that drops this often is called problematic. It is a starting point, not a rule: change it any time.</span>
+      </div>
+    </details>
     <div id="fleet-issues"></div>
     <div id="fleet-body"><div class="empty">Reading the fleet…</div></div>
   </section>
@@ -4478,6 +4509,145 @@ const FLEET_STATES = {
   needs_attention: ['warn', 'Needs attention'], offline: ['bad', 'Offline'],
 };
 
+// **The reachability history, and the one list the owner asked for.** *"there's no enough detail
+// for me to sort through, i want to be able to sort for the offline site. and also 'problematic'
+// machine … and also a way for me to see which ones could be the likely cause"*. The Gateway records
+// every up/down transition and sends, per machine and per site, `history` (offline since, drops in
+// 24 h and 7 days, offline time, a 7-day strip, and a `problematic` verdict against the owner's own
+// threshold) and `causes` (the likely cause, each citing the evidence it came from). **Nothing here
+// works any of that out**: this draws what it was told, so the page and the app cannot disagree.
+//
+// Two plain controls, one list. A filter that hides everything is a page nobody can read, so
+// "Problematic" with nothing in it says so and still says how many Macs it looked at.
+let fleetFilter = 'all';    // all | offline | problematic
+let fleetSort = 'offline';  // offline | problematic | site | lastseen | drops | name
+// The last read, kept so changing a control re-sorts what is already on screen instead of asking
+// the Gateway again (and so the poll never loses the owner's choice).
+let lastFleetPayload = null;
+let fleetMachineRows = [];
+let fleetHealthSetting = null;
+const FLEET_FILTERS = [['all', 'Everything'], ['offline', 'Offline now'], ['problematic', 'Problematic']];
+const FLEET_SORTS = [['offline', 'Offline first'], ['problematic', 'Problematic first'], ['site', 'Site'],
+  ['lastseen', 'Last seen, longest ago'], ['drops', 'Drops in 24 h'], ['name', 'Name']];
+
+// A duration in words, because "2 days offline" is the question and "172800 s" is not an answer.
+function fleetDuration(seconds) {
+  if (seconds == null) return '—';
+  if (seconds < 90) return `${Math.round(seconds)} s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)} h`;
+  return `${Math.round(seconds / 86400)} days`;
+}
+
+// One item per machine **and** per site, so a down controller is a row the owner can see rather
+// than a heading with nothing under it.
+function fleetItems(d) {
+  const out = [];
+  (d.locations || []).forEach(L => out.push({ kind: 'site', row: L, label: L.label || L.id, site: L.label || L.id }));
+  (d.machines || []).forEach(m => out.push({ kind: 'machine', row: m, label: m.label || m.machine, site: m.location || '' }));
+  return out;
+}
+
+function fleetOfflineNow(item) {
+  const row = item.row;
+  if (item.kind === 'site') return row.reachable === false;
+  return row.reachable === false || row.state === 'offline';
+}
+
+function fleetProblematic(item) { return item.row.history && item.row.history.problematic === true; }
+
+function fleetDrops(item) { const h = item.row.history; return h && h.drops_day != null ? h.drops_day : -1; }
+
+// How long ago it was last seen: the history's own observation when there is one, else the
+// controller's word about the node. `null` when nobody said — which sorts last, never first.
+function fleetLastSeen(item) {
+  const row = item.row;
+  const h = row.history || {};
+  if (fleetOfflineNow(item)) return h.offline_since != null ? h.offline_since : (row.node_last_seen_at ?? null);
+  return h.observed_at ?? null;
+}
+
+function fleetVisible(items) {
+  const filtered = items.filter(item => {
+    if (fleetFilter === 'offline') return fleetOfflineNow(item);
+    if (fleetFilter === 'problematic') return fleetProblematic(item);
+    return true;
+  });
+  const byName = (a, b) => String(a.label).localeCompare(String(b.label));
+  const sorted = filtered.slice().sort((a, b) => {
+    switch (fleetSort) {
+      case 'site':
+        return String(a.site).localeCompare(String(b.site)) || byName(a, b);
+      case 'problematic': {
+        const pa = fleetProblematic(a) ? 1 : 0, pb = fleetProblematic(b) ? 1 : 0;
+        return pb - pa || fleetDrops(b) - fleetDrops(a) || byName(a, b);
+      }
+      case 'lastseen': {
+        const la = fleetLastSeen(a), lb = fleetLastSeen(b);
+        if (la == null && lb == null) return byName(a, b);
+        if (la == null) return 1;
+        if (lb == null) return -1;
+        return la - lb || byName(a, b);   // longest unseen first: those are the ones to look at
+      }
+      case 'drops':
+        return fleetDrops(b) - fleetDrops(a) || byName(a, b);
+      case 'name':
+        return byName(a, b);
+      default: { // offline first
+        const oa = fleetOfflineNow(a) ? 0 : 1, ob = fleetOfflineNow(b) ? 0 : 1;
+        return oa - ob || byName(a, b);
+      }
+    }
+  });
+  return sorted;
+}
+
+// The likely cause in plain words, with its evidence kept in the tooltip so the row stays one line.
+function fleetCause(item) {
+  const causes = item.row.causes || [];
+  const main = causes[0];
+  if (!main) return '';
+  // "Nothing wrong reported" and "No evidence yet" are not alarms: only a real hint is drawn as one.
+  const cls = main.code === 'fine' || main.code === 'no_evidence' ? 'hint' : 'msg bad';
+  const more = causes.slice(1).filter(c => c.code !== 'fine');
+  const body = `<div class="${cls}">Likely cause: ${esc(main.text)}</div>` +
+    more.map(c => `<div class="hint" title="${esc(c.evidence || '')}">also: ${esc(c.text)}</div>`).join('');
+  return main.evidence
+    ? `<div title="${esc(main.evidence)}">${body}</div>`
+    : body;
+}
+
+// The 7-day strip: one bar a day, filled by how much of it the Gateway saw it unreachable. A day
+// with no observation is hatched, never empty — "nobody looked" is not "it was up".
+function fleetStrip(history) {
+  const days = (history && history.days) || [];
+  if (!days.length) return '';
+  const bars = days.map(day => {
+    const name = day.date || '';
+    if (day.offline_fraction == null) {
+      return `<span class="fleet-day" title="${esc(name)}: not recorded" style="background:repeating-linear-gradient(45deg,var(--line) 0 2px,transparent 2px 4px)"></span>`;
+    }
+    const percent = Math.round(day.offline_fraction * 100);
+    const colour = percent >= 50 ? 'var(--bad)' : percent > 0 ? 'var(--warn)' : 'var(--ok)';
+    return `<span class="fleet-day" title="${esc(name)}: ${percent}% offline"><i style="width:${Math.max(percent, percent > 0 ? 8 : 0)}%;background:${colour}"></i></span>`;
+  }).join('');
+  return `<span class="fleet-week" title="The last 7 days, oldest on the left. A filled bar is time this was unreachable.">${bars}</span>`;
+}
+
+function fleetHistoryLine(item) {
+  const h = item.row.history;
+  if (!h || h.observed === false || h.drops_day == null) {
+    return 'Not measured yet — this Gateway has no history for it.';
+  }
+  const parts = [
+    `${h.drops_day} drop${h.drops_day === 1 ? '' : 's'} in 24 h`,
+    `${h.drops_week} in 7 days`,
+    `${fleetDuration(h.offline_seconds_week)} offline in 7 days`,
+  ];
+  if (fleetProblematic(item)) parts.unshift('Problematic');
+  return parts.join(' · ');
+}
+
 function fleetMac(m) {
   const [cls, word] = FLEET_STATES[m.state] || ['', m.state || (m.reachable ? 'Online' : 'Offline')];
   const cur = m.current || null;
@@ -4486,6 +4656,7 @@ function fleetMac(m) {
   const version = m.hub_version
     ? 'Hub ' + m.hub_version + (m.version_status && m.version_status !== 'latest' ? ` (${m.version_status})` : '') : '';
   const facts = [
+    m.location ? 'Site: ' + m.location : '',
     version, m.chip, m.memory_gb ? Math.round(m.memory_gb) + ' GB' : '',
     m.disk_free_gb != null ? Math.round(m.disk_free_gb) + ' GB free' : '',
     `${m.completed ?? 0} done · ${m.failed ?? 0} failed`,
@@ -4497,13 +4668,102 @@ function fleetMac(m) {
   const conn = m.connection || null;
   const connText = conn && conn.status === 'measured' ? (conn.text || '—') : '—';
   const connTitle = conn ? (conn.reason || conn.media || '') : "This Mac's Hub did not report its link.";
+  const history = m.history || null;
+  const offlineSince = history && history.offline_since != null
+    ? `<div class="hint">Offline for ${fleetDuration(Date.now() / 1000 - history.offline_since)}</div>` : '';
   return `<div class="fleet-mac">
-    <div class="row"><span class="name">${esc(m.label || m.machine)}</span><span class="badge ${cls}">${esc(word)}</span></div>
+    <div class="row"><span class="name">${esc(m.label || m.machine)}</span><span class="badge ${cls}">${esc(word)}</span>${
+      m.history && m.history.problematic === true ? '<span class="badge warn">Problematic</span>' : ''}</div>
     ${doing ? `<div class="cat">${esc(doing)}</div>` : ''}
     ${m.attention ? `<div class="msg bad">${esc(m.attention)}</div>` : ''}
+    ${offlineSince}
     ${conn && conn.slow ? `<div class="msg bad">Slow link — check cable/port (${esc(connText)})</div>` : ''}
+    ${fleetCause({ kind: 'machine', row: m })}
+    <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(history)}<span>${esc(fleetHistoryLine({ kind: 'machine', row: m }))}</span></div>
     <div class="hint" title="${esc(connTitle)}">${esc([`Network: ${connText}`, ...facts].join(' · '))}</div>
   </div>`;
+}
+
+function fleetSite(L) {
+  const online = L.reachable === true;
+  const badge = online ? '<span class="badge ok">Online</span>'
+    : L.reachable === false ? '<span class="badge bad">Unreachable</span>' : '<span class="badge">Not read</span>';
+  const macs = fleetMachineRows.filter(m => m.location_id === L.id);
+  const offline = macs.filter(m => m.reachable === false || m.state === 'offline').length;
+  return `<div class="fleet-mac">
+    <div class="row"><span class="name">${esc(L.label || L.id)}</span><span class="badge">Site</span>${badge}${
+      L.history && L.history.problematic === true ? '<span class="badge warn">Problematic</span>' : ''}</div>
+    ${L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
+    ${fleetCause({ kind: 'site', row: L })}
+    <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(L.history)}<span>${esc(fleetHistoryLine({ kind: 'site', row: L }))}</span></div>
+    <div class="hint">${esc([`${macs.length} Mac${macs.length === 1 ? '' : 's'}${offline ? ` · ${offline} offline` : ''}`,
+      L.version ? `Hub ${L.version}` : '', `${(L.running_jobs || []).length} running`,
+      L.capacity && L.capacity.queue_depth ? `${L.capacity.queue_depth} queued` : ''].filter(Boolean).join(' · '))}</div>
+  </div>`;
+}
+
+function fleetCard(item) { return item.kind === 'site' ? fleetSite(item.row) : fleetMac(item.row); }
+
+// The two controls, drawn once into the page and only ever re-read — a poll that rebuilt them would
+// close the list under the owner's hand every 15 s.
+function fleetControls() {
+  const pick = (options, value) => options.map(([k, title]) =>
+    `<option value="${esc(k)}"${k === value ? ' selected' : ''}>${esc(title)}</option>`).join('');
+  const filter = document.getElementById('fleet-filter');
+  const sort = document.getElementById('fleet-sort');
+  if (filter && !filter.options.length) filter.innerHTML = pick(FLEET_FILTERS, fleetFilter);
+  if (sort && !sort.options.length) sort.innerHTML = pick(FLEET_SORTS, fleetSort);
+  const health = fleetHealthSetting;
+  const box = document.getElementById('fleet-threshold');
+  const summary = box && box.querySelector('summary');
+  if (summary && health && !summary.dataset.done) {
+    summary.textContent =
+      `Problematic = ${health.flapping_drops_day} or more drops in 24 hours — change`;
+    const input = box.querySelector('input');
+    if (input && document.activeElement !== input) {
+      input.min = health.min; input.max = health.max; input.value = health.flapping_drops_day;
+    }
+    summary.dataset.done = '1';
+  }
+}
+
+function fleetSetFilter(value) { fleetFilter = value; if (lastFleetPayload) renderFleet(lastFleetPayload); }
+// The summary's "N problematic" is a shortcut to the filter, so the figure and the list agree in one
+// click. A button, not a span with an onclick: a span is not focusable and a keyboard cannot reach it.
+function fleetOnlyProblematic() {
+  fleetSetFilter('problematic');
+  const pick = document.getElementById('fleet-filter');
+  if (pick) pick.value = 'problematic';
+}
+function fleetSetSort(value) { fleetSort = value; if (lastFleetPayload) renderFleet(lastFleetPayload); }
+
+async function saveFleetThreshold() {
+  const input = document.querySelector('#fleet-threshold input');
+  const value = Number(input && input.value);
+  const note = document.getElementById('fleet-threshold-note');
+  try {
+    const answer = await api('/settings/fleet-health', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ flapping_drops_day: value }),
+    });
+    if (note) note.textContent = `Saved: problematic from ${answer.flapping_drops_day} drops in 24 h.`;
+    fleetHealthSetting = answer;
+    const box = document.getElementById('fleet-threshold');
+    if (box) box.querySelector('summary').dataset.done = '';
+    await loadFleet();
+  } catch (e) {
+    if (note) note.textContent = e.message;
+  }
+}
+
+function renderFleet(d) {
+  const items = fleetItems(d);
+  const visible = fleetVisible(items);
+  const box = document.getElementById('fleet-body');
+  // One list; a filter with nothing in it says so rather than looking like an empty fleet.
+  box.innerHTML = visible.length ? `<div class="fleet-macs">${visible.map(fleetCard).join('')}</div>`
+    : `<div class="empty">Nothing matches “${esc((FLEET_FILTERS.find(f => f[0] === fleetFilter) || [])[1] || fleetFilter)}”
+       — ${items.length} machine${items.length === 1 ? '' : 's'} and site${items.length === 1 ? '' : 's'} were read.</div>`;
 }
 
 async function loadFleet() {
@@ -4512,12 +4772,21 @@ async function loadFleet() {
   try { d = await api('/fleet'); }
   catch (e) { box.innerHTML = `<div class="empty">Could not read the fleet: ${esc(e.message)}</div>`; return; }
   if (state.view !== 'fleet') return;
+  lastFleetPayload = d;
+  fleetMachineRows = d.machines || [];
+  fleetHealthSetting = d.fleet_health || fleetHealthSetting;
+  fleetControls();
   const s = d.summary || {}, q = d.gateway_queue || {};
+  const items = fleetItems(d);
+  const problematic = items.filter(fleetProblematic).length;
   document.getElementById('fleet-summary').innerHTML = [
     `<span><b>${s.machines_online ?? '?'}</b> of ${s.machines ?? '?'} Macs online</span>`,
     `<span><b>${s.pulse?.working ?? 0}</b> working</span>`,
     `<span><b>${s.locations_up ?? '?'}</b> of ${s.locations ?? '?'} locations up</span>`,
     `<span>Queue <b>${q.waiting ?? 0}</b> waiting, <b>${q.running ?? 0}</b> running</span>`,
+    // Counted from the rows below, so the figure and the list cannot disagree — and it is the
+    // filter the owner asked for, one click away.
+    `<button type="button" class="badge ${problematic ? 'warn' : ''}" title="Show only these" onclick="fleetOnlyProblematic()">${problematic} problematic</button>`,
     `<span>Updated ${ago(d.generated_at)}</span>`,
     // "3 Macs on slow Ethernet": counted by the Gateway from the rows below, and named where it can.
     (s.connections && s.connections.slow_ethernet > 0)
@@ -4532,24 +4801,7 @@ async function loadFleet() {
       <b>${issues.length} warning${issues.length === 1 ? '' : 's'}</b></summary>${issues.map(i =>
     `<div class="fleet-issue"><span class="badge ${i.severity === 'error' ? 'bad' : 'warn'}">${esc(i.location || i.severity)}</span> ${esc(i.message)}</div>`
   ).join('')}</details>` : '';
-  const machines = d.machines || [];
-  box.innerHTML = (d.locations || []).map(L => {
-    const macs = machines.filter(m => m.location_id === L.id);
-    const online = macs.filter(m => m.reachable).length;
-    const badges = [
-      `<span class="badge ${L.reachable ? 'ok' : 'bad'}">${L.reachable ? 'Online' : 'Unreachable'}</span>`,
-      L.version ? `<span class="badge ${L.version_status === 'latest' ? '' : 'warn'}">Hub ${esc(L.version)}${L.version_status && L.version_status !== 'latest' ? ' · ' + esc(L.version_status) : ''}</span>` : '',
-      `<span class="badge">${online} of ${macs.length} Macs</span>`,
-      `<span class="badge">${(L.running_jobs || []).length} running</span>`,
-      L.capacity?.queue_depth ? `<span class="badge info">${L.capacity.queue_depth} queued</span>` : '',
-    ].join('');
-    return `<div class="card"><div class="card-head"><div class="card-main">
-        <div class="name">${esc(L.label || L.id)}</div><div class="card-badges">${badges}</div>
-        ${L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
-      </div></div>
-      ${macs.length ? `<div class="fleet-macs">${macs.map(fleetMac).join('')}</div>` : ''}
-    </div>`;
-  }).join('') || '<div class="empty">No locations.</div>';
+  renderFleet(d);
 }
 
 async function loadJobs() {

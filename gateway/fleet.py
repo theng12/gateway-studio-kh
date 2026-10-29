@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import fleet_history
 from . import render_optin
 from .config import DATA_DIR
 from .hub import hub_base_url, hub_token
@@ -1073,6 +1074,10 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
     location: dict = {
         "reachable": False,
         "error": None,
+        # **Which kind of failure it was**, in the vocabulary `fleet_history` uses for its cause
+        # hints: "refused", "timeout", "http", "server_disconnected" or "error". The `error`
+        # sentence is for a person and its wording has changed twice; a hint must not parse it.
+        "error_kind": None,
         "role": None,
         "version": None,
         # How that version compares to the one this build targets; `None` until a
@@ -1159,6 +1164,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             # Each degrades to its own empty value in `_OPTIONAL_PROBES`; one
             # broken route must never make a whole location read as offline.
     except httpx.HTTPStatusError as exc:
+        location["error_kind"] = "http"
         location["error"] = (
             "Rejected the Hub token (HTTP %d)." % exc.response.status_code
             if exc.response.status_code in (401, 403)
@@ -1166,6 +1172,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         )
         return location
     except httpx.ConnectError:
+        location["error_kind"] = "refused"
         # Nothing accepted the connection. On a fleet this is the loopback-bind
         # signature far more often than a dead machine: Studio Hub defaults to
         # `listenHost: 127.0.0.1`, so a controller that is running perfectly well
@@ -1181,6 +1188,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         return location
     except httpx.TimeoutException:
         # Routed, but silent: a different problem from a refusal, with a different fix.
+        location["error_kind"] = "timeout"
         location["error"] = (
             f"No answer within {int(_TIMEOUT)}s. The address is reachable but nothing replied — "
             "check the machine is awake and that Tailscale is up at both ends."
@@ -1189,6 +1197,10 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         location["slow"] = True
         return location
     except httpx.HTTPError as exc:
+        # A dropped connection (`RemoteProtocolError: Server disconnected`) is its own fault —
+        # something *was* answering — and is worth telling apart from a refusal.
+        location["error_kind"] = (
+            "server_disconnected" if "disconnect" in str(exc).lower() else "error")
         location["error"] = f"{type(exc).__name__}: {exc}" or "No response from the controller."
         return location
 
@@ -1650,7 +1662,7 @@ def _unread_location(location_id: str, label: str, url: str, *, local: bool = Fa
     return {
         "id": location_id, "label": label, "url": url, "local": local,
         "provider_id": provider_id_for(location_id),
-        "reachable": None, "error": None,
+        "reachable": None, "error": None, "error_kind": None,
         "role": None, "version": None, "hub_version_relation": None,
         "machines": [], "machine_summary": None,
         "nodes": [], "node_summary": None, "running_jobs": [],
@@ -1733,7 +1745,8 @@ def locations() -> list[dict]:
         # depend on the Hub answering. A page that can only name the provider of
         # a location that is up cannot offer to refresh the one that is down.
         local = _unread_location(LOCAL_ID, local_label(), "", local=True)
-        local.update(reachable=False, error=local_error or "Studio Hub is not running on this Mac.")
+        local.update(reachable=False, error_kind="local_hub_down",
+                     error=local_error or "Studio Hub is not running on this Mac.")
         _stamp_pause(local, LOCAL_ID)
     rows.append(local)
 
@@ -3856,6 +3869,11 @@ def _refresh() -> dict:
     # against it (`machines_flat` → `version_status`).
     stamp_latest(rows)
     machines = machines_flat(rows)
+    # **The reachability history is recorded here, and only here** — one fan-out, one observation, so
+    # there is no second poller to drift or to hammer the fleet with (see `fleet_history`). It is fed
+    # the flat machine rows too, so the reason it stores is the one `_node_reach_reason` worked out
+    # rather than a second reading of the same sentence. It writes to disk only on a real change.
+    fleet_history.observe(rows, machines)
     stamp_controller_versions(rows, machines)
     from . import startup_control  # late: it imports this module
 
