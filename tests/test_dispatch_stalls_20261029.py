@@ -829,10 +829,5 @@ class ClaimWindowTest(_Base):
         self.assertIsNotNone(row["attempt_started_at"])
 
 
-def seconds_of(old: float) -> float:
-    """A comparison margin that cannot pass by luck: the old stamp is hours behind the claim."""
-    return 3600.0
-
-
 if __name__ == "__main__":
     unittest.main()

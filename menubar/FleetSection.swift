@@ -645,8 +645,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         applyFilter()
     }
 
-    /// Offline now / problematic / everything. Read off the popup by tag-free index, because the words
-    /// are `FleetHealth.Filter`'s own and the order here is `allCases`.
     /// Offer the numbers the Gateway will accept, and select the one it is using.
     ///
     /// A gateway older than 0.2.209 publishes no threshold: the popup then says so and stays disabled,
@@ -686,6 +684,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
     }
 
+    /// Offline now / problematic / everything. Read off the popup by tag-free index, because the words
+    /// are `FleetHealth.Filter`'s own and the order here is `allCases`.
     @objc private func healthFilterChanged() {
         let index = healthPopup.indexOfSelectedItem
         let filters = FleetHealth.Filter.allCases
