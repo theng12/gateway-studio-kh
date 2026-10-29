@@ -193,15 +193,25 @@ def _silent_since(row: dict[str, Any]) -> float | None:
     """When this job's current attempt began waiting — **the restart's own re-send included**.
 
     `_check_running_liveness` measures silence from here, and the stamp it reads is the one the
-    attempt that is *live now* wrote. **A restart re-sends without refreshing `dispatch_started_at`**:
-    `_resume_interrupted` calls `store.note_restart_resend`, which stamps `restart_resent_at` and
-    nothing else. Measuring from the pre-restart stamp therefore failed a job that the restart had
-    just re-sent (probe `probe_resend_race.py`: a job stamped two hours before the shutdown failed
-    `PROVIDER_TIMEOUT` 20 s into its re-send) — and a *retryable* failure on work that may be live
-    upstream is what makes Story submit it again, which can be charged twice. The later of the two
-    stamps is when the wait actually began; `updated_at` covers a resumed row with neither.
+    attempt that is *live now* wrote. **Three ways an attempt can begin without touching
+    `dispatch_started_at`**, which is therefore only the floor:
+
+    * **a restart re-send** — `_resume_interrupted` calls `store.note_restart_resend`, which stamps
+      `restart_resent_at` and nothing else. Measuring from the pre-restart stamp failed a job the
+      restart had just re-sent (probe `probe_resend_race.py`: a job stamped two hours before the
+      shutdown failed `PROVIDER_TIMEOUT` 20 s into its re-send);
+    * **a re-route** — `store.record_route` drops the old site's `upstream_job_id` and stamps
+      `attempt_started_at`, because `begin_dispatch` only stamps while `dispatch_started_at` is
+      NULL and the queue-wait statistic reads that column. Without it a job 30 min old failed
+      `PROVIDER_TIMEOUT` while its second site was still submitting (`probe_reroute_sweep.py`);
+    * **any new send** — `begin_dispatch` stamps `attempt_started_at` as it opens the window.
+
+    A *retryable* failure on work that may be live upstream is what makes Story submit it again,
+    which can be charged twice, so the latest of the three stamps is when the wait really began;
+    `updated_at` covers a resumed row that carries none of them.
     """
-    stamps = [row.get("dispatch_started_at"), row.get("restart_resent_at")]
+    stamps = [row.get("dispatch_started_at"), row.get("restart_resent_at"),
+              row.get("attempt_started_at")]
     values = [float(value) for value in stamps if isinstance(value, (int, float))]
     if values:
         return max(values)

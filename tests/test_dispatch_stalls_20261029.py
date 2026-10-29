@@ -43,7 +43,7 @@ from gateway import concurrency, fleet  # noqa: E402
 from gateway import worker as worker_module  # noqa: E402
 from gateway.adapters import openai_compat  # noqa: E402
 from gateway.adapters.base import (  # noqa: E402
-    CHAT_DEADLINE_CEILING_S, BackendError, BackendRequest,
+    CHAT_DEADLINE_CEILING_S, BackendError, BackendRequest, BackendResult,
 )
 from gateway.providers import registry  # noqa: E402
 from gateway.store import JobStore  # noqa: E402
@@ -477,6 +477,139 @@ class ChatDeadlineTest(unittest.TestCase):
 
 
 # ── 3. Generic liveness ──────────────────────────────────────────────────
+class RerouteLivenessTest(_Base):
+    """Review round 2 (`probe_reroute_sweep.py`): a re-route clears the upstream id, not the start.
+
+    `store.record_route` drops the old site's `upstream_job_id` and nothing else stamps the new
+    attempt, while `begin_dispatch` only stamps `dispatch_started_at` when it is NULL and the
+    queue-wait statistic reads that column. So a job 30 min old that moves to a second site was
+    failed `PROVIDER_TIMEOUT` — retryable — while the second site's submit was still in flight.
+    """
+
+    #: A real 1×1 PNG: `artifact_problem` reads the header, so the second answer is usable.
+    PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00"
+           b"\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n"
+           b"-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+    def _patches(self, store, seen, second_started, release):
+        import types
+
+        first, second = _pid("imgA"), _pid("imgB")
+        png = self.PNG
+
+        def definition(provider_id):
+            if provider_id in (first, second):
+                return types.SimpleNamespace(id=provider_id, kind="openai", display_name=provider_id,
+                                             base_url=f"http://{provider_id}.invalid")
+            return None
+
+        def enabled(modality):
+            return [(definition(pid), {"model_id": IMAGE_MODEL, "modality": modality, "raw": {}})
+                    for pid in (first, second)]
+
+        class Adapter:
+            def __init__(self, provider_id: str) -> None:
+                self.provider_id = provider_id
+
+            def generate(self, request):
+                job_id = str((request.params or {}).get("_job_id") or "")
+                seen.append((self.provider_id, job_id))
+                if self.provider_id == first:
+                    # Accepted, ran, and settled as a failure after 30 min — the live shape.
+                    if request.checkpoint is not None:
+                        request.checkpoint("batch-A")
+                    with store._lock:
+                        store._conn.execute(
+                            "UPDATE jobs SET dispatch_started_at = ? WHERE id = ?",
+                            (time.time() - 1800.0, job_id))
+                        store._conn.commit()
+                    raise BackendError("the Hub reported the item failed after 30 min",
+                                       code="PROVIDER_FAILED", retryable=True,
+                                       upstream_accepted=True, upstream_settled=True)
+                second_started.set()          # the new site's submit is in flight
+                release.wait(30)
+                return BackendResult(media_type="image/png", content=png)
+
+        return (
+            patch.object(registry.models, "enabled_models", enabled),
+            patch.object(registry, "definition", definition),
+            patch.object(registry.credentials, "is_enabled", lambda pid: True),
+            patch.object(registry.credentials, "resolved", lambda pid: {}),
+            patch.object(worker_module, "adapter_for", lambda d: Adapter(str(d.id))),
+        )
+
+    def test_a_re_routed_job_is_not_failed_while_its_new_site_submits(self) -> None:
+        import threading
+
+        self.sites = [_site("imgA", macs=4), _site("imgB", macs=4)]
+        seen: list = []
+        second_started, release = threading.Event(), threading.Event()
+        row, _ = self.store.submit(modality="image", model_id=IMAGE_MODEL, params={},
+                                   idempotency_key="reroute-1", provider_id=_pid("imgA"))
+        worker = Worker(self.store, interval_s=0.05, pool_size=0)
+        patchers = self._patches(self.store, seen, second_started, release)
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        thread = threading.Thread(target=worker._run, args=(self.store.get(row["id"]),))
+        thread.start()
+        try:
+            self.assertTrue(second_started.wait(10), f"the job never re-routed: {seen}")
+            before = self.store.get(row["id"])
+            self.assertEqual(_pid("imgB"), before["provider_id"])
+            self.assertIsNone(before["upstream_job_id"], "a re-route drops the old site's id")
+            self.assertGreater(time.time() - float(before["dispatch_started_at"]), 720,
+                               "the first attempt's stamp is old, as after a long run")
+
+            out = worker._check_running_liveness()
+            self.assertEqual({"checked": 1, "said_something": 0, "failed": 0}, out)
+            self.assertEqual("running", self.store.get(row["id"])["state"],
+                             "the live attempt must not be failed as silent")
+        finally:
+            release.set()
+            thread.join(timeout=30)
+        final = self.store.get(row["id"])
+        self.assertEqual("succeeded", final["state"])
+        self.assertIsNone(final["error_code"])
+        self.assertEqual([pid for pid, _ in seen], [_pid("imgA"), _pid("imgB")],
+                         "one attempt per site, no duplicate send")
+
+    def test_a_re_routed_attempt_that_really_goes_silent_still_fails(self) -> None:
+        # The other half: the sweep must still end a re-routed attempt that goes quiet past the
+        # lane's ceiling, so the stamp is a floor for it to read, not a blanket exemption.
+        self.sites = [_site("imgA", macs=2), _site("imgB", macs=2)]
+        worker = Worker(self.store, interval_s=10.0, pool_size=0)
+        job_id = self.job(IMAGE_MODEL)
+        self.assertTrue(self.store.mark_running(job_id))
+        self.assertTrue(self.store.begin_dispatch(job_id))
+        self.store.record_route(job_id, _pid("imgB"))
+        worker._running[job_id] = self.store.get(job_id)
+        with self.store._lock:
+            stale = time.time() - 1800.0
+            self.store._conn.execute(
+                "UPDATE jobs SET dispatch_started_at = ?, attempt_started_at = ? WHERE id = ?",
+                (stale, stale, job_id))
+            self.store._conn.commit()
+        out = worker._check_running_liveness()
+        self.assertEqual(1, out["failed"])
+        row = self.store.get(job_id)
+        self.assertEqual("failed", row["state"])
+        self.assertEqual("PROVIDER_TIMEOUT", row["error_code"])
+        self.assertTrue(row["retryable"])
+
+    def test_a_new_send_stamps_its_own_attempt_start(self) -> None:
+        # The stamp is written by the send itself, so the sweep never has to guess.
+        self.sites = [_site("img1", macs=2)]
+        job_id = self.job(IMAGE_MODEL)
+        before = time.time()
+        self.assertTrue(self.store.mark_running(job_id))
+        self.assertTrue(self.store.begin_dispatch(job_id))
+        row = self.store.get(job_id)
+        self.assertIsInstance(row["attempt_started_at"], float)
+        self.assertGreaterEqual(float(row["attempt_started_at"]), before - 1.0)
+        self.assertEqual(float(row["attempt_started_at"]), float(row["dispatch_started_at"]))
+
+
 class RunningJobLivenessTest(_Base):
     def _running(self, worker: Worker, job_id: str) -> dict:
         self.assertTrue(self.store.mark_running(job_id))

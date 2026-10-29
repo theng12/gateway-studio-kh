@@ -334,6 +334,14 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # When a restart re-sent this fleet job to the same site with the same key (0.2.160): its first
     # send was still unanswered at shutdown, and the Hub answers a repeated key with that batch.
     ("restart_resent_at", "REAL"),
+    # **When the attempt that is live now began.** A re-route (`record_route`) clears the upstream
+    # id but must not rewrite `dispatch_started_at` — the queue-wait statistic reads that column
+    # (`store.queue_wait_by_modality`) — so the job's *first* dispatch stayed the only stamp and the
+    # liveness sweep failed a job 30 min into its second attempt as if it had been silent since the
+    # first (review round 2, 2026-10-29: `probe_reroute_sweep.py`). Written by `begin_dispatch` on
+    # every new send and by `record_route` on every re-route; `worker._silent_since` takes the
+    # latest of it, `dispatch_started_at` and `restart_resent_at`.
+    ("attempt_started_at", "REAL"),
     # Every settled attempt, in order: `[{"location", "code", "detail", "at"}]`. The
     # terminal failure after the last attempt **names the machines and why each failed**,
     # and that sentence has to be built from a record rather than reconstructed from the
@@ -2705,17 +2713,24 @@ class JobStore:
         return counts
 
     def begin_dispatch(self, job_id: str) -> bool:
-        """Open the dispatch window only while a running job has no cancel request."""
+        """Open the dispatch window only while a running job has no cancel request.
+
+        **`attempt_started_at` is stamped here, on every new send** (`_silent_since` reads it): the
+        window itself opens only while `dispatch_started_at` is NULL, so the first send of a job is
+        the only one this UPDATE can stamp there — the queue-wait statistic reads that column and
+        a re-send must not rewrite it.
+        """
         with self._lock:
+            now = time.time()
             result = self._conn.execute(
                 """
                 UPDATE jobs
-                   SET dispatch_started_at = ?, updated_at = ?
+                   SET dispatch_started_at = ?, attempt_started_at = ?, updated_at = ?
                  WHERE id = ? AND state = 'running'
                    AND cancel_requested_at IS NULL
                    AND dispatch_started_at IS NULL
                 """,
-                (time.time(), time.time(), job_id),
+                (now, now, now, job_id),
             )
             self._conn.commit()
             return result.rowcount == 1
@@ -2845,8 +2860,16 @@ class JobStore:
         """Point a queued job at a different location (and, optionally, member model) after a site refusal.
 
         The model is unchanged unless ``model_id`` is given (image pool re-route across members).
+
+        **A re-route begins a new attempt, so it says so.** `upstream_job_id` goes (the old site's
+        id names that site's work) and `attempt_started_at` is stamped, because otherwise the
+        liveness sweep still reads the *first* dispatch as this attempt's start and fails the job
+        `PROVIDER_TIMEOUT` — retryable, and Story re-submits — while the new site is submitting
+        (review round 2, 2026-10-29). `dispatch_started_at` is deliberately left alone: the
+        queue-wait statistic reads it.
         """
-        fields: dict[str, Any] = {"provider_id": provider_id, "upstream_job_id": None}
+        fields: dict[str, Any] = {"provider_id": provider_id, "upstream_job_id": None,
+                                  "attempt_started_at": time.time()}
         if model_id is not None:
             fields["model_id"] = model_id
         self._update(job_id, **fields)
