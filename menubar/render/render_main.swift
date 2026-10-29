@@ -162,11 +162,16 @@ func renderWorkstationSheet() {
 /// the new row on the page before its first read lands (`fleet-add-just-added`). Drawn tall, so the Add form and
 /// the table are in one image.
 func renderAddLocation() {
+    // The app's Fleet row is the web page now, so this renders the **kept** native page in a
+    // window of its own. That is the point of keeping it: the old page (and its Add form) can
+    // still be looked at and restored without being wired into the app.
     let (width, height) = sizes.first ?? (1100, 1500)
-    _ = MainWindow.shared.show(section: "fleet")
-    guard let window = MainWindow.shared.window else { print("no window for fleet-add"); return }
-    FleetSection.shared.select(.locations)
-    window.styleMask = [.borderless, .resizable]
+    let native = FleetSection.shared
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+                          styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
+    window.contentView = native.view
+    native.select(.locations)
+    native.activated()
     window.setContentSize(NSSize(width: width, height: height))
     window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
     window.makeKeyAndOrderFront(nil)
@@ -177,7 +182,7 @@ func renderAddLocation() {
     }
     spin(2.0)
     shot("slow")
-    FleetSection.shared.renderAdd(label: "Shops", url: "http://100.120.246.9:47873", token: "fixture-fleet-token")
+    native.renderAdd(label: "Shops", url: "http://100.120.246.9:47873", token: "fixture-fleet-token")
     spin(1.0)
     shot("adding")
     spin(5.5)
@@ -270,11 +275,6 @@ for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", 
         for size in sizes {
             _ = MainWindow.shared.show(section: name == "whatsnew" ? "what's new" : name)
             guard let window = MainWindow.shared.window else { print("no window for \(page)"); continue }
-            if parts.count > 1, let tab = ["groups": 0, "groups-problems": 0, "locations": 1, "machines": 2, "models": 3, "models-open": 3, "jobs": 4, "story": 5][parts[1]],
-               let kind = FleetTab(rawValue: tab) {
-                FleetSection.shared.select(kind)
-                FleetSection.shared.showProblemsOnly(parts[1] == "groups-problems")
-            }
             // A titled window is clamped to the screen's height; GATEWAY_RENDER_TALL=1 draws a taller page
             // (to read a long page in one image) by dropping the title bar, which the bitmap never included.
             if ProcessInfo.processInfo.environment["GATEWAY_RENDER_TALL"] == "1" {
@@ -285,8 +285,30 @@ for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", 
             let requestedWindowSize = window.frame.size
             window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
             window.makeKeyAndOrderFront(nil)
-            let isConsole = ["models", "providers", "content packs"].contains(name)
+            let isConsole = ["models", "providers", "content packs", "fleet"].contains(name)
             spin(isConsole ? 6.0 : 1.8)
+            // **Fleet is the web page now**, so its inner tab is chosen in the page, exactly as a
+            // browser chooses it — after the page has loaded. `groups-problems` is Groups with the
+            // Problematic filter applied. A build that still has the kept native page in its
+            // sidebar falls back to selecting the native tab.
+            if name == "fleet", parts.count > 1 {
+                let tab = parts[1] == "models-open" ? "models"
+                    : parts[1] == "groups-problems" ? "groups" : parts[1]
+                if let web = ConsoleSection.fleet.webView as WKWebView? {
+                    var failure: Error?
+                    var done = false
+                    web.evaluateJavaScript(parts[1] == "groups-problems"
+                        ? "selectFleetTab('groups'); fleetSetFilter('problematic');"
+                        : "selectFleetTab('\(tab)');") { _, error in failure = error; done = true }
+                    let deadline = Date().addingTimeInterval(8)
+                    while !done && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+                    if let failure { print("fleet tab \(tab) did not apply: \(failure)") }
+                    spin(1.2)
+                } else if let number = ["groups": 0, "locations": 1, "machines": 2, "models": 3, "jobs": 4, "story": 5][tab],
+                          let kind = FleetTab(rawValue: number) {
+                    FleetSection.shared.select(kind)
+                }
+            }
             if name == "fleet", parts.count > 1, ["models", "models-open"].contains(parts[1]) {
                 func buttons(_ view: NSView) -> [NSButton] {
                     (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons)
@@ -337,6 +359,7 @@ for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", 
                 case "models": return ConsoleSection.models.webView
                 case "providers": return ConsoleSection.providers.webView
                 case "content packs": return ConsoleSection.packs.webView
+                case "fleet": return ConsoleSection.fleet.webView
                 default: return nil
                 }
             }()
