@@ -267,6 +267,10 @@ test('the Locations table reads the roster: refused members, models offered, hub
   assert.match(html, /http:\/\/100\.64\.0\.31:47873/);
   assert.match(html, /No answer within 5s\./);
   assert.match(html, /0\.6\.120 · Behind/);
+  assert.match(html, /fleetLocationAction\(this,'test'\)/);
+  assert.match(html, /fleetLocationAction\(this,'rename'\)/);
+  assert.match(html, /fleetLocationAction\(this,'pause'\)/);
+  assert.match(html, /fleetLocationAction\(this,'remove'\)/);
 });
 
 test('the location filter offers every location and keeps the owner\'s choice', async () => {

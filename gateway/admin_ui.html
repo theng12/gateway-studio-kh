@@ -583,12 +583,20 @@
       <p class="hint">Auto-start, Lite Mode, the Trash setting and installing models stay in the Gateway app.</p>
     </div>
 
-    <!-- Locations: the roster, read-only. -->
+    <!-- Locations: the roster and its owner controls. -->
     <div class="fleet-pane" id="fleet-pane-locations" hidden>
       <div class="stat" id="fleet-locations-status"></div>
+      <details class="card"><summary>Add a location</summary>
+        <div>
+          <label>Name <input id="fleet-add-label" autocomplete="off"></label>
+          <label>Address <input id="fleet-add-url" type="url" required placeholder="http://10.0.0.5:47873"></label>
+          <label>Fleet token <input id="fleet-add-token" type="password" autocomplete="new-password"></label>
+          <button type="button" onclick="addFleetLocation(this)">Add location</button>
+        </div>
+      </details>
+      <div id="fleet-location-action-note" role="status" aria-live="polite"></div>
       <div class="tablewrap" id="fleet-locations-wrap"></div>
       <div id="fleet-issues"></div>
-      <p class="hint">Adding, testing, renaming, pausing and removing a location stay in the Gateway app.</p>
     </div>
 
     <!-- Models: what each Hub location offers, pooled by model. -->
@@ -5664,7 +5672,75 @@ function fleetLocationRow(L) {
       style="${status.bad ? 'color:var(--warn-text)' : 'color:var(--dim)'}">
       <div><div>${esc(status.main || '—')}</div>
       ${status.sub ? `<div class="ft-sub">${esc(status.sub)}</div>` : ''}</div></td>
+    <td data-label="Actions"><div class="row">
+      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
+      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
+      <button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'${L.paused_at != null ? 'resume' : 'pause'}')">${L.paused_at != null ? 'Resume' : 'Pause'}</button>
+      ${L.id === 'local' ? '' : `<button type="button" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'remove')">Remove</button>`}
+    </div></td>
   </tr>`;
+}
+
+function fleetLocationNote(text) {
+  const note = document.getElementById('fleet-location-action-note');
+  if (note) note.textContent = text;
+}
+
+async function addFleetLocation(button) {
+  const label = document.getElementById('fleet-add-label').value.trim();
+  const url = document.getElementById('fleet-add-url').value.trim();
+  const token = document.getElementById('fleet-add-token').value.trim();
+  if (!url) { fleetLocationNote('An address is required.'); return; }
+  button.disabled = true;
+  fleetLocationNote('Connecting…');
+  try {
+    const result = await api('/fleet/controllers', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, url, token }) });
+    ['fleet-add-label', 'fleet-add-url', 'fleet-add-token'].forEach(id => { document.getElementById(id).value = ''; });
+    const detail = result.credential?.detail || '';
+    const discovery = result.discovery_error ? ` Its models could not be read yet — ${result.discovery_error}`
+      : result.discovered != null ? ` Discovered ${result.discovered} models.` : '';
+    fleetLocationNote(`Added ${label || url}. ${detail}${discovery} ${result.enable_seed?.sentence || result.enable_seed?.error || ''}`);
+    await loadFleet();
+  } catch (e) { fleetLocationNote(`Could not add the location — ${e.message}`); }
+  finally { button.disabled = false; }
+}
+
+async function fleetLocationAction(button, action) {
+  const location = (lastFleetPayload?.locations || []).find(row => String(row.id) === button.dataset.id);
+  if (!location) { fleetLocationNote('Location no longer available. Refresh and try again.'); return; }
+  const name = location.label || location.id;
+  const base = `/fleet/controllers/${encodeURIComponent(location.id)}`;
+  let path = base, method = 'POST', body = {};
+  if (action === 'rename') {
+    const value = prompt('Rename this location. Only the name changes. Its address, its credential and its models are untouched.', name);
+    if (value == null) return;
+    const label = value.trim();
+    if (!label) { fleetLocationNote('A name is required. The location was not renamed.'); return; }
+    method = 'PATCH'; body = { label };
+  } else if (action === 'remove') {
+    if (!confirm(`Remove ${name}?\n\nThis gateway stops talking to that controller and forgets its credentials. Nothing on the controller itself changes, and its models stop being offered here until you add it again and paste a token.`)) return;
+    method = 'DELETE'; body = null;
+  } else if (['test', 'pause', 'resume'].includes(action)) path += '/' + action;
+  else return;
+  button.disabled = true;
+  fleetLocationNote(`Working on ${name}…`);
+  try {
+    const result = await api(path, { method, ...(body == null ? {} : {
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
+    if (action === 'test') {
+      fleetLocationNote(result.reachable === true
+        ? `${name} answered as ${result.role || 'unknown role'} on Hub ${result.version || 'unknown version'}: ${result.machines ?? 'unknown'} machines, ${result.nodes ?? 'unknown'} nodes. ${result.credential?.detail || ''}`
+        : `No answer from ${name} — ${result.error || 'unknown reason'}`);
+    } else {
+      fleetLocationNote(action === 'pause' ? `Paused ${name}. It gets no new work; jobs already running there finish.`
+        : action === 'resume' ? `Resumed ${name}. Routing may use it again as soon as it answers.`
+        : action === 'rename' ? `Renamed to “${body.label}”. Its address, credential and models are untouched.`
+        : `Removed ${name}. Its models are no longer offered here.`);
+      await loadFleet();
+    }
+  } catch (e) { fleetLocationNote(`Could not ${action} ${name} — ${e.message}`); }
+  finally { button.disabled = false; }
 }
 
 function fleetMembersTooltip(L) {
@@ -5697,13 +5773,9 @@ function renderFleetLocations(d) {
   }
   if (wrap) {
     wrap.innerHTML = rows.length
-      ? `<table class="ftable fixed">
-         <colgroup>
-           <col style="width:14%"><col style="width:9%"><col style="width:15%"><col style="width:7%">
-           <col style="width:11%"><col style="width:12%"><col style="width:7%"><col style="width:8%"><col style="width:17%">
-         </colgroup>
+      ? `<table class="ftable">
          <thead><tr><th>Location</th><th>Health</th><th>Likely cause</th>
-         <th>Network</th><th>Hub</th><th>Members</th><th>Models</th><th>Release</th><th>Status</th></tr></thead>
+         <th>Network</th><th>Hub</th><th>Members</th><th>Models</th><th>Release</th><th>Status</th><th>Actions</th></tr></thead>
          <tbody>${rows.map(fleetLocationRow).join('')}</tbody></table>`
       : '<div class="fleet-empty">No location matches this filter.</div>';
   }
