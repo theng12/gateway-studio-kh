@@ -30,12 +30,22 @@ function element(value = '') {
     disabled: false,
     checked: false,
     hidden: false,
+    open: false,
     readOnly: false,
     dataset: {},
     attrs: {},
     style: {},
     select() {},
-    setAttribute(name, value) { this.attrs[name] = String(value); },
+    setAttribute(name, value) {
+      this.attrs[name] = String(value);
+      if (name === 'open') this.open = true;
+    },
+    removeAttribute(name) {
+      delete this.attrs[name];
+      if (name === 'open') this.open = false;
+    },
+    showModal() { this.open = true; this.attrs.open = ''; },
+    close() { this.open = false; delete this.attrs.open; },
   };
 }
 
@@ -536,17 +546,30 @@ test('shelved releases render Retire / Un-retire / Remove actions and retired st
   assert.match(html, /data-pack-action="remove"/);
   assert.match(html, /Remove…<\/button>/);
 
-  // Test clicking retire on active pack (newest version prompts with explanation)
+  // Retire asks in a native dialog: the text, one checkbox (unticked), Retire / Cancel.
   await h.context.retirePack('release.active');
-  // Two questions now: retire, and — separately — whether to remove it from every Story app.
-  assert.equal(confirmations.length, 2);
-  assert.match(confirmations[0], /Retire Active Pack v1\.0\.0\?/);
-  assert.match(confirmations[0], /This is the newest version/);
-  assert.match(confirmations[0], /Customers will stop seeing it in Studio Library/);
-  assert.match(confirmations[1], /Also remove Active Pack v1\.0\.0 from every Story app\?/);
-  assert.match(confirmations[1], /Cancel = retire only, Macs keep the pack/);
+  assert.equal(calls.filter(([p]) => p === '/content-shelf/retire').length, 0,
+    'opening the question must not post anything');
+  assert.equal(confirmations.length, 0, 'the question is the dialog, not a confirm()');
+  assert.equal(h.node('shelf-retire-dialog').open, true);
+  assert.equal(h.node('shelf-retire-remove').checked, false, 'the removal option is unticked by default');
+  assert.match(h.node('shelf-retire-text').textContent, /Retire Active Pack v1\.0\.0\?/);
+  assert.match(h.node('shelf-retire-text').textContent, /This is the newest version/);
+  assert.match(h.node('shelf-retire-text').textContent, /customers will stop seeing it in Studio Library/);
+
+  // Cancel closes and does nothing at all.
+  await h.context.cancelShelfRetire();
+  assert.equal(h.node('shelf-retire-dialog').open, false);
+  assert.equal(calls.filter(([p]) => p === '/content-shelf/retire').length, 0,
+    'Cancel must never retire anything');
+
+  // Retire with the box left unticked: a plain retire.
+  await h.context.retirePack('release.active');
+  assert.equal(h.node('shelf-retire-remove').checked, false, 'it is unticked again on every open');
+  await h.context.confirmShelfRetire();
+  assert.equal(h.node('shelf-retire-dialog').open, false);
   const retireCall = calls.find(([p]) => p === '/content-shelf/retire');
-  assert.deepEqual(retireCall[2], {release_id: 'release.active', confirm_latest: true, remove_from_installs: true});
+  assert.deepEqual(retireCall[2], {release_id: 'release.active', confirm_latest: true, remove_from_installs: false});
 
   // Test clicking unretire on retired pack
   await h.context.unretirePack('release.retired');
@@ -555,16 +578,16 @@ test('shelved releases render Retire / Un-retire / Remove actions and retired st
 
   // Test clicking remove on retired pack
   await h.context.removePack('release.retired');
-  assert.equal(confirmations.length, 3);
-  assert.match(confirmations[2], /Remove Retired Pack v1\.0\.0\?/);
-  assert.match(confirmations[2], /Its file moves to the Gateway trash/);
+  assert.equal(confirmations.length, 1);
+  assert.match(confirmations[0], /Remove Retired Pack v1\.0\.0\?/);
+  assert.match(confirmations[0], /Its file moves to the Gateway trash/);
   const removeCall = calls.find(([p]) => p === '/content-shelf/remove');
   assert.deepEqual(removeCall[2], {release_id: 'release.retired', confirm: true});
 });
 
-test('retiring alone never asks Story apps to remove anything', async () => {
-  // The option is deliberate and off by default: answering "no" to the second question retires
-  // the pack and leaves every Mac's copy untouched.
+test('ticking the box in the dialog is what asks Story apps to remove, and it never sticks', async () => {
+  // The option is deliberate and off by default: only a tick IN THE DIALOG asks, and the box is
+  // cleared every time the dialog opens so a second retire cannot inherit the first one's answer.
   const shelf = {
     ...READY_SHELF,
     releases: [{
@@ -574,18 +597,57 @@ test('retiring alone never asks Story apps to remove anything', async () => {
     }],
   };
   const calls = [];
-  const answers = [true, false];           // retire: yes · also remove: no
   const h = harness(async (pathName, options) => {
     calls.push([pathName, options?.method || 'GET', options?.body ? JSON.parse(options.body) : null]);
     return shelf;
-  }, {
-    confirm: () => answers.shift(),
   });
 
   await h.context.loadContentShelf();
+
+  // Unticked: retire only.
   await h.context.retirePack('release.only');
-  const retireCall = calls.find(([p]) => p === '/content-shelf/retire');
-  assert.deepEqual(retireCall[2], {release_id: 'release.only', confirm_latest: true, remove_from_installs: false});
+  await h.context.confirmShelfRetire();
+  const plain = calls.find(([p]) => p === '/content-shelf/retire');
+  assert.deepEqual(plain[2], {release_id: 'release.only', confirm_latest: true, remove_from_installs: false});
+
+  // Ticked: retire and ask every Story app.
+  calls.length = 0;
+  await h.context.retirePack('release.only');
+  h.node('shelf-retire-remove').checked = true;
+  await h.context.confirmShelfRetire();
+  const asked = calls.find(([p]) => p === '/content-shelf/retire');
+  assert.deepEqual(asked[2], {release_id: 'release.only', confirm_latest: true, remove_from_installs: true});
+
+  // Reopening starts from unticked, never from the previous answer.
+  await h.context.retirePack('release.only');
+  assert.equal(h.node('shelf-retire-remove').checked, false);
+});
+
+test('a WebKit without showModal still shows the same controls, and Cancel still does nothing', async () => {
+  // The app's floor is macOS 11, where `<dialog>.showModal` may be missing. The question must still
+  // be asked — an option silently dropped is worse than a non-modal one.
+  const shelf = {
+    ...READY_SHELF,
+    releases: [{
+      release_id: 'release.old', pack_id: 'com.fixture.old', version: '1.0.0',
+      archive_sha256: 'd'.repeat(64), bytes: 900, title: 'Old WebKit Pack', kind: 'topic-pack',
+      current: true, available: true, retired: false, published_at: '2026-09-21T00:00:00Z',
+    }],
+  };
+  const calls = [];
+  const h = harness(async (pathName, options) => {
+    calls.push([pathName, options?.method || 'GET', options?.body ? JSON.parse(options.body) : null]);
+    return shelf;
+  });
+
+  await h.context.loadContentShelf();
+  delete h.node('shelf-retire-dialog').showModal;   // the older WebKit shape
+  await h.context.retirePack('release.old');
+  assert.equal(h.node('shelf-retire-dialog').attrs.open, '');
+  assert.equal(calls.filter(([p]) => p === '/content-shelf/retire').length, 0);
+  await h.context.cancelShelfRetire();
+  assert.equal(h.node('shelf-retire-dialog').attrs.open, undefined);
+  assert.equal(calls.filter(([p]) => p === '/content-shelf/retire').length, 0);
 });
 
 test('a retired pack can be asked for Story removal, and the request withdrawn later', async () => {

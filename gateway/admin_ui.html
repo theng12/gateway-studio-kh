@@ -804,6 +804,18 @@
         <div id="shelf-releases" style="margin-top:12px"></div>
       </div>
     </section>
+    <!-- Retiring and removing customers' copies are two decisions, so they are asked separately:
+         one checkbox, unticked every time this opens, and Cancel closes without doing anything. -->
+    <dialog id="shelf-retire-dialog" aria-labelledby="shelf-retire-heading">
+      <h2 id="shelf-retire-heading">Retire this pack?</h2>
+      <p id="shelf-retire-text"></p>
+      <label class="check"><input id="shelf-retire-remove" type="checkbox"> Also remove from every Story app</label>
+      <p class="hint">Each Story Mac drops this pack the next time it checks in, and reports what it did. A Mac using the pack in a channel may keep it. Leaving this unticked retires the pack and leaves every Mac's copy untouched.</p>
+      <div class="row" style="margin-top:12px">
+        <button id="shelf-retire-confirm" class="primary" onclick="confirmShelfRetire()">Retire</button>
+        <button id="shelf-retire-cancel" onclick="cancelShelfRetire()">Cancel</button>
+      </div>
+    </dialog>
 
     </div>
 
@@ -1161,22 +1173,71 @@ async function shelfPackAction(path, body, done) {
     shelfMessage(`${error.message}`, true);
   }
 }
+// A retire is asked for in a native `<dialog>`: the text, one checkbox that is unticked every time
+// it opens, and Retire / Cancel. **Cancel closes and does nothing** — the second `confirm()` this
+// replaced made Cancel mean "still retire", which reads backwards.
+let shelfRetirePending = null;
+
+function retireDialog() {
+  return shelfNode('retire-dialog');
+}
+
+function closeRetireDialog() {
+  const dialog = retireDialog();
+  if (dialog) {
+    if (typeof dialog.close === 'function') dialog.close();
+    else dialog.removeAttribute('open');
+  }
+  shelfRetirePending = null;
+}
+
+function openRetireDialog(row) {
+  const name = `${row.title || row.pack_id} v${row.version}`;
+  shelfRetirePending = {releaseId: row.release_id, newest: !!row.current, name};
+  const text = shelfNode('retire-text');
+  if (text) {
+    text.textContent = row.current
+      ? `Retire ${name}? This is the newest version: customers will stop seeing it in Studio Library and cannot install it new. Macs that already installed it keep working, and you can un-retire it later.`
+      : `Retire ${name}? It will be hidden and cannot be installed new. Macs that already installed it keep working, and you can un-retire it later.`;
+  }
+  const remove = shelfNode('retire-remove');
+  if (remove) remove.checked = false;
+  const dialog = retireDialog();
+  if (!dialog) return false;
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  // An older WebKit without `<dialog>.showModal` still gets the same controls inline, so the
+  // choice is never silently dropped; Escape-to-cancel is the only thing it lacks.
+  else dialog.setAttribute('open', '');
+  return true;
+}
+
 async function retirePack(releaseId) {
   const row = shelfRelease(releaseId);
   if (!row) return;
+  if (openRetireDialog(row)) return;
+  // No dialog element at all (a stripped page): retire only, and say where the removal lives.
   const name = `${row.title || row.pack_id} v${row.version}`;
-  const newest = !!row.current;
-  const text = newest
-    ? `Retire ${name}?\n\nThis is the newest version. Customers will stop seeing it in Studio Library and cannot install it new. Macs that already installed it keep working. You can un-retire it later.`
-    : `Retire ${name}?\n\nIt will be hidden and cannot be installed new. Macs that already installed it keep working. You can un-retire it later.`;
-  if (!confirm(text)) return;
-  // A second question, because removing customers' copies is a different decision from hiding the
-  // pack, and it is off unless the owner answers yes here.
-  const alsoRemove = confirm(`Also remove ${name} from every Story app?\n\nEach Story Mac drops this pack the next time it checks in, and reports what it did. A Mac using the pack in a channel may keep it. Retiring alone leaves every Mac's copy untouched.\n\nOK = also remove from Story apps · Cancel = retire only, Macs keep the pack.`);
-  await shelfPackAction('/content-shelf/retire', {release_id: releaseId, confirm_latest: newest, remove_from_installs: alsoRemove},
+  if (!confirm(`Retire ${name}? Macs that already installed it keep working.`)) return;
+  await shelfPackAction('/content-shelf/retire',
+    {release_id: releaseId, confirm_latest: !!row.current, remove_from_installs: false},
+    `${name} is retired. Nothing was deleted. Story apps keep the copy they have.`);
+}
+
+function cancelShelfRetire() {
+  closeRetireDialog();
+}
+
+async function confirmShelfRetire() {
+  const pending = shelfRetirePending;
+  const remove = shelfNode('retire-remove');
+  const alsoRemove = !!(remove && remove.checked);
+  closeRetireDialog();
+  if (!pending) return;
+  await shelfPackAction('/content-shelf/retire',
+    {release_id: pending.releaseId, confirm_latest: pending.newest, remove_from_installs: alsoRemove},
     alsoRemove
-      ? `${name} is retired and every Story app is told to remove it. Nothing was deleted on this Gateway.`
-      : `${name} is retired. Nothing was deleted. Story apps keep the copy they have.`);
+      ? `${pending.name} is retired and every Story app is told to remove it. Nothing was deleted on this Gateway.`
+      : `${pending.name} is retired. Nothing was deleted. Story apps keep the copy they have.`);
 }
 async function unretirePack(releaseId) {
   const row = shelfRelease(releaseId);

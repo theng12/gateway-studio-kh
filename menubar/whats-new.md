@@ -18,12 +18,13 @@ every feature title, and they are left as they were written.
 
 ### Retire a pack, and — if you mean it — remove it from every Story app
 Retiring a pack in Content Packs still does exactly what it did: the file stays, customers stop
-seeing it, and every Mac that already has it keeps working. It now asks a second, separate question:
-**also remove it from every Story app?** Answer *no* and nothing changes on anyone's Mac. Answer
-*yes* and each Story app drops its copy the next time it checks in — a Mac using that pack in a
-channel may keep it instead, and says so. The shelf then reports what really happened, Mac by Mac:
-"removed on 3 of 4 Story Macs · kept on macmini-angkor: used by channel Night Falls · not reported
-yet: mac-b". A Mac that has not answered is **not reported yet**, never silently counted as removed.
+seeing it, and every Mac that already has it keeps working. Retire now opens one small question —
+**Also remove from every Story app**, a box that starts unticked — with Retire and Cancel. Cancel
+does nothing, and leaving the box alone changes nothing on anyone's Mac. Tick it and each Story app
+drops its copy the next time it checks in — a Mac using that pack in a channel may keep it instead,
+and says so. The shelf then reports what really happened, Mac by Mac: "removed on 3 of 4 Story Macs ·
+kept on macmini-angkor: used by channel Night Falls · not reported yet: mac-b". A Mac that has not
+answered is **not reported yet**, never silently counted as removed.
 You can also make or withdraw the request later on a pack that is already retired, and un-retiring a
 pack withdraws it — a copy already removed does not come back, and the page says so.
 
