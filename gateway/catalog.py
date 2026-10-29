@@ -1157,13 +1157,103 @@ def _tts_pause_parameters(definition: ProviderDefinition, raw: dict[str, Any]) -
     return {"pause_parameters": published} if published else {}
 
 
+#: The Hub capability that says a TTS model takes a free-text delivery/emotion instruction.
+#: **Read from the model's own `capabilities` list, never a model name** (§1): the Hub is the
+#: authority on which engine has the feature, and it may spell it with an underscore.
+DELIVERY_INSTRUCTION_CAPABILITY = "delivery-instruction"
+DELIVERY_INSTRUCTION_LIMIT = 500
+
+
+def _delivery_names() -> set[str]:
+    return {DELIVERY_INSTRUCTION_CAPABILITY, DELIVERY_INSTRUCTION_CAPABILITY.replace("-", "_")}
+
+
+def _hub_controls(raw: Any) -> dict[str, Any]:
+    """The Hub's per-model `controls` block, as `/api/hub/capabilities` published it.
+
+    Carried onto the model's raw record by discovery
+    (`providers/discovery._hub_controls`), re-read on every refresh.
+    """
+    controls = (raw or {}).get("hub_controls") if isinstance(raw, dict) else None
+    return controls if isinstance(controls, dict) else {}
+
+
+def takes_delivery_instruction(raw: Any) -> bool:
+    """Does this model publish the delivery-instruction capability?
+
+    **Two places, both the Hub's own, and either is enough:** the catalogue row's
+    `capabilities` (the Voice catalogue derives the token from the family's engine, so it is
+    stated per model) and the capability snapshot's `controls.capabilities`. A Hub that
+    publishes it in only one of the two still publishes it — and nothing here derives support
+    from a model id, a family name or a repo (§1).
+    """
+    if not isinstance(raw, dict):
+        return False
+    wanted = _delivery_names()
+    for block in (raw.get("capabilities"), _hub_controls(raw).get("capabilities")):
+        if isinstance(block, (list, tuple, set)):
+            for item in block:
+                name = (str(item.get("name") or item.get("id") or "")
+                        if isinstance(item, dict) else str(item))
+                if name in wanted:
+                    return True
+    return False
+
+
+def delivery_guidance(raw: Any) -> Any:
+    """The Hub's guidance for the capability, **exactly as it sent it**, or `None`.
+
+    The one source is the snapshot's `controls.delivery_instruction`
+    (`components/hub/backend/capabilities.py`): `kind`, `engine_form` (`instruct` for Breeze
+    TTS 2, `text_prefix` for VoxCPM2), `max_characters`, up to three `examples`, the
+    `language_rule`, the `inline_events` the engine documents, a directed `cfg_scale` and the
+    parameter it belongs to, the card's `source_url` and a `note`. Forwarded without a field
+    changed — a consumer that reshaped it would be describing an engine it has not read.
+
+    `None` when the Hub published none, and the control is then published without a `guidance`
+    field: nothing is invented for a Hub that said nothing.
+    """
+    guidance = _hub_controls(raw).get("delivery_instruction")
+    if guidance in (None, "", [], {}):
+        return None
+    return guidance
+
+
+def _delivery_control(raw: Any = None) -> dict[str, Any]:
+    """One text control, in the same shape the numeric controls already publish.
+
+    **`guidance` is the Hub's object, unchanged**, present only when the Hub published one —
+    free text and its examples, a language rule, the inline vocal events the engine accepts,
+    and the source URL. A consumer prints what is there and nothing when it is not.
+    """
+    control: dict[str, Any] = {
+        "name": "delivery_instruction",
+        "label": "Delivery / emotion",
+        "type": "text",
+        "max_length": DELIVERY_INSTRUCTION_LIMIT,
+    }
+    guidance = delivery_guidance(raw)
+    if guidance is not None:
+        control["guidance"] = guidance
+    return control
+
+
 def _tts_controls(definition: ProviderDefinition, raw: dict[str, Any]) -> list[dict[str, Any]]:
     """The TTS controls a row publishes: a Hub lane's own, or the cloud default."""
+    if takes_delivery_instruction(raw):
+        # **Only where the Hub says the model takes it.** A control on every TTS row would
+        # offer a field the engine ignores, which is the "control that does nothing" defect
+        # this file exists to avoid.
+        extra = [_delivery_control(raw)]
+    else:
+        extra = []
     if definition.kind == KIND_STUDIO_HUB:
         contract = raw.get("lane_contract") if isinstance(raw, dict) else None
         declared = _hub_declared_parameter(contract, "temperature") if isinstance(contract, dict) else None
         if declared is None:
-            return []
+            # No temperature on this lane — but the delivery instruction is its own capability
+            # and must not be lost with it. (A Hub row with neither publishes `[]`, as before.)
+            return extra
         def number(key: str, fallback: float) -> float:
             value = declared.get(key)
             return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else fallback
@@ -1175,7 +1265,7 @@ def _tts_controls(definition: ProviderDefinition, raw: dict[str, Any]) -> list[d
             "maximum": number("maximum", 2.0),
             "default": number("default", 0.7),
             "step": 0.05,
-        }]
+        }] + extra
     return [{
         "name": "temperature",
         "label": "Temperature",
@@ -1184,7 +1274,7 @@ def _tts_controls(definition: ProviderDefinition, raw: dict[str, Any]) -> list[d
         "maximum": 2.0,
         "default": 0.7,
         "step": 0.05,
-    }]
+    }] + extra
 
 
 def _transcription_row(model_id: str, definition: ProviderDefinition, model: dict[str, Any]) -> dict[str, Any]:

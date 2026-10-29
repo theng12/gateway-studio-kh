@@ -42,6 +42,16 @@ A running job with no job id from the provider and no progress used to look exac
 one. After two minutes it publishes what it is waiting for; past the lane's own time limit it fails
 retryably instead of staying silent.
 
+### Say how a line should be delivered
+The Audio lane has a new **Delivery / emotion** box: type *warm and slow*, *whisper the last line*,
+*slightly amused*, and the instruction goes to the engine with the text instead of a plain reading.
+The box appears only for a model whose own catalogue row publishes the control — the Gateway reads
+that live from your Studio Hub, never from the model's name — and it clears when you switch to a
+model that does not take one. The panel shows the engine's own guidance (examples, maximum length,
+inline-event syntax, language rule) exactly as the Hub published it, and nothing for a field the Hub
+did not send. Ask a model without the control for an instruction and it is refused with a plain 422
+that names why, rather than quietly reading the line plainly.
+
 ---
 
 ## 0.2.207 — 2026-10-28

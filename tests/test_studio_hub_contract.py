@@ -991,7 +991,8 @@ class VoiceReferenceMetadataTests(_HubCase):
         hub = _Hub(reference=self._staged_payload(clip))
         payload = self._staged_payload(clip)
         hub.reference = payload
-        params = {"text": "speak", "voice_id": "voice-abc123"}
+        params = {"text": "speak", "voice_id": "voice-abc123",
+                  "delivery_instruction": "softly, with a smile"}
         voice = SimpleNamespace(
             id="voice-abc123",
             display_name="Narrator",
@@ -1015,6 +1016,10 @@ class VoiceReferenceMetadataTests(_HubCase):
         )
         self.assertEqual(submitted["voice_reference_asset_id"], "staged-asset-1")
         self.assertNotIn("voice_library_id", submitted)
+        # **The cloned path carries it too** (`/api/generate/txt2speech/reference`): one body
+        # builder serves both, so a field added to it cannot reach one path and miss the other.
+        self.assertEqual(submitted["items"][0]["params"].get("delivery_instruction"),
+                         "softly, with a smile")
         self.assertIsNotNone(result.content)
         # The clip travels with the job: the controller's own library is never asked, because a
         # library id names an entry on one Mac and the broker may run the job on another.
@@ -2369,6 +2374,18 @@ class OutputFormatTests(_HubCase):
         self.assertEqual(
             self._item_params("tts", {"text": "hi", "voice_id": "v", "output_format": "m4a"}),
             {"voice_id": "v", "output_format": "m4a"})
+
+    def test_the_delivery_instruction_rides_the_plain_path(self) -> None:
+        # Owner, 2026-10-29: the Hub takes `delivery_instruction` on `/api/generate/txt2speech`
+        # as the engine's own instruction. The gateway forwards it in the item's params; whether
+        # a model *takes* it is its published capability, refused before this point.
+        self.assertEqual(
+            self._item_params("tts", {"text": "hi", "voice_id": "v",
+                                      "delivery_instruction": "warm, unhurried"}),
+            {"voice_id": "v", "delivery_instruction": "warm, unhurried"})
+        self.assertNotIn("delivery_instruction",
+                         self._item_params("tts", {"text": "hi", "voice_id": "v"}),
+                         "absent stays absent — the body is the one every Hub has always had")
 
     def test_absent_leaves_the_request_exactly_as_it_was(self) -> None:
         # The golden: no `output_format` key anywhere, so an old Story build and a toggled-off one

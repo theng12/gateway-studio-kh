@@ -2115,6 +2115,7 @@ def _submit(
         )
     if modality == "tts":
         _refuse_an_unspoken_language(compound_id, model, params)
+        _refuse_a_delivery_instruction(compound_id, model, params)
     if capability is not None:
         _refuse_references_this_lane_cannot_take(definition, model, params)
     # An idempotency key identifies one request, and a request has a modality.
@@ -2172,6 +2173,42 @@ def _refuse_an_unspoken_language(compound_id: str, model: dict[str, Any], params
                                     str(model.get("display_name") or compound_id), speakers)
     if reason:
         raise GatewayError(422, reason, "LANGUAGE_UNSUPPORTED")
+
+
+def _refuse_a_delivery_instruction(compound_id: str, model: dict[str, Any], params: Any) -> None:
+    """A delivery/emotion instruction is refused by a model that does not publish it.
+
+    **Silently dropping it is the defect this prevents**: the caller would hear the plain
+    reading and believe the instruction had been applied. Support is the model's own Hub
+    record (`capabilities`), read live — never a model name, never a list held here.
+    """
+    from .catalog import DELIVERY_INSTRUCTION_LIMIT, takes_delivery_instruction
+
+    params = params if isinstance(params, dict) else {}
+    value = params.get("delivery_instruction")
+    if value is None or value == "":
+        return
+    name = str(model.get("display_name") or compound_id)
+    if not isinstance(value, str):
+        raise GatewayError(422, "delivery_instruction must be text.", "DELIVERY_INSTRUCTION_INVALID")
+    text = value.strip()
+    if not text:
+        return
+    if len(text) > DELIVERY_INSTRUCTION_LIMIT:
+        raise GatewayError(
+            422,
+            f"delivery_instruction is {len(text)} characters; this Gateway sends at most "
+            f"{DELIVERY_INSTRUCTION_LIMIT} to the engine.",
+            "DELIVERY_INSTRUCTION_TOO_LONG",
+        )
+    if takes_delivery_instruction(model.get("raw")):
+        return
+    raise GatewayError(
+        422,
+        f"{name} does not take a delivery/emotion instruction. Leave it out, or choose a model "
+        f"whose catalogue row publishes the 'delivery_instruction' control.",
+        "DELIVERY_INSTRUCTION_UNSUPPORTED",
+    )
 
 
 def _pop_priority(params: Any) -> str:

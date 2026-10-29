@@ -16,7 +16,9 @@ if (START < 0 || END < 0) throw new Error('Create section boundary changed in ad
 function videoForm(videoRows) {
   const form = { innerHTML: '' };
   const context = vm.createContext({
-    document: { getElementById: id => (id === 'create-form' ? form : { innerHTML: '' }) },
+    // Every element the form touches needs the shape a real one has: `renderCreateForm` also
+    // asks the model which optional controls it publishes, and a stub without `style` threw.
+    document: { getElementById: id => (id === 'create-form' ? form : { innerHTML: '', style: {}, textContent: '' }) },
     esc: s => String(s ?? '').replace(/[&<>"']/g,
       c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
     api: async () => ({}),
