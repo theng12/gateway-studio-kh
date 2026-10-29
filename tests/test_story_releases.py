@@ -368,6 +368,90 @@ class StoryReleaseTests(unittest.TestCase):
         self.assertIsInstance(row["update_progress_at"], float)
         self.assertEqual(row["update"]["downloaded_bytes"], 10)
 
+    # ── What a Story app did with a pack the owner asked it to remove ─────────────────────
+    # Optional on the check-in, absent from an older Story, and never invented here.
+
+    def report_checkin(self, instance: str, removals) -> dict:
+        response = self.client.post("/v1/apps/story/checkin", headers=AUTH, json={
+            "instance_id": instance, "version": "1.4.363", "pack_removals": removals})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_a_checkin_records_what_this_mac_did_with_a_removal_ask(self) -> None:
+        self.report_checkin("Mac-mini", [
+            {"pack_id": "com.storystudio.pack.a", "outcome": "removed", "channels": []},
+            {"pack_id": "com.storystudio.pack.b", "outcome": "kept_in_use",
+             "channels": ["Night Falls"], "detail": "a channel still uses it"},
+        ])
+        stored = self.record("Mac-mini")["pack_removals"]
+        self.assertEqual([entry["pack_id"] for entry in stored],
+                         ["com.storystudio.pack.a", "com.storystudio.pack.b"])
+        self.assertEqual(stored[1]["outcome"], "kept_in_use")
+        self.assertEqual(stored[1]["channels"], ["Night Falls"])
+        self.assertEqual(stored[1]["detail"], "a channel still uses it")
+        self.assertIsInstance(self.record("Mac-mini")["pack_removals_at"], float)
+
+    def test_an_unfamiliar_outcome_is_dropped_not_guessed(self) -> None:
+        """`removed` is a claim about a customer's machine, so only Story's three words are kept."""
+        self.report_checkin("Mac-mini", [
+            {"pack_id": "com.storystudio.pack.a", "outcome": "probably_removed"},
+            {"pack_id": "com.storystudio.pack.b", "outcome": "removed"},
+            {"pack_id": "", "outcome": "removed"},
+            {"outcome": "failed"},
+            "not an object",
+        ])
+        stored = self.record("Mac-mini")["pack_removals"]
+        self.assertEqual([(entry["pack_id"], entry["outcome"]) for entry in stored],
+                         [("com.storystudio.pack.b", "removed")])
+
+    def test_a_pack_reported_twice_counts_once_and_the_later_word_wins(self) -> None:
+        self.report_checkin("Mac-mini", [
+            {"pack_id": "com.storystudio.pack.a", "outcome": "failed", "detail": "first try"},
+            {"pack_id": "com.storystudio.pack.a", "outcome": "removed"},
+        ])
+        stored = self.record("Mac-mini")["pack_removals"]
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["outcome"], "removed")
+
+    def test_an_checkin_without_the_field_keeps_the_last_report(self) -> None:
+        """An older Story states nothing; its last words are not erased into "removed nothing"."""
+        self.report_checkin("Mac-mini", [{"pack_id": "com.storystudio.pack.a", "outcome": "removed"}])
+        stamped = self.record("Mac-mini")["pack_removals_at"]
+        self.checkin(instance="Mac-mini")                     # no `pack_removals` at all
+        row = self.record("Mac-mini")
+        self.assertEqual([entry["outcome"] for entry in row["pack_removals"]], ["removed"])
+        self.assertEqual(row["pack_removals_at"], stamped)
+
+    def test_the_report_counts_only_macs_that_answered_after_the_ask(self) -> None:
+        self.report_checkin("early-mac", [{"pack_id": "com.storystudio.pack.a", "outcome": "removed"}])
+        early = self.record("early-mac")["pack_removals_at"]
+        time.sleep(0.02)
+        self.report_checkin("late-mac", [{"pack_id": "com.storystudio.pack.a", "outcome": "kept_in_use",
+                                          "channels": ["Night Falls"]}])
+        late = self.record("late-mac")["pack_removals_at"]
+        self.assertGreater(late, early)
+
+        # Asked between the two reports: only the later Mac answers this question.
+        report = story_releases.pack_removal_report(
+            {"com.storystudio.pack.a": (early + late) / 2})["com.storystudio.pack.a"]
+        self.assertEqual(report["total_instances"], 2)
+        self.assertEqual(report["reported_count"], 1)
+        self.assertEqual(report["removed_count"], 0)
+        self.assertEqual(report["kept_in_use"][0]["machine"], "late-mac")
+        self.assertEqual(report["not_reported"], ["early-mac"])
+
+        # Asked before both: both answer.
+        report = story_releases.pack_removal_report(
+            {"com.storystudio.pack.a": early - 0.5})["com.storystudio.pack.a"]
+        self.assertEqual((report["reported_count"], report["removed_count"]), (2, 1))
+
+        # A pack nobody has said anything about is "not reported yet" everywhere — never removed.
+        report = story_releases.pack_removal_report({"com.storystudio.pack.nobody": late})[
+            "com.storystudio.pack.nobody"]
+        self.assertEqual(report["reported_count"], 0)
+        self.assertEqual(report["removed_count"], 0)
+        self.assertEqual(len(report["not_reported"]), 2)
+
 
     def test_the_queue_view_counts_by_caller_and_group(self) -> None:
         from gateway.runtime import store

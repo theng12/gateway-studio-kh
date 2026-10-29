@@ -14,6 +14,26 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.209 — 2026-10-29
+
+### Retire a pack, and — if you mean it — remove it from every Story app
+Retiring a pack in Content Packs still does exactly what it did: the file stays, customers stop
+seeing it, and every Mac that already has it keeps working. It now asks a second, separate question:
+**also remove it from every Story app?** Answer *no* and nothing changes on anyone's Mac. Answer
+*yes* and each Story app drops its copy the next time it checks in — a Mac using that pack in a
+channel may keep it instead, and says so. The shelf then reports what really happened, Mac by Mac:
+"removed on 3 of 4 Story Macs · kept on macmini-angkor: used by channel Night Falls · not reported
+yet: mac-b". A Mac that has not answered is **not reported yet**, never silently counted as removed.
+You can also make or withdraw the request later on a pack that is already retired, and un-retiring a
+pack withdraws it — a copy already removed does not come back, and the page says so.
+
+### A re-tried job is never failed before it is sent
+When the Gateway picked a job up for another attempt, it measured "is this stuck?" from the
+**previous** attempt's clock. In the short gap between claiming the job and sending it, that old
+clock could look hours old and the job was failed as timed out — before anything was sent, which
+makes Story send it again. A claim now starts its own clock, so a job is only ever timed from its
+own attempt.
+
 ## 0.2.208 — 2026-10-29
 
 ### Background work no longer waits on a job it cannot use

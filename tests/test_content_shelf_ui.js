@@ -538,12 +538,15 @@ test('shelved releases render Retire / Un-retire / Remove actions and retired st
 
   // Test clicking retire on active pack (newest version prompts with explanation)
   await h.context.retirePack('release.active');
-  assert.equal(confirmations.length, 1);
+  // Two questions now: retire, and — separately — whether to remove it from every Story app.
+  assert.equal(confirmations.length, 2);
   assert.match(confirmations[0], /Retire Active Pack v1\.0\.0\?/);
   assert.match(confirmations[0], /This is the newest version/);
   assert.match(confirmations[0], /Customers will stop seeing it in Studio Library/);
+  assert.match(confirmations[1], /Also remove Active Pack v1\.0\.0 from every Story app\?/);
+  assert.match(confirmations[1], /Cancel = retire only, Macs keep the pack/);
   const retireCall = calls.find(([p]) => p === '/content-shelf/retire');
-  assert.deepEqual(retireCall[2], {release_id: 'release.active', confirm_latest: true});
+  assert.deepEqual(retireCall[2], {release_id: 'release.active', confirm_latest: true, remove_from_installs: true});
 
   // Test clicking unretire on retired pack
   await h.context.unretirePack('release.retired');
@@ -552,9 +555,118 @@ test('shelved releases render Retire / Un-retire / Remove actions and retired st
 
   // Test clicking remove on retired pack
   await h.context.removePack('release.retired');
-  assert.equal(confirmations.length, 2);
-  assert.match(confirmations[1], /Remove Retired Pack v1\.0\.0\?/);
-  assert.match(confirmations[1], /Its file moves to the Gateway trash/);
+  assert.equal(confirmations.length, 3);
+  assert.match(confirmations[2], /Remove Retired Pack v1\.0\.0\?/);
+  assert.match(confirmations[2], /Its file moves to the Gateway trash/);
   const removeCall = calls.find(([p]) => p === '/content-shelf/remove');
   assert.deepEqual(removeCall[2], {release_id: 'release.retired', confirm: true});
+});
+
+test('retiring alone never asks Story apps to remove anything', async () => {
+  // The option is deliberate and off by default: answering "no" to the second question retires
+  // the pack and leaves every Mac's copy untouched.
+  const shelf = {
+    ...READY_SHELF,
+    releases: [{
+      release_id: 'release.only', pack_id: 'com.fixture.only', version: '1.0.0',
+      archive_sha256: 'c'.repeat(64), bytes: 900, title: 'Only Pack', kind: 'topic-pack',
+      current: true, available: true, retired: false, published_at: '2026-09-21T00:00:00Z',
+    }],
+  };
+  const calls = [];
+  const answers = [true, false];           // retire: yes · also remove: no
+  const h = harness(async (pathName, options) => {
+    calls.push([pathName, options?.method || 'GET', options?.body ? JSON.parse(options.body) : null]);
+    return shelf;
+  }, {
+    confirm: () => answers.shift(),
+  });
+
+  await h.context.loadContentShelf();
+  await h.context.retirePack('release.only');
+  const retireCall = calls.find(([p]) => p === '/content-shelf/retire');
+  assert.deepEqual(retireCall[2], {release_id: 'release.only', confirm_latest: true, remove_from_installs: false});
+});
+
+test('a retired pack can be asked for Story removal, and the request withdrawn later', async () => {
+  const retired = {
+    release_id: 'release.retired', pack_id: 'com.fixture.retired', version: '1.0.0',
+    archive_sha256: 'd'.repeat(64), bytes: 1000, title: 'Retired Pack', kind: 'topic-pack',
+    current: false, available: true, retired: true, retired_at: '2026-10-27T00:00:00Z',
+    published_at: '2026-09-21T00:00:00Z', remove_from_installs: false,
+  };
+  const shelf = {...READY_SHELF, releases: [retired]};
+  const calls = [];
+  const h = harness(async (pathName, options) => {
+    calls.push([pathName, options?.method || 'GET', options?.body ? JSON.parse(options.body) : null]);
+    return shelf;
+  });
+
+  await h.context.loadContentShelf();
+  const html = h.node('shelf-releases').innerHTML;
+  assert.match(html, /data-pack-action="remove-from-installs"/);
+  assert.match(html, /Also remove from Story apps<\/button>/);
+  assert.doesNotMatch(html, /data-pack-action="keep-in-installs"/);
+
+  await h.context.setPackRemoveFromInstalls('release.retired', true);
+  const askCall = calls.find(([p]) => p === '/content-shelf/remove-from-installs');
+  assert.deepEqual(askCall[2], {release_id: 'release.retired', enabled: true});
+
+  // The flagged row offers the opposite action, and posting it withdraws the ask.
+  const flagged = {...READY_SHELF, releases: [{...retired, remove_from_installs: true, remove_from_installs_at: 1793500000}]};
+  const h2 = harness(async (pathName, options) => {
+    calls.push([pathName, options?.method || 'GET', options?.body ? JSON.parse(options.body) : null]);
+    return flagged;
+  });
+  await h2.context.loadContentShelf();
+  const flaggedHtml = h2.node('shelf-releases').innerHTML;
+  assert.match(flaggedHtml, /data-pack-action="keep-in-installs"/);
+  assert.match(flaggedHtml, /Keep on Story apps<\/button>/);
+  await h2.context.setPackRemoveFromInstalls('release.retired', false);
+  const clearCall = calls.filter(([p]) => p === '/content-shelf/remove-from-installs').pop();
+  assert.deepEqual(clearCall[2], {release_id: 'release.retired', enabled: false});
+});
+
+test('the shelf says what each Story Mac reported, and never draws silence as a removal', async () => {
+  const base = {
+    release_id: 'release.r', pack_id: 'com.fixture.r', version: '1.0.0',
+    archive_sha256: 'e'.repeat(64), bytes: 1000, title: 'Asked Pack', kind: 'topic-pack',
+    current: false, available: true, retired: true, retired_at: '2026-10-27T00:00:00Z',
+    published_at: '2026-09-21T00:00:00Z', remove_from_installs: true, remove_from_installs_at: 1793500000,
+  };
+  const render = async (row) => {
+    const h = harness(async () => ({...READY_SHELF, releases: [row]}));
+    await h.context.loadContentShelf();
+    return h.node('shelf-releases').innerHTML;
+  };
+
+  // No Mac has checked in: unknown, not removed.
+  const none = await render({...base, remove_report: null});
+  assert.match(none, /Removal requested .* no Story Mac has checked in yet/);
+
+  // Macs have checked in, none has reported since the ask.
+  const silent = await render({...base, remove_report: {
+    pack_id: 'com.fixture.r', asked_at: 1793500000, total_instances: 2, reported_count: 0,
+    removed_count: 0, removed: [], kept_in_use: [], failed: [], not_reported: ['mac-a', 'mac-b'],
+  }});
+  assert.match(silent, /not reported yet by any of 2 Story Macs/);
+  assert.doesNotMatch(silent, /removed on/);
+
+  // A mixed report: the owner's own sentence shape.
+  const mixed = await render({...base, remove_report: {
+    pack_id: 'com.fixture.r', asked_at: 1793500000, total_instances: 4, reported_count: 2,
+    removed_count: 1,
+    removed: [{machine: 'mac-a', outcome: 'removed', channels: []}],
+    kept_in_use: [{machine: 'macmini-angkor', outcome: 'kept_in_use', channels: ['Night Falls']}],
+    failed: [{machine: 'mac-c', outcome: 'failed', detail: 'the pack was in use'}],
+    not_reported: ['mac-d'],
+  }});
+  assert.match(mixed, /removed on 1 of 4 Story Macs/);
+  assert.match(mixed, /kept on macmini-angkor: used by channel Night Falls/);
+  assert.match(mixed, /failed on mac-c: the pack was in use/);
+  assert.match(mixed, /not reported yet: mac-d/);
+
+  // A pack nobody asked to remove draws no report at all.
+  const quiet = await render({...base, remove_from_installs: false, remove_from_installs_at: null});
+  assert.doesNotMatch(quiet, /Removal requested/);
 });

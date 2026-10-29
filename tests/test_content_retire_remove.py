@@ -10,6 +10,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -363,6 +364,203 @@ class ContentRetireRemoveTest(unittest.TestCase):
         entry = next(e for e in state["removed"] if e["archive_sha256"] == digest)
         self.assertEqual(entry["trash_path"], dummy_backup_path)
         self.assertEqual(entry["what"], f"{pack_id}@1.0.0")
+
+    # ── "Also remove from every Story app" (owner, 2026-10-29) ─────────────────────────────
+    # Retire still keeps the file and hides it; this is a second, per-pack, deliberate ask that
+    # each Story app remove its own copy. Off unless the owner says so.
+
+    def test_retiring_alone_stores_no_removal_ask(self) -> None:
+        pack_id = "com.storystudio.pack.topic.retireonly"
+        content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Retire Only"))
+
+        res = content_delivery.retire_pack(pack_id, confirm_latest=True)
+        self.assertFalse(res["remove_from_installs"])
+        self.assertIsNone(res["remove_from_installs_at"])
+        self.assertIn("keep the copy", res["story_apps"])
+
+        row = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)
+        self.assertTrue(row["retired"])
+        self.assertIs(row["remove_from_installs"], False)
+        self.assertNotIn("remove_from_installs_at", row)
+
+    def test_retiring_with_the_option_stores_the_ask_and_its_unix_stamp(self) -> None:
+        pack_id = "com.storystudio.pack.topic.retireandremove"
+        content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Retire And Remove"))
+
+        before = int(time.time())
+        res = content_delivery.retire_pack(pack_id, confirm_latest=True, remove_from_installs=True)
+        after = int(time.time())
+        self.assertTrue(res["remove_from_installs"])
+        self.assertIsInstance(res["remove_from_installs_at"], int, "the wire field is unix seconds")
+        self.assertTrue(before <= res["remove_from_installs_at"] <= after)
+        self.assertIn("told to remove", res["story_apps"])
+
+        row = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)
+        self.assertIs(row["remove_from_installs"], True)
+        self.assertEqual(row["remove_from_installs_at"], res["remove_from_installs_at"])
+
+        # A SECOND plain retire must not quietly withdraw an ask the owner already made.
+        content_delivery.retire_pack(pack_id, confirm_latest=True)
+        row = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)
+        self.assertIs(row["remove_from_installs"], True)
+
+    def test_the_ask_can_be_made_and_withdrawn_on_an_already_retired_pack(self) -> None:
+        pack_id = "com.storystudio.pack.topic.laterask"
+        content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Later Ask"))
+        content_delivery.retire_pack(pack_id, confirm_latest=True)
+
+        asked = content_delivery.set_remove_from_installs(pack_id, enabled=True)
+        self.assertTrue(asked["remove_from_installs"])
+        self.assertIsInstance(asked["remove_from_installs_at"], int)
+        row = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)
+        self.assertIs(row["remove_from_installs"], True)
+
+        cleared = content_delivery.set_remove_from_installs(pack_id, enabled=False)
+        self.assertFalse(cleared["remove_from_installs"])
+        self.assertIsNone(cleared["remove_from_installs_at"])
+        row = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)
+        self.assertIs(row["remove_from_installs"], False)
+        self.assertNotIn("remove_from_installs_at", row)
+        # The pack is still retired: withdrawing the ask is not un-retiring.
+        self.assertTrue(row["retired"])
+
+    def test_a_live_pack_cannot_be_marked_for_removal(self) -> None:
+        pack_id = "com.storystudio.pack.topic.liveask"
+        content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Live Ask"))
+        with self.assertRaises(content_delivery.DeliveryError) as cm:
+            content_delivery.set_remove_from_installs(pack_id, enabled=True)
+        self.assertEqual((cm.exception.status, cm.exception.code), (409, "CONTENT_PACK_NOT_RETIRED"))
+
+    def test_unretiring_withdraws_the_ask_too(self) -> None:
+        pack_id = "com.storystudio.pack.topic.unretireask"
+        content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Unretire Ask"))
+        content_delivery.retire_pack(pack_id, confirm_latest=True, remove_from_installs=True)
+
+        res = content_delivery.unretire_pack(pack_id)
+        self.assertFalse(res["remove_from_installs"])
+        row = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)
+        self.assertFalse(row.get("retired", False))
+        self.assertFalse(row.get("remove_from_installs", False))
+        self.assertNotIn("remove_from_installs_at", row)
+
+    def test_the_catalogue_read_carries_retired_packs_and_the_ask(self) -> None:
+        """A retired pack stays out of the catalogue but its id and the ask reach Story."""
+        pack_id = "com.storystudio.pack.topic.catalogueask"
+        pub = content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Catalogue Ask"))
+        release_id = pub["release"]["release_id"]
+        content_delivery.retire_pack(pack_id, confirm_latest=True, remove_from_installs=True)
+        asked_at = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)["remove_from_installs_at"]
+
+        catalogue = content_delivery.products("1.4.213")
+        self.assertFalse(any(p["title"] == "Catalogue Ask" for p in catalogue["products"]),
+                         "a retired pack must not be offered as something to install")
+        entry = next(p for p in catalogue["retired_packs"] if p["pack_id"] == pack_id)
+        self.assertEqual(set(entry), {"pack_id", "release_id", "retired_at",
+                                      "remove_from_installs", "remove_from_installs_at"})
+        self.assertEqual(entry["release_id"], release_id)
+        self.assertIsInstance(entry["retired_at"], str)
+        self.assertIs(entry["remove_from_installs"], True)
+        self.assertEqual(entry["remove_from_installs_at"], asked_at)
+
+        # Over HTTP, on the call Story actually makes.
+        response = self.client.get("/v1/content/products", params={"story_version": "1.4.213"},
+                                   headers={"Authorization": "Bearer fixture-api-key"})
+        self.assertEqual(response.status_code, 200, response.text[:200])
+        body = response.json()
+        self.assertEqual(next(p for p in body["retired_packs"] if p["pack_id"] == pack_id)["remove_from_installs"], True)
+
+        # Un-retiring removes it from the retired list as well as restoring the product.
+        content_delivery.unretire_pack(pack_id)
+        restored = content_delivery.products("1.4.213")
+        self.assertFalse(any(p["pack_id"] == pack_id for p in restored["retired_packs"]))
+        self.assertTrue(any(p["title"] == "Catalogue Ask" for p in restored["products"]))
+
+    def test_the_admin_routes_take_the_option_and_validate_it(self) -> None:
+        pack_id = "com.storystudio.pack.topic.adminask"
+        pub = content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Admin Ask"))
+        release_id = pub["release"]["release_id"]
+
+        # Retire over the route, with the option.
+        r = self.client.post("/admin/api/content-shelf/retire",
+                             json={"release_id": release_id, "confirm_latest": True,
+                                   "remove_from_installs": True})
+        self.assertEqual(r.status_code, 200, r.text[:200])
+        self.assertTrue(r.json()["remove_from_installs"])
+        shelf = self.client.get("/admin/api/content-shelf").json()
+        row = next(x for x in shelf["releases"] if x["release_id"] == release_id)
+        self.assertIs(row["remove_from_installs"], True)
+
+        # A string is not a boolean: a durable ask on customers' Macs is never coerced.
+        bad = self.client.post("/admin/api/content-shelf/retire",
+                               json={"release_id": release_id, "remove_from_installs": "false"})
+        self.assertEqual(bad.status_code, 422)
+        self.assertEqual(bad.json()["code"], "CONTENT_REQUEST_INVALID")
+
+        # Withdraw and re-make the ask later through the separate action.
+        off = self.client.post("/admin/api/content-shelf/remove-from-installs",
+                               json={"release_id": release_id, "enabled": False})
+        self.assertEqual(off.status_code, 200, off.text[:200])
+        self.assertFalse(off.json()["remove_from_installs"])
+        on = self.client.post("/admin/api/content-shelf/remove-from-installs",
+                              json={"release_id": release_id, "enabled": True})
+        self.assertEqual(on.status_code, 200, on.text[:200])
+        self.assertTrue(on.json()["remove_from_installs"])
+        self.assertIsInstance(on.json()["remove_from_installs_at"], int)
+
+        # `enabled` must be a real boolean, and the pack must be retired.
+        self.assertEqual(self.client.post("/admin/api/content-shelf/remove-from-installs",
+                                          json={"release_id": release_id, "enabled": "yes"}).status_code, 422)
+        live = "com.storystudio.pack.topic.adminlive"
+        live_pub = content_delivery.import_and_publish(make_archive(live, "1.0.0", "Admin Live"))
+        refused = self.client.post("/admin/api/content-shelf/remove-from-installs",
+                                   json={"release_id": live_pub["release"]["release_id"], "enabled": True})
+        self.assertEqual(refused.status_code, 409)
+        self.assertEqual(refused.json()["code"], "CONTENT_PACK_NOT_RETIRED")
+
+    def test_the_shelf_shows_what_each_story_mac_reported(self) -> None:
+        """`removed on 1 of 2` is drawn from the Macs' own words; an unreported Mac is named."""
+        pack_id = "com.storystudio.pack.topic.reportcard"
+        pub = content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Report Card"))
+        content_delivery.retire_pack(pack_id, confirm_latest=True, remove_from_installs=True)
+        asked_at = next(r for r in content_delivery.status()["releases"]
+                        if r["pack_id"] == pack_id)["remove_from_installs_at"]
+
+        instances = {
+            "mac-a": {"instance_id": "mac-a", "machine": "mac-a", "last_seen": asked_at + 60,
+                      "pack_removals": [{"pack_id": pack_id, "outcome": "removed", "channels": []}],
+                      "pack_removals_at": asked_at + 60},
+            "mac-b": {"instance_id": "mac-b", "machine": "mac-b", "last_seen": asked_at + 60,
+                      "pack_removals": [{"pack_id": pack_id, "outcome": "kept_in_use",
+                                         "channels": ["Night Falls"]}],
+                      "pack_removals_at": asked_at + 60},
+        }
+        path = self.data_dir / "story-instances.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(instances), encoding="utf-8")
+        self.addCleanup(path.unlink, missing_ok=True)
+
+        shelf = self.client.get("/admin/api/content-shelf").json()
+        row = next(x for x in shelf["releases"] if x["release_id"] == pub["release"]["release_id"])
+        report = row["remove_report"]
+        self.assertEqual((report["removed_count"], report["total_instances"], report["reported_count"]),
+                         (1, 2, 2))
+        self.assertEqual(report["kept_in_use"][0]["machine"], "mac-b")
+        self.assertEqual(report["kept_in_use"][0]["channels"], ["Night Falls"])
+
+        # A Mac that last reported BEFORE the owner asked answers nothing: "not reported yet".
+        instances["mac-b"]["pack_removals_at"] = asked_at - 60
+        path.write_text(json.dumps(instances), encoding="utf-8")
+        shelf = self.client.get("/admin/api/content-shelf").json()
+        row = next(x for x in shelf["releases"] if x["release_id"] == pub["release"]["release_id"])
+        self.assertEqual(row["remove_report"]["removed_count"], 1)
+        self.assertEqual(row["remove_report"]["reported_count"], 1)
+        self.assertEqual(row["remove_report"]["not_reported"], ["mac-b"])
+
+        # No ask → no report is drawn at all.
+        content_delivery.set_remove_from_installs(pack_id, enabled=False)
+        shelf = self.client.get("/admin/api/content-shelf").json()
+        row = next(x for x in shelf["releases"] if x["release_id"] == pub["release"]["release_id"])
+        self.assertNotIn("remove_report", row)
 
 
 if __name__ == "__main__":

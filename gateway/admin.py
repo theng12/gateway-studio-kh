@@ -3613,8 +3613,29 @@ def content_library() -> dict[str, Any]:
 
 @router.get("/api/content-shelf", dependencies=[Depends(require_admin)])
 def content_shelf() -> dict[str, Any]:
-    from . import content_delivery
-    return content_delivery.status()
+    """The shelf, plus what each Story Mac last said it did with a removal ask.
+
+    The shelf and the Story Macs are two authorities, so the merge happens here rather than in
+    either module: `content_delivery` owns the packs, `story_releases` owns the Macs.
+    """
+    from . import content_delivery, story_releases
+    data = content_delivery.status()
+    asked: dict[str, float] = {}
+    for row in data.get("releases") or []:
+        stamp = row.get("remove_from_installs_at")
+        if row.get("remove_from_installs") and isinstance(stamp, (int, float)):
+            # A Mac reports a pack by id, not by version, so it answers this pack's **latest**
+            # ask: a report from before the newest request must not read as a current answer.
+            asked[row["pack_id"]] = max(asked.get(row["pack_id"], 0.0), float(stamp))
+    # Nothing asked about → nothing read: the Story Macs file is only opened when it can answer.
+    reports = story_releases.pack_removal_report(asked) if asked else {}
+    for row in data.get("releases") or []:
+        # Only a pack the owner actually asked about carries a report, so every other row is
+        # exactly the shape it was before this feature existed.
+        report = reports.get(row.get("pack_id"))
+        if report is not None:
+            row["remove_report"] = report
+    return data
 
 
 @router.post("/api/content-shelf/setup", dependencies=[Depends(require_admin)])
@@ -3701,6 +3722,10 @@ async def content_shelf_retire(request: Request) -> Any:
     version = body.get("version")
     confirm_latest = bool(body.get("confirm_latest", False))
     release_id = body.get("release_id")
+    # A durable ask on the customer's Macs is never coerced from a string: `"false"` is not false.
+    remove_from_installs = body.get("remove_from_installs", False)
+    if type(remove_from_installs) is not bool:
+        return _error(422, "remove_from_installs must be true or false.", "CONTENT_REQUEST_INVALID")
 
     if not pack_id and not release_id:
         return _error(422, "pack_id or release_id is required.")
@@ -3719,6 +3744,55 @@ async def content_shelf_retire(request: Request) -> Any:
             str(pack_id),
             str(version) if version else None,
             confirm_latest=confirm_latest,
+            remove_from_installs=remove_from_installs,
+        )
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
+@router.post("/api/content-shelf/remove-from-installs", dependencies=[Depends(require_admin)])
+async def content_shelf_remove_from_installs(request: Request) -> Any:
+    """Ask every Story app to remove a retired pack, or withdraw that ask.
+
+    The same decision `retire` can make in one call, for a pack already retired. Only a retired
+    pack may carry it: a live pack is one customers can still install.
+    """
+    from . import content_delivery
+    from .content_packs import _json, PackError
+
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        return _error(415, "This request requires Content-Type: application/json.")
+    try:
+        body = _json(await request.body())
+    except PackError:
+        return _error(422, "Send one unambiguous JSON object.")
+    if not isinstance(body, dict):
+        return _error(422, "Request body must be a JSON object.")
+
+    enabled = body.get("enabled")
+    if type(enabled) is not bool:
+        return _error(422, "enabled must be true or false.", "CONTENT_REQUEST_INVALID")
+    pack_id = body.get("pack_id")
+    version = body.get("version")
+    release_id = body.get("release_id")
+
+    if not pack_id and not release_id:
+        return _error(422, "pack_id or release_id is required.")
+
+    try:
+        if release_id and not pack_id:
+            status = content_delivery.status()
+            target = next((r for r in status.get("releases", []) if r["release_id"] == release_id), None)
+            if not target:
+                return _error(404, f"No release found with release_id '{release_id}'.", "CONTENT_RELEASE_NOT_FOUND")
+            pack_id = target["pack_id"]
+            version = target["version"]
+
+        return await run_in_threadpool(
+            content_delivery.set_remove_from_installs,
+            str(pack_id),
+            str(version) if version else None,
+            enabled=enabled,
         )
     except content_delivery.DeliveryError as exc:
         return _error(exc.status, str(exc), exc.code)

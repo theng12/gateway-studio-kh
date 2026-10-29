@@ -1133,12 +1133,18 @@ function setShelfKindFilter(kind) {
   renderShelfReleases((shelfState.data && shelfState.data.releases) || []);
 }
 // Retire hides a pack from customers and blocks new installs; a Mac that already has it keeps it.
-// Remove (retired packs only) moves the files to the Gateway trash; nothing is deleted.
+// "Also remove from Story apps" is a second, deliberate ask on a retired pack: each Story Mac drops
+// its copy on its next check-in and reports what it did. Remove (retired packs only) moves the
+// files to the Gateway trash; nothing is deleted.
 function shelfRowActions(row) {
   const id = esc(row.release_id || '');
   if (!row.release_id) return '';
   if (row.retired) {
-    return `<button class="sm" data-pack-action="unretire" data-release-id="${id}" onclick="unretirePack('${id}')">Un-retire</button> ` +
+    const ask = row.remove_from_installs
+      ? `<button class="sm" data-pack-action="keep-in-installs" data-release-id="${id}" onclick="setPackRemoveFromInstalls('${id}', false)">Keep on Story apps</button> `
+      : `<button class="sm" data-pack-action="remove-from-installs" data-release-id="${id}" onclick="setPackRemoveFromInstalls('${id}', true)">Also remove from Story apps</button> `;
+    return ask +
+           `<button class="sm" data-pack-action="unretire" data-release-id="${id}" onclick="unretirePack('${id}')">Un-retire</button> ` +
            `<button class="sm" data-pack-action="remove" data-release-id="${id}" onclick="removePack('${id}')">Remove…</button>`;
   }
   return `<button class="sm" data-pack-action="retire" data-release-id="${id}" onclick="retirePack('${id}')">Retire…</button>`;
@@ -1164,14 +1170,57 @@ async function retirePack(releaseId) {
     ? `Retire ${name}?\n\nThis is the newest version. Customers will stop seeing it in Studio Library and cannot install it new. Macs that already installed it keep working. You can un-retire it later.`
     : `Retire ${name}?\n\nIt will be hidden and cannot be installed new. Macs that already installed it keep working. You can un-retire it later.`;
   if (!confirm(text)) return;
-  await shelfPackAction('/content-shelf/retire', {release_id: releaseId, confirm_latest: newest},
-    `${name} is retired. Nothing was deleted.`);
+  // A second question, because removing customers' copies is a different decision from hiding the
+  // pack, and it is off unless the owner answers yes here.
+  const alsoRemove = confirm(`Also remove ${name} from every Story app?\n\nEach Story Mac drops this pack the next time it checks in, and reports what it did. A Mac using the pack in a channel may keep it. Retiring alone leaves every Mac's copy untouched.\n\nOK = also remove from Story apps · Cancel = retire only, Macs keep the pack.`);
+  await shelfPackAction('/content-shelf/retire', {release_id: releaseId, confirm_latest: newest, remove_from_installs: alsoRemove},
+    alsoRemove
+      ? `${name} is retired and every Story app is told to remove it. Nothing was deleted on this Gateway.`
+      : `${name} is retired. Nothing was deleted. Story apps keep the copy they have.`);
 }
 async function unretirePack(releaseId) {
   const row = shelfRelease(releaseId);
   if (!row) return;
   await shelfPackAction('/content-shelf/unretire', {release_id: releaseId},
-    `${row.title || row.pack_id} v${row.version} is back on the shelf.`);
+    `${row.title || row.pack_id} v${row.version} is back on the shelf. Any removal request is withdrawn; a copy already gone does not come back.`);
+}
+async function setPackRemoveFromInstalls(releaseId, enabled) {
+  const row = shelfRelease(releaseId);
+  if (!row || !row.retired) return;
+  const name = `${row.title || row.pack_id} v${row.version}`;
+  const text = enabled
+    ? `Remove ${name} from every Story app?\n\nEach Story Mac drops this pack the next time it checks in, and reports what it did. A Mac using the pack in a channel may keep it. Nothing is deleted on this Gateway.`
+    : `Keep ${name} on every Story app?\n\nThe removal request is withdrawn and each Mac is told to keep the pack. A copy already removed does not come back.`;
+  if (!confirm(text)) return;
+  await shelfPackAction('/content-shelf/remove-from-installs', {release_id: releaseId, enabled},
+    enabled
+      ? `${name} is marked for removal from every Story app. Each Mac reports what it did.`
+      : `The removal request for ${name} is withdrawn. Story apps keep it.`);
+}
+// What each Story Mac last said it did with a removal ask. "Not reported yet" is said in those
+// words — one Mac's silence is never drawn as a removal.
+function shelfRemovalReport(row) {
+  if (!row || !row.remove_from_installs) return '';
+  const asked = row.remove_from_installs_at
+    ? ` ${esc(new Date(row.remove_from_installs_at * 1000).toLocaleString())}` : '';
+  const report = row.remove_report;
+  if (!report || !report.total_instances) {
+    return `<div class="muted">Removal requested${asked} · no Story Mac has checked in yet.</div>`;
+  }
+  if (!report.reported_count) {
+    return `<div class="muted">Removal requested${asked} · not reported yet by any of ${report.total_instances} Story Macs.</div>`;
+  }
+  const parts = [`removed on ${report.removed_count} of ${report.total_instances} Story Macs`];
+  for (const item of report.kept_in_use || []) {
+    const why = (item.channels && item.channels.length) ? `: used by channel ${item.channels.join(', ')}`
+      : (item.detail ? `: ${item.detail}` : '');
+    parts.push(`kept on ${item.machine}${why}`);
+  }
+  for (const item of report.failed || []) {
+    parts.push(`failed on ${item.machine}${item.detail ? `: ${item.detail}` : ''}`);
+  }
+  if ((report.not_reported || []).length) parts.push(`not reported yet: ${report.not_reported.join(', ')}`);
+  return `<div class="muted">${esc(parts.join(' · '))}</div>`;
 }
 async function removePack(releaseId) {
   const row = shelfRelease(releaseId);
@@ -1200,7 +1249,7 @@ function renderShelfReleases(releases) {
           <td><span class="pill">${esc(shelfKindLabel(row.kind))}</span></td>
           <td class="title">${esc(row.title || row.pack_id || 'Untitled pack')}</td>
           <td class="muted">v${esc(row.version || '?')}</td>
-          <td class="muted">${row.retired ? 'Retired — hidden from customers' : (row.current ? 'Current release' : 'Previous release')} · ${row.available ? 'Available' : 'Unavailable'} · Not installed here</td>
+          <td class="muted">${row.retired ? 'Retired — hidden from customers' : (row.current ? 'Current release' : 'Previous release')} · ${row.available ? 'Available' : 'Unavailable'} · Not installed here${shelfRemovalReport(row)}</td>
           <td>${shelfRowActions(row)}</td>
         </tr>`).join('')}</tbody></table></div>
     </section>`;

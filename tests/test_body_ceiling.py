@@ -120,6 +120,7 @@ _SELF_BOUNDED = {
     "/admin/login": 4 * MB,
     # `admin._json_body` reads the stream with its own 4 MiB bound.
     "/admin/api/content-shelf/remove": 4 * MB,
+    "/admin/api/content-shelf/remove-from-installs": 4 * MB,
     "/admin/api/content-shelf/retire": 4 * MB,
     "/admin/api/content-shelf/unretire": 4 * MB,
 }

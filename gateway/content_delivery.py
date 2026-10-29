@@ -479,6 +479,13 @@ def _release_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
             entry["retired"] = True
             if row.get("retired_at"):
                 entry["retired_at"] = row["retired_at"]
+            # **Retire keeps the pack; this asks Story to remove it.** The flag is always a bool so
+            # a client never has to guess, and its stamp is unix seconds because that is the wire
+            # contract Story's client is built against (`retired_at` above stays the shelf's own
+            # ISO stamp; the two units differ on purpose and neither is derived from the other).
+            entry["remove_from_installs"] = bool(row.get("remove_from_installs", False))
+            if row.get("remove_from_installs_at"):
+                entry["remove_from_installs_at"] = row["remove_from_installs_at"]
         result.append(entry)
     return result
 
@@ -789,6 +796,30 @@ def account(state: dict[str, Any] | None = None) -> dict[str, Any]:
     })
 
 
+def _retired_pack_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every retired release, so a Story Mac can act on the owner's ask.
+
+    A retired pack is deliberately **absent from `products`**: it must not appear in Studio Library
+    as something to install. But Story still has to learn the pack id before it can remove a copy it
+    already has, and the catalogue read is the one call every Story Mac already makes. So the same
+    response carries this minimal list beside the catalogue rather than a second endpoint nothing
+    would call.
+
+    The two timestamps carry different units on purpose: `retired_at` is the shelf's own ISO stamp
+    (as `releases` publishes it), and `remove_from_installs_at` is unix seconds, which is the wire
+    contract Story's client is built against.
+    """
+    rows = [row for row in _release_rows(state) if row.get("retired")]
+    rows.sort(key=lambda row: (str(row.get("pack_id") or ""), _version(row["version"])))
+    return [{
+        "pack_id": row["pack_id"],
+        "release_id": row["release_id"],
+        "retired_at": row.get("retired_at"),
+        "remove_from_installs": bool(row.get("remove_from_installs", False)),
+        "remove_from_installs_at": row.get("remove_from_installs_at"),
+    } for row in rows]
+
+
 def products(story_version: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
     state = state if state is not None else _configured_state()
     try:
@@ -822,7 +853,7 @@ def products(story_version: str, state: dict[str, Any] | None = None) -> dict[st
             "bundle_components": [], "owned_component_credit_value": 0, "showcase_videos": [],
             "cover": None, "hero": None, "tags": row["tags"], "license": None, "discount": None,
         })
-    return _bounded({"products": rows})
+    return _bounded({"products": rows, "retired_packs": _retired_pack_rows(state)})
 
 
 def shelves(story_version: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1002,7 +1033,8 @@ def _bounded(value: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
-def retire_pack(pack_id: str, version: str | None = None, *, confirm_latest: bool = False) -> dict[str, Any]:
+def retire_pack(pack_id: str, version: str | None = None, *, confirm_latest: bool = False,
+                remove_from_installs: bool = False) -> dict[str, Any]:
     """Mark a published pack (pack id + version, or whole pack) as retired.
 
     Its archive and records stay on disk. Retired packs are hidden from the
@@ -1011,6 +1043,14 @@ def retire_pack(pack_id: str, version: str | None = None, *, confirm_latest: boo
 
     Retiring the only or newest version hides the pack from the customer catalogue
     and requires explicit confirmation (confirm_latest=True).
+
+    **`remove_from_installs` is a second, deliberate decision** (owner, 2026-10-29): retire alone
+    hides the pack and leaves every Mac's copy alone, and only this flag asks each Story app to
+    drop it. It is stored on the retired row as a bool plus unix seconds, published to Story on the
+    catalogue read, and **only ever written when true** — a plain retire must not clear an ask the
+    owner already made, because the ask is withdrawn by `set_remove_from_installs(..., enabled=False)`
+    or by un-retiring, never by a default. A later one-off ask on an already-retired pack is the
+    same field through that function, so both doors cannot drift apart.
     """
     if not pack_id:
         raise DeliveryError("pack_id is required.", 422, "PACK_ID_REQUIRED")
@@ -1046,25 +1086,95 @@ def retire_pack(pack_id: str, version: str | None = None, *, confirm_latest: boo
             )
 
         now = _now()
+        asked_at = _unix_now()
         for r in target_releases:
             r["retired"] = True
             r["retired_at"] = now
+            if remove_from_installs:
+                r["remove_from_installs"] = True
+                r["remove_from_installs_at"] = asked_at
 
         _atomic_state(state)
+        asked = any(r.get("remove_from_installs") for r in target_releases)
         return {
             "ok": True,
             "retired": True,
             "pack_id": pack_id,
             "version": version,
             "affected_versions": [r["version"] for r in target_releases],
+            "remove_from_installs": asked,
+            "remove_from_installs_at": _asked_at(target_releases),
             "customer_impact": ("Customers are offered the newest version that is not retired."
                                 if survivors else
                                 "Hidden from the customer catalogue. Existing installs keep working; new installs are blocked."),
+            "story_apps": ("Every Story app is told to remove this pack the next time it checks in, "
+                           "and reports what it did." if asked else
+                           "Story apps keep the copy they already have."),
         }
 
 
+def set_remove_from_installs(pack_id: str, version: str | None = None, *, enabled: bool = True) -> dict[str, Any]:
+    """Ask every Story app to remove a retired pack — or withdraw the ask.
+
+    The later half of the same decision `retire_pack` can make in one call. **Only a retired pack
+    may carry it**: a live pack is one customers can still install, so "remove it from every Mac"
+    is not a thing to set quietly on the shelf.
+    """
+    if not pack_id:
+        raise DeliveryError("pack_id is required.", 422, "PACK_ID_REQUIRED")
+    with _lock():
+        state = _read_state()
+        all_for_pack = [row for row in state["releases"] if row.get("pack_id") == pack_id]
+        if not all_for_pack:
+            raise DeliveryError(f"No published release found for pack_id '{pack_id}'.", 404, "CONTENT_RELEASE_NOT_FOUND")
+        target_releases = all_for_pack if version is None else [r for r in all_for_pack if r.get("version") == version]
+        if not target_releases:
+            raise DeliveryError(f"No release found for pack_id '{pack_id}' version '{version}'.", 404, "CONTENT_RELEASE_NOT_FOUND")
+        live = [r for r in target_releases if not r.get("retired")]
+        if live:
+            raise DeliveryError(
+                f"'{live[0].get('title', pack_id)}' v{live[0]['version']} is not retired. "
+                "Retire a pack before asking Story apps to remove it.", 409, "CONTENT_PACK_NOT_RETIRED")
+
+        asked_at = _unix_now()
+        for r in target_releases:
+            if enabled:
+                r["remove_from_installs"] = True
+                r["remove_from_installs_at"] = asked_at
+            else:
+                r.pop("remove_from_installs", None)
+                r.pop("remove_from_installs_at", None)
+
+        _atomic_state(state)
+        return {
+            "ok": True,
+            "pack_id": pack_id,
+            "version": version,
+            "affected_versions": [r["version"] for r in target_releases],
+            "remove_from_installs": bool(enabled),
+            "remove_from_installs_at": _asked_at(target_releases),
+        }
+
+
+def _unix_now() -> int:
+    """Unix seconds, for the one timestamp whose contract is Story's (`remove_from_installs_at`)."""
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _asked_at(rows: list[dict[str, Any]]) -> int | None:
+    """The latest ask across the targeted rows, or None when no row carries one."""
+    stamps = [row.get("remove_from_installs_at") for row in rows if row.get("remove_from_installs")]
+    return max(stamps) if stamps else None
+
+
 def unretire_pack(pack_id: str, version: str | None = None) -> dict[str, Any]:
-    """Reactivate a retired pack or version."""
+    """Reactivate a retired pack or version.
+
+    **Un-retiring withdraws the removal ask too.** A pack that is back on the shelf is one a Mac may
+    install again, so leaving "remove it from every Story app" standing would delete the very copy
+    the owner just made available. Whatever is already gone does not come back, and the shelf says
+    so rather than implying a restore.
+    """
     if not pack_id:
         raise DeliveryError("pack_id is required.", 422, "PACK_ID_REQUIRED")
     with _lock():
@@ -1080,6 +1190,8 @@ def unretire_pack(pack_id: str, version: str | None = None) -> dict[str, Any]:
         for r in target_releases:
             r["retired"] = False
             r.pop("retired_at", None)
+            r.pop("remove_from_installs", None)
+            r.pop("remove_from_installs_at", None)
 
         _atomic_state(state)
         return {
@@ -1088,6 +1200,10 @@ def unretire_pack(pack_id: str, version: str | None = None) -> dict[str, Any]:
             "pack_id": pack_id,
             "version": version,
             "affected_versions": [r["version"] for r in target_releases],
+            "remove_from_installs": False,
+            "remove_from_installs_at": None,
+            "story_apps": ("The removal request is withdrawn. Story apps keep the pack from now on; "
+                           "a copy already removed does not come back."),
         }
 
 

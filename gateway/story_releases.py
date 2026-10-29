@@ -272,6 +272,42 @@ def _moved(was: object, current: dict[str, Any], prior: object, now: float) -> f
     return float(prior) if isinstance(prior, (int, float)) else now
 
 
+#: What a Story app says it did with a pack the owner asked it to remove. **Only these three
+#: words**, and nothing is inferred: an unknown outcome is dropped rather than stored, because
+#: "removed" is a claim about a customer's machine and a guess there is the worst kind.
+_REMOVAL_OUTCOMES = ("removed", "kept_in_use", "failed")
+_MAX_REMOVALS = 200
+_MAX_CHANNELS = 50
+
+
+def _removals(value: Any) -> list[dict[str, Any]]:
+    """One Mac's report on the packs it was asked to remove, exactly as the Mac stated it.
+
+    A pack is reported once (the last entry wins), so a Mac cannot count twice for itself. A field
+    the Mac left out stays `None`/empty — never a word we supply — and `channels` is only what the
+    Mac named.
+    """
+    if not isinstance(value, list):
+        return []
+    out: dict[str, dict[str, Any]] = {}
+    for item in value[:_MAX_REMOVALS]:
+        if not isinstance(item, dict):
+            continue
+        pack_id = _text(item.get("pack_id"), 200)
+        outcome = _text(item.get("outcome"), 20)
+        if not pack_id or outcome not in _REMOVAL_OUTCOMES:
+            continue
+        channels = item.get("channels")
+        out[pack_id] = {
+            "pack_id": pack_id,
+            "outcome": outcome,
+            "channels": [name for name in (_text(entry, 120) for entry in channels[:_MAX_CHANNELS])
+                         if name] if isinstance(channels, list) else [],
+            "detail": _text(item.get("detail"), 400),
+        }
+    return list(out.values())
+
+
 def checkin(payload: dict[str, Any]) -> dict[str, Any]:
     """Record one Story Mac's report; answer with the release and any "Update now"."""
     instance = _text(payload.get("instance_id"), 100)
@@ -290,6 +326,9 @@ def checkin(payload: dict[str, Any]) -> dict[str, Any]:
         "server_mode": payload.get("server_mode") is True,
         "last_seen": now,
     }
+    if "pack_removals" in payload:
+        record["pack_removals"] = _removals(payload.get("pack_removals"))
+        record["pack_removals_at"] = now
     update = payload.get("update") if isinstance(payload.get("update"), dict) else {}
     if "request_id" in update:
         record["update"]["request_id"] = _text(update.get("request_id"), 100) or None
@@ -297,6 +336,13 @@ def checkin(payload: dict[str, Any]) -> dict[str, Any]:
     with _lock:
         rows = _read_json(_instances_file())
         previous = rows.get(instance) if isinstance(rows.get(instance), dict) else {}
+        if "pack_removals" not in payload:
+            # An older Story states nothing. Keeping the last thing it said is honest — removals
+            # are one-shot acts and the report carries when it was made — while reading absence
+            # as "removed nothing" would not be.
+            record["pack_removals"] = previous.get("pack_removals") if isinstance(
+                previous.get("pack_removals"), list) else []
+            record["pack_removals_at"] = previous.get("pack_removals_at")
         record["update_progress_at"] = _moved(
             previous.get("update"), record["update"], previous.get("update_progress_at"), now)
         requested = previous.get("update_requested_at")
@@ -343,6 +389,56 @@ def request_update(instance: str) -> dict[str, Any]:
         row["update_request_previous_failure"] = update if update.get("phase") in ("failed", "rolled_back") else None
         _write_json(_instances_file(), rows)
     return status_row(row, current(), time.time())
+
+
+def pack_removal_report(asked_at: dict[str, float]) -> dict[str, dict[str, Any]]:
+    """What each Story Mac last said it did with each pack the owner asked it to remove.
+
+    `asked_at` maps a pack id to the moment the ask was made. **A Mac counts only when it checked
+    in after that moment**: a report from before the ask answers a question nobody had asked yet,
+    and the whole point of this view is that "not reported yet" never reads as "removed". Macs that
+    have never checked in at all are not counted at all — they are unknown, not zero.
+
+    Every outcome is the Mac's own word. Nothing here derives one, and a Mac that named no channel
+    is simply not credited with one.
+    """
+    rows = [row for row in _read_json(_instances_file()).values() if isinstance(row, dict)]
+    rows.sort(key=lambda row: str(row.get("machine") or row.get("instance_id") or "").lower())
+    out: dict[str, dict[str, Any]] = {}
+    for pack_id, asked in asked_at.items():
+        report: dict[str, Any] = {
+            "pack_id": pack_id,
+            "asked_at": asked,
+            "total_instances": len(rows),
+            "reported_count": 0,
+            "removed_count": 0,
+            "removed": [], "kept_in_use": [], "failed": [], "not_reported": [],
+        }
+        for row in rows:
+            name = str(row.get("machine") or row.get("instance_id") or "")
+            entries = row.get("pack_removals")
+            entry = next((item for item in entries if isinstance(item, dict)
+                          and item.get("pack_id") == pack_id), None) if isinstance(entries, list) else None
+            reported_at = row.get("pack_removals_at")
+            if entry is None or not isinstance(reported_at, (int, float)) or reported_at < asked:
+                report["not_reported"].append(name)
+                continue
+            item = {
+                "machine": name,
+                "instance_id": row.get("instance_id"),
+                "outcome": entry.get("outcome"),
+                "channels": entry.get("channels") or [],
+                "detail": entry.get("detail"),
+                "reported_at": reported_at,
+            }
+            report["reported_count"] += 1
+            if entry.get("outcome") == "removed":
+                report["removed_count"] += 1
+            bucket = report.get(str(entry.get("outcome")))
+            if isinstance(bucket, list):
+                bucket.append(item)
+        out[pack_id] = report
+    return out
 
 
 def status_row(row: dict[str, Any], release: dict[str, Any] | None, now: float) -> dict[str, Any]:

@@ -2330,11 +2330,22 @@ class JobStore:
             )
 
     def mark_running(self, job_id: str) -> bool:
-        """Claim only work still accepted, not a cancelled row in an old snapshot."""
+        """Claim only work still accepted, not a cancelled row in an old snapshot.
+
+        **A claim starts a new attempt, so the previous attempt's stamps go with it.** This used to
+        clear `dispatch_started_at` (the queue-wait statistic's column) and nothing else, so a job
+        claimed for a second attempt still carried the first attempt's `attempt_started_at` and
+        `restart_resent_at`. `worker._silent_since` reads the latest of the three, so the tiny
+        claim→`begin_dispatch` window measured silence from an old attempt and the liveness sweep
+        could fail the job `PROVIDER_TIMEOUT` — retryable — before its own send. Clearing both makes
+        the claim's `updated_at` the floor until a send stamps its own attempt.
+        """
         with self._lock:
             result = self._conn.execute(
                 """UPDATE jobs SET state = 'running', next_action_at = NULL,
                                    dispatch_started_at = NULL,
+                                   attempt_started_at = NULL,
+                                   restart_resent_at = NULL,
                                    attempt_count = attempt_count + 1,
                                    defer_reason = NULL,
                                    updated_at = ?

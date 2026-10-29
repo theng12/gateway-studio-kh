@@ -772,5 +772,67 @@ class PoolMemberBusyDefersTest(_Base):
         self.assertIsNone(row["recovery_state"], "a wait is not a hold")
 
 
+# ── 5. A claim begins a new attempt (0.2.209) ────────────────────────────
+class ClaimWindowTest(_Base):
+    """`mark_running` cleared `dispatch_started_at` and nothing else.
+
+    A claim and `begin_dispatch` are two steps, so between them the row still carried the
+    **previous** attempt's `attempt_started_at` / `restart_resent_at`. `_silent_since` reads the
+    latest of the three stamps, so a job claimed after a long first attempt measured silence from
+    that old attempt: in a slow claim→send window the liveness sweep failed it `PROVIDER_TIMEOUT` —
+    retryable — before its own send, and a retryable failure on work that may be live upstream is
+    exactly what makes Story submit it again.
+    """
+
+    def _age_previous_attempt(self, job_id: str, seconds: float = 3 * 3600) -> float:
+        old = time.time() - seconds
+        with self.store._lock:
+            self.store._conn.execute(
+                "UPDATE jobs SET attempt_started_at = ?, restart_resent_at = ?, "
+                "dispatch_started_at = ? WHERE id = ?", (old, old, old, job_id))
+            self.store._conn.commit()
+        return old
+
+    def test_a_claim_clears_the_previous_attempts_stamps(self) -> None:
+        job_id = self.job()
+        old = self._age_previous_attempt(job_id)
+        self.assertLessEqual(worker_module._silent_since(self.store.get(job_id)), old)
+
+        self.assertTrue(self.store.mark_running(job_id))
+        row = self.store.get(job_id)
+        self.assertIsNone(row["attempt_started_at"], "a claim starts a new attempt")
+        self.assertIsNone(row["restart_resent_at"], "a claim starts a new attempt")
+        self.assertIsNone(row["dispatch_started_at"], "the queue-wait statistic still reads NULL")
+        self.assertGreater(worker_module._silent_since(row), old + 3600,
+                           "the claim itself is the floor until a send stamps its own attempt")
+
+    def test_the_sweep_does_not_fail_the_job_between_its_claim_and_its_send(self) -> None:
+        worker = Worker(self.store, interval_s=10.0, pool_size=0)
+        job_id = self.job()
+        self._age_previous_attempt(job_id)
+        self.assertTrue(self.store.mark_running(job_id))
+        worker._running[job_id] = self.store.get(job_id)
+        out = worker._check_running_liveness()
+        self.assertEqual({"checked": 1, "said_something": 0, "failed": 0}, out)
+        row = self.store.get(job_id)
+        self.assertEqual("running", row["state"])
+        self.assertIsNone(row["error_code"])
+
+    def test_the_send_after_the_claim_still_stamps_its_own_attempt(self) -> None:
+        # The protection is the claim's floor, not a missing stamp: opening the window still
+        # writes both columns, so a send that really goes silent is still ended by the sweep.
+        job_id = self.job()
+        self.assertTrue(self.store.mark_running(job_id))
+        self.assertTrue(self.store.begin_dispatch(job_id))
+        row = self.store.get(job_id)
+        self.assertIsNotNone(row["dispatch_started_at"])
+        self.assertIsNotNone(row["attempt_started_at"])
+
+
+def seconds_of(old: float) -> float:
+    """A comparison margin that cannot pass by luck: the old stamp is hours behind the claim."""
+    return 3600.0
+
+
 if __name__ == "__main__":
     unittest.main()
