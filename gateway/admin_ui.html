@@ -6045,12 +6045,14 @@ function fleetOrphanJob(o) {
 // some are still pending. "Signalled" means **not yet stopped** and is said in those words.
 function fleetCancelAnswer(result) {
   if (!result || typeof result !== 'object') return 'the Hub gave no answer';
+  const hub = result.answer && typeof result.answer === 'object' ? result.answer : {};
+  if (result.ok === false) return `the Hub refused: ${result.error || hub.detail || result.reason || 'no reason reported'}`;
   const parts = [];
-  if (result.queued_cancelled != null) parts.push(`${result.queued_cancelled} queued cancelled`);
-  if (result.running_signalled != null) {
-    parts.push(`${result.running_signalled} running signalled — not yet stopped`);
+  if (hub.queued_cancelled != null) parts.push(`${hub.queued_cancelled} queued cancelled`);
+  if (hub.running_signalled != null) {
+    parts.push(`${hub.running_signalled} running signalled — not yet stopped`);
   }
-  if (result.running_pending != null) parts.push(`${result.running_pending} still pending`);
+  if (hub.running_pending != null) parts.push(`${hub.running_pending} still pending`);
   return parts.length ? parts.join(' · ') : 'the Hub answered without a count';
 }
 

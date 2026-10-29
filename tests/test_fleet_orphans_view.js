@@ -42,7 +42,7 @@ function element(extra = {}) {
     querySelector: () => null, ...extra };
 }
 
-function context(snapshot, answer = { queued_cancelled: 2, running_signalled: 1, running_pending: 0 }) {
+function context(snapshot, answer = { ok: true, answer: { queued_cancelled: 2, running_signalled: 1, running_pending: 0 } }) {
   const nodes = new Map([
     ['fleet-body', element()], ['fleet-summary', element()], ['fleet-issues', element()],
     ['fleet-filter', element()], ['fleet-sort', element()], ['fleet-threshold', element()],
@@ -161,6 +161,14 @@ test('Stop posts the orphan flag and says a signalled worker is not yet stopped'
   assert.equal(JSON.parse(sent[0].opts.body).modality, 'image');
   const html = ctx.nodes.get('fleet-orphans').innerHTML;
   assert.match(html, /running signalled — not yet stopped/);
+});
+
+test('a Hub refusal is shown instead of a successful stop', async () => {
+  const ctx = context(payload([site([orphan()])]), { ok: false, answer: { detail: 'batch is busy' } });
+  await ctx.loadFleet();
+  await ctx.stopOrphan({ dataset: { site: 'L1', batch: 'b-old', modality: 'image' },
+    parentElement: { querySelector: () => null }, disabled: false });
+  assert.match(ctx.nodes.get('fleet-orphans').innerHTML, /the Hub refused: batch is busy/);
 });
 
 test('a site that timed out reads "not checked", never "no orphaned batches"', async () => {
