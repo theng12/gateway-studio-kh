@@ -16,6 +16,24 @@ every feature title, and they are left as they were written.
 
 ## 0.2.209 — 2026-10-29
 
+### The Fleet page sorts itself out: what is offline, what keeps dropping, and the likely cause
+The Machines tab gained four columns. **Health** says *Problematic*, how long a Mac has been
+**Offline** right now, how many **drops** it had, or *Stable*. **Seen** says when it was last up.
+**Drops · 7 days** draws the week and the 24-hour count. **Likely cause** names the reason — a
+credential, a dead site, a slow Ethernet link, Wi-Fi, services not starting at login, a Hub that is
+behind — and the tooltip shows the evidence each answer came from.
+A new **Show** menu (Everything / Offline now / Problematic) and **Sort** menu (Offline first,
+Problematic first, Site, Last seen, Drops in 24 h, Name) make a long fleet readable, and the summary
+has a real **N problematic** short-cut.
+**Problematic** is your own number: *N or more drops in 24 hours*, 4 by default, saved on the Gateway
+from the box on the same strip. A whole site being down counts against the site, not against every
+Mac on it — one dead controller is never five broken Macs. A Mac that is down now never reads
+*Stable*, and a Mac the Gateway has not been able to watch says `—` rather than `0` or *fine*. When
+nothing supports a cause it says **No evidence yet** instead of guessing.
+The Gateway keeps the last seven days in `data/fleet_history.json`; nothing new polls — it records
+the check it already makes — and it writes only when something actually changed. The browser console
+at `/admin` draws the same list from the same verdict.
+
 ### Retire a pack, and — if you mean it — remove it from every Story app
 Retiring a pack in Content Packs still does exactly what it did: the file stays, customers stop
 seeing it, and every Mac that already has it keeps working. Retire now opens one small question —

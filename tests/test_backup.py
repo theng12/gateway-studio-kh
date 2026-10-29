@@ -347,8 +347,9 @@ class BackupTests(unittest.TestCase):
             "voices_state.json",
             "models_cache.json",
             "retention.json",
+            "fleet_health.json",
         ]
-        # Inspect real sources to verify the 10 local settings files are declared
+        # Inspect real sources to verify the 11 local settings files are declared
         real_sources = _REAL_SOURCES()
         roles_dict = dict(real_sources)
         for filename in expected_settings:
@@ -385,6 +386,40 @@ class BackupTests(unittest.TestCase):
             self.assertEqual(os.stat(settings_data / "pools.json").st_mode & 0o777, 0o600)
             safety = Path(result["safety_copy"])
             self.assertEqual((safety / "gateway/data/pools.json").read_text(), '{"setting": "mutated"}\n')
+
+    def test_the_problematic_threshold_is_backed_up(self) -> None:
+        """`fleet_health.json` is a setting the owner chose, so a restore must bring his number back.
+
+        It is only a recovery point if the role names **the file the module actually reads**: a
+        plausible path nothing writes backs up nothing and still looks like a backup.
+        """
+        from gateway import fleet_history
+
+        declared = dict(_REAL_SOURCES())["gateway/data/fleet_health.json"]
+        self.assertEqual(declared, Path(config.DATA_DIR) / "fleet_health.json")
+        self.assertEqual(declared.name, fleet_history.SETTINGS_PATH.name)
+
+        # The owner's own number, chosen through the module's one writer.
+        settings_file = self.live / "data" / "fleet_health.json"
+        with patch.object(fleet_history, "SETTINGS_PATH", settings_file):
+            fleet_history.set_settings({"flapping_drops_day": 9})
+        self.assertEqual(json.loads(settings_file.read_text())["flapping_drops_day"], 9)
+
+        roles = list(self.files.items()) + [("gateway/data/fleet_health.json", settings_file)]
+        with patch.object(backup, "sources", lambda: list(roles)):
+            raw = io.BytesIO()
+            manifest = backup.pack(raw)
+            self.assertIn("gateway/data/fleet_health.json", {e["path"] for e in manifest["files"]})
+            archive = self.root / "fleet_health_test.tar.gz"
+            archive.write_bytes(raw.getvalue())
+
+            settings_file.write_text('{"flapping_drops_day": 4}\n')
+            backup.restore(archive)
+
+        self.assertEqual(json.loads(settings_file.read_text())["flapping_drops_day"], 9)
+        self.assertEqual(os.stat(settings_file).st_mode & 0o777, 0o600)
+        with patch.object(fleet_history, "SETTINGS_PATH", settings_file):
+            self.assertEqual(fleet_history.settings()["flapping_drops_day"], 9)
 
 
 

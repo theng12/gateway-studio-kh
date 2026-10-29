@@ -14,7 +14,8 @@
   transcripts) and this Mac's Studio Hub voices (`StudioHub Standalone/voice/voices/`);
 * the local settings files: `providers.local.json`, `pools.json`, `provider-concurrency.local.json`,
   `model-limits.local.json`, `telegram.json`, `render_optin.json`, `fleet_warnings.json`,
-  `voices_state.json`, `models_cache.json`, `retention.json`.
+  `voices_state.json`, `models_cache.json`, `retention.json`, `fleet_health.json` (the owner's
+  *problematic* threshold; the 7-day history beside it is observed and comes back on its own).
 
 Nothing else - job history, analytics, artifacts and transient caches are recreatable or
 disposable (owner's call). Not encrypted, by owner decision: the archive is mode 0600, like the
@@ -126,6 +127,7 @@ def sources() -> list[tuple[str, Path]]:
         ("gateway/data/voices_state.json", data / "voices_state.json"),
         ("gateway/data/models_cache.json", data / "models_cache.json"),
         ("gateway/data/retention.json", data / "retention.json"),
+        ("gateway/data/fleet_health.json", data / "fleet_health.json"),
     ]
 
 
