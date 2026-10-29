@@ -144,6 +144,112 @@ class ATranstionIsRecordedOnce(HistoryCase):
         self.assertEqual(history["drops_day"], 0)
 
 
+class ADropHasALengthAndARecoveryCause(HistoryCase):
+    """How long a drop lasted, and whether it came back by itself (owner, 2026-10-30).
+
+    A count alone cannot tell a Mac that dropped once for two minutes from one that drops every
+    eight minutes. Every figure here is derived from the recorded transitions; a length nobody
+    watched end is `None`, never a short one.
+    """
+
+    def drop_once(self, *, away: float, back: bool = True) -> None:
+        self.observe([machine()])
+        self.advance(60)
+        self.observe([machine(up=False, reach_reason="unreachable")])
+        self.advance(away)
+        if back:
+            self.observe([machine()])
+
+    def test_a_completed_drop_has_its_length(self) -> None:
+        self.drop_once(away=120)
+        history = fleet_history.summary("m:L1/m1")
+        self.assertEqual(history["last_drop"]["duration_seconds"], 120)
+        self.assertEqual(history["drop_median_seconds"], 120)
+        self.assertEqual(history["drop_longest_seconds"], 120)
+        self.assertEqual(history["drops_completed"], 1)
+        # One drop has no gap between drops — `None`, not zero.
+        self.assertIsNone(history["drop_gap_seconds"])
+
+    def test_a_recovery_with_no_startup_action_is_by_itself(self) -> None:
+        with mock.patch.object(fleet_history, "_startup_events", return_value=[]):
+            self.drop_once(away=60)
+            history = fleet_history.summary("m:L1/m1")
+        self.assertEqual(history["last_drop"]["recovered_by"], "by_itself")
+
+    def test_a_recovery_after_a_restart_request_names_it(self) -> None:
+        # The audit proves a restart was asked for two minutes before the Mac answered again.
+        events = [{"at": self.now - 120, "event": "requested", "controller": "L1",
+                   "machine": "m1", "action": "restart_services"}]
+        with mock.patch.object(fleet_history, "_startup_events", return_value=events):
+            self.drop_once(away=180)
+            history = fleet_history.summary("m:L1/m1")
+        self.assertEqual(history["last_drop"]["recovered_by"], "after_startup_action")
+
+    def test_an_action_for_another_machine_is_not_this_one(self) -> None:
+        events = [{"at": self.now - 60, "event": "requested", "controller": "L1",
+                   "machine": "other", "action": "restart_services"}]
+        with mock.patch.object(fleet_history, "_startup_events", return_value=events):
+            self.drop_once(away=60)
+            history = fleet_history.summary("m:L1/m1")
+        self.assertEqual(history["last_drop"]["recovered_by"], "by_itself")
+
+    def test_a_drop_still_running_has_no_length(self) -> None:
+        self.drop_once(away=120, back=False)
+        history = fleet_history.summary("m:L1/m1")
+        self.assertIsNone(history["last_drop"]["duration_seconds"])
+        self.assertTrue(history["last_drop"]["ongoing"])
+        self.assertEqual(history["last_drop"]["recovered_by"], "unknown")
+        self.assertIsNone(history["drop_longest_seconds"])
+
+    def test_median_longest_and_the_gap_between_drops(self) -> None:
+        # Three drops, each lasting a different time, with a different wait before each.
+        self.observe([machine()])
+        for away, gap_before in ((100, 60), (300, 600), (200, 1200)):
+            self.advance(gap_before)
+            self.observe([machine(up=False, reach_reason="unreachable")])
+            self.advance(away)
+            self.observe([machine()])
+        history = fleet_history.summary("m:L1/m1")
+        self.assertEqual(history["drops_completed"], 3)
+        self.assertEqual(history["drop_median_seconds"], 200)
+        self.assertEqual(history["drop_longest_seconds"], 300)
+        self.assertIsNotNone(history["drop_gap_seconds"])
+
+    def test_the_problematic_basis_says_what_was_counted(self) -> None:
+        snapshot = {"locations": [location()], "machines": [machine()]}
+        self.observe([machine()], [location()])
+        for _ in range(5):
+            self.advance(60)
+            self.observe([machine(up=False, reach_reason="unreachable")], [location()])
+            self.advance(120)
+            self.observe([machine()], [location()])
+        fleet_history.annotate(snapshot)
+        history = snapshot["machines"][0]["history"]
+        self.assertTrue(history["problematic"])
+        basis = history["problematic_basis"]
+        self.assertIn("5 drops in 24 h", basis)
+        self.assertIn("threshold 4", basis)
+        self.assertIn("longest 2 min", basis)
+        self.assertIn("median 2 min", basis)
+
+    def test_an_unmeasured_length_says_so_and_is_not_zero(self) -> None:
+        snapshot = {"locations": [location()], "machines": [machine()]}
+        self.observe([machine()], [location()])
+        self.advance(60)
+        self.observe([machine(up=False, reach_reason="unreachable")], [location()])
+        fleet_history.annotate(snapshot)
+        basis = snapshot["machines"][0]["history"]["problematic_basis"]
+        self.assertIn("length not measured", basis)
+
+    def test_every_window_is_named_in_the_read(self) -> None:
+        snapshot = {"locations": [location()], "machines": [machine()]}
+        self.observe([machine()], [location()])
+        fleet_history.annotate(snapshot)
+        windows = snapshot["history_windows"]
+        self.assertEqual(windows["offline_seconds_day"], "last 24 h")
+        self.assertEqual(windows["offline_seconds_week"], "last 7 days")
+
+
 class TheStoreIsBounded(HistoryCase):
     def test_the_history_survives_a_restart(self) -> None:
         self.observe([machine()])

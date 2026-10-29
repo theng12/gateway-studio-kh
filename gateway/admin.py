@@ -48,6 +48,7 @@ from .pricing import row_price
 from . import qualification
 from . import release_publisher, release_rollout
 from . import admin_session, model_share, render_optin, startup_control
+from . import orphans
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
 from .providers import definitions, registry
@@ -1589,6 +1590,21 @@ def set_fleet_health(payload: dict[str, Any]) -> Any:
         return fleet_history.set_settings(payload)
     except ValueError as exc:
         return _error(422, str(exc), "FLEET_HEALTH_SETTING_INVALID")
+
+
+@router.get("/api/settings/fleet-orphans", dependencies=[Depends(require_admin)])
+def get_fleet_orphans() -> dict[str, Any]:
+    """Whether an orphaned Hub batch is stopped automatically. Off unless the owner said so."""
+    return orphans.settings()
+
+
+@router.put("/api/settings/fleet-orphans", dependencies=[Depends(require_admin)])
+def set_fleet_orphans(payload: dict[str, Any]) -> Any:
+    """The auto-stop switch. A value that is not a real boolean is a 422, never a coercion."""
+    try:
+        return orphans.set_settings(payload)
+    except ValueError as exc:
+        return _error(422, str(exc), "FLEET_ORPHANS_SETTING_INVALID")
 
 
 @router.get("/api/settings/concurrency", dependencies=[Depends(require_admin)])
@@ -3983,6 +3999,12 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     # shows on this read, not on the next 15 s fan-out). `fleet_history` is the one place both
     # surfaces get them, so the web page and the app cannot say different things.
     fleet_history.annotate(out)
+    # **Hub batches still running for work that already finished.** Detection, not polling: it
+    # reads the in-flight lists this same fan-out already fetched and matches their ids against the
+    # jobs store. Owner-only like every other `/admin/api` read, and it writes onto the copies above
+    # for the same reason the history does — the cached snapshot must not carry a settings-dependent
+    # answer into routing.
+    orphans.annotate(out, store=store)
     # Read live, never from the cache: hiding a warning kind must show on the next read.
     out["fleet_warnings"] = fleet.warnings_setting()
     # **What the fleet should hold, and what it does.** The publisher identity and
@@ -4256,7 +4278,8 @@ def fleet_test_controller(controller_id: str, payload: dict[str, Any] | None = N
 
 
 def _fleet_job_action(
-    controller_id: str, modality: str, batch_id: str, item_index: int = 0
+    controller_id: str, modality: str, batch_id: str, item_index: int = 0,
+    *, location: dict[str, Any] | None = None,
 ) -> Any:
     """Resolve a location into the adapter and request that acts on one batch.
 
@@ -4265,20 +4288,26 @@ def _fleet_job_action(
     that matters, because a job action aimed at the wrong Hub is either a no-op or
     someone else's work. Returns `(definition, location, request)` on success, or a
     JSON error response to return as-is.
+
+    `location` is passed by the orphan auto-stop, which already holds the row from the fan-out it
+    is reading. A caller that omits it gets the usual snapshot lookup; the lookup is skipped there
+    because that caller runs **inside** `fleet._refresh`, and asking the snapshot for a fleet while
+    the fleet is being built is at best a second fan-out and at worst a wait on ourselves.
     """
     if modality not in MODALITIES:
         return _error(422, f"modality must be one of {', '.join(MODALITIES)}")
-    # `allow_stale`: this is a click, and a live probe of every controller to find
-    # one url would make the action wait on the whole fleet. The page has just read
-    # the snapshot, so it is warm.
-    location = next(
-        (
-            row
-            for row in (fleet.snapshot(allow_stale=True).get("locations") or [])
-            if str(row.get("id")) == controller_id
-        ),
-        None,
-    )
+    if location is None:
+        # `allow_stale`: this is a click, and a live probe of every controller to find
+        # one url would make the action wait on the whole fleet. The page has just read
+        # the snapshot, so it is warm.
+        location = next(
+            (
+                row
+                for row in (fleet.snapshot(allow_stale=True).get("locations") or [])
+                if str(row.get("id")) == controller_id
+            ),
+            None,
+        )
     if location is None:
         return _error(404, "No such location.")
     provider_id = str(location.get("provider_id") or "")
@@ -4301,6 +4330,37 @@ def _fleet_job_action(
     return definition, location, request
 
 
+def cancel_fleet_batch(location: dict[str, Any], batch_id: str,
+                       modality: str) -> dict[str, Any]:
+    """Ask one controller's Hub to stop one batch. Raises `AdminError` on refusal.
+
+    The one implementation behind the Fleet Stop button and the orphan auto-stop, so the two can
+    never aim at different controllers or read the Hub's answer differently.
+    """
+    resolved = _fleet_job_action(str(location.get("id") or ""), modality, batch_id,
+                                 location=location)
+    if not isinstance(resolved, tuple):
+        # Keep the helper's own refusal sentence rather than a generic one: it names the exact
+        # reason (no such location, no provider, a modality nothing serves).
+        try:
+            detail = json.loads(bytes(resolved.body)).get("detail")
+        except (TypeError, ValueError, AttributeError):
+            detail = None
+        raise AdminError(getattr(resolved, "status_code", 400) or 400,
+                         str(detail or "The location or modality is not valid."))
+    definition, _location, request = resolved
+    # `getattr`, not a protocol check: "this lane cannot cancel upstream" is an
+    # answer to report, and most adapters issue a one-shot request with no remote
+    # state to stop.
+    cancel = getattr(adapter_for(definition), "cancel", None)
+    if cancel is None:
+        raise AdminError(400, f"{definition.display_name} cannot cancel work upstream.")
+    try:
+        return cancel(request)
+    except BackendError as exc:
+        raise AdminError(exc.status, exc.detail, exc.code) from exc
+
+
 @router.post(
     "/api/fleet/controllers/{controller_id}/jobs/{batch_id}/cancel",
     dependencies=[Depends(require_admin)],
@@ -4319,22 +4379,47 @@ def fleet_cancel_job(controller_id: str, batch_id: str, payload: dict[str, Any])
     `modality` picks the route: transcription batches live at
     `/api/hub/transcription/jobs` and are invisible to the shared jobs route, so a
     cancel aimed at the wrong one answers 404 at the Hub.
+
+    **`orphan_stop: true` is the orphaned-batch Stop, and it carries a guard.** The Gateway offers
+    that button only for a batch no current Gateway job owns, and only when the job's own record
+    proves its work was kept (`orphans._stop_guard`). The guard is checked here as well as in the
+    page, because "the button was not drawn" is not a refusal: a stale tab or a replayed request
+    must not stop a batch whose result exists only on that Hub. An ordinary cancel (from Jobs) keeps
+    its previous meaning and does not pass this flag.
     """
-    resolved = _fleet_job_action(controller_id, str(payload.get("modality") or "").strip(), batch_id)
-    if not isinstance(resolved, tuple):
-        return resolved
-    definition, location, request = resolved
-    # `getattr`, not a protocol check: "this lane cannot cancel upstream" is an
-    # answer to report, and most adapters issue a one-shot request with no remote
-    # state to stop.
-    cancel = getattr(adapter_for(definition), "cancel", None)
-    if cancel is None:
-        return _error(400, f"{definition.display_name} cannot cancel work upstream.")
+    modality = str(payload.get("modality") or "").strip()
+    if modality not in MODALITIES:
+        return _error(422, f"modality must be one of {', '.join(MODALITIES)}")
+    # The row the page just read, with the address and credential already resolved for it.
+    location = next(
+        (row for row in (fleet.snapshot(allow_stale=True).get("locations") or [])
+         if str(row.get("id")) == controller_id),
+        None,
+    )
+    if location is None:
+        return _error(404, "No such location.")
+    if payload.get("orphan_stop") is True:
+        verdict = _orphan_stop_verdict(location, batch_id)
+        if verdict is None:
+            return _error(409, "This batch is not one of the Gateway's running batches any more.")
+        if verdict.get("classification") != "orphan_superseded":
+            return _error(409, "This batch is not an orphan — its work is still the Gateway's.")
+        if not verdict["stop"]["allowed"]:
+            return _error(409, verdict["stop"]["reason"])
     try:
-        result = cancel(request)
-    except BackendError as exc:
+        result = cancel_fleet_batch(location, batch_id, modality)
+    except AdminError as exc:
         return _error(exc.status, exc.detail, exc.code)
     return {"batch_id": batch_id, "location": location.get("label"), "result": result}
+
+
+def _orphan_stop_verdict(location: dict[str, Any], batch_id: str) -> dict[str, Any] | None:
+    """The orphan entry for one batch at one site, or `None` when no checked read shows it."""
+    result = orphans.analyse([location], store=store)
+    state = result["by_location"].get(str(location.get("id"))) or {}
+    if not state.get("checked"):
+        return None
+    return next((entry for entry in state["orphans"] if entry["batch_id"] == batch_id), None)
 
 
 @router.post(

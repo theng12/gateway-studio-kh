@@ -78,6 +78,11 @@ let fixture = snapshot("""
     "state": "ready", "reachable": true,
     "history": {"observed": true, "online": true, "drops_day": 5, "drops_week": 9,
                 "observed_at": 1759999990, "offline_seconds_week": 5400, "problematic": true,
+                "drop_median_seconds": 120, "drop_longest_seconds": 600, "drop_gap_seconds": 480,
+                "drops_completed": 5,
+                "problematic_basis": "5 drops in 24 h (threshold 4) · longest 10 min · median 2 min",
+                "last_drop": {"at": 1759990000, "reason": "timeout", "text": "the connection timed out",
+                              "duration_seconds": 120, "ongoing": false, "recovered_by": "by_itself"},
                 "days": [{"date": "2026-10-22", "offline_fraction": 0.2}]},
     "causes": [{"code": "flapping", "text": "It keeps dropping out — 5 drops in the last 24 h.",
                 "evidence": "The threshold is 4 drops in 24 h; this Mac has 9 in the last 7 days."},
@@ -105,6 +110,13 @@ let flapping = fixture.machines.first { $0.machine == "1301" }!
 check(flapping.history?.dropsDay == 5, "drops_day did not decode")
 check(flapping.history?.offlineSecondsWeek == 5400, "offline_seconds_week did not decode")
 check(flapping.history?.problematic == true, "problematic did not decode")
+check(flapping.history?.problematicBasis?.contains("threshold 4") == true,
+      "problematic_basis did not decode")
+check(flapping.history?.dropLongestSeconds == 600, "drop_longest_seconds did not decode")
+check(flapping.history?.dropMedianSeconds == 120, "drop_median_seconds did not decode")
+check(flapping.history?.dropGapSeconds == 480, "drop_gap_seconds did not decode")
+check(flapping.history?.lastDrop?.durationSeconds == 120, "the last drop's length did not decode")
+check(flapping.history?.lastDrop?.recoveredBy == "by_itself", "the recovery word did not decode")
 check(flapping.causes?.count == 2, "both causes did not decode")
 check(flapping.causes?[0].evidence?.contains("threshold is 4 drops") == true,
       "the evidence did not decode")
@@ -117,8 +129,11 @@ check(unmeasured.history?.measured == false, "an unobserved machine read as meas
 let flappingVerdict = FleetHealth.verdict(flapping.history)
 check(flappingVerdict.text == "Problematic", "a problematic Mac drew \(flappingVerdict.text)")
 check(flappingVerdict.health == .warn, "a problematic Mac is not amber")
-check(flappingVerdict.tooltip.contains("9 in 7 days") || flappingVerdict.tooltip.contains("9 in 7 days."),
-      "the tooltip does not carry the figures: \(flappingVerdict.tooltip)")
+check(flappingVerdict.tooltip.contains("9 drops in 7 days"),
+      "the tooltip does not carry the figures with their window: \(flappingVerdict.tooltip)")
+// The verdict shows its basis, not just the word.
+check(flappingVerdict.tooltip.contains("threshold 4") && flappingVerdict.tooltip.contains("longest 10 min"),
+      "the tooltip does not carry the problematic basis: \(flappingVerdict.tooltip)")
 
 let quiet = fixture.machines.first { $0.machine == "1108" }!
 var calm = flapping.history
@@ -141,16 +156,38 @@ check(FleetHealth.rank(unmeasured.history) == 3, "an unmeasured Mac is not ranke
 
 // MARK: The figures, and the strip
 
-check(FleetHealth.shortSummary(flapping.history).contains("5 in 24 h"),
+check(FleetHealth.shortSummary(flapping.history).contains("5 drops in 24 h"),
       "the column caption lost the 24 h figure: \(FleetHealth.shortSummary(flapping.history))")
+// **Every number keeps its own window.** The dropped words "in 7 days" once left "5 in 24 h · 42 h
+// off" reading as one span (Production, 2026-10-30).
+check(FleetHealth.shortSummary(flapping.history).contains("off in 7 days"),
+      "the column caption lost the offline window: \(FleetHealth.shortSummary(flapping.history))")
+check(!FleetHealth.shortSummary(flapping.history).contains("42 h off ·"),
+      "the column caption mixed two windows")
 check(FleetHealth.summary(flapping.history).contains("5 drops in 24 h"),
       "the summary lost the 24 h figure: \(FleetHealth.summary(flapping.history))")
 check(FleetHealth.summary(flapping.history).contains("2 h offline in 7 days"),
       "the summary lost the offline time: \(FleetHealth.summary(flapping.history))")
 check(FleetHealth.summary(unmeasured.history) == "Not measured yet — this Gateway has no history for it.",
       "an unmeasured Mac does not say so")
+// How long the drops lasted, and whether they came back by themselves — the difference the owner
+// asked for between "dropped once for two minutes" and "drops every eight minutes".
+let evidence = FleetHealth.dropEvidence(flapping.history) ?? ""
+check(evidence.contains("Drops up to 10 min, median 2 min"), "drop lengths are missing: \(evidence)")
+check(evidence.contains("about every 8 min"), "the gap between drops is missing: \(evidence)")
+check(evidence.contains("by itself"), "the recovery cause is missing: \(evidence)")
+// A Mac with drops but no measured length says so; it is never treated as short.
+var unmeasuredLength = flapping.history
+unmeasuredLength?.dropLongestSeconds = nil
+unmeasuredLength?.dropMedianSeconds = nil
+check((FleetHealth.dropEvidence(unmeasuredLength) ?? "").contains("Drop length not measured"),
+      "an unmeasured drop length is not named")
 check(FleetHealth.stripTooltip(site.history).contains("2026-10-22: not recorded"),
       "an unobserved day is not named in the strip tooltip")
+check(FleetHealth.stripTooltip(flapping.history).contains("about every 8 min"),
+      "the strip tooltip does not carry how often it drops")
+check(FleetHealth.stripTooltip(flapping.history).contains("threshold 4"),
+      "the strip tooltip does not carry the problematic basis")
 check(FleetHealth.stripTooltip(unmeasured.history).contains("no history"),
       "an unmeasured strip does not say so")
 

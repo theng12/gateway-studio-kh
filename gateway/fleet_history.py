@@ -64,6 +64,31 @@ HISTORY_PATH = Path(os.environ.get("GATEWAY_FLEET_HISTORY") or (DATA_DIR / "flee
 #: The owner's knobs, beside the history rather than in `.env` (the menu bar app owns that file).
 SETTINGS_PATH = Path(os.environ.get("GATEWAY_FLEET_HEALTH_SETTINGS") or (DATA_DIR / "fleet_health.json"))
 
+#: How long before a recovery a startup action still counts as the thing that brought it back.
+#: A restart request is queued and collected at the Mac's next check-in, so the two are minutes
+#: apart rather than seconds; ten minutes is far wider than the relay needs and far narrower than
+#: an unrelated request in the same hour.
+RECOVERY_ACTION_WINDOW_S = 600.0
+
+#: The startup actions that can bring a Mac back. Setting a preference does not; starting or
+#: restarting the services does. Read from the audit log the Gateway already writes
+#: (`startup_control.audit`), never inferred from the fact that the Mac came back.
+RECOVERY_ACTIONS = frozenset({"start_services", "restart_services"})
+
+
+def _startup_events() -> list[dict]:
+    """The startup audit's recent rows, newest first. A seam for tests, and a soft failure.
+
+    Imported lazily: `startup_control` imports `fleet`, which imports this module.
+    """
+    try:
+        from . import startup_control
+
+        return startup_control.recent_audit(limit=500)
+    except Exception:  # noqa: BLE001 - no audit is "no evidence", never a failed page
+        return []
+
+
 #: The clock, as a seam: a test drives a week of transitions without sleeping, and nothing else
 #: about the module changes (the alternative — patching `time.time` — is process-wide in a suite
 #: that runs other work in threads).
@@ -417,6 +442,7 @@ def summary(key: str, now: float | None = None) -> dict:
     since = _num(subject.get("since"))
     drops = [e for e in own if not e[1]]
     last = drops[-1] if drops else None
+    facts = _drop_facts(drops, events, subject, now)
     return {
         "observed": True,
         "online": up_now if isinstance(up_now, bool) else None,
@@ -431,16 +457,112 @@ def summary(key: str, now: float | None = None) -> dict:
         "flips_week": flips_7,
         "offline_seconds_day": round(offline_24, 1),
         "offline_seconds_week": round(offline_7, 1),
+        # **How long each drop lasted, and whether it came back by itself.** A Mac that drops every
+        # eight minutes reads differently from one that dropped once for two minutes, and the
+        # count alone cannot tell them apart. Every figure is derived from recorded transitions;
+        # a length nobody saw end (or a recovery no startup action explains) is `None`/"unknown",
+        # never a silent zero.
+        "drop_median_seconds": facts["median_seconds"],
+        "drop_longest_seconds": facts["longest_seconds"],
+        "drop_gap_seconds": facts["gap_seconds"],
+        "drops_completed": facts["completed"],
         "days": _strip(spans, observed_since, now),
         "pattern": _pattern(own, now),
         # What the Gateway itself saw when it last lost this subject, in its own words.
         "last_drop": ({"at": float(last[0]), "reason": last[2] if len(last) > 2 else None,
-                       "text": _REASON_WORDS.get(str(last[2])) if len(last) > 2 else None}
+                       "text": _REASON_WORDS.get(str(last[2])) if len(last) > 2 else None,
+                       **(facts["last"] or {})}
                       if last else None),
         # The verdict itself is added by `annotate`: it depends on the owner's threshold, which is
         # read live there.
         "problematic": None,
     }
+
+
+def _drop_facts(drops: list, events: list, subject: dict, now: float) -> dict:
+    """Median/longest drop and the typical gap between drops, from recorded transitions.
+
+    `None` everywhere nothing was measured: a drop still in progress has no length, one drop has
+    no gap, and a Mac with no history has neither. A median of one value is that value, which is
+    honest — it is not a claim about a distribution that does not exist, and the page also says
+    how many drops it is based on.
+    """
+    ordered = sorted(events, key=lambda event: float(event[0]))
+    facts: list[dict] = []
+    for drop in sorted(drops, key=lambda event: float(event[0])):
+        at = float(drop[0])
+        recovery = next((event for event in ordered if float(event[0]) > at and event[1]), None)
+        ended = float(recovery[0]) if recovery is not None else None
+        duration = round(ended - at, 1) if ended is not None else None
+        facts.append({
+            "at": at,
+            "duration_seconds": duration,
+            "ongoing": ended is None,
+            "recovered_by": _recovered_by(subject, at, ended) if ended is not None else "unknown",
+        })
+    completed = [fact for fact in facts if fact["duration_seconds"] is not None]
+    durations = [fact["duration_seconds"] for fact in completed]
+    gaps = [round(facts[index + 1]["at"] - facts[index]["at"], 1)
+            for index in range(len(facts) - 1)
+            if facts[index + 1]["at"] > facts[index]["at"]]
+    return {
+        "median_seconds": _median(durations),
+        "longest_seconds": max(durations) if durations else None,
+        "gap_seconds": _median(gaps),
+        "completed": len(completed),
+        "last": {key: facts[-1][key] for key in ("duration_seconds", "ongoing", "recovered_by")}
+                if facts else None,
+    }
+
+
+def _recovered_by(subject: dict, dropped_at: float, recovered_at: float | None) -> str:
+    """`after_startup_action` when the audit proves one, `by_itself` when it just came back.
+
+    A recovery with no audit entry is not proof that nobody restarted anything: the log keeps the
+    last 500 events. The word is therefore `by_itself` only for a **machine** the Gateway watched
+    return (the transition is evidence) with no matching action; a site's controller is not in the
+    startup audit at all, so its recovery is `unknown` rather than given a cause it never had.
+    """
+    if recovered_at is None:
+        return "unknown"
+    machine = str(subject.get("machine") or "").strip()
+    location = str(subject.get("location") or "").strip()
+    if not machine:
+        return "unknown"
+    for event in _startup_events():
+        if event.get("event") != "requested":
+            continue
+        if str(event.get("action") or "") not in RECOVERY_ACTIONS:
+            continue
+        if str(event.get("machine") or "") != machine:
+            continue
+        controller = str(event.get("controller") or "")
+        if location and controller and controller != location:
+            continue
+        at = _num(event.get("at"))
+        if at is None:
+            continue
+        if 0 <= recovered_at - at <= RECOVERY_ACTION_WINDOW_S:
+            return "after_startup_action"
+    return "by_itself"
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return round(ordered[middle], 1)
+    return round((ordered[middle - 1] + ordered[middle]) / 2, 1)
+
+
+def _length_text(seconds: float | None) -> str:
+    """How a drop's length reads in a sentence — never a guess, never a zero for unknown."""
+    if seconds is None:
+        return "length not measured"
+    return f"{int(seconds)} s" if seconds < 90 else (
+        f"{int(seconds // 60)} min" if seconds < 5400 else f"{int(seconds // 3600)} h")
 
 
 def _unobserved(now: float) -> dict:
@@ -452,7 +574,10 @@ def _unobserved(now: float) -> dict:
         "since": None, "online_since": None, "offline_since": None,
         "drops_day": None, "drops_week": None, "flips_day": None, "flips_week": None,
         "offline_seconds_day": None, "offline_seconds_week": None,
+        "drop_median_seconds": None, "drop_longest_seconds": None, "drop_gap_seconds": None,
+        "drops_completed": None,
         "days": days, "pattern": None, "problematic": None, "last_drop": None,
+        "problematic_basis": None,
     }
 
 
@@ -699,8 +824,9 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
     if history.get("problematic") is True:
         return [_cause(
             "flapping", f"It keeps dropping out — {history.get('drops_day')} drops in the last 24 h.",
-            f"The threshold is {threshold} drops in 24 h; this Mac has "
-            f"{history.get('drops_week')} in the last {WINDOW_DAYS} days.")]
+            history.get("problematic_basis")
+            or f"The threshold is {threshold} drops in 24 h; this Mac has "
+               f"{history.get('drops_week')} in the last {WINDOW_DAYS} days.")]
     return [NOTHING_WRONG]
 
 
@@ -711,8 +837,9 @@ def site_causes(location: dict, history: dict, threshold: int) -> list[dict]:
             return [_cause(
                 "flapping",
                 f"This site keeps dropping out — {history.get('drops_day')} drops in the last 24 h.",
-                f"The threshold is {threshold} drops in 24 h; it has {history.get('drops_week')} in "
-                f"the last {WINDOW_DAYS} days.")]
+                history.get("problematic_basis")
+                or f"The threshold is {threshold} drops in 24 h; it has "
+                   f"{history.get('drops_week')} in the last {WINDOW_DAYS} days.")]
         return [NOTHING_WRONG]
     kind = location.get("error_kind")
     error = location.get("error")
@@ -769,6 +896,7 @@ def annotate(value: dict) -> dict:
         location_id = str(row.get("id") or "")
         history = summary("l:" + location_id, now) if location_id else _unobserved(now)
         history["problematic"] = _verdict(history, threshold)
+        history["problematic_basis"] = _basis(history, threshold)
         row["history"] = history
         row["causes"] = site_causes(row, history, threshold)
     for machine in value.get("machines") or []:
@@ -778,10 +906,26 @@ def annotate(value: dict) -> dict:
         machine_id = str(machine.get("machine") or "")
         history = summary(f"m:{location_id}/{machine_id}", now)
         history["problematic"] = _verdict(history, threshold)
+        history["problematic_basis"] = _basis(history, threshold)
         machine["history"] = history
         machine["causes"] = machine_causes(machine, history, by_id.get(location_id), threshold,
                                            latest)
     value["fleet_health"] = settings()
+    # **Self-describing windows, one per read.** The two offline figures differ only by their
+    # window, and "5 in 24 h · 42 h off" mixed them on both surfaces (Production, 2026-10-30).
+    # A reader that consults this map cannot pair a number with the wrong span, and the names
+    # themselves say which is which without opening this file.
+    value["history_windows"] = {
+        "drops_day": "last 24 h",
+        "flips_day": "last 24 h",
+        "offline_seconds_day": "last 24 h",
+        "drops_week": f"last {WINDOW_DAYS} days",
+        "flips_week": f"last {WINDOW_DAYS} days",
+        "offline_seconds_week": f"last {WINDOW_DAYS} days",
+        "drop_median_seconds": f"drops that ended in the last {WINDOW_DAYS} days",
+        "drop_longest_seconds": f"drops that ended in the last {WINDOW_DAYS} days",
+        "drop_gap_seconds": f"between drops in the last {WINDOW_DAYS} days",
+    }
     return value
 
 
@@ -790,3 +934,21 @@ def _verdict(history: dict, threshold: int) -> bool | None:
     if not history.get("observed"):
         return None
     return int(history.get("drops_day") or 0) >= threshold
+
+
+def _basis(history: dict, threshold: int) -> str | None:
+    """The evidence behind *Problematic*, in one line beside it.
+
+    The rule is the owner's drop count and stays exactly that — this says **what was counted**
+    (24 h, not the 7-day offline figure the same row shows) and how long those drops lasted. A
+    drop whose length nobody measured says so, rather than reading as a short one.
+    """
+    if not history.get("observed"):
+        return None
+    drops = history.get("drops_day")
+    if drops is None:
+        return None
+    longest = _length_text(history.get("drop_longest_seconds"))
+    median = _length_text(history.get("drop_median_seconds"))
+    return (f"{drops} drop{'s' if drops != 1 else ''} in 24 h (threshold {threshold}) · "
+            f"longest {longest} · median {median}")

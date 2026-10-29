@@ -69,6 +69,11 @@ enum FleetHealth {
                 + "drops, so it does not claim it is fine.")
         }
         var lines = [summary(history)]
+        // **Problematic never appears without its basis.** The rule is the owner's drop count; this
+        // says what was counted and how long those drops lasted, so the verdict is checkable.
+        if history.problematic == true, let basis = history.problematicBasis {
+            lines.insert(basis, at: 0)
+        }
         if let flips = history.flipsDay {
             lines.append("\(flips) up/down change\(flips == 1 ? "" : "s") in 24 h"
                 + (history.flipsWeek.map { ", \($0) in 7 days" } ?? "") + ".")
@@ -102,14 +107,18 @@ enum FleetHealth {
         return ("Stable", .ok, tooltip)
     }
 
-    /// The one-line caption under the strip: the 24 h figure and the week's offline time, because a
-    /// column is about as wide as it can be and the strip says the rest.
+    /// The one-line caption under the strip: the 24 h drop count and the week's offline time,
+    /// because a column is about as wide as it can be and the strip says the rest.
+    ///
+    /// **Each number keeps its own window.** It read "5 in 24 h · 42 h off", where the count
+    /// covered 24 h and the offline time covered seven days — two time spans in one sentence with
+    /// nothing saying so (Production, 2026-10-30). Both halves now name their window.
     static func shortSummary(_ history: FleetHistory?) -> String {
         guard let history, history.measured else { return "Not measured yet" }
         guard let drops = history.dropsDay else { return "Not measured yet" }
-        var parts = ["\(drops) in 24 h"]
-        if let offline = history.offlineSecondsWeek, offline > 0 {
-            parts.append("\(duration(offline)) off")
+        var parts = ["\(drops) drop\(drops == 1 ? "" : "s") in 24 h"]
+        if let offline = history.offlineSecondsWeek {
+            parts.append("\(duration(offline)) off in 7 days")
         }
         return parts.joined(separator: " · ")
     }
@@ -145,7 +154,8 @@ enum FleetHealth {
 
     // MARK: The seven days
 
-    /// One line of figures: "3 drops in 24 h · 9 in 7 days · 2 h offline in 7 days".
+    /// One line of figures, each with **its own window**: "3 drops in 24 h · 9 drops in 7 days ·
+    /// 2 h offline in 7 days".
     static func summary(_ history: FleetHistory?) -> String {
         guard let history, history.measured else {
             return "Not measured yet — this Gateway has no history for it."
@@ -153,7 +163,7 @@ enum FleetHealth {
         var parts: [String] = []
         if let drops = history.dropsDay, let week = history.dropsWeek {
             parts.append("\(drops) drop\(drops == 1 ? "" : "s") in 24 h")
-            parts.append("\(week) in 7 days")
+            parts.append("\(week) drop\(week == 1 ? "" : "s") in 7 days")
         } else {
             parts.append("Drops not recorded")
         }
@@ -167,6 +177,39 @@ enum FleetHealth {
         return parts.joined(separator: " · ")
     }
 
+    /// How long this Mac's drops lasted and how often they come, in one line.
+    ///
+    /// A count alone cannot tell "dropped once for two minutes" from "drops every eight minutes";
+    /// the owner asked for that difference. A length nobody measured says so — it is never treated
+    /// as short, and a Mac with no completed drop says "length not measured" rather than "0 s".
+    static func dropEvidence(_ history: FleetHistory?) -> String? {
+        guard let history, history.measured else { return nil }
+        guard (history.dropsDay ?? 0) > 0 || (history.dropsWeek ?? 0) > 0 else { return nil }
+        var parts: [String] = []
+        if let longest = history.dropLongestSeconds {
+            let median = history.dropMedianSeconds.map { ", median \(duration($0))" } ?? ""
+            parts.append("Drops up to \(duration(longest))\(median)")
+        } else {
+            parts.append("Drop length not measured")
+        }
+        if let gap = history.dropGapSeconds {
+            parts.append("about every \(duration(gap))")
+        }
+        if let last = history.lastDrop, let recovery = last.recoveredBy {
+            parts.append("last recovery: " + recoveryText(recovery))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// The Gateway's three words, in the owner's language.
+    static func recoveryText(_ recoveredBy: String) -> String {
+        switch recoveredBy {
+        case "after_startup_action": return "after a startup action"
+        case "by_itself": return "by itself"
+        default: return "unknown"
+        }
+    }
+
     /// The tooltip of the whole strip: a day is either a figure or "not recorded", never a blank.
     static func stripTooltip(_ history: FleetHistory?) -> String {
         let days = history?.days ?? []
@@ -177,8 +220,10 @@ enum FleetHealth {
             }
             return "\(day.date ?? "—"): \(Int((fraction * 100).rounded()))% of the day offline"
         }
-        return (["The last 7 days, oldest on the left. A filled bar is time this was unreachable."] + lines)
-            .joined(separator: "\n")
+        let head = ["The last 7 days, oldest on the left. A filled bar is time this was unreachable."]
+            + (dropEvidence(history).map { [$0] } ?? [])
+            + (history?.problematic == true ? (history?.problematicBasis.map { [$0] } ?? []) : [])
+        return (head + lines).joined(separator: "\n")
     }
 
     /// "45s", "12m", "3h", "7d" — for a badge, where the full word does not fit.

@@ -474,6 +474,18 @@
         <span class="hint" id="fleet-threshold-note">A Mac that drops this often is called problematic. It is a starting point, not a rule: change it any time.</span>
       </div>
     </details>
+    <!-- One switch, off by default: an automatic action is the owner's deliberate choice. It uses
+         the same guard as the Stop button, and a batch no Gateway job knows is never touched. -->
+    <details class="card" id="fleet-orphan-setting">
+      <summary>Orphaned Hub batches: automatic stop is off</summary>
+      <div class="row">
+        <label><input type="checkbox" id="fleet-orphan-auto" onchange="saveOrphanAutoStop(this.checked)">
+          Stop them automatically when the work is already kept</label>
+        <span class="hint" id="fleet-orphan-note">The same check as Stop: the Gateway job succeeded
+          with its artifacts on disk, or failed or was cancelled with nothing left to collect. A
+          batch no Gateway job knows is never stopped automatically.</span>
+      </div>
+    </details>
     <div id="fleet-issues"></div>
     <div id="fleet-body"><div class="empty">Reading the fleet…</div></div>
   </section>
@@ -4526,6 +4538,10 @@ let fleetSort = 'offline';  // offline | problematic | site | lastseen | drops |
 let lastFleetPayload = null;
 let fleetMachineRows = [];
 let fleetHealthSetting = null;
+let fleetOrphanAutoStop = false;
+// What the Hub said for a batch we just asked to stop, kept across the 15 s redraw so the answer
+// does not vanish under the person reading it. "Signalled" is not "stopped".
+let fleetOrphanAnswers = {};
 const FLEET_FILTERS = [['all', 'Everything'], ['offline', 'Offline now'], ['problematic', 'Problematic']];
 const FLEET_SORTS = [['offline', 'Offline first'], ['problematic', 'Problematic first'], ['site', 'Site'],
   ['lastseen', 'Last seen, longest ago'], ['drops', 'Drops in 24 h'], ['name', 'Name']];
@@ -4631,7 +4647,10 @@ function fleetStrip(history) {
     const colour = percent >= 50 ? 'var(--bad)' : percent > 0 ? 'var(--warn)' : 'var(--ok)';
     return `<span class="fleet-day" title="${esc(name)}: ${percent}% offline"><i style="width:${Math.max(percent, percent > 0 ? 8 : 0)}%;background:${colour}"></i></span>`;
   }).join('');
-  return `<span class="fleet-week" title="The last 7 days, oldest on the left. A filled bar is time this was unreachable.">${bars}</span>`;
+  const dropLine = fleetDropEvidence(history);
+  const title = 'The last 7 days, oldest on the left. A filled bar is time this was unreachable.'
+    + (dropLine ? '\n' + dropLine : '');
+  return `<span class="fleet-week" title="${esc(title)}">${bars}</span>`;
 }
 
 function fleetHistoryLine(item) {
@@ -4639,12 +4658,39 @@ function fleetHistoryLine(item) {
   if (!h || h.observed === false || h.drops_day == null) {
     return 'Not measured yet — this Gateway has no history for it.';
   }
+  // **Each number says its own window.** This read "5 drops in 24 h · 5 in 7 days · 42 h offline
+  // in 7 days", where the unlabelled middle figure could be read either way (Production,
+  // 2026-10-30).
   const parts = [
     `${h.drops_day} drop${h.drops_day === 1 ? '' : 's'} in 24 h`,
-    `${h.drops_week} in 7 days`,
-    `${fleetDuration(h.offline_seconds_week)} offline in 7 days`,
+    `${h.drops_week} drops in 7 days`,
+    h.offline_seconds_week == null ? 'offline time not measured'
+      : `${fleetDuration(h.offline_seconds_week)} offline in 7 days`,
   ];
   if (fleetProblematic(item)) parts.unshift('Problematic');
+  return parts.join(' · ');
+}
+
+// How long this thing's drops lasted, and how often they come — one line, for the strip tooltip.
+// A length nobody measured says so, never "0 s" and never treated as short.
+function fleetDropEvidence(history) {
+  if (!history || history.observed === false) return '';
+  if (!(history.drops_day > 0 || history.drops_week > 0)) return '';
+  const length = (seconds) => seconds == null ? 'length not measured' : fleetDuration(seconds);
+  const parts = [];
+  if (history.drop_longest_seconds != null) {
+    const median = history.drop_median_seconds != null
+      ? `, median ${fleetDuration(history.drop_median_seconds)}` : '';
+    parts.push(`Drops up to ${fleetDuration(history.drop_longest_seconds)}${median}`);
+  } else {
+    parts.push('Drop length not measured');
+  }
+  if (history.drop_gap_seconds != null) parts.push(`about every ${fleetDuration(history.drop_gap_seconds)}`);
+  const recovery = history.last_drop && history.last_drop.recovered_by;
+  if (recovery) {
+    parts.push('last recovery: ' + (recovery === 'after_startup_action' ? 'after a startup action'
+      : recovery === 'by_itself' ? 'by itself' : 'unknown'));
+  }
   return parts.join(' · ');
 }
 
@@ -4673,7 +4719,8 @@ function fleetMac(m) {
     ? `<div class="hint">Offline for ${fleetDuration(Date.now() / 1000 - history.offline_since)}</div>` : '';
   return `<div class="fleet-mac">
     <div class="row"><span class="name">${esc(m.label || m.machine)}</span><span class="badge ${cls}">${esc(word)}</span>${
-      m.history && m.history.problematic === true ? '<span class="badge warn">Problematic</span>' : ''}</div>
+      m.history && m.history.problematic === true
+        ? `<span class="badge warn" title="${esc(m.history.problematic_basis || '')}">Problematic</span>` : ''}</div>
     ${doing ? `<div class="cat">${esc(doing)}</div>` : ''}
     ${m.attention ? `<div class="msg bad">${esc(m.attention)}</div>` : ''}
     ${offlineSince}
@@ -4692,7 +4739,8 @@ function fleetSite(L) {
   const offline = macs.filter(m => m.reachable === false || m.state === 'offline').length;
   return `<div class="fleet-mac">
     <div class="row"><span class="name">${esc(L.label || L.id)}</span><span class="badge">Site</span>${badge}${
-      L.history && L.history.problematic === true ? '<span class="badge warn">Problematic</span>' : ''}</div>
+      L.history && L.history.problematic === true
+        ? `<span class="badge warn" title="${esc(L.history.problematic_basis || '')}">Problematic</span>` : ''}</div>
     ${L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
     ${fleetCause({ kind: 'site', row: L })}
     <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(L.history)}<span>${esc(fleetHistoryLine({ kind: 'site', row: L }))}</span></div>
@@ -4725,6 +4773,14 @@ function fleetControls() {
     }
     summary.dataset.done = '1';
   }
+  const orphanBox = document.getElementById('fleet-orphan-setting');
+  const orphanSummary = orphanBox && orphanBox.querySelector('summary');
+  if (orphanSummary && !orphanSummary.dataset.done) {
+    orphanSummary.textContent = `Orphaned Hub batches: automatic stop is ${fleetOrphanAutoStop ? 'on' : 'off'}`;
+    const checkbox = document.getElementById('fleet-orphan-auto');
+    if (checkbox && document.activeElement !== checkbox) checkbox.checked = fleetOrphanAutoStop;
+    orphanSummary.dataset.done = '1';
+  }
 }
 
 function fleetSetFilter(value) { fleetFilter = value; if (lastFleetPayload) renderFleet(lastFleetPayload); }
@@ -4756,6 +4812,148 @@ async function saveFleetThreshold() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Orphaned Hub batches — a batch still running at a site for work that already finished.
+//
+// The Gateway decides every word: what the batch has produced, which Gateway job owns it (if
+// any), and whether Stop is allowed. This page draws those answers and never re-derives them.
+// A site that did not answer says "not checked", never "none".
+// ---------------------------------------------------------------------------
+
+function fleetOrphanProgress(o) {
+  const p = o.progress || {};
+  const bits = [];
+  if (p.done != null && p.total != null) bits.push(`${p.done}/${p.total} items done`);
+  else if (p.done != null) bits.push(`${p.done} items done · total not reported`);
+  else bits.push('items not reported');
+  if (p.running != null) bits.push(`${p.running} running`);
+  if (p.retrying != null && p.retrying > 0) bits.push(`${p.retrying} retrying`);
+  // A count the Hub did not send is "not reported", never 0 — an artifact count nobody measured
+  // must not read as "it made nothing".
+  bits.push(p.artifact_count == null ? 'artifacts not reported'
+    : `${p.artifact_count} artifact${p.artifact_count === 1 ? '' : 's'}`);
+  if (p.output_path) bits.push(`output ${p.output_path}`);
+  return bits.join(' · ');
+}
+
+function fleetOrphanJob(o) {
+  if (!o.job) return 'No Gateway job names this batch.';
+  const j = o.job;
+  const parts = [`Gateway job ${j.state}`];
+  if (j.artifacts != null) {
+    parts.push(`${j.artifacts} artifact${j.artifacts === 1 ? '' : 's'}, ${j.artifacts_on_disk} on disk`);
+  }
+  if (j.superseded_by) parts.push(`replaced by batch ${j.superseded_by}`);
+  if (j.error_code) parts.push(j.error_code);
+  return parts.join(' · ');
+}
+
+// The Hub answers a request, not a result: some items were queued, some workers were signalled,
+// some are still pending. "Signalled" means **not yet stopped** and is said in those words.
+function fleetCancelAnswer(result) {
+  if (!result || typeof result !== 'object') return 'the Hub gave no answer';
+  const parts = [];
+  if (result.queued_cancelled != null) parts.push(`${result.queued_cancelled} queued cancelled`);
+  if (result.running_signalled != null) {
+    parts.push(`${result.running_signalled} running signalled — not yet stopped`);
+  }
+  if (result.running_pending != null) parts.push(`${result.running_pending} still pending`);
+  return parts.length ? parts.join(' · ') : 'the Hub answered without a count';
+}
+
+function fleetOrphanRow(L, o) {
+  const running = o.running_seconds != null
+    ? `running ${fleetDuration(o.running_seconds)}` : 'running time not reported';
+  const site = L.label || L.id;
+  const unknown = o.classification === 'orphan_unknown';
+  const badge = `<span class="badge ${unknown ? '' : 'bad'}">${unknown ? 'No Gateway job' : 'Superseded'}</span>`;
+  // Stop is offered only when the Gateway's guard allows it, and never for a batch no Gateway job
+  // names. The reason is shown either way, because "why can I not stop this?" is the next question.
+  const stop = (!unknown && o.stop && o.stop.allowed)
+    ? `<button class="badge warn" type="button" data-site="${esc(L.id)}" data-batch="${esc(o.batch_id)}"
+         data-modality="${esc(o.modality || '')}" onclick="stopOrphan(this)">Stop</button>`
+    : `<span class="hint">${esc((o.stop && o.stop.reason) || 'No Stop offered.')}</span>`;
+  const said = fleetOrphanAnswers[`${L.id}/${o.batch_id}`];
+  const answer = (!unknown && o.stop && o.stop.allowed)
+    ? `<span class="hint" data-answer="${esc(site)} — ${esc(o.batch_id)}">${esc(said || '')}</span>` : '';
+  return `<div class="fleet-issue">
+    <div>${badge} ${esc(site)} · batch ${esc(o.batch_id)} · ${esc(o.modality || 'work')} · ${esc(running)}</div>
+    <div class="hint">${esc(fleetOrphanProgress(o))}</div>
+    <div class="hint">${esc(fleetOrphanJob(o))}</div>
+    <div class="row" style="gap:8px;align-items:center">${stop}${answer}</div>
+  </div>`;
+}
+
+function fleetOrphans(d) {
+  const count = Number.isFinite(d.orphan_batches) ? d.orphan_batches : null;
+  const unchecked = (d.locations || []).filter(L => L.orphans_checked === false);
+  if (!count && !unchecked.length) return '';
+  const rows = (d.locations || []).flatMap(L => {
+    if (L.orphans_checked === false) {
+      return [`<div class="fleet-issue"><span class="badge">Not checked</span>
+        ${esc(L.label || L.id)} — ${esc(L.orphans_note || 'not read on this pass')}</div>`];
+    }
+    return (L.orphan_batches || []).map(o => fleetOrphanRow(L, o));
+  });
+  // Forget answers for batches that are no longer listed (the Hub stopped it, or the next read no
+  // longer shows it); a note about a batch nobody can see is clutter that never goes away.
+  const present = new Set((d.locations || []).flatMap(L =>
+    (L.orphan_batches || []).map(o => `${L.id}/${o.batch_id}`)));
+  Object.keys(fleetOrphanAnswers).forEach(key => { if (!present.has(key)) delete fleetOrphanAnswers[key]; });
+  // **A site nobody read is not a clean site.** With no orphans found but a site unchecked, the
+  // line says the check was incomplete — never "no orphaned batches", which is a claim this read
+  // cannot make.
+  const headline = count
+    ? `${count} Hub batch${count === 1 ? '' : 'es'} still running for work that already finished`
+    : `${unchecked.length} site${unchecked.length === 1 ? '' : 's'} not checked — no orphaned batch `
+      + 'was found among the sites that answered';
+  const tail = count && unchecked.length
+    ? ` · ${unchecked.length} site${unchecked.length === 1 ? '' : 's'} not checked` : '';
+  return `<details class="card"${count ? ' open' : ''}><summary class="fleet-issue">
+      <b>${esc(headline + tail)}</b></summary>${rows.join('')}</details>`;
+}
+
+async function stopOrphan(button) {
+  const key = `${button.dataset.site}/${button.dataset.batch}`;
+  const slot = button.parentElement.querySelector('[data-answer]');
+  button.disabled = true;
+  try {
+    const answer = await api(`/fleet/controllers/${encodeURIComponent(button.dataset.site)}`
+      + `/jobs/${encodeURIComponent(button.dataset.batch)}/cancel`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modality: button.dataset.modality, orphan_stop: true }),
+    });
+    fleetOrphanAnswers[key] = `Hub answered: ${fleetCancelAnswer(answer.result)}`;
+  } catch (e) {
+    fleetOrphanAnswers[key] = e.message;
+  }
+  if (lastFleetPayload) renderFleetIssues(lastFleetPayload);
+  else if (slot) slot.textContent = fleetOrphanAnswers[key] || '';
+}
+
+async function saveOrphanAutoStop(enabled) {
+  const note = document.getElementById('fleet-orphan-note');
+  try {
+    const answer = await api('/settings/fleet-orphans', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auto_stop: enabled }),
+    });
+    fleetOrphanAutoStop = answer.auto_stop === true;
+    if (note) {
+      note.textContent = fleetOrphanAutoStop
+        ? 'Saved: the Gateway stops an orphan by itself when the same guard as Stop allows it. A batch no Gateway job names is never stopped.'
+        : 'Saved: off. Only the Stop button stops an orphan.';
+    }
+    const box = document.getElementById('fleet-orphan-setting');
+    if (box) box.querySelector('summary').dataset.done = '';
+    fleetControls();
+  } catch (e) {
+    const input = document.getElementById('fleet-orphan-auto');
+    if (input) input.checked = fleetOrphanAutoStop;
+    if (note) note.textContent = e.message;
+  }
+}
+
 function renderFleet(d) {
   const items = fleetItems(d);
   const visible = fleetVisible(items);
@@ -4764,6 +4962,19 @@ function renderFleet(d) {
   box.innerHTML = visible.length ? `<div class="fleet-macs">${visible.map(fleetCard).join('')}</div>`
     : `<div class="empty">Nothing matches “${esc((FLEET_FILTERS.find(f => f[0] === fleetFilter) || [])[1] || fleetFilter)}”
        — ${items.length} machine${items.length === 1 ? '' : 's'} and site${items.length === 1 ? '' : 's'} were read.</div>`;
+}
+
+function renderFleetIssues(d) {
+  const issues = d.issues || [];
+  // Folded by default: on a phone a dozen warnings would push every Mac off the first screen.
+  const issuesBox = document.getElementById('fleet-issues');
+  if (!issuesBox) return;
+  const open = issuesBox.querySelector('details')?.open ? ' open' : '';
+  const orphans = fleetOrphans(d);
+  issuesBox.innerHTML = orphans + (issues.length ? `<details class="card"${open}><summary class="fleet-issue">
+      <b>${issues.length} warning${issues.length === 1 ? '' : 's'}</b></summary>${issues.map(i =>
+    `<div class="fleet-issue"><span class="badge ${i.severity === 'error' ? 'bad' : 'warn'}">${esc(i.location || i.severity)}</span> ${esc(i.message)}</div>`
+  ).join('')}</details>` : '');
 }
 
 async function loadFleet() {
@@ -4775,6 +4986,7 @@ async function loadFleet() {
   lastFleetPayload = d;
   fleetMachineRows = d.machines || [];
   fleetHealthSetting = d.fleet_health || fleetHealthSetting;
+  fleetOrphanAutoStop = d.orphans_auto_stop === true;
   fleetControls();
   const s = d.summary || {}, q = d.gateway_queue || {};
   const items = fleetItems(d);
@@ -4793,14 +5005,8 @@ async function loadFleet() {
       ? `<span class="badge warn" title="${esc((s.connections.slow_machines || []).join(', '))}">` +
         `${s.connections.slow_ethernet} on slow Ethernet</span>` : '',
   ].join('');
-  const issues = d.issues || [];
   // Folded by default: on a phone a dozen warnings would push every Mac off the first screen.
-  const issuesBox = document.getElementById('fleet-issues');
-  const open = issuesBox.querySelector('details')?.open ? ' open' : '';
-  issuesBox.innerHTML = issues.length ? `<details class="card"${open}><summary class="fleet-issue">
-      <b>${issues.length} warning${issues.length === 1 ? '' : 's'}</b></summary>${issues.map(i =>
-    `<div class="fleet-issue"><span class="badge ${i.severity === 'error' ? 'bad' : 'warn'}">${esc(i.location || i.severity)}</span> ${esc(i.message)}</div>`
-  ).join('')}</details>` : '';
+  renderFleetIssues(d);
   renderFleet(d);
 }
 
