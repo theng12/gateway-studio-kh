@@ -91,7 +91,15 @@ def require_admin(
     owner-only by default rather than by anybody remembering. The handful of routes a guest
     may use take `Depends(require_guest_or_admin)` instead, and the app's `/admin`
     middleware repeats the same allowlist as a backstop.
+
+    **A guest API key is refused for the same reason, before loopback is trusted.** Loopback
+    means "this Mac", and the key is exactly the credential an agent on another machine
+    holds; letting it through because the process happens to run here would make the key
+    owner-level on the owner's own Mac.
     """
+    if bearer_guest(request) is not None:
+        raise AdminError(403, "A guest account may only use the Create page.",
+                         "GUEST_NOT_ALLOWED")
     identity = admin_session.session(request.cookies.get(admin_session.COOKIE))
     if identity is not None and identity.get("role") == "guest":
         raise AdminError(403, "A guest account may only use the Create page.",
@@ -112,10 +120,33 @@ def require_admin(
         raise AdminError(403, "Invalid API key.")
 
 
+def bearer_guest(request: Request) -> dict[str, Any] | None:
+    """The guest an `Authorization: Bearer gwk_…` key belongs to, or `None`.
+
+    **Only a token with the guest key's own prefix is even looked up**, so the owner's gateway
+    key — which every Story Studio request carries — never reads the guest file.
+    """
+    headers = getattr(request, "headers", None) or {}
+    authorization = headers.get("authorization") or ""
+    if not authorization.lower().startswith("bearer "):
+        return None
+    return admin_session.guest_by_key(authorization[7:].strip())
+
+
 def guest_identity(request: Request) -> dict[str, Any] | None:
-    """The guest behind this request, or `None` for the owner, the key and this Mac."""
+    """The guest behind this request, or `None` for the owner, the key and this Mac.
+
+    Two doors, one identity: the browser's session cookie a person signs in with, and the
+    **guest API key** an agent holds (`admin_session.guest_by_key`). Everything downstream —
+    the free/local model gate, job and file ownership, "Requested by" — reads this function,
+    so an agent key reaches exactly what that guest's browser reaches and nothing more.
+    `via` says which door it came through, because a cookie is ambient and must name its
+    origin on a write, while a bearer key is not.
+    """
     identity = admin_session.session(request.cookies.get(admin_session.COOKIE))
-    return identity if identity is not None and identity.get("role") == "guest" else None
+    if identity is not None and identity.get("role") == "guest":
+        return {**identity, "via": "cookie"}
+    return bearer_guest(request)
 
 
 def require_guest_or_admin(
@@ -123,15 +154,31 @@ def require_guest_or_admin(
 ) -> None:
     """The same door, plus guests — for the Create page's own routes and nothing else.
 
-    A guest is still *authenticated here*: the same cookie, the same origin rule on a write.
-    What a guest may reach is decided by which routes take this dependency; what a guest may
-    *see* (their own jobs, their own files) is decided inside each of them.
+    A guest is still *authenticated here*: the same cookie or guest API key, the same origin
+    rule on a write. What a guest may reach is decided by which routes take this dependency;
+    what a guest may *see* (their own jobs, their own files) is decided inside each of them.
     """
-    identity = admin_session.session(request.cookies.get(admin_session.COOKIE))
-    if identity is not None and identity.get("role") == "guest":
-        if request.method not in ("GET", "HEAD", "OPTIONS") and not admin_session.same_origin(request):
+    guest = guest_identity(request)
+    if guest is not None:
+        # **CSRF is about ambient credentials.** A session cookie rides along with whatever
+        # page the browser is on, so a write must name this origin; a bearer key is sent
+        # deliberately by an agent and there is no page for it to be tricked by.
+        if (guest.get("via") != "key" and request.method not in ("GET", "HEAD", "OPTIONS")
+                and not admin_session.same_origin(request)):
             raise AdminError(403, "Cross-site request refused.")
         return
+    authorization = authorization or ""
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+        if token.startswith(admin_session.GUEST_KEY_PREFIX) and not _key_matches(token):
+            # **One sentence for every dead key.** Revoked, disabled, removed and never-existed
+            # read alike, so the answer cannot be used to ask which guest ids were real.
+            raise AdminError(
+                401,
+                "That guest API key is not valid — it may have been revoked, or its guest "
+                "disabled or removed. Ask the Gateway's owner for a new one.",
+                "GUEST_KEY_INVALID",
+            )
     require_admin(request, authorization)
 
 
@@ -143,6 +190,9 @@ def require_local_app(
 
     Used for the browser password itself, so a signed-in browser cannot change it.
     """
+    if bearer_guest(request) is not None:
+        raise AdminError(403, "A guest account may only use the Create page.",
+                         "GUEST_NOT_ALLOWED")
     if not request_is_loopback(request):
         raise AdminError(403, "Set the browser password in the Gateway app on its own Mac.")
     if is_loopback():
@@ -159,11 +209,13 @@ def require_owner(request: Request, authorization: str | None = Header(default=N
     can never flip an owner-only switch (remote final rendering). The signed-in browser is what lets the
     owner change it once the Gateway runs on a Mac they do not sit at (owner, 2026-10-24).
     """
+    # A guest is not the owner's, whatever door it came through — including an agent's key
+    # on this Mac's loopback, which the loopback branch below would otherwise trust.
+    if guest_identity(request) is not None:
+        raise AdminError(403, "Only the owner can change this: use the Gateway app, or sign in to the Gateway in a browser.")
     if request_is_loopback(request):
         return require_local_app(request, authorization)
     # A guest session is not the owner's, whatever route is asking.
-    if guest_identity(request) is not None:
-        raise AdminError(403, "Only the owner can change this: use the Gateway app, or sign in to the Gateway in a browser.")
     if admin_session.valid_session(request.cookies.get(admin_session.COOKIE)):
         if request.method not in ("GET", "HEAD", "OPTIONS") and not admin_session.same_origin(request):
             raise AdminError(403, "Cross-site request refused.")
@@ -1909,6 +1961,40 @@ def remove_guest(guest_id: str) -> Any:
     return {"guest": row, "guests": list_guests()["guests"]}
 
 
+@router.post("/api/guests/{guest_id}/key", dependencies=[Depends(require_admin)])
+def issue_guest_key(guest_id: str) -> Any:
+    """Give this guest **one** API key for an agent. The key is in this answer and nowhere else.
+
+    It is stored as its SHA-256, so it cannot be shown again; issuing another replaces it.
+    The guest is not otherwise changed — same free/local gate, same own jobs, same
+    "Requested by" — because the key resolves to the guest, it is not a second account.
+    """
+    try:
+        token = admin_session.issue_guest_key(guest_id)
+    except KeyError:
+        return _error(404, f"no guest '{guest_id}'")
+    except ValueError as exc:
+        return _error(422, str(exc))
+    # **`Cache-Control: no-store`**, because this response is the only copy of the key that
+    # will ever exist and a cached page would keep it in a browser history.
+    return JSONResponse(
+        {"guest": admin_session.get_guest(guest_id), "key": token,
+         "guests": list_guests()["guests"],
+         "shown_once": "This is the only time the key is shown. Copy it now."},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.delete("/api/guests/{guest_id}/key", dependencies=[Depends(require_admin)])
+def revoke_guest_key(guest_id: str) -> Any:
+    """Stop the key working. It takes effect on the next request; the guest's account stays."""
+    try:
+        row = admin_session.revoke_guest_key(guest_id)
+    except KeyError:
+        return _error(404, f"no guest '{guest_id}'")
+    return {"guest": row, "guests": list_guests()["guests"]}
+
+
 # ---------------------------------------------------------------------------
 # Create — the console's own door to generation.
 #
@@ -2145,6 +2231,76 @@ async def create_transcription(
         params["language"] = language.strip()
     try:
         job, created = _submit("transcription", model_id, params, key,
+                               requested_by=requested_by(request))
+    except GatewayError as exc:
+        return _error(exc.status, exc.detail, exc.code)
+    return {"created": created, **_job_envelope(job, native=True)}
+
+
+@router.post("/api/create/video", dependencies=[Depends(require_guest_or_admin)])
+async def create_video_from_image(
+    request: Request,
+    model_id: str = Form(...),
+    file: UploadFile = File(...),
+    prompt: str = Form(default=""),
+    options: str = Form(default=""),
+    idempotency_key: str = Form(default=""),
+) -> Any:
+    """Queue an **image-to-video** job from an uploaded scene image.
+
+    Image-to-video only: text-to-video is retired, so the image is a required field rather
+    than something the Gateway could do without. The console's `_submit` shape is reused —
+    the same resolution, enablement gate and idempotency rule as every other submit — and the
+    image is staged beside the transcription uploads before queueing, so a job that waits, or
+    survives a restart, still carries its own picture (exactly what `/v1/videos/generations`
+    does with `_stage_video_reference`).
+    """
+    import json as _json
+    from pathlib import Path
+
+    from . import video_assets
+    from .api import GatewayError, _job_envelope, _refuse_when_the_disk_is_low, _submit
+    from .config import ARTIFACT_DIR
+
+    refusal = _guest_model_refusal(request, "video", model_id)
+    if refusal:
+        return _error(403, refusal, "GUEST_PAID_MODEL")
+    try:
+        extra = _json.loads(options) if options.strip() else {}
+    except ValueError:
+        return _error(422, "options must be a JSON object, or left empty.")
+    if not isinstance(extra, dict):
+        return _error(422, "options must be a JSON object, or left empty.")
+    internal = sorted(str(key) for key in extra if str(key).startswith("_"))
+    if internal:
+        return _error(
+            422,
+            f"{', '.join(internal)} is not a field this page sets; it is the Gateway's own.",
+            "INTERNAL_PARAM",
+        )
+    content = await file.read()
+    _refuse_when_the_disk_is_low(len(content))
+    if not content:
+        return _error(422, "the uploaded scene image is empty")
+    if len(content) > video_assets.MAX_SOURCE_IMAGE_BYTES:
+        limit_mb = video_assets.MAX_SOURCE_IMAGE_BYTES // (1024 * 1024)
+        return _error(413, f"That image is larger than {limit_mb} MB, which is this "
+                           f"Gateway's limit per source image.")
+    media_type = (file.content_type or "").split(";")[0].strip().lower()
+    if media_type not in video_assets.ACCEPTED_MEDIA_TYPES:
+        return _error(422, f"Unsupported source image type {media_type or 'unknown'!r}; "
+                           f"use one of {', '.join(video_assets.ACCEPTED_MEDIA_TYPES)}.")
+    upload_dir = Path(str(ARTIFACT_DIR)) / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    staged = upload_dir / f"console-video-{uuid4().hex}{Path(file.filename or '').suffix or '.png'}"
+    staged.write_bytes(content)
+    params: dict[str, Any] = {**extra, "model_id": model_id,
+                              "_reference_path": str(staged), "_reference_type": media_type}
+    if prompt.strip():
+        params["prompt"] = prompt.strip()
+    key = idempotency_key.strip() or str(uuid4())
+    try:
+        job, created = _submit("video", model_id, params, key,
                                requested_by=requested_by(request))
     except GatewayError as exc:
         return _error(exc.status, exc.detail, exc.code)

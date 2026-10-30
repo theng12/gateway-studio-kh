@@ -104,6 +104,7 @@ GUEST_ALLOWED = {
     "/admin", "/admin/",
     "/admin/login", "/admin/logout",
     "/admin/api/create/models", "/admin/api/create", "/admin/api/create/transcription",
+    "/admin/api/create/video",
     "/admin/api/create/status/{job_id}", "/admin/api/create/status/{job_id}/cancel",
     "/admin/api/voices", "/admin/api/jobs", "/admin/api/artifacts/keep",
     "/admin/api/artifacts/{job_id}/outputs/{asset_id}",

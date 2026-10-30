@@ -34,6 +34,16 @@ owner asked for this cleanup, and turning it off leaves the duplicate to the Sto
 **Automatic stop** switch beside it still starts off and keeps its meaning; a batch no Gateway job
 names is still never stopped automatically.
 
+### Agents can make things now — with a guest key
+A guest can be given **one API key for an agent** — Claude Code, Claude Desktop, anything that
+speaks MCP — from **Guests → Create key**. It is shown once and stored only as a hash; **Replace**
+and **Revoke** are right there, and disabling or removing the guest stops it at once. The key is
+*the same guest*, not a second account: free and local models only unless you tick paid models for
+that guest, their own jobs and files only, and every job it starts says **Requested by … (guest)**.
+It opens the Create API and nothing else — every other console route and **every `/v1` route**
+refuses it, including on this Mac's own loopback. The connector itself is
+`connectors/mcp/` — a small `python3` MCP server with a ready-to-paste config in its README.
+
 ## 0.2.210 — 2026-10-30
 
 ### The Fleet page is the web page now — one page, built once
