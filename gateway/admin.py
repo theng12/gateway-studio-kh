@@ -4875,6 +4875,11 @@ def fleet_machine_set_work_policy(
     controller_id: str, machine_id: str, payload: dict[str, Any]
 ) -> Any:
     """Replace one Mac's ranked work order or switch one of its functions on or off."""
+    if set(payload) == {"preferred_work"}:
+        try:
+            return startup_control.set_node_preferred_work(controller_id, machine_id, payload["preferred_work"])
+        except startup_control.StartupError as error:
+            return JSONResponse(status_code=error.status, content=error.body)
     if set(payload) == {"function_enabled"}:
         try:
             return startup_control.set_node_function_enabled(
@@ -4883,7 +4888,7 @@ def fleet_machine_set_work_policy(
         except startup_control.StartupError as error:
             return JSONResponse(status_code=error.status, content=error.body)
     if set(payload) != {"priority_order"}:
-        return _error(400, "provide only priority_order or function_enabled", "BAD_PRIORITY_ORDER")
+        return _error(400, "provide only priority_order, function_enabled or preferred_work", "BAD_PRIORITY_ORDER")
     try:
         return startup_control.set_node_work_policy(
             controller_id, machine_id, payload.get("priority_order")

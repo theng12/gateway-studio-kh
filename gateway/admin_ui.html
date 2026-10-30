@@ -6168,6 +6168,7 @@ function fleetDialogConfirm(button) {
   const handlers = {
     lite: fleetLiteSave,
     priority: fleetPrioritySave,
+    preferred: fleetPreferredSave,
     install: fleetInstallSave,
     preset: fleetPresetSave,
     remove: fleetRemoveSave,
@@ -6537,6 +6538,7 @@ function fleetMachineActionCell(m) {
   }
   more.push(`<button type="button"${ids} data-paused="${m.node_paused === true ? '0' : '1'}" onclick="fleetMachinePause(this, this.dataset.lid, this.dataset.mid, Number(this.dataset.paused) === 1)">${m.node_paused === true ? 'Resume This Mac' : 'Pause This Mac'}</button>`);
   more.push(`<button type="button"${ids} onclick="fleetPriorityOpen(this, this.dataset.lid, this.dataset.mid)">Work Priorities…</button>`);
+  more.push(`<button type="button"${ids} onclick="fleetPreferredOpen(this, this.dataset.lid, this.dataset.mid)">Preferred Work…</button>`);
   more.push(`<button type="button"${ids} onclick="fleetLiteOpen(this, this.dataset.lid, this.dataset.mid)">Lite Mode…</button>`);
   more.push(`<button type="button"${ids} onclick="fleetMachineNetwork(this, this.dataset.lid, this.dataset.mid)">Network…</button>`);
   more.push(`<button type="button"${ids} onclick="fleetTrashOpen(this, this.dataset.lid, this.dataset.mid)">Trash…</button>`);
@@ -6674,6 +6676,59 @@ async function fleetLiteSave(button, state) {
   } catch (e) {
     fleetDialogNote(`Could not change Lite Mode — ${e.message}`);
   } finally { button.disabled = false; }
+}
+
+// ---- Preferred work ---------------------------------------------------------
+
+async function fleetPreferredOpen(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is no longer in the list. Refresh and try again.'); return; }
+  button.disabled = true;
+  try {
+    const policy = await api(`/fleet/controllers/${fleetSeg(locationId)}/machines/${fleetSeg(machineId)}/work-policy`);
+    const current = policy && policy.preferred_work;
+    const choices = policy && policy.preferred_choices;
+    if (policy.queued || !current || typeof current.enabled !== 'boolean' || !Array.isArray(choices)
+        || !Number.isInteger(current.idle_seconds) || (current.enabled && !choices.includes(current.modality))) {
+      fleetNote('fleet-machine-action-note', 'Preferred work is unknown. The Mac has not confirmed its settings.');
+      return;
+    }
+    const options = choices.filter(id => typeof id === 'string' && id).map(id =>
+      `<option value="${esc(id)}"${current.enabled && current.modality === id ? ' selected' : ''}>${esc(fleetPriorityTitle(id, null))}</option>`).join('');
+    fleetDialogOpen({
+      kind: 'preferred', locationId, machineId,
+      heading: `Preferred Work — ${machine.label || machine.machine}`,
+      text: 'Confirmed by this Mac. After its preferred work finishes, it waits for more of that work for the selected time.',
+      body: `<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:end">`
+        + `<label>Preferred work <select id="fleet-preferred-choice" style="max-width:100%"><option value=""${current.enabled ? '' : ' selected'}>None</option>${options}</select></label>`
+        + `<label>Hold (seconds) <input id="fleet-preferred-seconds" type="number" min="0" step="1" value="${esc(current.idle_seconds)}" style="width:8em;max-width:100%"></label></div>`,
+    });
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Preferred work unavailable — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetPreferredSave(button, state) {
+  const modality = document.getElementById('fleet-preferred-choice').value;
+  const input = document.getElementById('fleet-preferred-seconds');
+  if (!input.validity.valid || input.value === '') { fleetDialogNote('Enter a whole number of seconds.'); return; }
+  const preference = { enabled: Boolean(modality), modality: modality || null, idle_seconds: Number(input.value) };
+  button.disabled = true;
+  fleetDialogNote('Saving…');
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(state.locationId)}/machines/${fleetSeg(state.machineId)}/work-policy`,
+      fleetPayload({ preferred_work: preference }));
+    const saved = answer && answer.preferred_work;
+    if (answer.queued || !saved || saved.enabled !== preference.enabled
+        || (preference.enabled && (saved.modality !== preference.modality || saved.idle_seconds !== preference.idle_seconds))) {
+      fleetDialogNote(answer.queued ? 'The Mac could not be reached. The controller queued the change; the Mac has not confirmed it.'
+        : 'The Mac did not confirm this change. Refresh and check its preferred work.');
+      return;
+    }
+    fleetDialogClose();
+    fleetNote('fleet-machine-action-note', 'Preferred work saved and confirmed by this Mac.');
+  } catch (e) { fleetDialogNote(`Could not save preferred work — ${e.message}`); }
+  finally { button.disabled = false; }
 }
 
 // ---- Work priorities -------------------------------------------------------
