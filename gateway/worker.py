@@ -748,13 +748,13 @@ def reconcile_superseded(store: JobStore) -> dict[str, int]:
                 resolve(job_id, batch_id, status="stopped", detail=json.dumps(answer)[:300])
                 _audit_superseded("superseded_stop", job=job_id, batch=batch_id,
                                   controller=provider_id, modality=modality,
-                                  requested_by="gateway-auto",
+                                  requested_by="gateway-auto", switch="superseded_stop",
                                   reason=verdict.get("reason"), result=answer)
                 out["stopped"] += 1
             else:
                 _audit_superseded("superseded_stop_refused", job=job_id, batch=batch_id,
                                   controller=provider_id, modality=modality,
-                                  result=answer)
+                                  switch="superseded_stop", result=answer)
                 out["left"] += 1
         except Exception as exc:  # noqa: BLE001 - one entry must not starve the rest
             log.warning("superseded batch %s: could not reconcile: %s",
@@ -820,11 +820,12 @@ def _stop_losing_copy(store: JobStore, job_id: str, adopted_batch_id: str,
             resolve(job_id, current, status="stopped", detail=json.dumps(answer)[:300])
         _audit_superseded("superseded_stop", job=job_id, batch=current, controller=provider_id,
                           modality=modality, requested_by="gateway-auto",
-                          reason=verdict.get("reason"), result=answer)
+                          switch="superseded_stop", reason=verdict.get("reason"), result=answer)
         out["stopped"] += 1
     else:
         _audit_superseded("superseded_stop_refused", job=job_id, batch=current,
-                          controller=provider_id, modality=modality, result=answer)
+                          controller=provider_id, modality=modality,
+                          switch="superseded_stop", result=answer)
 
 
 def is_background(job: dict[str, Any]) -> bool:

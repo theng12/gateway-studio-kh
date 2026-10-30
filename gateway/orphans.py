@@ -488,11 +488,12 @@ def maybe_auto_stop(snapshot: dict, *, store: Any = None, now: float | None = No
             except Exception as exc:  # noqa: BLE001 - one refusal must not stop the rest
                 log.warning("orphan auto-stop for batch %s failed: %s", entry["batch_id"], exc)
                 _audit("orphan_stop_refused", controller=row.get("id"), batch=entry["batch_id"],
-                       modality=entry["modality"], detail=str(exc)[:300])
+                       modality=entry["modality"], switch="auto_stop", detail=str(exc)[:300])
                 continue
             _audit("orphan_stop", controller=row.get("id"), batch=entry["batch_id"],
                    modality=entry["modality"], result=answer, requested_by="gateway-auto",
-                   reason=entry["stop"]["reason"], job=entry["job"]["id"] if entry["job"] else None)
+                   switch="auto_stop", reason=entry["stop"]["reason"],
+                   job=entry["job"]["id"] if entry["job"] else None)
             stopped.append({"location": row.get("id"), "batch_id": entry["batch_id"],
                             "result": answer})
     _prune_auto_stop(now)

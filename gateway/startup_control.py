@@ -95,6 +95,124 @@ def recent_audit(limit: int = 50) -> list[dict[str, Any]]:
     return list(reversed(rows))
 
 
+#: The audit events that are **an actual stop of a Hub batch**, and nothing else. A refusal is not
+#: listed: the batch is still running, so there is nothing yet to see afterwards.
+STOP_EVENTS = ("superseded_stop", "orphan_stop")
+
+#: The switch each event came from when the row does not say. Rows written before 0.2.212 carry no
+#: `switch` field, and each event has always had exactly one writer, so this is a fact about the
+#: code, not a guess about the row.
+_SWITCH_BY_EVENT = {"superseded_stop": "superseded_stop", "orphan_stop": "auto_stop"}
+
+#: The Fleet page's list: the last seven days, at most 200 stops. Bounded because the audit keeps
+#: 500 lines, so this reads a file that is already small.
+STOP_DAYS = 7.0
+STOP_LIMIT = 200
+_HUB_COUNTS = ("queued_cancelled", "running_signalled", "running_pending")
+
+
+def recent_stops(days: float = STOP_DAYS, limit: int = STOP_LIMIT, *,
+                 now: float | None = None) -> dict[str, Any]:
+    """Every Hub batch this Gateway stopped without a person, newest first, for the Fleet page.
+
+    An automatic stop nobody can see afterwards is worse than none, so this is the read behind
+    "Recent automatic stops". It lists `superseded_stop` and `orphan_stop` rows — the copy this
+    Gateway replaced after a site went silent, the orphan the owner's own switch covered — and the
+    **manual** orphan Stop, which the same route writes with `requested_by: "admin"` and
+    `switch: "manual"`, because a stop a person pressed belongs in the same list and must not read
+    as automatic.
+
+    **An unreadable log is `available: false` with `stops: None`, never an empty list.** "Nothing
+    was stopped" and "I could not read the log" must not be the same answer, and an empty list is
+    a claim this read cannot make when the file cannot be opened.
+    """
+    days = min(max(float(days or 0.0), 0.25), 30.0)
+    limit = max(1, min(int(limit or 0), _AUDIT_KEEP))
+    moment = time.time() if now is None else now
+    try:
+        lines = audit_path().read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        # No audit has ever been written: nothing has been stopped, and that is a real answer.
+        return {"available": True, "stops": [], "count": 0, "days": days, "limit": limit,
+                "note": "No stop has been recorded yet."}
+    except OSError as exc:
+        return {"available": False, "stops": None, "count": None, "days": days, "limit": limit,
+                "note": f"not available: the audit log could not be read ({type(exc).__name__})."}
+    cutoff = moment - days * 86400.0
+    stops: list[dict[str, Any]] = []
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or str(row.get("event") or "") not in STOP_EVENTS:
+            continue
+        at = row.get("at")
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or float(at) < cutoff:
+            continue
+        stops.append(_stop_row(row))
+        if len(stops) >= limit:
+            break
+    return {"available": True, "stops": stops, "count": len(stops), "days": days,
+            "limit": limit, "note": None}
+
+
+def _stop_row(row: dict[str, Any]) -> dict[str, Any]:
+    """One audit line as the page draws it. A field the row does not carry stays `None`."""
+    result = row.get("result") if isinstance(row.get("result"), dict) else {}
+    # Every Studio Hub adapter records the Hub's own body under `answer` (`_recorded_call`), and
+    # these rows are all Studio Hub stops, so that is the one place the counts live.
+    answer = result.get("answer") if isinstance(result.get("answer"), dict) else {}
+    site = str(row.get("controller") or "").strip()
+    event = str(row.get("event") or "")
+    return {
+        "at": float(row.get("at") or 0.0),
+        "site": site or None,
+        "site_label": _site_label(site) or None,
+        "batch": _stop_text(row.get("batch")),
+        "job": _stop_text(row.get("job")),
+        "modality": _stop_text(row.get("modality")),
+        "reason": _stop_text(row.get("reason")),
+        "switch": _stop_text(row.get("switch")) or _SWITCH_BY_EVENT.get(event),
+        "requested_by": _stop_text(row.get("requested_by")),
+        "ok": result.get("ok") if isinstance(result.get("ok"), bool) else None,
+        "error": _stop_text(result.get("error")) or _stop_text(answer.get("detail")),
+        "hub": {key: _stop_count(answer.get(key)) for key in _HUB_COUNTS},
+    }
+
+
+def _site_label(controller: str) -> str:
+    """The owner's name for the location the row names; its id when the roster no longer has it.
+
+    The audit records the id whatever it was called: the superseded cleanup writes the provider id
+    (`studio-hub-<controller>`) and the orphan sweep the controller id. A row for a location since
+    removed keeps its id, which is still the truth it was written with — never an invented name.
+    """
+    if not controller:
+        return ""
+    label = fleet.label_for_provider(controller)
+    if label:
+        return label
+    if controller == fleet.LOCAL_ID:
+        return fleet.local_label()
+    for entry in fleet.roster():
+        if str(entry.get("id") or "") == controller:
+            return str(entry.get("label") or "").strip() or controller
+    return controller
+
+
+def _stop_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _stop_count(value: object) -> int | None:
+    """A count the Hub sent, or `None`: a missing figure never becomes a zero nobody measured."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 def validate(action: object, value: object, force: object) -> tuple[str, bool | None, bool]:
     """The request as the Hub will see it, or a `StartupError(400)` naming what is wrong."""
     if action not in ACTIONS:

@@ -10,6 +10,28 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.212 — 2026-10-30
+
+### Every automatic stop now leaves a list you can read
+The Gateway already stopped a copy it had replaced, and an orphaned Hub batch when you switched
+that on, and wrote each one to its audit log — a file nothing on the page ever showed you. A batch
+could therefore stop on a Mac nobody was looking at, and afterwards there was no way to tell which
+copy was stopped, why the Gateway thought it was safe, or what the Hub said it did.
+
+Fleet → Jobs now carries **Recent automatic stops**, the last seven days, newest first. Each line
+names the time, the site, the Hub batch, the Gateway job it belonged to, the reason the guard
+proved before it asked — the kept copy delivered and on disk, or nothing left to collect — and
+which switch did it, `superseded_stop` or `auto_stop`. The Hub's own answer is there too: how many
+were queued and cancelled, how many running workers were **asked to stop, not yet confirmed**, and
+how many are still pending. A Stop you pressed on an orphan appears in the same list, marked
+**manual**, so it can never read as something the Gateway did by itself.
+
+The two switches above it now say their current state in the heading — both of them, in words —
+and the list is owner-only: a guest never sees it. If the audit log cannot be read, the list says
+**not available**, never "nothing was stopped".
+
+---
+
 ## 0.2.211 — 2026-10-30
 
 ### A site that drops off is cleaned up, not left with a duplicate batch

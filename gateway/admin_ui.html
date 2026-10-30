@@ -684,6 +684,17 @@
             job names is never touched.</span>
         </div>
       </details>
+      <!-- Every stop this Gateway made without a person, and every orphan Stop a person pressed.
+           An automatic stop nobody can see afterwards is worse than none. -->
+      <details class="card" id="fleet-auto-stops-card">
+        <summary id="fleet-auto-stops-summary">Recent automatic stops</summary>
+        <p class="hint">Every Hub batch this Gateway stopped on its own: the copy it replaced after a
+          site went silent, and an orphan the switch above covered. A Stop you pressed is listed
+          too, marked <b>manual</b>. The reason is what the guard proved before it asked, and
+          “asked to stop, not yet confirmed” is the Hub being told — not a worker that has stopped.</p>
+        <div class="row"><button type="button" onclick="loadAutoStops(true)">Refresh the list</button></div>
+        <div id="fleet-auto-stops"><div class="empty">Read the list to see the last 7 days.</div></div>
+      </details>
       <div id="fleet-jobs-problems"></div>
       <p class="hint">Retry re-queues a failed item — the Hub accepts only an item in an error state, and
         refuses a cancelled batch or an uncertain item (discard that first). Stop asks the Hub to stop the
@@ -7741,15 +7752,18 @@ function fleetControls() {
   }
   const orphanBox = document.getElementById('fleet-orphan-setting');
   const orphanSummary = orphanBox && orphanBox.querySelector('summary');
-  if (orphanSummary && !orphanSummary.dataset.done) {
-    orphanSummary.textContent = `Orphaned Hub batches: automatic stop is ${fleetOrphanAutoStop ? 'on' : 'off'}`;
+  if (orphanSummary) {
+    // **The summary is the current state, not a label written once.** Two switches with two
+    // defaults live under it, and a reader opening the card must be able to tell which is on.
+    orphanSummary.textContent = 'Orphaned Hub batches: automatic stop is '
+      + `${fleetOrphanAutoStop ? 'on' : 'off'} · stopping copies this Gateway replaced is `
+      + `${fleetOrphanSupersededStop ? 'on' : 'off'}`;
     const checkbox = document.getElementById('fleet-orphan-auto');
     if (checkbox && document.activeElement !== checkbox) checkbox.checked = fleetOrphanAutoStop;
     const replaced = document.getElementById('fleet-orphan-superseded');
     if (replaced && document.activeElement !== replaced) {
       replaced.checked = fleetOrphanSupersededStop;
     }
-    orphanSummary.dataset.done = '1';
   }
 }
 
@@ -7786,6 +7800,7 @@ function selectFleetTab(tab) {
     pane.hidden = pane.id !== 'fleet-pane-' + tab;
   });
   if (tab === 'story') loadFleetStory();
+  if (tab === 'jobs') loadAutoStops();
 }
 
 function renderFleetTabs() {
@@ -7947,6 +7962,8 @@ async function stopOrphan(button) {
   }
   if (lastFleetPayload) renderFleetOrphans(lastFleetPayload);
   else if (slot) slot.textContent = fleetOrphanAnswers[key] || '';
+  // A Stop a person pressed is written to the same audit list, so it appears there at once.
+  await loadAutoStops(true);
 }
 
 async function saveOrphanAutoStop(enabled) {
@@ -7962,8 +7979,6 @@ async function saveOrphanAutoStop(enabled) {
         ? 'Saved: the Gateway stops an orphan by itself when the same guard as Stop allows it. A batch no Gateway job names is never stopped.'
         : 'Saved: off. Only the Stop button stops an orphan; the copies this Gateway replaced have their own switch below.';
     }
-    const box = document.getElementById('fleet-orphan-setting');
-    if (box) box.querySelector('summary').dataset.done = '';
     fleetControls();
   } catch (e) {
     const input = document.getElementById('fleet-orphan-auto');
@@ -7981,8 +7996,6 @@ async function saveOrphanSupersededStop(enabled) {
       body: JSON.stringify({ superseded_stop: enabled }),
     });
     fleetOrphanSupersededStop = answer.superseded_stop !== false;
-    const box = document.getElementById('fleet-orphan-setting');
-    if (box) box.querySelector('summary').dataset.done = '';
     fleetControls();
   } catch (e) {
     const input = document.getElementById('fleet-orphan-superseded');
@@ -7998,6 +8011,88 @@ function renderFleetOrphans(d) {
   const box = document.getElementById('fleet-orphans');
   if (!box) return;
   box.innerHTML = fleetOrphans(d);
+}
+
+// ---------------------------------------------------------------------------
+// Recent automatic stops — every stop a switch made, and every Stop a person pressed.
+//
+// The list is read from the Gateway's existing startup audit, not from a second log, and the page
+// draws it as given: the switch that did it, the reason the guard proved, and the Hub's own
+// answer. **An unreadable log reads "not available", never "nothing was stopped".**
+// ---------------------------------------------------------------------------
+
+let fleetAutoStops = null;  // the last answer, so the tab re-opens without a second read
+
+function fleetAutoStopSwitch(row) {
+  if (row.switch === 'manual') return 'manual stop';
+  if (row.switch === 'superseded_stop') return 'superseded_stop: a copy this Gateway replaced';
+  if (row.switch === 'auto_stop') return 'auto_stop: an orphaned Hub batch';
+  return row.switch ? `switch ${row.switch}` : 'switch not recorded';
+}
+
+// The Hub answers a request, not a result. "Signalled" is said in full: asked to stop, not yet
+// confirmed — a worker that has accepted an item cannot be promised to stop.
+function fleetAutoStopAnswer(row) {
+  if (row.ok === false) {
+    return `the Hub refused: ${row.error || 'no reason reported'}`;
+  }
+  const hub = row.hub || {};
+  const parts = [];
+  if (hub.queued_cancelled != null) parts.push(`${hub.queued_cancelled} queued cancelled`);
+  if (hub.running_signalled != null) {
+    parts.push(`${hub.running_signalled} running asked to stop, not yet confirmed`);
+  }
+  if (hub.running_pending != null) parts.push(`${hub.running_pending} still pending`);
+  return parts.length ? parts.join(' · ') : 'the Hub answered without a count';
+}
+
+function fleetAutoStopRow(row) {
+  const site = row.site_label || row.site || 'site not recorded';
+  const job = row.job ? `Gateway job ${row.job}` : 'no Gateway job recorded';
+  const manual = row.switch === 'manual';
+  return `<div class="fleet-issue">
+    <div><span class="badge ${manual ? 'warn' : ''}">${esc(fleetAutoStopSwitch(row))}</span>
+      ${esc(site)} · batch ${esc(row.batch || 'not recorded')} · ${esc(row.modality || 'work')}</div>
+    <div class="hint">${esc(fleetStamp(row.at))} · ${esc(job)}</div>
+    <div class="hint">Why: ${esc(row.reason || 'no reason recorded')}</div>
+    <div class="hint">Hub answered: ${esc(fleetAutoStopAnswer(row))}</div>
+  </div>`;
+}
+
+function fleetAutoStopsHtml(d) {
+  // No answer, or an answer that says it could not read the log: "not available", never empty.
+  if (!d || d.available === false) {
+    return `<div class="empty">not available — ${esc((d && d.note)
+      || 'the audit log could not be read, so this list says nothing about what was stopped.')}</div>`;
+  }
+  const rows = d.stops || [];
+  if (!rows.length) {
+    return `<div class="empty">${esc((d.note || 'No automatic stop in the last 7 days.'))}</div>`;
+  }
+  const days = Number.isFinite(d.days) ? d.days : 7;
+  return `<div class="hint">${rows.length} stop${rows.length === 1 ? '' : 's'} in the last `
+    + `${esc(String(days))} day${days === 1 ? '' : 's'}, newest first.</div>`
+    + rows.map(fleetAutoStopRow).join('');
+}
+
+function renderAutoStops(d) {
+  const box = document.getElementById('fleet-auto-stops');
+  if (box) box.innerHTML = fleetAutoStopsHtml(d);
+}
+
+async function loadAutoStops(force) {
+  const box = document.getElementById('fleet-auto-stops');
+  if (!box) return;
+  if (!force && fleetAutoStops) { renderAutoStops(fleetAutoStops); return; }
+  box.innerHTML = '<div class="empty">Reading the audit…</div>';
+  try {
+    fleetAutoStops = await api('/fleet/startup/auto-stops?days=7&limit=200');
+  } catch (e) {
+    // A read that failed is not an empty list either.
+    box.innerHTML = `<div class="empty">Could not read the stops: ${esc(e.message)}</div>`;
+    return;
+  }
+  renderAutoStops(fleetAutoStops);
 }
 
 function renderFleetGroups(d) {

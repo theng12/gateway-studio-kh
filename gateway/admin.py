@@ -4567,7 +4567,9 @@ def fleet_cancel_job(controller_id: str, batch_id: str, payload: dict[str, Any])
     proves its work was kept (`orphans._stop_guard`). The guard is checked here as well as in the
     page, because "the button was not drawn" is not a refusal: a stale tab or a replayed request
     must not stop a batch whose result exists only on that Hub. An ordinary cancel (from Jobs) keeps
-    its previous meaning and does not pass this flag.
+    its previous meaning and does not pass this flag. An orphan Stop is written to the startup audit
+    (`switch: "manual"`), so it appears in the Fleet page's "Recent automatic stops" list beside the
+    ones a switch made — a stop nobody can see afterwards is worse than none.
     """
     modality = str(payload.get("modality") or "").strip()
     if modality not in MODALITIES:
@@ -4580,6 +4582,7 @@ def fleet_cancel_job(controller_id: str, batch_id: str, payload: dict[str, Any])
     )
     if location is None:
         return _error(404, "No such location.")
+    verdict = None
     if payload.get("orphan_stop") is True:
         verdict = _orphan_stop_verdict(location, batch_id)
         if verdict is None:
@@ -4592,6 +4595,17 @@ def fleet_cancel_job(controller_id: str, batch_id: str, payload: dict[str, Any])
         result = cancel_fleet_batch(location, batch_id, modality)
     except AdminError as exc:
         return _error(exc.status, exc.detail, exc.code)
+    if verdict is not None:
+        # **A Stop the owner pressed belongs in the same list as the automatic ones**, marked
+        # manual: a stop nobody can see afterwards is worse than none, whether a person pressed
+        # the button or a switch did. `orphans.recent_stops` lists `orphan_stop` rows for exactly
+        # that reason, and the `switch` field is what tells the two apart.
+        startup_control.audit(
+            "orphan_stop", controller=str(location.get("id") or ""), batch=batch_id,
+            modality=modality, job=(verdict.get("job") or {}).get("id"),
+            reason=verdict["stop"]["reason"], requested_by="admin", switch="manual",
+            result=result,
+        )
     return {"batch_id": batch_id, "location": location.get("label"), "result": result}
 
 
@@ -5080,6 +5094,18 @@ def fleet_enable_autostart(payload: dict[str, Any]) -> Any:
 def fleet_startup_audit(limit: int = 50) -> dict[str, Any]:
     """The last startup requests this gateway sent, newest first."""
     return {"audit": startup_control.recent_audit(limit)}
+
+
+@router.get("/api/fleet/startup/auto-stops", dependencies=[Depends(require_admin)])
+def fleet_startup_auto_stops(days: float = 7, limit: int = 200) -> dict[str, Any]:
+    """Every Hub batch this Gateway stopped without a person — and every orphan Stop a person
+    pressed, marked manual — newest first, for the Fleet page's "Recent automatic stops".
+
+    Read from the existing startup audit rather than a second log, bounded to the last `days` days
+    and `limit` rows. **An unreadable log answers `available: false` with `stops: null`, never an
+    empty list**: "nothing was stopped" and "I could not read the log" are different answers.
+    """
+    return startup_control.recent_stops(days=days, limit=limit)
 
 
 # ---------------------------------------------------------------------------
