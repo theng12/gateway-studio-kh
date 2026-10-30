@@ -423,6 +423,15 @@ class SoundLibraryTests(unittest.TestCase):
         self.assertEqual(meta["source_url"], "https://openverse.org/audio/by-1")
         self.assertEqual(meta["author"], "AnotherAuthor")
 
+    def test_download_without_ffprobe_uses_source_duration(self):
+        from unittest.mock import patch
+        from gateway import sound_sources
+        from gateway.sound_library import download_into_library
+        with patch.object(sound_sources, "_find_ffprobe", return_value=None):
+            meta = download_into_library("openverse", "cc0-clip-1", self.registry.credentials)
+        self.assertIsNone(meta["format"])
+        self.assertIsNotNone(meta["duration_seconds"])
+
     def test_cc0_download_stores_real_licence(self):
         """No placeholder — the stored licence is the one from the detail response."""
         from gateway.sound_library import download_into_library

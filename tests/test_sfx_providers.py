@@ -491,6 +491,52 @@ class GeneratedClipImport(SfxTestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(list(sound_library._library_dir().glob(f"{hashlib.sha256(b'not audio').hexdigest()}*")), [])
 
+    @staticmethod
+    def flac() -> bytes:
+        import base64
+        data = bytearray(base64.b64decode("ZkxhQ4AAACIDIAMgAAAAAAZVAfQA8AAAAAAAAAAAAAAAAAAAAAAAAAAA//h0CAADH/cAAABK+A=="))
+        data[18:26] = (int.from_bytes(data[18:26], "big") | 800).to_bytes(8, "big")
+        return bytes(data)
+
+    def test_imports_wav_and_flac_without_ffprobe(self):
+        import base64
+        from unittest.mock import patch
+        # Real 0.1-second, 8 kHz mono FLAC frame; STREAMINFO records its 800 samples.
+        wav = self.wav()[:-2] + b"\x11\x00"
+        with patch.object(sound_sources, "_find_ffprobe", return_value=None):
+            for fmt, data, duration in (("wav", wav, 1.0), ("flac", self.flac(), 0.1)):
+                with self.subTest(format=fmt):
+                    response = self.post(format=fmt, audio_b64=base64.b64encode(data).decode())
+                    self.assertEqual(response.status_code, 200, response.text)
+                    meta = response.json()
+                    self.assertEqual((meta["format"], meta["sample_rate"], meta["channels"]), (fmt, 8000, 1))
+                    self.assertEqual(meta["duration_seconds"], duration)
+                    self.assertIsNone(meta["bit_rate"])
+
+    def test_invalid_audio_without_ffprobe_is_refused(self):
+        import base64
+        from unittest.mock import patch
+        flac = self.flac()
+        with patch.object(sound_sources, "_find_ffprobe", return_value=None):
+            for fmt, data in (("wav", b"garbage"), ("wav", self.wav()[:-10]),
+                              ("flac", b"garbage"), ("flac", flac[:-5])):
+                with self.subTest(format=fmt, size=len(data)):
+                    response = self.post(format=fmt, audio_b64=base64.b64encode(data).decode())
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertIn("could not be read", response.text)
+                    self.assertEqual(list(sound_library._library_dir().glob(f"{hashlib.sha256(data).hexdigest()}*")), [])
+
+    def test_missing_ffprobe_is_named_for_other_formats(self):
+        import base64
+        from unittest.mock import patch
+        with patch.object(sound_sources, "_find_ffprobe", return_value=None), \
+             patch.object(sound_library, "_find_ffprobe", return_value=None):
+            for fmt in ("mp3", "ogg", "m4a"):
+                with self.subTest(format=fmt):
+                    response = self.post(format=fmt, audio_b64=base64.b64encode(fmt.encode()).decode())
+                    self.assertEqual(response.status_code, 422, response.text)
+                    self.assertIn(f"no ffprobe to read {fmt}", response.text)
+
     def test_a_missing_note_model_or_description_is_refused(self):
         with self.probed():
             for field in ("licence_note", "model_id", "description", "title"):
