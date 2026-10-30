@@ -12,6 +12,14 @@ every feature title, and they are left as they were written.
 
 ## 0.2.214 — 2026-10-30
 
+### A retired pack no longer blocks every Content Pack install
+When a pack was retired but its archive was still on the Gateway, the receipt said two different
+things about it — download not available, archive available — and Story refuses the whole receipt
+when they disagree. So every Content Pack install and every Restore failed on every Story Mac. A
+retired pack now says the same thing in both places: no download, because the Gateway already
+refuses to serve it. Nothing changes for a live pack, and the pack still appears in the owner's
+Library so it can be removed rather than looking lost.
+
 ### A slow site no longer makes its Macs vanish from the Fleet page
 When a site took longer than six seconds to answer, its Macs used to disappear from the list — so a
 Mac could look missing only because its site was busy. They now stay in the list, marked **Last

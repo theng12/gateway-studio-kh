@@ -762,11 +762,23 @@ def _wire_kind(kind: str) -> str:
 
 
 def _wire_release(row: dict[str, Any], public: dict[str, Any]) -> dict[str, Any]:
+    """One release as Story reads it.
+
+    **`archive_available` is "this client can download it now", not "the file is on disk".** A
+    retired release stays on the shelf, and `issue_download` refuses it (`410
+    CONTENT_PRODUCT_RETIRED`, 6729f29), so its archive is not available on the wire. That is also
+    what makes it agree with an entitlement's `download_available`, which Story requires
+    (`download_available must match current release archive availability`): a retired family whose
+    archive is still on disk used to read `download_available: false` beside
+    `archive_available: true`, and Story rejected the whole receipts payload. A non-retired release
+    reports exactly what it did before.
+    """
     return {
         "release_id": row["release_id"], "pack_id": row["pack_id"], "version": row["version"],
         "archive_sha256": row["archive_sha256"], "archive_bytes": row["bytes"],
         "min_story_version": row["min_story_version"], "changelog": row["changelog"],
-        "component_summary": {row["kind"]: 1}, "archive_available": public["available"],
+        "component_summary": {row["kind"]: 1},
+        "archive_available": public["available"] and not bool(row.get("retired", False)),
     }
 
 
@@ -914,23 +926,39 @@ def receipts(state: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def release_history(family: str, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One family's releases, **describing the same ownership the receipt does**.
+
+    Story checks this against the receipt entitlement, field for field, before it will use a
+    release: `history.retired === entitlement.retired` and `history.currentReleaseId ===
+    entitlement.currentRelease.releaseId` (`ownedReleaseHistory`,
+    `electron/server/services/content-store-delivery.ts`). Both rows must therefore come from the
+    **same release row**, which is the one `_owned_releases` picked for the receipt and account —
+    not `matches[0]`, which is whatever order the shelf happens to store.
+
+    That matters for a fully retired family, whose receipt still names its last release (an
+    installed pack must not look lost) while `_release_rows` marks no row `current` for the
+    catalogue. Publishing `current_release_id: null` against a receipt that names a release made
+    Story answer `CONTENT_PACK_OWNED_RELEASE_MISMATCH` — the next failure after the archive
+    mismatch, on the same family.
+    """
     state = state if state is not None else _configured_state()
     matches = [row for row in state["releases"] if row["entitlement_family"] == family]
     if not matches:
         raise DeliveryError("No such private entitlement.", 404, "CONTENT_ENTITLEMENT_NOT_FOUND")
     public = {row["release_id"]: row for row in _release_rows(state)}
-    match_ids = {row["release_id"] for row in matches}
-    current = next((row for row in public.values()
-                    if row["release_id"] in match_ids and row["current"] and row["available"]), None)
-    first = matches[0]
+    owned = next(((row, availability) for row, availability in _owned_releases(state)
+                  if row["entitlement_family"] == family), None)
+    described = owned[0] if owned else matches[0]
+    current_release_id = described["release_id"] if owned else None
     return _bounded({
-        **{key: value for key, value in _entitlement(first, public[first["release_id"]]).items()
+        **{key: value for key, value in _entitlement(described, public[described["release_id"]]).items()
            if key in ("entitlement_family", "entitlement_id", "product_id", "title", "kind",
                       "publisher_id", "granted_at", "retired")},
-        "current_release_id": current["release_id"] if current else None,
+        "current_release_id": current_release_id,
         "releases": [{
             **_wire_release(row, public[row["release_id"]]), "state": "published",
-            "published_at": row["published_at"], "current": public[row["release_id"]]["current"],
+            "published_at": row["published_at"],
+            "current": row["release_id"] == current_release_id,
             "recalled_at": None, "recall_reason": None,
         } for row in sorted(matches, key=lambda item: _version(item["version"]))],
     })

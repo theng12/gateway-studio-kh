@@ -7,7 +7,9 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -561,6 +563,180 @@ class ContentRetireRemoveTest(unittest.TestCase):
         shelf = self.client.get("/admin/api/content-shelf").json()
         row = next(x for x in shelf["releases"] if x["release_id"] == pub["release"]["release_id"])
         self.assertNotIn("remove_report", row)
+
+    # ---- A retired family and the contract Story parses -----------------------
+    #
+    # Story's `parseContentStoreReceipts` refuses the WHOLE payload when one entitlement's
+    # `download_available` disagrees with its `current_release.archive_available`
+    # (`electron/server/lib/genstudio-content-store.ts`). A retired family whose archive is still
+    # on disk used to say false beside true, so every install and Restore failed on every shipped
+    # Story. These tests encode Story's rules, not just the one live example.
+
+    def _story_headers(self) -> dict[str, str]:
+        return {"Authorization": "Bearer fixture-api-key"}
+
+    def _assert_story_entitlement_rule(self, receipts: dict) -> None:
+        """Story's receipts parser, in Python: every entitlement row must agree with its release."""
+        rows = receipts["entitlements"]
+        self.assertTrue(rows, "the fixture owns at least one pack")
+        for index, entitlement in enumerate(rows):
+            release = entitlement.get("current_release")
+            self.assertEqual(
+                bool(entitlement["download_available"]),
+                bool(release and release["archive_available"]),
+                f"entitlements[{index}] download_available must match current release "
+                "archive availability (Story rejects the whole payload otherwise)")
+
+    def _assert_history_matches_entitlement(self, entitlement: dict, history: dict) -> None:
+        """Story's `ownedReleaseHistory`: every identity field and the current release must agree."""
+        for field in ("entitlement_family", "entitlement_id", "product_id", "title", "kind",
+                      "publisher_id", "granted_at", "retired"):
+            self.assertEqual(history[field], entitlement[field],
+                             f"release history {field} must match the verified entitlement")
+        expected = (entitlement.get("current_release") or {}).get("release_id")
+        self.assertEqual(history["current_release_id"], expected,
+                         "the receipt's current_release must be the history's current_release_id")
+        current = [row for row in history["releases"] if row["current"]]
+        if expected is None:
+            self.assertEqual(current, [], "no current release is named, so no row may claim to be it")
+        else:
+            self.assertEqual([row["release_id"] for row in current], [expected],
+                             "exactly the named release is current")
+
+    def _verify_signature(self, public_key_base64: str, payload: dict, signature: str) -> None:
+        """The same ed25519 check `test_content_delivery` runs, so a signed payload stays signed."""
+        program = """
+import { createPublicKey, verify } from 'node:crypto';
+const chunks=[]; for await (const chunk of process.stdin) chunks.push(chunk);
+const row=JSON.parse(Buffer.concat(chunks));
+const canonical=value => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
+  : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
+  : JSON.stringify(value);
+const key=createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),Buffer.from(row.public_key_base64,'base64')]),format:'der',type:'spki'});
+process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.from(row.signature,'base64')) ? 0 : 1);
+"""
+        checked = subprocess.run(
+            [shutil.which("node") or "node", "--input-type=module", "-e", program],
+            input=json.dumps({"public_key_base64": public_key_base64, "payload": payload,
+                              "signature": signature}).encode(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(checked.returncode, 0, checked.stderr.decode())
+
+    def test_a_retired_family_with_its_archive_on_disk_is_consistent_for_story(self) -> None:
+        pack_id = "com.storystudio.pack.style.oil-painting-classical-v2"
+        archive = make_archive(pack_id, "1.0.0", "Oil Painting Classical")
+        pub = content_delivery.import_and_publish(archive)
+        family = pub["archive"]["entitlement"]["family"]
+        release_id = pub["release"]["release_id"]
+        digest = pub["release"]["archive_sha256"]
+        content_delivery.retire_pack(pack_id, confirm_latest=True)
+        # The archive is still on disk: that is the state that used to break the parser.
+        self.assertTrue((self.data_dir / "content-library" / digest / "archive.sspack").is_file())
+
+        headers = self._story_headers()
+        receipts = self.client.get("/v1/content/receipts", headers=headers).json()
+        self._assert_story_entitlement_rule(receipts)
+        entitlement = next(e for e in receipts["entitlements"] if e["entitlement_family"] == family)
+        self.assertTrue(entitlement["retired"])
+        self.assertFalse(entitlement["download_available"])
+        self.assertIsNotNone(entitlement["current_release"])
+        self.assertFalse(entitlement["current_release"]["archive_available"],
+                         "a refused download is not an available archive")
+
+        # Story draws its overview's `downloadAvailable` from this row.
+        account = self.client.get("/v1/content/account", headers=headers).json()
+        owned = next(o for o in account["owned"] if o["entitlement_family"] == family)
+        self.assertFalse(owned["current_release"]["archive_available"])
+
+        history = self.client.get(
+            f"/v1/content/entitlements/{family}/releases", headers=headers).json()
+        self._assert_history_matches_entitlement(entitlement, history)
+        self.assertTrue(history["retired"])
+        self.assertFalse(any(row["archive_available"] for row in history["releases"]),
+                         "every version of a retired family is refused by `issue_download`")
+
+        # The catalogue still hides a retired family, and still tells Story to remove a copy.
+        products = self.client.get("/v1/content/products",
+                                   params={"story_version": "1.4.213"}, headers=headers).json()
+        self.assertFalse(any(p["entitlement_family"] == family for p in products["products"]),
+                         "products must not offer a retired family")
+        self.assertIn(pack_id, [row["pack_id"] for row in products["retired_packs"]])
+        shelves = self.client.get("/v1/content/shelves",
+                                  params={"story_version": "1.4.213"}, headers=headers).json()
+        offered = {product_id for shelf in shelves["shelves"] for product_id in shelf["product_ids"]}
+        self.assertNotIn(entitlement["product_id"], offered)
+
+        # The refusal itself is unchanged (6729f29).
+        refused = self.client.post("/v1/content/downloads", headers=headers,
+                                   json={"release_id": release_id})
+        self.assertEqual(refused.status_code, 410)
+        self.assertIn("CONTENT_PRODUCT_RETIRED", refused.json().get("code", ""))
+
+        # Nothing inside the signed restore receipt changed, and it still verifies.
+        keys = self.client.get("/v1/content/public-key", headers=headers).json()
+        signed = receipts["restore_receipt"]
+        self._verify_signature(keys["public_key_base64"], signed["receipt"],
+                               signed["receipt_signature"])
+        self.assertIn(release_id, [row["release_id"] for row in signed["receipt"]["releases"]])
+
+    def test_a_live_family_still_reports_a_downloadable_release(self) -> None:
+        pack_id = "com.storystudio.pack.topic.livereceipt"
+        pub = content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Live Receipt"))
+        family = pub["archive"]["entitlement"]["family"]
+        headers = self._story_headers()
+
+        receipts = self.client.get("/v1/content/receipts", headers=headers).json()
+        self._assert_story_entitlement_rule(receipts)
+        entitlement = next(e for e in receipts["entitlements"] if e["entitlement_family"] == family)
+        self.assertFalse(entitlement["retired"])
+        self.assertTrue(entitlement["download_available"])
+        self.assertTrue(entitlement["current_release"]["archive_available"])
+
+        history = self.client.get(
+            f"/v1/content/entitlements/{family}/releases", headers=headers).json()
+        self._assert_history_matches_entitlement(entitlement, history)
+        self.assertFalse(history["retired"])
+        self.assertTrue(all(row["archive_available"] for row in history["releases"]))
+
+        # A live family is still offered, and still downloadable.
+        products = self.client.get("/v1/content/products",
+                                   params={"story_version": "1.4.213"}, headers=headers).json()
+        self.assertTrue(any(p["entitlement_family"] == family for p in products["products"]))
+        shelves = self.client.get("/v1/content/shelves",
+                                  params={"story_version": "1.4.213"}, headers=headers).json()
+        offered = {product_id for shelf in shelves["shelves"] for product_id in shelf["product_ids"]}
+        self.assertIn(entitlement["product_id"], offered)
+        grant = self.client.post("/v1/content/downloads", headers=headers,
+                                 json={"release_id": entitlement["current_release"]["release_id"]})
+        self.assertEqual(grant.status_code, 200, grant.text)
+
+    def test_a_mixed_family_history_describes_the_receipts_ownership(self) -> None:
+        """A retired older version beside a live newer one: both parsers must agree on the family."""
+        pack_id = "com.storystudio.pack.topic.mixedreceipt"
+        doc1 = json.dumps({"schema_version": 1, "kind": "topic-pack", "id": f"{pack_id}.item",
+                           "name": "Mixed 1.0.0", "description": "d1"}).encode()
+        doc2 = json.dumps({"schema_version": 1, "kind": "topic-pack", "id": f"{pack_id}.item",
+                           "name": "Mixed 1.0.1", "description": "d2"}).encode()
+        content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Mixed 1.0.0", doc1))
+        pub = content_delivery.import_and_publish(
+            make_archive(pack_id, "1.0.1", "Mixed 1.0.1", doc2))
+        family = pub["archive"]["entitlement"]["family"]
+        content_delivery.retire_pack(pack_id, version="1.0.0")
+
+        headers = self._story_headers()
+        receipts = self.client.get("/v1/content/receipts", headers=headers).json()
+        self._assert_story_entitlement_rule(receipts)
+        entitlement = next(e for e in receipts["entitlements"] if e["entitlement_family"] == family)
+        self.assertFalse(entitlement["retired"], "the live version owns the family")
+        self.assertEqual(entitlement["current_release"]["version"], "1.0.1")
+
+        history = self.client.get(
+            f"/v1/content/entitlements/{family}/releases", headers=headers).json()
+        self._assert_history_matches_entitlement(entitlement, history)
+        by_version = {row["version"]: row for row in history["releases"]}
+        self.assertFalse(by_version["1.0.0"]["archive_available"], "the retired version is refused")
+        self.assertTrue(by_version["1.0.1"]["archive_available"])
 
 
 if __name__ == "__main__":
