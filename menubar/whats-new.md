@@ -12,6 +12,9 @@ every feature title, and they are left as they were written.
 
 ## 0.2.217 — 2026-10-30
 
+### Organize voices with tags
+Add or remove tags from voices in the Gateway's web console, and filter the list by tag. Tags travel with the voice catalogue and shared voice requests.
+
 ### A kept sound can be fetched by another Mac
 The Gateway's sound library could list a clip but never hand over its audio, so Story on a second
 Mac could not use one. `GET /v1/sounds/library/{sha256}/audio` now serves the stored bytes with

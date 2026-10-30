@@ -1436,6 +1436,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             var bits = [voice["description"] as? String ?? ""]
             if let gender = voice["gender"] as? String, !gender.isEmpty { bits.append(gender) }
             if let accent = voice["accent"] as? String, !accent.isEmpty { bits.append(accent) }
+            if let tags = voice["tags"] as? [String], !tags.isEmpty { bits.append("Tags: " + tags.joined(separator: ", ")) }
             field.stringValue = bits.filter { !$0.isEmpty }.joined(separator: " · ")
             field.textColor = .secondaryLabelColor
         case "source":

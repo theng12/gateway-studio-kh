@@ -747,6 +747,16 @@
     </div>
     <div id="jobs-body"><div class="empty">Reading jobs…</div></div>
   </section>
+  <section id="view-voices" style="display:none">
+    <div class="heading"><h1>Voices</h1><p>Organize voices with tags. Tags are shared with Story and accompany a voice when you share it.</p></div>
+    <div class="filters">
+      <div class="grow"><input id="voice-search" type="search" placeholder="Search voices" aria-label="Search voices" oninput="renderVoiceTags()"></div>
+      <select id="voice-tag-filter" aria-label="Filter by tag" onchange="renderVoiceTags()"><option value="">All tags</option></select>
+    </div>
+    <p class="hint" id="voice-tag-limits"></p>
+    <div id="voice-tag-status" class="msg" role="status"></div>
+    <div id="voice-tag-rows" aria-live="polite"></div>
+  </section>
   <!-- MODELS -->
   <section id="view-models" style="display:none">
     <div class="heading">
@@ -1358,7 +1368,7 @@ const NAV = [
   ] },
   { group: 'Library', items: [
     { view: 'jobs', label: 'Jobs', icon: 'jobs' },
-    { view: 'voices', label: 'Voices', icon: 'voices', app: true },
+    { view: 'voices', label: 'Voices', icon: 'voices' },
     { view: 'models', label: 'Models', icon: 'models' },
     { view: 'analytics', label: 'Analytics', icon: 'analytics', app: true },
     { view: 'packs', label: 'Content Packs', icon: 'packs' },
@@ -1404,7 +1414,6 @@ function navIcon(name) {
 //: Pages this console does not carry yet: a real note, never an empty page.
 const APP_ONLY = {
   overview: 'Overview is in the Gateway app.',
-  voices: 'Voices are browsed and managed in the Gateway app.',
   analytics: 'Analytics is in the Gateway app.',
   whatsnew: "What's New is in the Gateway app.",
   settings: 'Settings is in the Gateway app.',
@@ -1499,11 +1508,12 @@ function setView(view) {
       else row.removeAttribute('aria-current');
     });
   }
-  for (const id of ['fleet', 'jobs', 'models', 'providers', 'create', 'packs', 'guests', 'missing']) {
+  for (const id of ['fleet', 'jobs', 'voices', 'models', 'providers', 'create', 'packs', 'guests', 'missing']) {
     const section = document.getElementById('view-' + id);
     if (section) section.style.display = view === id ? '' : 'none';
   }
   if (view === 'guests') loadGuests();
+  else if (view === 'voices') loadVoiceTags();
   else if (view === 'models') { loadModels(); loadFreshness(); }
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
   else if (view === 'packs') { loadContentShelf(); loadPreservedArchives(); }
@@ -2052,6 +2062,65 @@ async function loadStatus() {
     if (foot) foot.className = 'nav-status off';
     if (foot) foot.textContent = 'Could not read the gateway: ' + e.message;
   }
+}
+
+/* -------------------------------- voice tags ------------------------------- */
+let voiceTagRows = [];
+let voiceTagLimits = null;
+async function loadVoiceTags() {
+  const status = document.getElementById('voice-tag-status');
+  status.textContent = 'Loading voices…';
+  try {
+    const data = await api('/voices');
+    voiceTagRows = data.voices || [];
+    voiceTagLimits = data.tag_limits;
+    const filter = document.getElementById('voice-tag-filter');
+    const selected = filter.value;
+    filter.replaceChildren(new Option('All tags', ''));
+    (data.tag_suggestions || []).forEach(tag => filter.add(new Option(tag, tag)));
+    filter.value = selected;
+    document.getElementById('voice-tag-limits').textContent =
+      `Up to ${voiceTagLimits.max_tags} tags per voice, ${voiceTagLimits.max_length} characters each.`;
+    status.textContent = '';
+    renderVoiceTags();
+  } catch (error) { status.textContent = `Could not load voices: ${error.message}`; }
+}
+function renderVoiceTags() {
+  const query = document.getElementById('voice-search').value.trim().toLocaleLowerCase();
+  const tag = document.getElementById('voice-tag-filter').value.toLocaleLowerCase();
+  const rows = voiceTagRows.filter(v => (!tag || (v.tags || []).some(t => t.toLocaleLowerCase() === tag)) &&
+    (!query || [v.display_name, v.description, ...(v.tags || [])].some(s => String(s || '').toLocaleLowerCase().includes(query))));
+  const container = document.getElementById('voice-tag-rows');
+  container.replaceChildren();
+  if (!rows.length) { container.textContent = 'No voices match these filters.'; return; }
+  rows.forEach(voice => {
+    const row = document.createElement('div'); row.className = 'card-head';
+    const main = document.createElement('div'); main.className = 'card-main';
+    const name = document.createElement('div'); name.className = 'name'; name.textContent = voice.display_name;
+    const tags = document.createElement('div'); tags.className = 'row';
+    (voice.tags || []).forEach(tag => {
+      const button = document.createElement('button'); button.className = 'sm';
+      button.textContent = `${tag} ×`; button.setAttribute('aria-label', `Remove ${tag} from ${voice.display_name}`);
+      button.onclick = () => saveVoiceTags(voice, voice.tags.filter(t => t !== tag)); tags.append(button);
+    });
+    const input = document.createElement('input'); input.placeholder = 'Add a tag';
+    input.setAttribute('aria-label', `Add a tag to ${voice.display_name}`);
+    input.setAttribute('list', 'voice-tag-suggestions'); input.maxLength = voiceTagLimits.max_length;
+    const add = document.createElement('button'); add.className = 'sm'; add.textContent = 'Add';
+    add.onclick = () => { if (input.value.trim()) saveVoiceTags(voice, [...(voice.tags || []), input.value]); };
+    input.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); add.click(); } };
+    main.append(name, tags); row.append(main, input, add); container.append(row);
+  });
+  const list = document.createElement('datalist'); list.id = 'voice-tag-suggestions';
+  [...document.getElementById('voice-tag-filter').options].slice(1).forEach(option => list.append(new Option(option.value)));
+  container.append(list);
+}
+async function saveVoiceTags(voice, tags) {
+  const status = document.getElementById('voice-tag-status');
+  try {
+    await api('/voices/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({voice_id:voice.id, tags})});
+    await loadVoiceTags(); status.textContent = 'Tags saved.';
+  } catch (error) { status.textContent = `Could not save tags: ${error.message}`; }
 }
 
 /* ---------------------------------- models --------------------------------- */
