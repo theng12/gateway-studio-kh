@@ -33,6 +33,7 @@ import gzip
 import hashlib
 import json
 import os
+import plistlib
 import re
 import subprocess
 import tempfile
@@ -292,9 +293,10 @@ def _hash_file(path: Path) -> tuple[str, int]:
 def _mounted(dmg: Path) -> Iterator[Path]:
     """The disk image mounted read-only at a private mount point; always detached."""
     mountpoint = tempfile.mkdtemp(prefix="gateway-dmg-")
+    device = None
     try:
         attach = subprocess.run(
-            ["hdiutil", "attach", "-readonly", "-nobrowse", "-noverify", "-noautoopen",
+            ["hdiutil", "attach", "-readonly", "-nobrowse", "-noverify", "-noautoopen", "-plist",
              "-mountpoint", mountpoint, str(dmg)],
             capture_output=True, text=True, timeout=300,
         )
@@ -303,10 +305,12 @@ def _mounted(dmg: Path) -> Iterator[Path]:
                 f"Could not mount the disk image: {(attach.stderr or '').strip()[:300]}",
                 500, "RELEASE_MOUNT_FAILED",
             )
+        device = min(e["dev-entry"] for e in plistlib.loads(attach.stdout.encode())["system-entities"])
         yield Path(mountpoint)
     finally:
-        # Detach even when attach failed half way; a mount that never happened just errors.
-        subprocess.run(["hdiutil", "detach", "-force", mountpoint], capture_output=True, timeout=120)
+        # By the device attach named, never by a path: a mount-point detach ejected a real SSD.
+        if device:
+            subprocess.run(["hdiutil", "detach", "-force", device], capture_output=True, timeout=120)
         try:
             os.rmdir(mountpoint)
         except OSError:
