@@ -1105,7 +1105,9 @@
       <h1>Guests</h1>
       <p>A guest can use <b>Create</b> and see their own results. Nothing else in this console
         is theirs: every other page and route refuses them. By default they may use free and
-        local models only — switch paid models on per guest if you want to.</p>
+        local models only — switch paid models on per guest if you want to. <b>Create key</b>
+        gives the same guest one API key for an agent (Claude Code, Claude Desktop): it is
+        shown once, the same rules apply to it, and <b>Revoke key</b> stops it at once.</p>
     </div>
     <section class="card">
       <div class="body">
@@ -1120,6 +1122,16 @@
           <button class="primary" id="guest-add" onclick="addGuest(this)">Add Guest</button>
         </div>
         <div class="msg" id="guest-msg" role="status" aria-live="polite"></div>
+        <div id="guest-key-box" class="msg" role="status" style="display:none">
+          <b>Copy this key now — it is shown once and cannot be read again.</b>
+          <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">
+            <input type="text" id="guest-key-value" readonly autocomplete="off" spellcheck="false"
+                   style="flex:1;min-width:220px" onclick="this.select()">
+            <button type="button" class="sm" onclick="copyGuestKey()">Copy</button>
+            <button type="button" class="sm" onclick="hideGuestKey()">Done</button>
+          </div>
+          <div style="margin-top:6px" id="guest-key-what"></div>
+        </div>
       </div>
     </section>
     <div id="guests-body"><div class="empty">Reading guests…</div></div>
@@ -8064,7 +8076,7 @@ async function loadGuests() {
   }
   const rows = guestsState.rows;
   box.innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr>
-      <th>Guest</th><th>State</th><th class="num">Jobs</th><th>Paid models</th><th>Spend</th><th></th>
+      <th>Guest</th><th>State</th><th class="num">Jobs</th><th>Paid models</th><th>Spend</th><th>Agent key</th><th></th>
     </tr></thead><tbody>${rows.map(g => `<tr>
       <td>${esc(g.name)}${g.removed ? '' : ''}</td>
       <td><span class="badge ${g.removed ? '' : g.disabled ? 'warn' : 'ok'}">${
@@ -8073,12 +8085,104 @@ async function loadGuests() {
       <td>${g.removed ? esc(g.paid_allowed ? 'on' : 'off') : `<label class="check"><input type="checkbox" ${
         g.paid_allowed ? 'checked' : ''} onchange="setGuestPaid('${esc(g.id)}', this.checked)"> paid models</label>`}</td>
       <td>${g.spend_recorded ? esc(g.spend == null ? 'not recorded' : String(g.spend)) : 'not recorded'}</td>
+      <td>${guestKeyCell(g)}</td>
       <td>${g.removed ? '' : `
         <button class="sm" onclick="resetGuestPassword('${esc(g.id)}')">Reset password</button>
         <button class="sm" onclick="setGuestDisabled('${esc(g.id)}', ${g.disabled ? 'false' : 'true'})">${g.disabled ? 'Enable' : 'Disable'}</button>
         <button class="sm" onclick="removeGuestAccount('${esc(g.id)}')">Remove</button>`}</td>
     </tr>`).join('')}</tbody></table></div>`
     : '<div class="empty">No guests yet. A guest signs in with their name and password and gets the Create page.</div>';
+}
+
+// ---------------------------------------------------------------------------
+// The guest's agent key — one bearer key for an MCP agent, for the same guest.
+//
+// **Shown once.** The server keeps only its hash, so this page draws what it knows (whether a
+// key exists, when it was issued and last used) and offers the key exactly once, in the answer
+// to the issue call, in a text box the owner can copy. It is never put in a URL or a link.
+// ---------------------------------------------------------------------------
+function guestKeyWhen(epoch) {
+  const value = Number(epoch);
+  if (!isFinite(value) || value <= 0) return '';
+  return new Date(value * 1000).toLocaleString();
+}
+
+function guestKeyCell(g) {
+  const key = g.api_key;
+  if (g.removed) return esc(key ? 'key revoked with the account' : 'none');
+  const state = !key ? 'No key'
+    : key.revoked ? `Revoked ${esc(guestKeyWhen(key.created_at))}`
+    : `Active since ${esc(guestKeyWhen(key.created_at))}` +
+      (key.last_used_at ? ` · used ${esc(guestKeyWhen(key.last_used_at))}` : ' · not used yet')
+      + ` · ${esc(key.fingerprint)}`;
+  const issue = `<button class="sm" onclick="issueGuestKey('${esc(g.id)}')">${
+    key && !key.revoked ? 'Replace key' : 'Create key'}</button>`;
+  const revoke = key && !key.revoked
+    ? `<button class="sm" onclick="revokeGuestKey('${esc(g.id)}')">Revoke key</button>` : '';
+  return `<div>${state}</div><div>${issue}${revoke}</div>`;
+}
+
+function hideGuestKey() {
+  const box = document.getElementById('guest-key-box');
+  const field = document.getElementById('guest-key-value');
+  if (field) field.value = '';
+  if (box) box.style.display = 'none';
+}
+
+function showGuestKey(value, who) {
+  const box = document.getElementById('guest-key-box');
+  const field = document.getElementById('guest-key-value');
+  const what = document.getElementById('guest-key-what');
+  if (!box || !field) return;
+  field.value = value;            // textContent/value only: never markup
+  if (what) what.textContent = `Key for ${who}. Point the MCP server at it with GATEWAY_GUEST_KEY, `
+    + 'or store it in the Keychain. Issuing again replaces it; Revoke stops it immediately.';
+  box.style.display = '';
+  field.focus();
+  field.select();
+}
+
+function copyGuestKey() {
+  const field = document.getElementById('guest-key-value');
+  if (!field) return;
+  field.select();
+  // The page is served over plain http on Tailscale, where the async clipboard API is
+  // unavailable; the selected text is the fallback, and Cmd-C is one keystroke.
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(field.value).then(
+      () => guestMessage('Key copied.'),
+      () => guestMessage('Select the key and press Cmd-C.'));
+  } else {
+    guestMessage('Select the key and press Cmd-C.');
+  }
+}
+
+async function issueGuestKey(id) {
+  const name = guestById(id).name;
+  if (!confirm(`Create an API key for ${name}? It is shown once, and replaces any key they have.`)) return;
+  try {
+    const answer = await api('/guests/' + encodeURIComponent(id) + '/key', { method: 'POST' });
+    guestRowsFrom(answer);
+    showGuestKey(String(answer.key || ''), name);
+    guestMessage(`Key created for ${name}. It is shown once — copy it now.`);
+    loadGuests();
+  } catch (e) {
+    guestMessage(e.message, true);
+  }
+}
+
+async function revokeGuestKey(id) {
+  const name = guestById(id).name;
+  if (!confirm(`Revoke ${name}'s API key? Their agent stops on its next request; their account and jobs stay.`)) return;
+  try {
+    const answer = await api('/guests/' + encodeURIComponent(id) + '/key', { method: 'DELETE' });
+    guestRowsFrom(answer);
+    hideGuestKey();
+    guestMessage(`${name}'s key is revoked.`);
+    loadGuests();
+  } catch (e) {
+    guestMessage(e.message, true);
+  }
 }
 
 function guestRowsFrom(answer) {

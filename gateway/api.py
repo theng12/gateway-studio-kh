@@ -174,6 +174,7 @@ _UPLOAD_CEILINGS: tuple[tuple["re.Pattern[str]", int, str, str], ...] = (
     (re.compile(r"^/v1/videos/source-images$"), _MAX_UPLOAD_BYTES, "a source image", "upload"),
     (re.compile(r"^/admin/api/create/transcription$"), _MAX_UPLOAD_BODY, "a transcription upload",
      "upload"),
+    (re.compile(r"^/admin/api/create/video$"), _MAX_UPLOAD_BYTES, "a source image", "upload"),
     (re.compile(r"^/v1/audio/transcriptions/quotes$"), _MAX_UPLOAD_BODY, "a transcription upload",
      "upload"),
     (re.compile(r"^/admin/api/fleet/controllers/[^/]+/machines/[^/]+/transcribe$"),
@@ -192,6 +193,11 @@ _UPLOAD_CEILINGS: tuple[tuple["re.Pattern[str]", int, str, str], ...] = (
 #: self-bounded JSON reader on the gateway (`_json_body` in admin.py) accepts 4 MiB and a door
 #: below it would refuse a body that route was written to take.
 _BODY_CEILING_DEFAULT = 4 * 1024 * 1024
+
+#: The upload doors a **guest API key** may open. Both are the Create surface's own; every
+#: other upload door refuses the key at the route, so `_upload_credentials_ok` must not read
+#: a body for a request that is certain to be refused.
+_GUEST_UPLOAD_PATHS = frozenset({"/admin/api/create/transcription", "/admin/api/create/video"})
 
 #: A private render blob is a whole video, streamed by its own route against a size the caller
 #: declares and `render_service` checks. Capping it here would refuse real renders.
@@ -350,8 +356,15 @@ def _upload_credentials_ok(scope: Any) -> bool:
     authorization = (headers.get(b"authorization") or b"").decode("latin-1").strip()
     if authorization.lower().startswith("bearer "):
         expected = gateway_api_key()
-        if expected and hmac.compare_digest(authorization[7:].strip().encode(), expected.encode()):
+        token = authorization[7:].strip()
+        if expected and hmac.compare_digest(token.encode(), expected.encode()):
             return True
+        # A guest's API key is a credential for the Create door, which is an upload door.
+        # **Only those two doors**: elsewhere the route refuses the key anyway, and the body
+        # must not be spooled (or the upload budget spent) for a refusal that was certain.
+        if admin_session.guest_by_key(token) is not None:
+            if (scope.get("path") or "") in _GUEST_UPLOAD_PATHS:
+                return True
     cookie_header = (headers.get(b"cookie") or b"").decode("latin-1")
     for part in cookie_header.split(";"):
         name, _, value = part.strip().partition("=")
@@ -905,6 +918,18 @@ def require_auth(request: Request, authorization: str | None = Header(default=No
     token = authorization[7:].strip()
     if not token:
         raise GatewayError(401, "Empty bearer token.", "UNAUTHORIZED")
+    # **A guest key is never a `/v1` credential.** `/v1` is the owner's API and holds the
+    # fleet, account, content and final-render surfaces; a guest reaches the Create API only.
+    # Refused here, before loopback or the configured key is consulted, so the answer is the
+    # same sentence the Create door uses and not an accident of which check ran first.
+    # **Resolved, not merely spelled**: a configured gateway key that happened to start with
+    # the guest prefix is still the owner's key.
+    from . import admin_session
+
+    if token.startswith(admin_session.GUEST_KEY_PREFIX):
+        if admin_session.guest_by_key(token) is not None:
+            raise GatewayError(403, "A guest API key may only use the Create API.",
+                               "GUEST_NOT_ALLOWED")
     # Read per request, not from a module-level snapshot. It *was* snapshotted at
     # import, so editing `GATEWAY_API_KEY` in `.env` changed nothing and — the part
     # that matters — **after rotating the key the old one still worked**. A
@@ -4648,6 +4673,7 @@ _GUEST_ALLOWED = re.compile(
     r"|^/admin/api/create/models$"
     r"|^/admin/api/create$"
     r"|^/admin/api/create/transcription$"
+    r"|^/admin/api/create/video$"
     r"|^/admin/api/create/status/[^/]+(/cancel)?$"
     r"|^/admin/api/voices$"
     r"|^/admin/api/jobs$"
@@ -4666,10 +4692,12 @@ async def guest_scope(request: Request, call_next):
     path = request.url.path
     if not path.startswith("/admin"):
         return await call_next(request)
-    from . import admin_session
+    from .admin import guest_identity
 
-    identity = admin_session.session(request.cookies.get(admin_session.COOKIE))
-    if identity is not None and identity.get("role") == "guest":
+    # The browser's cookie and a guest's API key are one identity (review 2026-10-30): the
+    # key is the same guest, so it is confined by the same list rather than by a second one.
+    identity = guest_identity(request)
+    if identity is not None:
         if not _GUEST_ALLOWED.match(path):
             return JSONResponse(
                 status_code=403,

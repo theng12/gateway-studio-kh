@@ -21,6 +21,15 @@ and a session role that the admin routes read. A guest session reaches the Creat
 and its own jobs only; `admin.require_admin` refuses it everywhere else, and the app's
 `/admin` middleware carries the same allowlist as a backstop, so a route added tomorrow
 is owner-only until somebody says otherwise.
+
+**A guest API key (2026-10-30).** An agent cannot hold a browser cookie, so a guest may
+also be given one bearer key. It is minted by the owner, shown once, and stored as its
+SHA-256 only. **It is the same guest, not a second kind of account**: the request is
+resolved to that guest's identity before any route decides anything, so it reaches exactly
+what the guest's browser reaches — free and local models unless the owner allowed paid
+ones, its own jobs and files, and "Requested by <name> (guest)" on what it starts. It is
+refused everywhere else, `/v1` included, and disabling, removing or revoking ends it on
+the next request because the record is read live, not cached.
 """
 
 from __future__ import annotations
@@ -351,6 +360,8 @@ def public_guest(row: dict) -> dict:
         "disabled": bool(row.get("disabled_at")),
         "removed": bool(row.get("removed_at")),
         "spend_recorded": False,
+        # Whether an agent key exists, never the key or its hash (`guest_key_public`).
+        "api_key": guest_key_public(row),
     }
 
 
@@ -535,6 +546,103 @@ def retire_guest(guest_id: str) -> dict:
 
 
 _DUMMY_SALT = secrets.token_bytes(16)
+
+
+# ---------------------------------------------------------------------------
+# Guest API keys — one bearer key an agent can hold, for the same guest.
+#
+# **Shown once, stored hashed.** The plaintext leaves this module exactly once, in the
+# owner's answer to the issue route; the row keeps only its SHA-256. The fingerprint the
+# page shows is the first 8 hex characters of that same digest, so it identifies a key
+# without being any part of it.
+#
+# **Not a cache.** Every verified request re-reads the guest file, so revoking a key,
+# disabling the guest or removing them all take effect on the very next request — the
+# property `session()` already has for cookies.
+# ---------------------------------------------------------------------------
+GUEST_KEY_PREFIX = "gwk_"
+
+
+def _guest_key_status(record: dict | None) -> dict | None:
+    if not isinstance(record, dict) or not record.get("hash"):
+        return None
+    digest = str(record["hash"])
+    return {
+        "fingerprint": digest[:8],
+        "created_at": record.get("created_at"),
+        "last_used_at": record.get("last_used_at"),
+        "revoked": bool(record.get("revoked_at")),
+    }
+
+
+def guest_key_public(row: dict) -> dict | None:
+    """That a key exists and when it was used — never the key, never its full digest."""
+    return _guest_key_status(row.get("api_key"))
+
+
+def issue_guest_key(guest_id: str) -> str:
+    """Mint this guest's key and return it once. **Issuing again replaces the old key.**"""
+    with _lock:
+        rows = _guest_rows()
+        row = next((r for r in rows if str(r.get("id")) == str(guest_id)), None)
+        if row is None:
+            raise KeyError(guest_id)
+        if row.get("removed_at"):
+            raise ValueError("That guest was removed; add a new one instead.")
+        token = GUEST_KEY_PREFIX + secrets.token_urlsafe(32)
+        row["api_key"] = {"hash": _digest(token), "created_at": time.time(),
+                          "last_used_at": None, "revoked_at": None}
+        row["updated_at"] = time.time()
+        _save_guest_rows(rows)
+        return token
+
+
+def revoke_guest_key(guest_id: str) -> dict:
+    """Stop the key working at once. The record of it is kept so the page can say so."""
+    with _lock:
+        rows = _guest_rows()
+        row = next((r for r in rows if str(r.get("id")) == str(guest_id)), None)
+        if row is None:
+            raise KeyError(guest_id)
+        record = row.get("api_key")
+        if isinstance(record, dict) and record.get("hash") and not record.get("revoked_at"):
+            record["revoked_at"] = time.time()
+            row["updated_at"] = time.time()
+            _save_guest_rows(rows)
+        return public_guest(row)
+
+
+def guest_by_key(token: str) -> dict | None:
+    """The guest a bearer key belongs to, or `None`.
+
+    Compared with `hmac.compare_digest` against each guest's stored digest, so an attacker
+    learns nothing from the time it takes to be refused. A key whose guest was disabled,
+    removed or had its key revoked is refused exactly like one that never existed.
+    """
+    if not isinstance(token, str) or not token.startswith(GUEST_KEY_PREFIX) or len(token) > 200:
+        return None
+    digest = _digest(token)
+    now = time.time()
+    with _lock:
+        rows = _guest_rows()
+        found = None
+        for row in rows:
+            record = row.get("api_key")
+            if not isinstance(record, dict) or not record.get("hash"):
+                continue
+            if hmac.compare_digest(digest, str(record["hash"])):
+                found = (row, record)
+        if found is None:
+            return None
+        row, record = found
+        if row.get("removed_at") or row.get("disabled_at") or record.get("revoked_at"):
+            return None
+        # Written at most hourly: "last used" is a courtesy line on the page, not a log.
+        if now - float(record.get("last_used_at") or 0) > 3600:
+            record["last_used_at"] = now
+            _save_guest_rows(rows)
+        return {"role": "guest", "guest_id": str(row.get("id")),
+                "name": str(row.get("name") or ""), "via": "key"}
 
 
 def check_guest(name: str, password: str) -> dict | None:

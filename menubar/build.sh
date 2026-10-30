@@ -190,6 +190,9 @@ echo "==> bundling gateway source"
 preserve_path "$APP/Contents/Resources/gateway"
 mkdir -p "$APP/Contents/Resources/gateway/data"
 cp -R "$ROOT/gateway" "$APP/Contents/Resources/gateway/gateway"
+# The MCP agent connector: a stdlib-only python3 script an MCP client launches. It ships
+# beside the gateway source so an installed app has it at a stable path.
+cp -R "$ROOT/connectors" "$APP/Contents/Resources/gateway/connectors"
 cp "$ROOT/requirements.txt" "$APP/Contents/Resources/gateway/"
 cp "$ROOT/requirements.lock" "$APP/Contents/Resources/gateway/"
 # Shipped read-only defaults. User data lives in Application Support.

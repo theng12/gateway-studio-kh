@@ -144,3 +144,82 @@ test('the Guests page draws what the server said, including what it does not kno
   assert.ok(html.includes('onchange="setGuestPaid(\'guest-1\''), 'the owner switch is there');
   assert.ok(!html.includes('setGuestPaid(\'guest-3\''), 'a removed guest has no switch');
 });
+
+// The guest's agent key — one bearer token for an MCP agent, shown exactly once.
+//
+// The server is the boundary (a guest key is refused everywhere but Create, and every /v1
+// route refuses it — walked in test_guest_api_keys.py). What is checked here is that the page
+// offers the key, draws its state honestly, and **puts the key in one text box and nowhere
+// else**: not in markup, not in an attribute, not in a URL.
+function keyHarness(answerFor) {
+  const nodes = {
+    'guests-body': element(),
+    'guest-msg': element(),
+    'guest-key-box': { ...element(), style: { display: 'none' } },
+    'guest-key-value': { ...element(), focus() { this.focused = true; }, select() { this.selected = true; } },
+    'guest-key-what': element(),
+  };
+  const calls = [];
+  const context = vm.createContext({
+    document: { getElementById: id => nodes[id] || null },
+    esc,
+    api: async (path, options) => {
+      calls.push([path, options && options.method]);
+      return answerFor(path, options);
+    },
+    confirm: () => true,
+    prompt: () => null,
+    navigator: {},
+  });
+  vm.runInContext(between('let guestsState', 'async function signOut()'), context);
+  return { context, nodes, calls };
+}
+
+function guestRow(over) {
+  return { id: 'guest-1', name: 'Maria', paid_allowed: false, disabled: false, removed: false,
+           jobs: 0, unfinished: 0, spend_recorded: false, spend: null, api_key: null, ...over };
+}
+
+test('a guest with no key offers one, and a removed guest offers nothing', async () => {
+  const { context, nodes } = keyHarness(() => ({ guests: [
+    guestRow(),
+    guestRow({ id: 'guest-2', name: 'Sam', removed: true,
+               api_key: { fingerprint: 'abcd1234', created_at: 1, last_used_at: null, revoked: true } }),
+  ], password_min_length: 8 }));
+  await vm.runInContext('loadGuests()', context);
+  const html = nodes['guests-body'].innerHTML;
+  assert.ok(html.includes("issueGuestKey('guest-1')"), html);
+  assert.ok(html.includes('No key'), html);
+  assert.ok(!html.includes("issueGuestKey('guest-2')"), 'a retired guest is history');
+});
+
+test('an active key shows its state and can be revoked', async () => {
+  const { context, nodes } = keyHarness(() => ({ guests: [guestRow({
+    api_key: { fingerprint: 'deadbeef', created_at: 1, last_used_at: 2, revoked: false } })] }));
+  await vm.runInContext('loadGuests()', context);
+  const html = nodes['guests-body'].innerHTML;
+  assert.ok(html.includes('deadbeef'), 'the fingerprint identifies the key without being it');
+  assert.ok(html.includes('Replace key'));
+  assert.ok(html.includes("revokeGuestKey('guest-1')"));
+  assert.ok(html.includes('used '), 'last use is drawn when the server knows it');
+});
+
+test('the key is shown once, in one text box, and never in the markup', async () => {
+  const secret = 'gwk_abcdefghijklmnop';
+  const { context, nodes, calls } = keyHarness((path, options) => {
+    if (path === '/guests') return { guests: [guestRow()] };
+    if (path === '/guests/guest-1/key' && options && options.method === 'POST') {
+      return { guest: guestRow(), key: secret, guests: [guestRow()] };
+    }
+    return {};
+  });
+  await vm.runInContext('loadGuests()', context);
+  await vm.runInContext("issueGuestKey('guest-1')", context);
+  assert.equal(nodes['guest-key-value'].value, secret, 'the key is in the box, for copying');
+  assert.equal(nodes['guest-key-box'].style.display, '', 'and the box is shown');
+  assert.ok(!nodes['guests-body'].innerHTML.includes(secret), 'never drawn into the table');
+  assert.ok(!JSON.stringify(calls).includes(secret), 'never put in a URL or a call');
+  await vm.runInContext('hideGuestKey()', context);
+  assert.equal(nodes['guest-key-value'].value, '');
+  assert.equal(nodes['guest-key-box'].style.display, 'none');
+});
