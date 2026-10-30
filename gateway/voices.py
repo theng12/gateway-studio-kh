@@ -95,6 +95,82 @@ PREVIEW_TIMEOUT = httpx.Timeout(30.0, connect=8.0)
 
 ID_SEPARATOR = "::"
 
+#: A voice tag is a short, plain label. These are the limits the editor prints and
+#: the server enforces — one copy, published on `/admin/api/voices` as
+#: `tag_limits`, so the hint beside the input cannot drift from the refusal.
+TAG_MAX_LENGTH = 32
+MAX_TAGS = 12
+
+
+def clean_tags(values: Any) -> tuple[str, ...]:
+    """Free-form voice tags: trimmed, de-duplicated case-insensitively, bounded.
+
+    The first spelling of a duplicate wins (`Khmer` before `khmer`). Blank entries
+    are dropped rather than stored as empty tags. A value that is not a list, a
+    non-string entry, a control character, a tag over `TAG_MAX_LENGTH` or more than
+    `MAX_TAGS` tags is **refused** — an edit that silently discards half a list
+    would leave the owner looking at a tag he did not type.
+    """
+    if not isinstance(values, (list, tuple)):
+        raise ValueError("Tags must be a list of short strings.")
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            raise ValueError("Every tag must be text.")
+        tag = " ".join(raw.split())
+        if not tag:
+            continue
+        if any(ord(char) < 32 or ord(char) == 127 for char in tag):
+            raise ValueError("A tag cannot contain control characters.")
+        if len(tag) > TAG_MAX_LENGTH:
+            raise ValueError(f"Each tag is at most {TAG_MAX_LENGTH} characters.")
+        key = tag.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+    if len(out) > MAX_TAGS:
+        raise ValueError(f"A voice has at most {MAX_TAGS} tags.")
+    return tuple(out)
+
+
+def read_tags(values: Any) -> tuple[str, ...]:
+    """Tags as read from stored data: **lenient**, because a voice must still load.
+
+    Old voices have no tags (`()`), and a hand-edited catalogue cannot make a voice
+    disappear from the library by carrying one bad entry — the unusable entries are
+    dropped and the rest stay.
+    """
+    if not isinstance(values, (list, tuple)):
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        tag = " ".join(raw.split())
+        if (not tag or len(tag) > TAG_MAX_LENGTH
+                or any(ord(char) < 32 or ord(char) == 127 for char in tag)):
+            continue
+        key = tag.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+        if len(out) == MAX_TAGS:
+            break
+    return tuple(out)
+
+
+def tag_suggestions(voices: list["Voice"]) -> list[str]:
+    """Every tag in use, one spelling per case-insensitive tag, sorted for a picker."""
+    seen: dict[str, str] = {}
+    for voice in voices:
+        for tag in voice.tags:
+            seen.setdefault(tag.casefold(), tag)
+    return sorted(seen.values(), key=str.casefold)
+
 #: Where a voice came from. Drives both display and what can be done with it.
 SOURCE_LOCAL = "local"        # this Mac's own reference clips
 SOURCE_ACCOUNT = "account"    # the owner's own entry at the provider
@@ -135,6 +211,9 @@ class Voice:
     age: str = ""
     preview_url: str = ""
     owned: bool = True
+    #: Free-form labels for finding a voice in a long library. Never used for
+    #: dispatch or ranking; an old voice with none reads as `()`.
+    tags: tuple[str, ...] = ()
     raw: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -149,6 +228,7 @@ class Voice:
             "gender": self.gender,
             "accent": self.accent,
             "age": self.age,
+            "tags": list(self.tags),
             "has_preview": bool(self.preview_url),
             "owned": self.owned,
             # **Not `tts_model_id`.** That name is a *serving* claim — Story
@@ -407,6 +487,7 @@ def _local_voices() -> list[Voice]:
                 gender=str(entry.get("gender") or ""),
                 preview_url="",
                 owned=True,
+                tags=read_tags(entry.get("tags")),
                 raw={
                     "engine_name": entry.get("engine_name"),
                     "tts_model_id": entry.get("tts_model_id"),
@@ -564,7 +645,8 @@ class VoiceRegistry:
         self.path = path or STATE_PATH
         # `hidden`: provider voices the owner removed from this Gateway ({provider: {voice: info}}).
         # They stay in the provider's account; Restore brings them back.
-        self._data: dict[str, Any] = {"enabled": {}, "discovered": {}, "custom": {}, "hidden": {}}
+        self._data: dict[str, Any] = {"enabled": {}, "discovered": {}, "custom": {}, "hidden": {},
+                                      "tags": {}}
         self._load()
 
     def _load(self) -> None:
@@ -575,7 +657,7 @@ class VoiceRegistry:
         except (json.JSONDecodeError, OSError):
             return
         if isinstance(parsed, dict):
-            for key in ("enabled", "discovered", "custom", "hidden"):
+            for key in ("enabled", "discovered", "custom", "hidden", "tags"):
                 if isinstance(parsed.get(key), dict):
                     self._data[key] = parsed[key]
 
@@ -619,6 +701,15 @@ class VoiceRegistry:
         return outcomes
 
     # -- reads ------------------------------------------------------------
+    def _tags_for(self, provider_id: str, provider_voice_id: str) -> tuple[str, ...]:
+        """A provider voice's tags, from this registry's own state.
+
+        Kept apart from the discovered listing: a refresh replaces discovery, and a
+        tag the owner typed must not vanish because a provider answered late. The
+        bucket is keyed by the provider's own voice id, never by the display name.
+        """
+        return read_tags((self._data["tags"].get(provider_id) or {}).get(provider_voice_id))
+
     def _from_cached(self, provider_id: str) -> list[Voice]:
         cached = self._data["discovered"].get(provider_id) or {}
         out: list[Voice] = []
@@ -639,6 +730,7 @@ class VoiceRegistry:
                     age=str(item.get("age") or ""),
                     preview_url=str(item.get("preview_url") or ""),
                     owned=bool(item.get("owned", True)),
+                    tags=self._tags_for(provider_id, str(item.get("provider_voice_id") or "")),
                     raw=item.get("raw") or {},
                 )
             )
@@ -680,6 +772,7 @@ class VoiceRegistry:
                         language=str(item.get("language") or ""),
                         description=str(item.get("description") or ""),
                         owned=True,
+                        tags=self._tags_for(provider_id, str(item.get("provider_voice_id") or "")),
                         raw=item.get("raw") or {},
                     )
                 )
@@ -747,6 +840,27 @@ class VoiceRegistry:
         bucket[provider_voice_id] = bool(enabled)
         self._save()
         return True
+
+    def set_tags(self, voice_id: str, tags: list[str] | tuple[str, ...]) -> dict[str, Any]:
+        """Replace one **provider** voice's tags. Local voices live in their catalogue.
+
+        The stored list is the cleaned one, so the caller can show exactly what was
+        kept. Clearing removes the bucket entry rather than storing an empty list;
+        an old voice with none reads as `[]` either way.
+        """
+        provider_id, provider_voice_id = split_id(voice_id)
+        if not provider_voice_id:
+            raise KeyError(voice_id)
+        cleaned = clean_tags(list(tags))
+        if cleaned:
+            self._data["tags"].setdefault(provider_id, {})[provider_voice_id] = list(cleaned)
+        else:
+            bucket = self._data["tags"].get(provider_id) or {}
+            bucket.pop(provider_voice_id, None)
+            if not bucket:
+                self._data["tags"].pop(provider_id, None)
+        self._save()
+        return {"id": voice_id, "tags": list(cleaned)}
 
     def add_custom(
         self,
@@ -969,6 +1083,9 @@ def story_row(voice: Voice) -> dict[str, Any]:
         # **`""` when nothing was stated**, never "neutral": the catalogue stores nothing for
         # an unstated voice, and the picker prints only what is there.
         "gender": voice.gender or "",
+        # Free-form labels the owner gave this voice. Never a dispatch or ranking input:
+        # published so Story and a Hub can show the same words the Gateway shows.
+        "tags": list(voice.tags),
         "description": voice.description or "",
         "provider": GATEWAY_VOICE_LIBRARY if held else (
             definition.display_name if definition else voice.provider_id),

@@ -2647,6 +2647,13 @@ def resolve_all_recovery(before: float | None = Query(None, ge=0)) -> dict[str, 
 # purpose: ElevenLabs' public library holds tens of thousands of voices and the
 # owner wants a handful, so browsing is a query rather than a download.
 # ---------------------------------------------------------------------------
+def _voice_tag_limits() -> dict[str, int]:
+    """The tag limits, published with the voice list so the editor cannot drift."""
+    from .voices import MAX_TAGS, TAG_MAX_LENGTH
+
+    return {"max_tags": MAX_TAGS, "max_length": TAG_MAX_LENGTH}
+
+
 @router.get("/api/voices", dependencies=[Depends(require_guest_or_admin)])
 def list_voices(
     provider_id: str | None = None,
@@ -2669,7 +2676,7 @@ def list_voices(
     names, and the console prints the published name.
     """
     if model_id:
-        from .voices import voices_for_model
+        from .voices import tag_suggestions, voices_for_model
 
         rows = voices_for_model(model_id)
         if q:
@@ -2691,6 +2698,8 @@ def list_voices(
             "total": len(discovered),
             "enabled": sum(1 for v in discovered if voice_registry().is_enabled(v)),
             "summary": voice_registry().summary(),
+            "tag_limits": _voice_tag_limits(),
+            "tag_suggestions": tag_suggestions(discovered),
             "providers": [
                 {"id": d.id, "name": d.display_name, "kind": d.kind}
                 for d in registry.definitions()
@@ -2718,12 +2727,17 @@ def list_voices(
         ]
 
     discovered = voice_registry().voices(provider_id=provider_id)
+    from .voices import tag_suggestions
+
     return {
         "voices": rows,
         "matched": len(rows),
         "total": len(discovered),
         "enabled": sum(1 for v in discovered if voice_registry().is_enabled(v)),
         "summary": voice_registry().summary(),
+        # The editor prints the limits the server enforces, from the same constants.
+        "tag_limits": _voice_tag_limits(),
+        "tag_suggestions": tag_suggestions(discovered),
         "providers": [
             {"id": d.id, "name": d.display_name, "kind": d.kind}
             for d in registry.definitions()
@@ -2952,29 +2966,53 @@ def add_voices(payload: dict[str, Any]) -> Any:
 
 @router.post("/api/voices/settings", dependencies=[Depends(require_admin)])
 def set_voice_settings(payload: dict[str, Any]) -> Any:
-    """A local voice's language label and reference transcript.
+    """A voice's language label, reference transcript and free-form tags.
 
-    `{voice_id, language?, include?, transcript?}`; an absent field is left alone.
-    Transcript off is for a recording the transcriber cannot understand: its words are
-    never sent and it is never transcribed again. On needs words — the `transcript` typed
-    here, one already saved, or timed segments.
+    `{voice_id, language?, include?, transcript?, gender?, tags?}`; an absent field is
+    left alone. Transcript off is for a recording the transcriber cannot understand:
+    its words are never sent and it is never transcribed again. On needs words — the
+    `transcript` typed here, one already saved, or timed segments.
+
+    **Tags replace the whole list**, so the editor sends the row's complete set and a
+    removed tag is really removed. They are cleaned by the same code every reader
+    uses (trimmed, de-duplicated case-insensitively, bounded), and a refusal names
+    the limit rather than storing half of what was typed. A local voice's tags live
+    with its catalogue entry and folder; a provider voice's live in the voice
+    registry's state, keyed by the provider's own id, so a discovery refresh cannot
+    erase them.
     """
     from . import voice_import
+    from .voices import SOURCE_LOCAL, clean_tags
 
     voice_id = str(payload.get("voice_id") or "").strip()
     include = payload.get("include")
     transcript = payload.get("transcript")
     language = payload.get("language")
     gender = payload.get("gender")
+    tags = payload.get("tags")
+    if tags is not None and not isinstance(tags, list):
+        return _error(422, "'tags' must be a list of short strings.")
+    try:
+        cleaned_tags = None if tags is None else list(clean_tags(tags))
+    except ValueError as exc:
+        return _error(422, str(exc))
     if (not voice_id or (include is not None and not isinstance(include, bool))
             or (transcript is not None and not isinstance(transcript, str))
             or (language is not None and not isinstance(language, str))
             or (gender is not None and not isinstance(gender, str))):
         return _error(422, "expected {'voice_id': str, 'language'?: str, 'include'?: bool, "
-                           "'transcript'?: str, 'gender'?: 'm'|'f'|'n'}")
+                           "'transcript'?: str, 'gender'?: 'm'|'f'|'n', 'tags'?: [str]}")
+    voice = voice_registry().find(voice_id)
+    if voice is None:
+        return _error(404, f"no voice {voice_id!r} on this Mac")
     try:
-        return voice_import.update_voice(voice_id, language=language, include=include,
-                                         transcript=transcript, gender=gender)
+        if voice.source == SOURCE_LOCAL:
+            return voice_import.update_voice(voice_id, language=language, include=include,
+                                             transcript=transcript, gender=gender,
+                                             tags=cleaned_tags)
+        if cleaned_tags is None:
+            return _error(422, "Only tags can be set on a voice from a provider.")
+        return voice_registry().set_tags(voice_id, cleaned_tags)
     except KeyError:
         return _error(404, f"no voice {voice_id!r} on this Mac")
     except ValueError as exc:

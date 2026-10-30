@@ -181,6 +181,9 @@ def write_voice_files(entry: dict) -> None:
                 # assumed. `license` exists only once it has been granted.
                 "permission_acknowledged": bool(entry.get("permission_acknowledged")),
                 "license": entry.get("license"),
+                # Free-form labels, kept with the voice so a copied folder carries them.
+                # An older folder has none; readers return an empty list.
+                "tags": list(_read_tags(entry.get("tags"))),
             }, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -289,19 +292,32 @@ def clean_gender(value: str) -> str:
     return GENDERS[text]
 
 
+def _read_tags(value: Any) -> tuple[str, ...]:
+    """The one lenient tag reader, imported here to keep `voices` out of the cycle."""
+    from .voices import read_tags
+
+    return read_tags(value)
+
+
 def update_voice(voice_id: str, *, language: str | None = None, include: bool | None = None,
-                 transcript: str | None = None, gender: str | None = None) -> dict:
-    """Change a voice's language label and/or its reference transcript. `None` leaves a field alone.
+                 transcript: str | None = None, gender: str | None = None,
+                 tags: list[str] | None = None) -> dict:
+    """Change a voice's language label, reference transcript and/or tags. `None` leaves a field alone.
 
     Transcript on needs words to send: the text given here, a transcript already saved, or
     timed segments — on with none of those would be off while saying otherwise. Off keeps
     whatever is saved, so turning it back on restores it. An empty language clears the label.
+    Tags replace the whole list (an empty list clears them) and are cleaned before storage,
+    so a duplicate or an over-long tag is refused rather than stored.
     """
+    from .voices import clean_tags
+
     wanted = catalogue_id(voice_id)
     label = None if language is None else str(language).strip()
     if label and not LANGUAGE_RE.fullmatch(label):
         raise ValueError("A language is a code like km or en, or a short name, up to 40 letters.")
     text = None if transcript is None else str(transcript).strip()
+    cleaned_tags = None if tags is None else list(clean_tags(tags))
     payload = _read_catalog()
     for entry in payload.get("voices") or []:
         if str(entry.get("id")) != wanted:
@@ -322,12 +338,15 @@ def update_voice(voice_id: str, *, language: str | None = None, include: bool | 
             entry["gender"] = clean_gender(gender)
             if not entry["gender"]:
                 entry.pop("gender", None)
+        if cleaned_tags is not None:
+            entry["tags"] = cleaned_tags
         write_voice_files(entry)
         _write_catalog(payload)
         return {"id": wanted, "language": str(entry.get("language") or ""),
                 "gender": str(entry.get("gender") or ""),
                 "include_reference_transcript": transcript_included(entry),
-                "reference_transcript": str(entry.get("reference_transcript") or "")}
+                "reference_transcript": str(entry.get("reference_transcript") or ""),
+                "tags": list(_read_tags(entry.get("tags")))}
     raise KeyError(voice_id)
 
 
@@ -528,6 +547,13 @@ def push_fields(entry: dict) -> dict:
         "transcript_segments": json.dumps(shared_segments(entry) if transcript_included(entry) else []),
         "permission_acknowledged": bool(entry.get("permission_acknowledged")),
         "filename": clip.name or "reference.wav",
+        # **A JSON array in one multipart field**, the same convention as
+        # `transcript_segments` above: a plain comma-separated string cannot carry a
+        # tag that contains a comma, and the Hub needs one unambiguous shape. The
+        # Hub's shared-voice route must add `tags: str = Form("[]")` and
+        # `json.loads` it; today it ignores an unknown field, so this is safe to
+        # send before that lands.
+        "tags": json.dumps(list(_read_tags(entry.get("tags"))), ensure_ascii=False),
         # Sent separately as the file part; kept here so a caller has one place to
         # read the whole request from.
         "audio_path": str(clip),
