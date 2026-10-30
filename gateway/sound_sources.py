@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import threading
 import time
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -804,12 +805,7 @@ def describe_all(credential_store: CredentialStore) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Shared media probe — ffprobe if available, else None.
-#
-# The bundled app ships an ffprobe next to the gateway; a checkout finds
-# one on $PATH. If neither is present, the library records `format=None`
-# and the test suite stubs the probe — a missing probe is not a reason
-# to refuse a known-good download.
+# Shared media probe — ffprobe when available, WAV and FLAC metadata otherwise.
 # ---------------------------------------------------------------------------
 
 def _find_ffprobe() -> str | None:
@@ -819,11 +815,58 @@ def _find_ffprobe() -> str | None:
     return shutil.which("ffprobe")
 
 
+def _probe_audio_fallback(path: Path) -> dict[str, Any] | None:
+    # shortcut: FLAC checks metadata and frame bounds, not decoded samples; use ffprobe for more.
+    try:
+        if path.suffix.lower() == ".wav":
+            with wave.open(str(path), "rb") as audio:
+                rate, channels, frames = audio.getframerate(), audio.getnchannels(), audio.getnframes()
+                frame_size = channels * audio.getsampwidth()
+                remaining = frames * frame_size
+                while remaining:
+                    chunk = audio.readframes(min(65536, remaining // frame_size))
+                    if not chunk:
+                        return None
+                    remaining -= len(chunk)
+            return {"format": "wav", "duration_seconds": frames / rate,
+                    "sample_rate": rate, "channels": channels, "bit_rate": None}
+        if path.suffix.lower() == ".flac":
+            with path.open("rb") as audio:
+                if audio.read(4) != b"fLaC":
+                    return None
+                header = audio.read(4)
+                if len(header) != 4 or header[0] & 0x7f or int.from_bytes(header[1:], "big") != 34:
+                    return None
+                info = audio.read(34)
+                if len(info) != 34:
+                    return None
+                packed = int.from_bytes(info[10:18], "big")
+                rate, channels, frames = packed >> 44, ((packed >> 41) & 7) + 1, packed & ((1 << 36) - 1)
+                if not rate or not frames or int.from_bytes(info[:2], "big") < 16:
+                    return None
+                size = path.stat().st_size
+                while not header[0] & 0x80:
+                    header = audio.read(4)
+                    if len(header) != 4 or audio.tell() + int.from_bytes(header[1:], "big") > size:
+                        return None
+                    audio.seek(int.from_bytes(header[1:], "big"), 1)
+                frame = audio.read(6)
+                min_frame_size = int.from_bytes(info[4:7], "big")
+                if (len(frame) < 6 or frame[0] != 0xff or frame[1] & 0xfe != 0xf8
+                        or size - (audio.tell() - len(frame)) < max(11, min_frame_size)):
+                    return None
+            return {"format": "flac", "duration_seconds": frames / rate,
+                    "sample_rate": rate, "channels": channels, "bit_rate": None}
+    except (OSError, EOFError, wave.Error, ZeroDivisionError):
+        return None
+    return None
+
+
 def probe_audio(path: Path) -> dict[str, Any] | None:
     """Return `{format, duration_seconds, sample_rate, channels, bit_rate}` or None."""
     ffprobe = _find_ffprobe()
     if not ffprobe:
-        return None
+        return _probe_audio_fallback(path)
     try:
         completed = subprocess.run(
             [

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .sound_sources import (SoundSearchResult, SoundSourceError, hash_bytes, name_list,
+from .sound_sources import (SoundSearchResult, SoundSourceError, _find_ffprobe, hash_bytes, name_list,
                             probe_audio, source_for)
 from .providers.credentials import CredentialStore
 
@@ -331,6 +331,8 @@ def import_generated_clip(audio: bytes, payload: dict[str, Any]) -> dict[str, An
     duration_s = (probe or {}).get("duration_seconds")
     if not isinstance(duration_s, (int, float)) or duration_s <= 0:
         audio_path.unlink(missing_ok=True)
+        if filetype in ("mp3", "ogg", "m4a") and not _find_ffprobe():
+            raise ValueError(f"The Gateway has no ffprobe to read {filetype} audio, so it was not added.")
         raise ValueError("That file could not be read as audio, so it was not added.")
 
     meta: dict[str, Any] = {
