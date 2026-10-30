@@ -567,13 +567,21 @@ def tool_download_result(arguments: dict) -> dict:
         extension = mimetypes.guess_extension(media_type) or ""
         filename = f"{job.get('modality') or 'asset'}-{job_id[:8]}-{asset_id}{extension}"
     target = _safe_target(str(arguments.get("folder") or ""), filename.strip())
-    if target.exists():
-        stem, suffix = target.stem, target.suffix
-        index = 2
-        while target.exists():
+    # **Exclusive create, never truncate.** `exists()` follows symlinks, so a dangling link in
+    # the output folder would read as "free" and the write would follow it out of the folder.
+    stem, suffix = target.stem, target.suffix
+    index = 2
+    while True:
+        try:
+            with open(target, "xb") as handle:
+                handle.write(content)
+            break
+        except FileExistsError:
             target = target.with_name(f"{stem}-{index}{suffix}")
             index += 1
-    target.write_bytes(content)
+            if index > 10_000:
+                raise ConnectorError("Could not find a free filename in that folder.",
+                                     code="OUTPUT_EXISTS") from None
     return {"saved_to": str(target), "bytes": len(content), "media_type": media_type,
             "job_id": job_id, "asset_id": asset_id}
 
@@ -824,10 +832,12 @@ def handle(message: dict) -> dict | None:
     method = str(message.get("method") or "")
     message_id = message.get("id")
     if method == "initialize":
-        requested = (message.get("params") or {}).get("protocolVersion")
+        # **The version this server speaks, not the one the client asked for.** MCP says a
+        # server that does not support a requested version answers with one it does, and the
+        # client then decides whether to continue — echoing a version we never implemented
+        # would be the opposite of that.
         return {"jsonrpc": "2.0", "id": message_id, "result": {
-            "protocolVersion": requested if isinstance(requested, str) and requested
-            else PROTOCOL_VERSION,
+            "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             "instructions": (
