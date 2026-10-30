@@ -4587,7 +4587,8 @@ def content_commerce_unavailable(_: str = Depends(require_content_authority)) ->
 # ---------------------------------------------------------------------------
 # Sound Library (Openverse)
 # ---------------------------------------------------------------------------
-from .sound_library import list_clips, search_library, download_into_library, quota_status
+from .sound_library import (clip_audio_path, clip_media_type, list_clips,
+                            search_library, download_into_library, quota_status)
 from .providers.registry import registry as _registry
 
 @app.get("/v1/sounds/search", dependencies=[Depends(require_auth)])
@@ -4670,6 +4671,27 @@ def sounds_add_to_library(payload: dict[str, Any]) -> dict[str, Any]:
 def sounds_list_library() -> dict[str, Any]:
     """List clips already in the shared library."""
     return {"clips": list_clips()}
+
+
+#: A clip id is its sha256, in hex. Anything else is refused before it touches the disk,
+#: which also means a path cannot be built out of a request.
+_CLIP_ID = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+@app.get("/v1/sounds/library/{sha256}/audio", dependencies=[Depends(require_auth)])
+def sounds_library_audio(sha256: str) -> Response:
+    """Serve one library clip's bytes.
+
+    Story on another Mac has no other way to reach a clip the Gateway downloaded: the
+    library listing names it and this route carries the audio. The media type is the one
+    stored beside the bytes, never inferred from a URL.
+    """
+    if _CLIP_ID.fullmatch(sha256) is None:
+        raise GatewayError(400, "Not a sha256 clip id.", "INVALID_CLIP_ID")
+    path = clip_audio_path(sha256.lower())
+    if path is None:
+        raise GatewayError(404, "No such clip in the library.", "CLIP_NOT_FOUND")
+    return stream_file(path, clip_media_type(path))
 
 @app.get("/v1/sounds/quota", dependencies=[Depends(require_auth)])
 def sounds_quota() -> dict[str, Any]:

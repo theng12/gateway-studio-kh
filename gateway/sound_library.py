@@ -116,6 +116,22 @@ def clip_audio_path(sha256: str) -> Path | None:
     return None
 
 
+#: Media type per extension the library stores. Values are stated, not guessed:
+#: a clip's bytes are served to another Mac, so the type travels with them.
+_CLIP_MEDIA_TYPES: dict[str, str] = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "ogg": "audio/ogg",
+    "flac": "audio/flac",
+    "m4a": "audio/mp4",
+}
+
+
+def clip_media_type(path: Path) -> str:
+    """The media type for a stored clip file, from its stored extension."""
+    return _CLIP_MEDIA_TYPES.get(path.suffix.lstrip(".").lower(), "application/octet-stream")
+
+
 def search_library(query: str, kind: str | None = None) -> list[dict[str, Any]]:
     """Full-text-ish search over the local library titles and tags.
 

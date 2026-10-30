@@ -22,6 +22,7 @@ Run with ``.venv/bin/python tests/test_sfx_providers.py``.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -54,6 +55,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from gateway import api  # noqa: E402
 from gateway import admin_session  # noqa: E402
+from gateway import sound_library  # noqa: E402
 from gateway.providers import definitions, registry  # noqa: E402
 from gateway import sound_sources  # noqa: E402
 
@@ -370,7 +372,54 @@ class SfxTokenReachesTheAdapter(SfxTestCase):
 
 
 # ---------------------------------------------------------------------------
-# 3. Grouping the Providers page — display only, covering everything
+# 3. Serving a library clip's bytes
+# ---------------------------------------------------------------------------
+class SoundClipBytes(SfxTestCase):
+    """`GET /v1/sounds/library/{sha256}/audio` — the only way another Mac gets a clip.
+
+    The library holds the bytes and the sidecar names the licence; this route carries the
+    bytes so Story on a second Mac can place a clip the Gateway already downloaded.
+    """
+
+    AUDIO = b"\xff\xfb\x90\x00a library clip"
+
+    def setUp(self):
+        super().setUp()
+        self.sha = hashlib.sha256(self.AUDIO).hexdigest()
+        lib = sound_library._library_dir()
+        (lib / f"{self.sha}.mp3").write_bytes(self.AUDIO)
+        (lib / f"{self.sha}.json").write_text(json.dumps({
+            "title": "Clip", "author": "Someone", "licence": "cc0",
+            "licence_version": "1.0", "source": "openverse",
+        }))
+        sound_library._write_index([self.sha])
+
+    @staticmethod
+    def url(sha: str) -> str:
+        return f"/v1/sounds/library/{sha}/audio"
+
+    def test_serves_the_stored_bytes_with_their_media_type(self):
+        response = self.remote.get(self.url(self.sha), headers=AUTH)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, self.AUDIO)
+        self.assertEqual(response.headers["content-type"], "audio/mpeg")
+        self.assertEqual(int(response.headers["content-length"]), len(self.AUDIO))
+
+    def test_an_unknown_clip_is_404(self):
+        response = self.remote.get(self.url("0" * 64), headers=AUTH)
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_malformed_id_is_refused_before_the_disk(self):
+        for bad in ("not-a-sha", "0" * 63, "0" * 65, "g" * 64):
+            self.assertEqual(self.remote.get(self.url(bad), headers=AUTH).status_code, 400,
+                             f"{bad!r} must be refused as a clip id")
+
+    def test_a_remote_peer_must_present_the_key(self):
+        self.assertEqual(self.remote.get(self.url(self.sha)).status_code, 401)
+
+
+# ---------------------------------------------------------------------------
+# 4. Grouping the Providers page — display only, covering everything
 # ---------------------------------------------------------------------------
 class ProviderGrouping(SfxTestCase):
     def payload(self, **params):
