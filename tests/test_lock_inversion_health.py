@@ -234,10 +234,14 @@ class AdmissionNeverWaitsForAFanOutTest(_ColdFleetTest):
         self.assertLess(elapsed, 1.0, "a stale read waited for the fan-out")
         self.assertEqual(answers[0]["locations"], [])
         # The shape is the fan-out's, so no reader has to special-case an empty fleet.
+        # `last_known_machines` is a slow site's rows on the Fleet read only; an empty fleet has
+        # none, and routing never sees it (see `fleet._carry_last_known_machines`).
         self.assertEqual(
             set(answers[0]),
-            {"locations", "machines", "running", "summary", "issues", "generated_at"},
+            {"locations", "machines", "last_known_machines", "running", "summary", "issues",
+             "generated_at"},
         )
+        self.assertEqual(answers[0]["last_known_machines"], [])
 
 
 class HealthNeverWaitsForAdmissionTest(_ColdFleetTest):
