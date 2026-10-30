@@ -308,7 +308,8 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
                 continue
             if not snapshot.get("known"):
                 limit = int(concurrency.retry_policy()["max_attempts"])
-                attempted = len(store.attempts_of(job["id"])) if hasattr(store, "attempts_of") else 0
+                attempted = sum(1 for item in store.attempts_of(job["id"])
+                                if item.get("code") != "RESTART_DEADLINE") if hasattr(store, "attempts_of") else 0
                 if attempted < limit:
                     close(job["id"], resolution="requeued",
                           detail=(f"the Hub has never heard of batch {batch_id} ({provider_id}), so "
@@ -1501,7 +1502,7 @@ def execute_job(job: dict[str, Any], store: JobStore, *, resume: bool = False) -
         # yet sent. What was sent is followed to its end whatever was toggled since.
         upstream = str(current.get("upstream_job_id") or "")
         _dispatch(job, store, provider_id, model_id, modality, params, upstream,
-                  resend=not upstream)
+                  resend=not upstream, restarted=True)
         return
 
     # Re-check enablement at execution time. A provider can be switched off
@@ -1572,7 +1573,8 @@ def _published_cap(definition: Any, model_id: str, modality: str) -> int | None:
 
 
 def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: str,
-              modality: str, params: dict[str, Any], resume_id: str, *, resend: bool = False) -> None:
+              modality: str, params: dict[str, Any], resume_id: str, *, resend: bool = False,
+              restarted: bool = False) -> None:
     """Call the adapter and settle what it answers. `resume_id` polls that upstream id first.
 
     `resend`: a restart re-sends a fleet job whose first send was unanswered (`restart_can_resend`).
@@ -1628,6 +1630,9 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             on_wait=on_wait,
             upstream_job_id=resume_id,
             dispatch_started_at=(current.get("dispatch_started_at") if resume_id else None),
+            resumed_after_restart=restarted and bool(resume_id),
+            on_deadline=lambda detail: store.note_attempt_event(
+                job_id, location_id=provider_id, code="RESTART_DEADLINE", detail=detail),
             max_output_tokens=_published_cap(definition, model_id, modality),
         )
         adapter = adapter_for(definition)
@@ -1858,6 +1863,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                         return
                     provider_id = moved
                     resume_id = ""
+                    restarted = False
                     follows = 0  # a different batch at a different site gets its own follows
                     _moved(job_id, moved)
                     continue
@@ -1895,6 +1901,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                     )
                     provider_id = moved
                     resume_id = ""  # a fresh submission at the next location
+                    restarted = False
                     _moved(job_id, moved)
                     continue
             # ── A free Mac handed the job back and no other location can take it now: wait ───────
@@ -1937,7 +1944,8 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             terminal_detail = detail
             if not unknown:
                 attempts_of = getattr(store, "attempts_of", None)
-                logged = attempts_of(job_id) if attempts_of is not None else []
+                logged = [entry for entry in (attempts_of(job_id) if attempts_of is not None else [])
+                          if entry.get("code") != "RESTART_DEADLINE"]
                 limit = int(concurrency.retry_policy()["max_attempts"])
                 if logged and len(logged) >= limit:
                     terminal_detail = _tried_everything_detail(logged, limit=limit)

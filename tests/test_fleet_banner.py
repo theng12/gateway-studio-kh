@@ -64,6 +64,13 @@ class MachineLabelTests(unittest.TestCase):
             row = _row([{"machine": "local", "label": "This Mac"}], local=True, label="Studio Mac")
             self.assertEqual(fleet.machines_flat([row])[0]["label"], "Studio Mac")
 
+    def test_location_version_is_not_assigned_to_an_unidentified_machine(self) -> None:
+        row = _row([{"machine": "local"}, {"machine": "other"}], local=True)
+        row["version"] = "0.6.211"
+        flat = {m["machine"]: m for m in fleet.machines_flat([row])}
+        self.assertEqual(flat["local"]["hub_version"], "0.6.211")
+        self.assertIsNone(flat["other"]["hub_version"])
+
     def test_disk_issues_name_the_real_label(self) -> None:
         mac = {"machine": "terranash-1106", "label": "This Mac", "reachable": True, "disk_free_gb": 3.0,
                "disk_total_gb": 460.0, "disk": {"state": "red", "free_gb": 3.0, "total_gb": 460.0}}

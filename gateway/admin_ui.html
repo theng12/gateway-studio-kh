@@ -8208,6 +8208,7 @@ function renderFleetOrphans(d) {
 let fleetAutoStops = null;  // the last answer, so the tab re-opens without a second read
 
 function fleetAutoStopSwitch(row) {
+  if (row.switch === 'deadline') return 'running-time limit';
   if (row.switch === 'manual') return 'manual stop';
   if (row.switch === 'superseded_stop') return 'superseded_stop: a copy this Gateway replaced';
   if (row.switch === 'auto_stop') return 'auto_stop: an orphaned Hub batch';

@@ -131,6 +131,17 @@ class FleetSnapshotFreshnessTests(unittest.TestCase):
                     t.join(timeout=10)
         self.assertTrue(returned, "a plain read must not wait on the fan-out it just scheduled")
 
+    def test_page_read_between_refresher_passes_does_not_start_a_sweep(self):
+        self._reset_cache()
+        with patch.object(self.fleet, "locations", self._fake_locations()):
+            self.fleet.snapshot(force=True)
+            with self.fleet._cache_lock:
+                self.fleet._cache["at"] = time.time() - 16
+            with patch.object(self.fleet, "_revalidate_in_background") as refresh:
+                self.fleet.snapshot()
+                refresh.assert_not_called()
+            self.assertEqual(self.calls, 1)
+
     def test_force_does_fan_out(self):
         # The Refresh button is the one path allowed to wait, so it must actually
         # refresh -- a Refresh that only re-reads the cache is a control that

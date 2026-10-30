@@ -137,6 +137,36 @@ class PollRereadsTheLimitTests(unittest.TestCase):
                 exc.progress = progress
                 raise
 
+    def test_resumed_running_deadline_is_recorded_before_stop(self) -> None:
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"items": [{"state": "running", "elapsed_s": 61}]})))
+        self.addCleanup(client.close)
+        events = []
+        with patch.object(hub_module, "POLL_INTERVAL_S", 0), \
+                patch.object(hub_module, "_stop_hub_work", return_value=None):
+            with self.assertRaises(BackendError):
+                hub_module._poll_batch(client, "http://hub-a.test", {}, "batch-a", 0,
+                                       deadline_seconds=60, resumed_after_restart=True,
+                                       on_deadline=events.append)
+        self.assertEqual(len(events), 1)
+        self.assertIn("restarted", events[0])
+        self.assertIn("still reported", events[0])
+
+    def test_deadline_stop_records_the_request_and_hub_answer(self) -> None:
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"items": [{"state": "cancelled"}]})))
+        self.addCleanup(client.close)
+        answer = {"ok": True, "answer": {"running_signalled": 1}}
+        with patch.object(hub_module, "_cancel_batch", return_value=answer), \
+                patch("gateway.startup_control.audit") as audit:
+            result = hub_module._stop_hub_work(client, "http://hub-a.test", {}, "batch-a", 0,
+                                               "/api/hub/jobs", "image")
+        self.assertEqual(result["item"]["state"], "cancelled")
+        self.assertEqual(audit.call_args_list[0].args, ("deadline_stop",))
+        self.assertEqual(audit.call_args_list[0].kwargs["requested_by"], "gateway")
+        self.assertEqual(audit.call_args_list[0].kwargs["result"], answer)
+        self.assertEqual(audit.call_args_list[1].kwargs["outcome"], "cancelled")
+
     def test_the_limit_is_read_again_once_the_hub_names_the_mac(self) -> None:
         asked: list[str] = []
         with self.assertRaises(BackendError) as caught:

@@ -2392,6 +2392,19 @@ class JobStore:
             return result.rowcount == 1
 
     # -- the attempt record (A7) -------------------------------------------
+    def note_attempt_event(self, job_id: str, *, location_id: str, code: str, detail: str) -> None:
+        """Record an observation without treating it as a settled or reroutable attempt."""
+        with self._lock:
+            row = self._conn.execute("SELECT attempt_log FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row is None:
+                return
+            entries = _loads_list(row["attempt_log"])
+            entries.append({"location": location_id, "code": code, "detail": detail[:500],
+                            "at": time.time(), "waited": True})
+            self._conn.execute("UPDATE jobs SET attempt_log = ?, updated_at = ? WHERE id = ?",
+                               (json.dumps(entries), time.time(), job_id))
+            self._conn.commit()
+
     def record_attempt(self, job_id: str, *, location_id: str, code: str,
                        detail: str) -> dict[str, Any] | None:
         """Note that this job was tried at `location_id` and came back a **known** failure.

@@ -838,6 +838,8 @@ def _poll_batch(
     dispatched_at: float | None = None,
     stranded: Callable[[], bool] | None = None,
     deadline_for_machine: Callable[[str], float] | None = None,
+    resumed_after_restart: bool = False,
+    on_deadline: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Poll a Hub batch to a terminal state.
 
@@ -1140,6 +1142,12 @@ def _poll_batch(
             code="PROVIDER_SUBMISSION_UNCERTAIN",
             retryable=True,
         )
+    if on_deadline is not None and resumed_after_restart and state == "running":
+        try:
+            on_deadline(f"Gateway restarted during this attempt; the Hub still reported batch {batch_id} "
+                        f"running when its {int(limit)}s running limit was reached.")
+        except Exception:  # noqa: BLE001 - still stop work if the record cannot be written
+            log.exception("Could not record restart deadline for batch %s", batch_id)
     kind = "transcription" if "transcription" in jobs_path else "image"
     settled = _stop_hub_work(client, base, headers, batch_id, item_index, jobs_path, kind)
     if settled is not None:
@@ -1305,6 +1313,11 @@ def _stop_hub_work(client: httpx.Client, base: str, headers: dict[str, str], bat
     had not answered within `CANCEL_SETTLE_S` -- the cases where the outcome is truly unknown.
     """
     cancel = _cancel_batch(base, headers, batch_id, kind)
+    from .. import startup_control
+
+    startup_control.audit("deadline_stop", controller=base, batch=batch_id,
+                          requested_by="gateway", switch="deadline",
+                          reason="The Gateway's running-time limit was reached.", result=cancel)
     if not cancel.get("ok"):
         return None
     deadline = time.monotonic() + CANCEL_SETTLE_S
@@ -1317,12 +1330,16 @@ def _stop_hub_work(client: httpx.Client, base: str, headers: dict[str, str], bat
                 item = items[item_index] if item_index < len(items) else None
                 state = str((item or {}).get("state") or "").lower()
                 if state in _TERMINAL_OK or state in _TERMINAL_BAD:
+                    startup_control.audit("deadline_stop_outcome", controller=base, batch=batch_id,
+                                          requested_by="gateway", outcome=state)
                     return {"summary": summary, "item": item or {}}
                 if state in _TERMINAL_UNCERTAIN:
                     return None
         except (httpx.HTTPError, ValueError):
             pass
         if time.monotonic() >= deadline:
+            startup_control.audit("deadline_stop_outcome", controller=base, batch=batch_id,
+                                  requested_by="gateway", outcome="not confirmed")
             return None
         time.sleep(POLL_INTERVAL_S)
 
@@ -2760,6 +2777,7 @@ class StudioHubBackend:
                     progress=progress, on_wait=request.on_wait,
                     dispatched_at=request.dispatch_started_at, stranded=_stranded(request),
                     deadline_for_machine=lambda machine: lane_deadline_seconds(request, machine),
+                    resumed_after_restart=request.resumed_after_restart, on_deadline=request.on_deadline,
                 )
             except BackendError as exc:
                 if exc.status != 404:

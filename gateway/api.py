@@ -1748,7 +1748,7 @@ def _publish_attempt_evidence(body: dict[str, Any], job: dict[str, Any]) -> None
         }
         for index, entry in enumerate(attempts)
     ]
-    body["attempts_used"] = len(attempts)
+    body["attempts_used"] = sum(1 for entry in attempts if entry.get("code") != "RESTART_DEADLINE")
     body["attempts_allowed"] = limit
     body["attempt_policy"] = concurrency.retry_policy_wording()
 

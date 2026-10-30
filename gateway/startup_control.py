@@ -97,7 +97,7 @@ def recent_audit(limit: int = 50) -> list[dict[str, Any]]:
 
 #: The audit events that are **an actual stop of a Hub batch**, and nothing else. A refusal is not
 #: listed: the batch is still running, so there is nothing yet to see afterwards.
-STOP_EVENTS = ("superseded_stop", "orphan_stop")
+STOP_EVENTS = ("superseded_stop", "orphan_stop", "deadline_stop")
 
 #: The switch each event came from when the row does not say. Rows written before 0.2.212 carry no
 #: `switch` field, and each event has always had exactly one writer, so this is a fact about the

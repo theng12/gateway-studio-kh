@@ -10,6 +10,23 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.217 — 2026-10-30
+
+### Fleet says what its controller actually knows
+A Mac that does not answer its controller may be asleep, off the network, or have a Studio Hub
+that is frozen or waiting on a permission prompt. The problem stays red, but the description no
+longer claims the Mac is asleep. A location's Hub version is shown on its own Mac, rather than
+being copied onto other Macs whose version was not reported.
+
+### Fewer repeated fleet reads
+The Gateway reuses its recent Fleet report between background refreshes, reducing extra work on
+busy sites. Refresh still asks for a new report.
+
+### Deadline stops leave a record
+When the Gateway asks a Hub to stop a batch that reached its running limit, the stop record names
+who asked and what the Hub answered. If the Gateway restarted during a batch that was still running
+at the limit, its attempt history says so. The limit still counts time the Hub reports as running.
+
 ## 0.2.216 — 2026-10-30
 
 ### A model is not "unavailable" because its site missed one slow answer

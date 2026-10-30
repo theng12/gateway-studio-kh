@@ -772,8 +772,9 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
         elif reason == "unreachable":
             causes.append(_cause(
                 "asleep_or_off",
-                "It is not answering at all — asleep, switched off, or off the network.",
-                f"Every connection attempt failed" + (f" and it was last heard {seen_text}" if seen_text else "")
+                "It is not answering its controller — it may be asleep, off the network, or its "
+                "Studio Hub may be frozen or waiting on a permission prompt.",
+                f"Its controller reported it unreachable" + (f" and it was last heard {seen_text}" if seen_text else "")
                 + (" — the controller's own sentence: " + detail if detail else "") + ".",
                 severity="bad"))
         elif detail:

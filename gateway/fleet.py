@@ -1948,7 +1948,9 @@ _MAX_PROBES = 24
 #: How long a snapshot is reused. The page polls, and several clients (the
 #: window, the console, a test) read the same data; re-probing every controller
 #: on each read would multiply the load on every site by the number of readers.
-_CACHE_TTL = 5.0
+#: Keep ordinary reads from launching another sweep between the 15-second refresher passes.
+#: ponytail: 30 seconds permits a fallback refresh if the refresher falls behind; tune from measured sweep time.
+_CACHE_TTL = 30.0
 #: `gen` counts roster changes (`invalidate`): a fan-out that read the roster before the latest change
 #: must not cache its answer. `last` is the value `invalidate` dropped, served (made to agree with the
 #: roster, `with_roster`) to a plain read until the next fan-out lands, so that read never waits.
@@ -3094,7 +3096,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             # A node's own Hub version, as its controller last read it; the controller's own Mac is
             # the controller's version.
             version = node.get("version") or (startup or {}).get("app_version") \
-                or (row.get("version") if not node else None)
+                or (row.get("version") if mid == "local" else None)
             limitation = _limitation_fields(entry)
             # "Some reporters missing" on a Mac whose only silent reporter is a studio it does not run
             # is that same artefact again, not a third finding.

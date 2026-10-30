@@ -64,6 +64,14 @@ class AuditFile(unittest.TestCase):
         patched.start()
         self.addCleanup(patched.stop)
 
+    def test_deadline_stop_is_visible_with_its_requester(self) -> None:
+        startup_control.audit("deadline_stop", controller="studio-hub-L1", batch="batch-a",
+                              requested_by="gateway", switch="deadline", result=HUB_ANSWER)
+        row = startup_control.recent_stops()["stops"][0]
+        self.assertEqual(row["batch"], "batch-a")
+        self.assertEqual(row["requested_by"], "gateway")
+        self.assertEqual(row["hub"]["running_signalled"], 1)
+
     def rows(self) -> list[dict]:
         if not self.path.exists():
             return []

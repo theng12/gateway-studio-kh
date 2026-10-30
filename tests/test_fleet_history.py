@@ -450,6 +450,10 @@ class ACauseCitesItsEvidence(HistoryCase):
                                     node_last_seen_at=T0 - 7200))[0]
         self.assertEqual(cause["code"], "asleep_or_off")
         self.assertIn("2 h ago", cause["evidence"])
+        self.assertIn("its controller", cause["text"])
+        self.assertIn("frozen", cause["text"])
+        self.assertIn("permission prompt", cause["text"])
+        self.assertEqual(cause["severity"], "bad")
 
     def test_unauthorized_is_a_credential_not_a_network(self) -> None:
         cause = self.causes(machine(up=False, node_state="unauthorized",
