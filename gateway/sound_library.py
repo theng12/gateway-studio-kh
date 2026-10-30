@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .sound_sources import SoundSearchResult, SoundSourceError, hash_bytes, probe_audio, source_for
+from .sound_sources import (SoundSearchResult, SoundSourceError, hash_bytes, name_list,
+                            probe_audio, source_for)
 from .providers.credentials import CredentialStore
 
 log = logging.getLogger("gateway.sound_library")
@@ -206,6 +207,10 @@ def download_into_library(
         filetype=(detail.get("filetype")
                   if isinstance(detail.get("filetype"), str) else None),
         download_url=str(detail.get("url") or ""),
+        tags=name_list(detail.get("tags")),
+        category=(detail.get("category")
+                  if isinstance(detail.get("category"), str) else None),
+        genres=name_list(detail.get("genres")),
     )
 
     raw_bytes = src.download_bytes(stub, timeout=45.0)
@@ -248,6 +253,13 @@ def download_into_library(
         "source_id": source_item_id,
         "source_url": str(detail.get("foreign_landing_url") or ""),
         "attribution": detail.get("attribution"),
+        # The upstream's own description of the clip. Kept so `search_library` can match a
+        # tag and Story can show what the clip is. Old sidecars have none; readers treat
+        # the absence as "no tags", never as a reason to drop the clip.
+        "tags": list(name_list(detail.get("tags"))),
+        "category": (detail.get("category")
+                     if isinstance(detail.get("category"), str) else None),
+        "genres": list(name_list(detail.get("genres"))),
         "kind": kind,
         "duration_seconds": duration_s,
         "format": (probe or {}).get("format"),

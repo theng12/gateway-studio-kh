@@ -4617,6 +4617,9 @@ def sounds_search(
                     "licence": h.licence,
                     "duration_ms": h.duration_ms,
                     "attribution": h.attribution,
+                    "tags": list(h.tags),
+                    "category": h.category,
+                    "genres": list(h.genres),
                 })
         except Exception as exc:
             log.warning("Sound search failed for %s: %s", src.id, exc)
@@ -4647,6 +4650,9 @@ def sounds_search(
                 "licence": clip.get("licence"),
                 "duration_ms": int(clip.get("duration_seconds", 0) * 1000) if clip.get("duration_seconds") else None,
                 "attribution": clip.get("attribution"),
+                "tags": list(clip.get("tags") or []),
+                "category": clip.get("category"),
+                "genres": list(clip.get("genres") or []),
             })
         library_only = True
 

@@ -73,6 +73,9 @@ CLIP = {
     "filesize": 100,
     "filetype": "mp3",
     "attribution": "Someone, CC0",
+    "tags": [{"name": "rain"}, {"name": "ambient"}],
+    "category": "sound_effect",
+    "genres": [{"name": "field recording"}],
 }
 
 
@@ -357,6 +360,13 @@ class SfxTokenReachesTheAdapter(SfxTestCase):
         quota = self.remote.get("/admin/api/sounds/sources", headers=AUTH).json()["sources"][0]["quota"]
         self.assertEqual(quota["scopes"]["anon_burst"]["available"], "19")
         self.assertIsNotNone(quota["last_seen_at"])
+
+    def test_the_search_response_carries_tags_category_and_genres(self):
+        """Openverse's own description reaches Story, not just the title and licence."""
+        row = self.remote.get("/v1/sounds/search?q=rain", headers=AUTH).json()["results"][0]
+        self.assertEqual(row["tags"], ["rain", "ambient"])
+        self.assertEqual(row["category"], "sound_effect")
+        self.assertEqual(row["genres"], ["field recording"])
 
     def test_a_key_from_the_env_file_works_without_the_console(self):
         # `.env` is the documented no-UI key source for every provider; a sound source honours it

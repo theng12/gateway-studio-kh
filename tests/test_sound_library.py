@@ -96,6 +96,9 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
             "filetype": "mp3",
             "duration": 60000,
             "attribution": "CC0 Test Clip by TestAuthor",
+            "tags": [{"name": "rain"}, {"name": "ambient"}],
+            "category": "sound_effect",
+            "genres": [{"name": "field recording"}],
         })
         # BY clip
         results.append({
@@ -110,6 +113,9 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
             "filetype": "mp3",
             "duration": 120000,
             "attribution": "BY Test Clip by AnotherAuthor",
+            "tags": [{"name": "door"}],
+            "category": "sound_effect",
+            "genres": ["mechanical"],
         })
         # NC clip (should be filtered out)
         results.append({
@@ -174,6 +180,9 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
                 "filetype": "mp3",
                 "duration": 60000,
                 "attribution": "CC0 Test Clip by TestAuthor",
+                "tags": [{"name": "rain"}, {"name": "ambient"}],
+                "category": "sound_effect",
+                "genres": [{"name": "field recording"}],
             }
         elif source_id == "by-clip-1":
             payload = {
@@ -188,6 +197,9 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
                 "filetype": "mp3",
                 "duration": 120000,
                 "attribution": "BY Door Creak by AnotherAuthor is licensed under CC BY 4.0",
+                "tags": [{"name": "door"}],
+                "category": "sound_effect",
+                "genres": ["mechanical"],
             }
         elif source_id == "nc-clip-1":
             payload = {
@@ -494,6 +506,52 @@ class SoundLibraryTests(unittest.TestCase):
         clips = list_clips()
         shas = [c.get("sha256") for c in clips]
         self.assertIn(meta["sha256"], shas)
+
+    # -- tags, category, genres ---------------------------------------------
+    def test_search_carries_tags_category_and_genres(self):
+        from gateway.sound_sources import source_for
+        src = source_for("openverse", self.registry.credentials)
+        results = src.search(query="tag_case", min_sec=None, max_sec=None,
+                             category=None, page_size=10)
+        cc0 = next(r for r in results if r.source_id == "cc0-clip-1")
+        self.assertEqual(cc0.tags, ("rain", "ambient"))
+        self.assertEqual(cc0.category, "sound_effect")
+        self.assertEqual(cc0.genres, ("field recording",))
+        # The index has published both an object list and a plain-string list; a shape
+        # change upstream must not silently empty the field.
+        by = next(r for r in results if r.source_id == "by-clip-1")
+        self.assertEqual(by.genres, ("mechanical",))
+
+    def test_library_sidecar_keeps_tags_category_and_genres(self):
+        from gateway import sound_library
+        from gateway.sound_library import download_into_library, search_library
+        meta = download_into_library("openverse", "cc0-clip-1", self.registry.credentials)
+        self.assertEqual(meta["tags"], ["rain", "ambient"])
+        self.assertEqual(meta["category"], "sound_effect")
+        self.assertEqual(meta["genres"], ["field recording"])
+        sidecar = json.loads(
+            (sound_library._library_dir() / f"{meta['sha256']}.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(sidecar["tags"], ["rain", "ambient"])
+        # `search_library` already reads `clip.tags`; the stored tags now make it useful.
+        self.assertIn(meta["sha256"], [c["sha256"] for c in search_library("ambient")])
+
+    def test_old_sidecar_without_tags_still_loads(self):
+        from gateway import sound_library
+        lib = sound_library._library_dir()
+        sha = "ab" * 32
+        (lib / f"{sha}.mp3").write_bytes(b"\xff\xfb\x90\x00legacy")
+        (lib / f"{sha}.json").write_text(json.dumps({
+            "title": "Legacy Rain Clip", "author": "Old", "licence": "cc0",
+            "source": "openverse", "source_id": "legacy-1",
+        }), encoding="utf-8")
+        with sound_library._lock:
+            index = sound_library._read_index()
+            if sha not in index:
+                index.insert(0, sha)
+                sound_library._write_index(index)
+        self.assertIn(sha, [c["sha256"] for c in sound_library.list_clips()])
+        self.assertIn(sha, [c["sha256"] for c in sound_library.search_library("legacy")])
 
 
 if __name__ == "__main__":

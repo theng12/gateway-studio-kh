@@ -91,6 +91,23 @@ def _licence_rank(licence: str | None) -> int:
     return _LICENCE_RANK.get(licence, 5)
 
 
+def name_list(raw: Any) -> tuple[str, ...]:
+    """Names from an Openverse `tags` / `genres` array.
+
+    The API publishes objects with a `name`; a plain string is accepted too so a shape
+    change upstream cannot silently empty the field, and blanks are dropped rather than
+    stored as empty tags.
+    """
+    if not isinstance(raw, list):
+        return ()
+    names: list[str] = []
+    for entry in raw:
+        name = entry.get("name") if isinstance(entry, dict) else entry
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return tuple(names)
+
+
 # ---------------------------------------------------------------------------
 # Search result shape
 # ---------------------------------------------------------------------------
@@ -112,6 +129,12 @@ class SoundSearchResult:
     download_url: str
     # Anything adapter-specific the download step needs (auth headers, etc.)
     download_extras: dict[str, Any] = field(default_factory=dict)
+    # Openverse's own description of a clip. Carried through search, the sidecar and the
+    # library so a near-match can be found by what it is, not only by its title.
+    # `tags` is normally a list of objects with `name`; names are what we keep.
+    tags: tuple[str, ...] = ()
+    category: str | None = None
+    genres: tuple[str, ...] = ()
 
     def sort_key(self) -> tuple[int, str]:
         return (_licence_rank(self.licence), (self.title or "").casefold())
@@ -517,6 +540,9 @@ class OpenverseSource(SoundSource):
             filesize=filesize,
             filetype=filetype,
             download_url=download_url,
+            tags=name_list(raw.get("tags")),
+            category=(raw.get("category") if isinstance(raw.get("category"), str) else None),
+            genres=name_list(raw.get("genres")),
         )
 
     # -- download --------------------------------------------------------
