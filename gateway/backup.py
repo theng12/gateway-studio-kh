@@ -94,11 +94,12 @@ DEFAULTS: dict[str, Any] = {
 }
 CHECK_INTERVAL_S = 60.0
 
-# ponytail: only reviewed settings files; review a new file's contents before adding it.
+# Only reviewed settings files; review a new file's contents before adding it. models_cache.json is
+# rebuilt from the providers, and its URLs carry query strings, so it stays out.
 SETTINGS_ROLES = frozenset("gateway/data/" + name for name in (
     "fleet.json", "providers.local.json", "pools.json", "provider-concurrency.local.json",
     "model-limits.local.json", "render_optin.json", "fleet_warnings.json", "voices_state.json",
-    "models_cache.json", "retention.json", "fleet_health.json", "fleet_orphans.json",
+    "retention.json", "fleet_health.json", "fleet_orphans.json",
 ))
 
 _lock = threading.Lock()
@@ -318,7 +319,8 @@ def _check_settings_data(name: str, data: bytes) -> None:
         if isinstance(item, dict):
             for key, child in item.items():
                 key = str(key).lower().replace("-", "_")
-                if re.search(r"(^|_)(api_?key|token|password|secret|credential|authorization|private_key)(_|$)", key):
+                # credential_fields only describes which fields a provider asks for; it holds no value.
+                if key != "credential_fields" and re.search(r"(^|_)(api_?key|token|password|secret|credential|authorization|private_key)(_|$)", key):
                     if child not in (None, "", False):
                         raise BackupError(f"{name} contains a credential-shaped field; settings backup refused.")
                 check(child)

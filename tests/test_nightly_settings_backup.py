@@ -118,5 +118,21 @@ class NightlySettingsTests(unittest.TestCase):
         self.assertFalse(list((self.root / "backups/nightly").glob("*.partial")))
 
 
+class RealShapedSettings(unittest.TestCase):
+    """Shapes taken from the real Gateway's files: both once made every night's backup fail."""
+
+    def test_a_provider_declaring_its_credential_fields_is_not_a_secret(self) -> None:
+        data = json.dumps({"providers": [{"id": "x", "credential_fields": [{"key": "api_key", "label": "Key", "env_var": "X_KEY"}]}]})
+        backup._check_settings_data("providers.local.json", data.encode())
+
+    def test_a_real_credential_inside_a_provider_is_still_refused(self) -> None:
+        data = json.dumps({"providers": [{"id": "x", "api_key": "abc"}]})
+        with self.assertRaises(backup.BackupError):
+            backup._check_settings_data("providers.local.json", data.encode())
+
+    def test_the_rebuilt_model_cache_is_not_backed_up(self) -> None:
+        self.assertNotIn("gateway/data/models_cache.json", backup.SETTINGS_ROLES)
+
+
 if __name__ == "__main__":
     unittest.main()
