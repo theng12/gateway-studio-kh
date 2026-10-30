@@ -30,6 +30,12 @@ and then look like it had found nothing. A search now gives up in a few seconds.
 the source that could not be reached and why, and the Gateway's own library answers in its place
 when it has a matching clip.
 
+### Packs can show a cover
+A pack in Story's Studio Library can now show cover art. The cover is a file placed beside the
+pack's archive on the Gateway, so adding one changes no pack version, archive or hash; Story
+fetches it through its own address, and a pack without one still reads "no preview yet" rather than
+a stand-in image.
+
 ### Fleet says what its controller actually knows
 A Mac that does not answer its controller may be asleep, off the network, or have a Studio Hub
 that is frozen or waiting on a permission prompt. The problem stays red, but the description no

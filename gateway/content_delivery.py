@@ -15,6 +15,7 @@ import shutil
 import stat
 import threading
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from . import config, content_packs, node_tool
@@ -42,6 +43,8 @@ _PUBLIC_MAX = 1024 * 1024
 _MAX_RELEASES = 1000
 _DIGEST = re.compile(r"[a-f0-9]{64}")
 _VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+#: The cover sidecar's fixed name, beside `archive.sspack` in the archive bank.
+_COVER_FILE = "cover.webp"
 
 
 class DeliveryError(ValueError):
@@ -390,8 +393,59 @@ def _available(release: dict[str, Any]) -> bool:
     return result
 
 
-def _validate_dependency_closure(
-    releases: list[dict[str, Any]],
+def cover_file(row: dict[str, Any]) -> Path | None:
+    """The cover sidecar beside a release's own archive, or None.
+
+    **A cover is product-level data, not part of the signed archive.** Dropping
+    `cover.webp` beside `archive.sspack` gives an already-published pack a cover
+    without a new version, archive or hash; nothing here rewrites the release or
+    the catalogue. The path is built from the stored release's own
+    `archive_sha256`, never from a request, and a symlink is refused the same way
+    `_available` refuses one.
+    """
+    digest = row.get("archive_sha256")
+    if not isinstance(digest, str) or _DIGEST.fullmatch(digest) is None:
+        return None
+    folder = content_packs.LIBRARY / digest
+    try:
+        if folder.is_symlink():
+            return None
+        path = folder / _COVER_FILE
+        if path.is_symlink():
+            return None
+        info = path.lstat()
+    except OSError:
+        return None
+    return path if stat.S_ISREG(info.st_mode) else None
+
+
+def cover_for(pack_id: str, version: str, state: dict[str, Any] | None = None) -> Path | None:
+    """The stored release's cover, looked up by **pack id and version**.
+
+    That identity, not a release id, is what Story's cover route asks with. An
+    unknown pack or version answers None, so a cover can only ever be served for
+    a release the authority actually holds.
+    """
+    state = state if state is not None else _configured_state()
+    for row in state.get("releases") or []:
+        if (isinstance(row, dict) and row.get("pack_id") == pack_id
+                and row.get("version") == version):
+            return cover_file(row)
+    return None
+
+
+def cover_url(pack_id: str, version: str) -> str:
+    """The Gateway-relative cover path published in a product row.
+
+    Relative, not absolute: Story validates it as a content path and proxies the
+    bytes through its own origin, because its renderer's CSP would block a LAN
+    Gateway's URL as a silent blank image.
+    """
+    return (f"/admin/api/content-library/covers/"
+            f"{quote(str(pack_id), safe='')}/{quote(str(version), safe='')}")
+
+
+def _validate_dependency_closure(    releases: list[dict[str, Any]],
     dependencies: list[dict[str, Any]],
     *,
     root_pack_id: str | None = None,
@@ -855,6 +909,10 @@ def products(story_version: str, state: dict[str, Any] | None = None) -> dict[st
         # behaviour and sees everything.
         if client_version_known and not compatible:
             continue
+        # A cover is looked up at read time from the release's own archive folder,
+        # so one can be added to a shipped pack by copying a file; absence stays
+        # `None` (the card's honest "no preview yet").
+        cover = cover_file(row)
         rows.append({
             "product_id": row["product_id"], "entitlement_family": row["entitlement_family"],
             "kind": _wire_kind(row["kind"]), "title": row["title"], "summary": row["description"],
@@ -863,7 +921,9 @@ def products(story_version: str, state: dict[str, Any] | None = None) -> dict[st
             "current_release": _wire_release(row, public), "compatible": compatible,
             "compatibility_reason": None if compatible else f"Requires Story Studio {row['min_story_version']} or newer.",
             "bundle_components": [], "owned_component_credit_value": 0, "showcase_videos": [],
-            "cover": None, "hero": None, "tags": row["tags"], "license": None, "discount": None,
+            "cover": ({"url": cover_url(row["pack_id"], row["version"]), "alt": row["title"]}
+                      if cover is not None else None),
+            "hero": None, "tags": row["tags"], "license": None, "discount": None,
         })
     return _bounded({"products": rows, "retired_packs": _retired_pack_rows(state)})
 

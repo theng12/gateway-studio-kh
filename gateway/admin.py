@@ -3920,6 +3920,45 @@ def export_content_archive(digest: str) -> Any:
     })
 
 
+#: The pack identity Story's cover proxy asks with. Story validates the same shapes
+#: before it calls; repeated here so no separator, dot-segment or escape can reach a
+#: path built from a request.
+_COVER_PACK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")
+_COVER_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$")
+
+
+@router.get("/api/content-library/covers/{pack_id}/{version}",
+            dependencies=[Depends(require_admin)])
+def content_library_cover(pack_id: str, version: str) -> Any:
+    """One pack's cover art, for Story's normal Gateway key.
+
+    Story proxies these bytes through its own origin because its renderer's CSP
+    refuses a LAN Gateway URL. `require_admin` is the right door: it accepts the
+    gateway key another machine holds (the credential Story sends), refuses a
+    guest key, and the file comes only from the stored release record — never
+    from the request.
+    """
+    if _COVER_PACK_ID.fullmatch(pack_id) is None or _COVER_VERSION.fullmatch(version) is None:
+        return _error(400, "Invalid pack identity for a cover image.", "CONTENT_COVER_INVALID")
+    from . import content_delivery
+    try:
+        path = content_delivery.cover_for(pack_id, version)
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+    if path is None:
+        return _error(404, "This pack has no cover image.", "CONTENT_COVER_NOT_FOUND")
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return _error(404, "This pack has no cover image.", "CONTENT_COVER_NOT_FOUND")
+    return Response(data, media_type="image/webp", headers={
+        # A cover can be replaced in place without a new pack version, so this is
+        # long but not immutable; the response is key-gated, so it stays private.
+        "Cache-Control": "private, max-age=86400",
+        "X-Content-Type-Options": "nosniff",
+    })
+
+
 @router.post("/api/content-shelf/retire", dependencies=[Depends(require_admin)])
 async def content_shelf_retire(request: Request) -> Any:
     from . import content_delivery

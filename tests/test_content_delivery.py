@@ -56,6 +56,9 @@ from _isolation import isolate_content
 _TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
+#: A minimal WebP-shaped payload. The route states the media type; the bytes only
+#: have to be distinguishable from another cover.
+_WEBP_BYTES = b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"cover-fixture-bytes"
 
 
 def _canonical(value) -> str:
@@ -491,6 +494,114 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
             replacement.write_text(json.dumps(original))
             os.chmod(replacement, 0o600)
             os.replace(replacement, state_path)
+
+    def test_a_cover_beside_the_archive_is_published_and_served(self) -> None:
+        """A cover is product-level data: a file beside the archive, no new release.
+
+        The catalogue publishes the Gateway-relative path Story's parser accepts, and
+        Story's cover proxy reaches it with the normal Gateway key. The bytes are
+        served with their stated media type and a long cache; nothing here touches
+        the release, its version or its archive hash.
+        """
+        self._setup()
+        record = _record("cover-art")
+        self._install_registry_records([record])
+        self._publish(self._build_archive(record, "Covered Pack"))
+        state = content_delivery._configured_state()
+        release = next(row for row in state["releases"] if row["pack_id"] == record["pack_id"])
+        archive_bytes = release["archive_sha256"]
+        (content_packs.LIBRARY / archive_bytes / "cover.webp").write_bytes(_WEBP_BYTES)
+
+        headers = self._story_headers()
+        catalog = self.client.get("/v1/content/products", params={"story_version": "1.4.216"},
+                                  headers=headers).json()
+        product = next(p for p in catalog["products"] if p["product_id"] == release["product_id"])
+        self.assertEqual(product["cover"], {
+            "url": f"/admin/api/content-library/covers/{record['pack_id']}/1.0.0",
+            "alt": "Covered Pack",
+        })
+        self.assertIsNone(product["hero"])
+        # The product still describes the same release: a cover adds no version.
+        self.assertEqual(product["current_release"]["release_id"], release["release_id"])
+        self.assertEqual(product["current_release"]["archive_sha256"], archive_bytes)
+
+        served = self.client.get(
+            f"/admin/api/content-library/covers/{record['pack_id']}/1.0.0", headers=headers)
+        self.assertEqual(served.status_code, 200, served.text[:200])
+        self.assertEqual(served.headers["content-type"], "image/webp")
+        self.assertEqual(served.headers["x-content-type-options"], "nosniff")
+        self.assertIn("max-age=86400", served.headers["cache-control"])
+        self.assertEqual(served.content, _WEBP_BYTES)
+
+    def test_a_product_without_a_cover_is_null_and_the_route_is_404(self) -> None:
+        self._setup()
+        record = _record("no-cover")
+        self._install_registry_records([record])
+        self._publish(self._build_archive(record, "Plain Pack"))
+        headers = self._story_headers()
+        catalog = self.client.get("/v1/content/products", params={"story_version": "1.4.216"},
+                                  headers=headers).json()
+        product = next(p for p in catalog["products"] if "no-cover" in p["product_id"])
+        self.assertIsNone(product["cover"], "no cover file means null, never a stand-in image")
+        response = self.client.get(
+            f"/admin/api/content-library/covers/{record['pack_id']}/1.0.0", headers=headers)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["code"], "CONTENT_COVER_NOT_FOUND")
+
+    def test_an_unknown_or_malformed_cover_identity_is_refused(self) -> None:
+        self._setup()
+        record = _record("cover-ids")
+        self._install_registry_records([record])
+        self._publish(self._build_archive(record, "Identity Pack"))
+        headers = self._story_headers()
+
+        # A well-formed identity the authority does not hold.
+        missing = self.client.get(
+            "/admin/api/content-library/covers/com.storystudio.pack.topic.nobody/1.0.0",
+            headers=headers)
+        self.assertEqual(missing.status_code, 404)
+
+        # Path-shaped ids never reach the stored release lookup.
+        for url in (
+            "/admin/api/content-library/covers/_bad/1.0.0",
+            "/admin/api/content-library/covers/pack/bad!",
+        ):
+            response = self.client.get(url, headers=headers)
+            self.assertEqual(response.status_code, 400, url)
+            self.assertEqual(response.json()["code"], "CONTENT_COVER_INVALID", url)
+
+        # Traversal is refused either by this route's shape check or by the
+        # framework's own path normalisation; neither ever reaches a file.
+        for url in (
+            "/admin/api/content-library/covers/..%2F..%2Fetc/1.0.0",
+            "/admin/api/content-library/covers/pack/..%2F1.0.0",
+            "/admin/api/content-library/covers/%2e%2e/1.0.0",
+            "/admin/api/content-library/covers/pack/1.0.0%00",
+        ):
+            response = self.client.get(url, headers=headers)
+            self.assertIn(response.status_code, (400, 404), url)
+            # A refusal is never a cover.
+            self.assertNotEqual(response.content, _WEBP_BYTES, url)
+
+    def test_the_cover_route_needs_storys_gateway_key_beyond_loopback(self) -> None:
+        """Story sends the gateway key, not an admin session; a stranger gets 401."""
+        self._setup()
+        record = _record("cover-auth")
+        self._install_registry_records([record])
+        self._publish(self._build_archive(record, "Keyed Pack"))
+        release = next(row for row in content_delivery._configured_state()["releases"]
+                       if row["pack_id"] == record["pack_id"])
+        (content_packs.LIBRARY / release["archive_sha256"] / "cover.webp").write_bytes(_WEBP_BYTES)
+        url = f"/admin/api/content-library/covers/{record['pack_id']}/1.0.0"
+
+        remote = TestClient(app, base_url="http://100.64.0.9:8787",
+                            client=("100.64.0.9", 50123))
+        try:
+            self.assertEqual(remote.get(url).status_code, 401)
+            self.assertEqual(remote.get(url, headers={"Authorization": "Bearer wrong"}).status_code, 403)
+            self.assertEqual(remote.get(url, headers=self._story_headers()).status_code, 200)
+        finally:
+            remote.close()
 
     def test_a_multi_item_pack_publishes_and_keeps_every_item(self) -> None:
         """A pack may hold several items, and none of them may be borrowed.
