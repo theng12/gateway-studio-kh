@@ -2577,7 +2577,8 @@ class JobStore:
     #: letting the column grow without bound.
     _SUPERSEDED_LIMIT = 16
 
-    def record_superseded_batch(self, job_id: str, entry: dict[str, Any]) -> bool:
+    def record_superseded_batch(self, job_id: str, entry: dict[str, Any], *,
+                                bump_updated_at: bool = True) -> bool:
         """Record an upstream batch this job was **moved off**, in a structured field.
 
         Called at the one moment a free Studio Hub location goes silent past the adapter's grace
@@ -2588,6 +2589,11 @@ class JobStore:
 
         One entry per batch id, and the batch id is what makes it unique: a second move records a
         second entry; the same batch recorded twice is a no-op. Returns whether a row changed.
+
+        `bump_updated_at=False` is for an id that arrived **after** the job settled
+        (`record_upstream_acceptance`): the row's own history should not move forward for a
+        fact about an attempt nobody is waiting on, and an old failure must not look freshly
+        changed on the Jobs list.
         """
         batch_id = str(entry.get("batch_id") or "").strip()
         if not batch_id:
@@ -2608,10 +2614,16 @@ class JobStore:
                 "status": "open",
                 "recorded_at": time.time(),
             })
-            self._conn.execute(
-                "UPDATE jobs SET superseded_batches = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(entries[-self._SUPERSEDED_LIMIT:]), time.time(), job_id),
-            )
+            if bump_updated_at:
+                self._conn.execute(
+                    "UPDATE jobs SET superseded_batches = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(entries[-self._SUPERSEDED_LIMIT:]), time.time(), job_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE jobs SET superseded_batches = ? WHERE id = ?",
+                    (json.dumps(entries[-self._SUPERSEDED_LIMIT:]), job_id),
+                )
             self._conn.commit()
             return True
 
@@ -2630,12 +2642,19 @@ class JobStore:
         """`[(job, entry)]` for every **open** superseded batch, newest job first.
 
         Bounded like the hold sweep: the cleanup asks one Hub a question per entry, so a cap is
-        what keeps one unreachable site from holding the sweep open. A resolved entry stays beside
-        its job as history and is skipped here — only an open one is worth asking a Hub about.
+        what keeps one unreachable site from holding the sweep open.
+
+        **The open filter is in SQL, not only in this loop.** Reading the fifty newest jobs that
+        merely *have* the column let a busy outage bury an old open entry: once more than fifty
+        movers carried fully resolved history, the oldest open batch was never reached again.
+        `"status": "open"` is how `record_superseded_batch` writes an unresolved entry (the
+        default `json.dumps` separators make the spelling stable), so the scan only sees jobs with
+        something to do; the partial index still makes `ORDER BY updated_at` a walk of the index.
         """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM jobs WHERE superseded_batches IS NOT NULL "
+                "AND instr(superseded_batches, '\"status\": \"open\"') > 0 "
                 "ORDER BY updated_at DESC LIMIT ?",
                 (max(1, int(limit)),),
             ).fetchall()
@@ -3007,7 +3026,7 @@ class JobStore:
                     "batch_id": identifier, "item_index": 0,
                     "provider_id": str(row["provider_id"] or ""),
                     "location": "", "modality": str(row["modality"] or ""), "jobs_path": "",
-                })
+                }, bump_updated_at=False)
                 return False
             result = self._conn.execute(
                 """

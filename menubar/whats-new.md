@@ -28,9 +28,11 @@ Before moving a job off a silent site, the Gateway now asks once more whether th
 there: if the Mac has come back and the batch is still running, it keeps following it; if it has
 finished, it collects it. No second batch is started in those cases.
 
-This is only for batches the Gateway replaced itself. The **Automatic stop** switch under Fleet →
-Jobs still starts off and keeps its old meaning; a batch no Gateway job names is still never
-stopped automatically.
+This is only for batches the Gateway replaced itself, it gives up following a site that keeps
+dropping after two tries, and it is a **switch of its own under Fleet → Jobs, on by default** — the
+owner asked for this cleanup, and turning it off leaves the duplicate to the Stop button. The older
+**Automatic stop** switch beside it still starts off and keeps its meaning; a batch no Gateway job
+names is still never stopped automatically.
 
 ## 0.2.210 — 2026-10-30
 

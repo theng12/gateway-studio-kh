@@ -46,7 +46,9 @@ function context(snapshot, answer = { ok: true, answer: { queued_cancelled: 2, r
   const nodes = new Map([
     ['fleet-body', element()], ['fleet-summary', element()], ['fleet-issues', element()],
     ['fleet-filter', element()], ['fleet-sort', element()], ['fleet-threshold', element()],
-    ['fleet-orphan-setting', element()], ['fleet-orphan-auto', element()],
+    ['fleet-orphan-setting', element({ querySelector: () => element() })],
+    ['fleet-orphan-auto', element()],
+    ['fleet-orphan-superseded', element()], ['fleet-orphan-superseded-note', element()],
     ['fleet-orphan-note', element()], ['fleet-orphans', element()],
     // The merged Fleet page is one tab strip over several panes; every renderer writes its own
     // node on each load, so the harness holds them all.
@@ -229,4 +231,25 @@ test('turning automatic stop on posts a real boolean and never a string', async 
   const sent = ctx.calls.filter(call => call.path === '/settings/fleet-orphans');
   assert.equal(sent.length, 1);
   assert.equal(JSON.parse(sent[0].opts.body).auto_stop, true);
+});
+
+test('the replaced-copy switch is separate, on by default, and sends only its own key', async () => {
+  // The Gateway's answer decides the control; absent means the default, which is on.
+  const on = context(payload([], { orphans_superseded_stop: true }));
+  await on.loadFleet();
+  assert.equal(on.nodes.get('fleet-orphan-superseded').checked, true);
+  assert.equal(on.nodes.get('fleet-orphan-auto').checked, false,
+    'the general switch stays off');
+
+  const off = context(payload([], { orphans_superseded_stop: false }));
+  await off.loadFleet();
+  assert.equal(off.nodes.get('fleet-orphan-superseded').checked, false);
+
+  await off.saveOrphanSupersededStop(false);
+  const sent = off.calls.filter(call => call.path === '/settings/fleet-orphans');
+  assert.equal(sent.length, 1);
+  const body = JSON.parse(sent[0].opts.body);
+  assert.equal(body.superseded_stop, false);
+  assert.equal('auto_stop' in body, false,
+    'turning this one off must not touch the general orphan switch');
 });

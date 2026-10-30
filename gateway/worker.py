@@ -159,6 +159,12 @@ def _defer_delay(attempts: int, cap_s: float | None = None) -> float:
 #: How often the hold reconciliation asks the Hub about its outstanding holds.
 _HOLD_SWEEP_S = 60.0
 
+#: How often the superseded-batch cleanup runs. **Its own timer and thread**, so a slow cleanup
+#: can never be the reason a hold is not reconciled (both are network-bound, and sharing one
+#: thread would queue one behind the other). One pass is additionally bounded by
+#: `SUPERSEDED_SWEEP_BUDGET_S`.
+_SUPERSEDED_SWEEP_S = 60.0
+
 #: How often the running jobs are asked whether they have said anything (`_check_running_liveness`).
 #: Cheap: one row read per job in flight, and nothing when nothing is running.
 _LIVENESS_SWEEP_S = 30.0
@@ -356,9 +362,11 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
 
 #: The Hub finished it and there is an artifact: not a failure, so not closed as one.
 _DONE_UPSTREAM_STATES = frozenset({"succeeded", "success", "done", "complete", "completed"})
-#: The Hub's terminal words, as `studio_hub` already names them.
+#: The Hub's terminal words, as `studio_hub` already names them. `cancelled_items` is the Hub's
+#: batch-level rollup spelling when its items were cancelled; without it a superseded batch that
+#: ended that way looked "still running" to the cleanup and was asked about for ever.
 _TERMINAL_UPSTREAM_STATES = frozenset(
-    {"failed", "error", "cancelled", "canceled", "refused", "expired"}
+    {"failed", "error", "cancelled", "canceled", "cancelled_items", "refused", "expired"}
 )
 
 
@@ -378,6 +386,20 @@ _TERMINAL_UPSTREAM_STATES = frozenset(
 # has one, and stopped under the same guard `orphans.py` uses for the Fleet Stop button. A batch
 # no Gateway job names (`orphan_unknown`) is never touched — this cleanup only ever aims at
 # batches this Gateway wrote down itself, and the general auto-stop switch stays off.
+
+#: How many consecutive times a still-running batch may be re-followed before the job moves on.
+#: **A Hub flapping on about a minute's cycle otherwise keeps a job `running` for ever**: each
+#: follow restarts `_poll_batch` (so the run budget and the queue ceiling begin again) and the
+#: liveness sweep never looks at a row that has an `upstream_job_id`. Two follows ride out a
+#: reboot or a blip; the third lost contact falls through to the ordinary `_next_machine` path,
+#: which records the batch and moves the job.
+FOLLOW_LIMIT = 2
+
+#: One cleanup pass stops after this long. It also has **its own timer and thread** (see
+#: `_SUPERSEDED_SWEEP_S`), so the hold reconciliation is never queued behind it; this budget
+#: bounds one pass so a dead or slow site cannot pin its thread indefinitely. Leftovers stay open
+#: for the next minute, which is why the budget is a per-pass number rather than a longer one.
+SUPERSEDED_SWEEP_BUDGET_S = 90.0
 
 #: One settlement at a time per job. A superseded batch can finish while the job's *other* copy is
 #: still being collected on its own thread; before this, both could pass the "already succeeded?"
@@ -448,17 +470,20 @@ def _hub_batch_answer(provider_id: str, modality: str, batch_id: str,
 
 
 def _adopt_hub_batch(job: dict[str, Any], provider_id: str, modality: str, batch_id: str,
-                     item_index: int, location: str | None, store: JobStore) -> tuple[bool, bool]:
+                     item_index: int, location: str | None,
+                     store: JobStore) -> tuple[bool, bool, str | None]:
     """Fetch, verify and settle a finished superseded batch, through the normal done path.
 
-    Returns `(attempted, settled)`. `attempted` says the bytes were fetched and handed to the done
-    path — even if it then found the job already settled, which is `settled=False` and means the
-    other copy won the race. `attempted=False` is the Hub or the disk refusing, and the caller
-    leaves the batch for the next sweep (or re-dispatches with it recorded).
+    Returns `(attempted, settled, rejected)`. `attempted` says the bytes were fetched and handed
+    to the done path. `settled` says **this** result settled the job; a job whose other copy won
+    the race is `attempted=True, settled=False`. `rejected` is the sentence from a result the
+    done path refused (`INVALID_ARTIFACT`, a disk refusal): the caller must close the entry with a
+    named status rather than re-download it every sweep. Nothing escapes to the sweep's caller —
+    a failed adoption is a report, like `reconcile_holds` treats it.
     """
     definition = registry.definition(provider_id)
     if definition is None or getattr(definition, "kind", "") != KIND_STUDIO_HUB:
-        return False, False
+        return False, False, None
     try:
         params = json.loads(job.get("params") or "{}")
     except (TypeError, ValueError):
@@ -483,17 +508,28 @@ def _adopt_hub_batch(job: dict[str, Any], provider_id: str, modality: str, batch
     except Exception as exc:  # noqa: BLE001 - an adoption that cannot finish stays for next sweep
         log.warning("job %s: could not adopt superseded batch %s at %s: %s",
                     job.get("id"), batch_id, provider_id, exc)
-        return False, False
-    return True, settle_result(job["id"], result, store)
+        return False, False, None
+    try:
+        settled = settle_result(job["id"], result, store)
+    except Exception as exc:  # noqa: BLE001 - **the same rule as `reconcile_holds`**: a refused
+        # result (a corrupt or empty artifact, a disk refusal) is a report about this batch, not
+        # an exception to escape the sweep and re-download the same bytes every minute.
+        log.warning("job %s: superseded batch %s was refused by the done path: %s",
+                    job.get("id"), batch_id, exc)
+        return True, False, f"{type(exc).__name__}({getattr(exc, 'code', None) or 'no code'}): {exc}"
+    return True, settled, None
 
 
 def _cancel_hub_batch(provider_id: str, modality: str, batch_id: str,
                       item_index: int = 0, location: str | None = None) -> dict[str, Any]:
     """Ask one Hub to stop one batch, through the adapter the Fleet Stop button uses."""
     definition = registry.definition(provider_id)
-    if definition is None:
+    if definition is None or getattr(definition, "kind", "") != KIND_STUDIO_HUB:
+        # **Never a paid lane's cancel.** This cleanup exists for Studio Hub batches this Gateway
+        # replaced; a paid provider's cancel is a different action with billing consequences, and
+        # it is not this sweep's decision to make.
         return {"ok": False, "status": None,
-                "reason": f"the location {provider_id} is no longer known"}
+                "reason": f"{provider_id or 'the location'} is not a Studio Hub location"}
     cancel = getattr(adapter_for(definition), "cancel", None)
     if cancel is None:
         return {"ok": False, "status": None,
@@ -539,11 +575,19 @@ def reconcile_superseded(store: JobStore) -> dict[str, int]:
         twice); if the owner cancelled the job, it is recorded and not adopted.
       * **still running, and the job already settled** — stopped only when the orphan guard holds
         (`orphans.stop_allowed`: the job succeeded with every artifact on disk, or failed/was
-        cancelled with nothing left to collect). A job still running is left alone: its other copy
-        may win, and the guard never stops a batch whose work is not kept.
+        cancelled with nothing left to collect) **and** the owner's `superseded_stop` switch is on
+        (default on; it is its own key, separate from the general orphan auto-stop). A job still
+        running, and a job on an unresolved `unknown_outcome` hold, are left alone: their other
+        copy may still finish and be adopted, and the guard never stops unkept work.
       * **no such batch** — closed as `not_found`; nothing to collect or stop.
       * **the site did not answer** — left open for the next sweep. "Could not ask" is never
         "finished".
+
+    **Bounded per sweep, on its own clock.** It has its own timer and thread
+    (`_SUPERSEDED_SWEEP_S`), so the hold reconciliation that runs on the other sweep thread is
+    never queued behind it; and one pass stops after `SUPERSEDED_SWEEP_BUDGET_S`, so a dead or
+    slow site cannot pin its own thread either. Anything not reached stays open for the next
+    minute.
 
     Never raises: one unreadable entry must not starve the rest, and reconciliation must never
     stop dispatch. Only jobs whose own record names a batch reach this function, so an
@@ -559,7 +603,14 @@ def reconcile_superseded(store: JobStore) -> dict[str, int]:
     except Exception:  # noqa: BLE001 - an unreadable table is not a reason to stop
         log.exception("could not read superseded batches")
         return out
+    # Read once per sweep: the owner's switch is live, and a whole pass should agree with itself.
+    stops_allowed = _superseded_stops_allowed()
+    deadline = time.monotonic() + float(SUPERSEDED_SWEEP_BUDGET_S)
     for job, entry in entries:
+        if time.monotonic() >= deadline:
+            log.info("superseded-batch sweep used its %ss budget; the rest wait for the next pass",
+                     SUPERSEDED_SWEEP_BUDGET_S)
+            break
         try:
             out["checked"] += 1
             job_id = str(job.get("id") or "")
@@ -604,9 +655,19 @@ def reconcile_superseded(store: JobStore) -> dict[str, int]:
                     out["duplicates"] += 1
                     continue
                 # **First copy to finish wins.** The job has no result yet, so this one is it.
-                attempted, settled = _adopt_hub_batch(
+                attempted, settled, rejected = _adopt_hub_batch(
                     job, provider_id, modality, batch_id, int(entry.get("item_index") or 0),
                     entry.get("location"), store)
+                if rejected:
+                    # A named answer, closed once: the bytes were refused (corrupt, empty, or the
+                    # disk said no) and asking the Hub for the same file every minute would never
+                    # change it. The owner sees the reason instead of a silent retry loop.
+                    resolve(job_id, batch_id, status="result_rejected", detail=rejected[:300])
+                    _audit_superseded("superseded_result_rejected", job=job_id, batch=batch_id,
+                                      controller=provider_id, modality=modality,
+                                      detail=rejected[:300])
+                    out["closed"] += 1
+                    continue
                 if not attempted:
                     out["left"] += 1  # the Hub or the network refused; try again next sweep
                     continue
@@ -647,8 +708,20 @@ def reconcile_superseded(store: JobStore) -> dict[str, int]:
                 out["closed"] += 1
                 continue
             # **Still running or queued.** Only a job that already settled may have its duplicate
-            # stopped, and only under the same guard the Fleet Stop button uses.
-            if job_state not in {"succeeded", "failed", "cancelled"}:
+            # stopped, and only under the same guard the Fleet Stop button uses — and only while
+            # the owner's own switch is on.
+            #
+            # **An unresolved hold is not settled.** A job `failed` with `recovery_state =
+            # unknown_outcome` is waiting for this very batch's answer; its artifacts are not on
+            # disk *yet*, so the guard would call "nothing to collect" and stopping it would throw
+            # away the only copy. It is treated exactly like a running job: left alone.
+            settled_job = (job_state in ("succeeded", "cancelled")
+                           or (job_state == "failed"
+                               and job.get("recovery_state") != RECOVERY_UNKNOWN))
+            if not settled_job:
+                out["left"] += 1
+                continue
+            if not stops_allowed:
                 out["left"] += 1
                 continue
             verdict = _orphan_stop_verdict(job)
@@ -683,14 +756,25 @@ def _orphan_stop_verdict(job: dict[str, Any]) -> dict[str, Any]:
     return orphans.stop_allowed(job)
 
 
+def _superseded_stops_allowed() -> bool:
+    """The owner's switch for stopping copies **this Gateway replaced** (default on).
+
+    Not the general orphan auto-stop: that one still starts off. A settings file that cannot be
+    read is the default, never a reason to stop something the owner did not allow.
+    """
+    from . import orphans
+
+    return orphans.settings()["superseded_stop"]
+
+
 def _stop_losing_copy(store: JobStore, job_id: str, adopted_batch_id: str,
                       out: dict[str, int]) -> None:
     """The copy that lost the race: record it, then stop it if the guard allows.
 
     Runs after this Gateway adopted the *other* copy, so the job has settled succeeded and the
     guard's strongest condition — every artifact present and non-empty — has just been proven.
-    Recorded in the same structured field, so the next sweep retries a cancel the Hub only
-    signalled ("running signalled, not yet stopped").
+    The losing batch is recorded either way, so the Fleet page can draw it and the owner's switch
+    can stop it later; a stop is only attempted while `superseded_stop` is on.
     """
     row = store.get(job_id) if hasattr(store, "get") else None
     if not row or str(row.get("state") or "") != "succeeded":
@@ -700,10 +784,18 @@ def _stop_losing_copy(store: JobStore, job_id: str, adopted_batch_id: str,
         return
     provider_id = str(row.get("provider_id") or "")
     modality = str(row.get("modality") or "")
+    definition = registry.definition(provider_id)
+    if definition is None or getattr(definition, "kind", "") != KIND_STUDIO_HUB:
+        # **Nothing outside a Studio Hub is this cleanup's to stop.** A paid lane's batch is not a
+        # duplicate this Gateway chose to leave behind; cancelling it is a different decision with
+        # billing consequences, and it is never made here.
+        return
     record = getattr(store, "record_superseded_batch", None)
     if record is not None:
         record(job_id, {"batch_id": current, "item_index": 0, "provider_id": provider_id,
                         "location": "", "modality": modality, "jobs_path": ""})
+    if not _superseded_stops_allowed():
+        return  # recorded for the page and a later switch-on; the owner turned stopping off
     verdict = _orphan_stop_verdict(row)
     if not verdict.get("allowed"):
         return
@@ -1493,6 +1585,9 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
     pinned = fleet.pinned_location(params)
     tried: set[str] = set()
     result = None
+    #: Consecutive "the batch is still running, follow it again" answers at this site. Bounded by
+    #: `FOLLOW_LIMIT` so a flapping Hub cannot hold a job `running` for ever (see there).
+    follows = 0
     while True:
         definition = registry.definition(provider_id)
         if definition is None or not registry.credentials.is_enabled(provider_id):
@@ -1645,50 +1740,96 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 snapshot = (_hub_batch_answer(provider_id, modality, batch_id,
                                               recovery.get("location"))
                             if batch_id else None)
-                if snapshot is not None and snapshot.get("known"):
-                    state = str(snapshot.get("state") or "").lower()
-                    if state in _DONE_UPSTREAM_STATES:
-                        attempted, settled = _adopt_hub_batch(
-                            current or job, provider_id, modality, batch_id,
-                            int(recovery.get("item_index") or 0),
-                            recovery.get("location"), store)
-                        if attempted:
-                            log.warning("job %s: %s finished batch %s while contact was lost; "
-                                        "%s instead of dispatching a second batch",
-                                        job_id, provider_id, batch_id,
-                                        "collected it" if settled
-                                        else "the job had already been settled by another copy")
-                            return
-                    elif state not in _TERMINAL_UPSTREAM_STATES:
-                        # Still running (or queued) there: keep following it. Re-entering the loop
-                        # with `resume_id` polls the same batch and never submits a new one.
-                        log.warning("job %s: %s still has batch %s; following it again instead of "
-                                    "dispatching a second batch", job_id, provider_id, batch_id)
+                state = (str(snapshot.get("state") or "").lower()
+                         if snapshot is not None and snapshot.get("known") else "")
+                if state in _DONE_UPSTREAM_STATES:
+                    attempted, settled, rejected = _adopt_hub_batch(
+                        current or job, provider_id, modality, batch_id,
+                        int(recovery.get("item_index") or 0),
+                        recovery.get("location"), store)
+                    if settled:
+                        log.warning("job %s: %s finished batch %s while contact was lost; "
+                                    "collected it instead of dispatching a second batch",
+                                    job_id, provider_id, batch_id)
+                        return
+                    if rejected:
+                        # The done path refused the bytes (corrupt or empty). There is nothing
+                        # more to get from this batch; record it and move the job on below.
+                        log.warning("job %s: %s finished batch %s, but the done path refused it "
+                                    "(%s); moving the job on", job_id, provider_id, batch_id,
+                                    rejected)
+                    elif attempted:
+                        # The disk refused the write, so the job is now failed retryable and
+                        # nothing was kept. **Record the batch anyway**: the sweep retries the
+                        # collection once the disk frees, so the finished work is not lost.
+                        entry = _superseded_entry(recovery, provider_id=provider_id,
+                                                  modality=modality)
+                        record = getattr(store, "record_superseded_batch", None)
+                        if entry is not None and record is not None:
+                            record(job_id, entry)
+                        log.warning("job %s: %s finished batch %s but it could not be kept; the "
+                                    "batch is recorded for the cleanup to retry",
+                                    job_id, provider_id, batch_id)
+                        return
+                elif state and state not in _TERMINAL_UPSTREAM_STATES:
+                    # Still running (or queued) there: keep following it. Re-entering the loop
+                    # with `resume_id` polls the same batch and never submits a new one.
+                    #
+                    # **Bounded**: a Hub flapping on a minute's cycle would otherwise keep this
+                    # job `running` for ever, restarting the poll's own budget each time and
+                    # never reaching the liveness sweep (it skips rows with an upstream id).
+                    follows += 1
+                    if follows <= FOLLOW_LIMIT:
+                        log.warning("job %s: %s still has batch %s; following it again "
+                                    "(%s of %s) instead of dispatching a second batch",
+                                    job_id, provider_id, batch_id, follows, FOLLOW_LIMIT)
                         resume_id = batch_id
                         continue
+                    log.warning("job %s: %s still has batch %s after %s follows; moving the job "
+                                "on and recording the batch", job_id, provider_id, batch_id,
+                                FOLLOW_LIMIT)
+                # **Re-read immediately before the move.** The read above can take fifteen
+                # seconds; a cancel, or the other copy settling the job, may have happened since.
+                current = store.get(job_id) if hasattr(store, "get") else current
+                current = current or {}
+                if str(current.get("state") or "") in TERMINAL_STATES:
+                    log.warning("job %s: settled while its batch was being re-read; recording "
+                                "this attempt's answer instead of moving it", job_id)
+                    _fail(store, job_id, code=exc.code, detail=str(exc)[:500])
+                    return
                 abandoned = dict(current, provider_id=provider_id)
+                # **Written before `_next_machine`**, so a crash between recording the move and
+                # writing the batch cannot leave a duplicate nobody can aim at. If nothing moves,
+                # the entry is closed as `not_moved` below and the hold sweep owns the batch.
+                entry = _superseded_entry(recovery, provider_id=provider_id, modality=modality)
+                record = getattr(store, "record_superseded_batch", None)
+                resolve_entry = getattr(store, "resolve_superseded_batch", None)
+                if entry is not None and record is not None:
+                    record(job_id, entry)
                 moved = _next_machine(
                     store, job_id, model_id, modality, provider_id,
                     code=exc.code, detail=str(exc)[:500],
                 )
-                if moved is not None:
-                    # **Write down the batch this job is leaving** before it is sent anywhere
-                    # else. `_next_machine` has already recorded the move; a crash between the two
-                    # would leave a duplicate nobody can aim at, so this goes first.
-                    entry = _superseded_entry(recovery, provider_id=provider_id, modality=modality)
-                    record = getattr(store, "record_superseded_batch", None)
-                    if entry is not None and record is not None:
-                        record(job_id, entry)
+                if moved is None:
+                    if entry is not None and resolve_entry is not None:
+                        resolve_entry(job_id, entry["batch_id"], status="not_moved",
+                                      detail="the job stayed on this batch; its hold owns it")
+                else:
                     log.warning("job %s: %s went silent mid-job; moving it to %s and cancelling "
                                 "the abandoned attempt", job_id, provider_id,
                                 "the Gateway queue (every lane full)" if moved == QUEUED_IN_GATEWAY else moved)
-                    threading.Thread(target=cancel_upstream, args=(abandoned, store),
-                                     kwargs={"record": False}, daemon=True,
-                                     name=f"gateway-cancel-{job_id[:8]}").start()
+                    # The immediate best-effort stop of the abandoned attempt is the same kind of
+                    # automatic stop as the cleanup's: the owner's switch covers both. (On by
+                    # default; off leaves the duplicate to the Fleet page's Stop.)
+                    if _superseded_stops_allowed():
+                        threading.Thread(target=cancel_upstream, args=(abandoned, store),
+                                         kwargs={"record": False}, daemon=True,
+                                         name=f"gateway-cancel-{job_id[:8]}").start()
                     if moved == QUEUED_IN_GATEWAY:
                         return
                     provider_id = moved
                     resume_id = ""
+                    follows = 0  # a different batch at a different site gets its own follows
                     _moved(job_id, moved)
                     continue
             # ── A7: a **known** failure is retried on a different machine ──────────
@@ -1936,6 +2077,10 @@ class Worker:
         #: When the hold reconciliation last ran, and what it found (Q8).
         self._last_hold_sweep = 0.0
         self._sweeping = threading.Event()
+        #: The superseded-batch cleanup's own clock and thread. Separate from the hold sweep so
+        #: one can never queue behind the other; `superseded_sweep` is its last result.
+        self._last_superseded_sweep = 0.0
+        self._superseded_sweeping = threading.Event()
         #: When the running jobs were last asked whether they have said anything (see
         #: `_check_running_liveness`), and the last sweep's count, kept for an operator.
         self._last_liveness = 0.0
@@ -2703,6 +2848,17 @@ class Worker:
                 threading.Thread(target=self._sweep_holds, name="gateway-hold-sweep",
                                  daemon=True).start()
 
+            # **The superseded-batch cleanup has its own clock and thread** (0.2.211). Both
+            # sweeps are network-bound; sharing one thread queued one behind the other, and a
+            # slow site could make a hold wait behind a duplicate's read. Separate events mean a
+            # slow cleanup does not delay a hold, or the next dispatch pass.
+            if (time.time() - self._last_superseded_sweep >= _SUPERSEDED_SWEEP_S
+                    and not self._superseded_sweeping.is_set()):
+                self._last_superseded_sweep = time.time()
+                self._superseded_sweeping.set()
+                threading.Thread(target=self._sweep_superseded,
+                                 name="gateway-superseded-sweep", daemon=True).start()
+
             # **A running job that has said nothing gets asked** (`_check_running_liveness`). It is
             # row reads only, on this thread, so it cannot park dispatch behind a network call --
             # and it is what makes a pool wait or a wedged call visible instead of silent.
@@ -2830,16 +2986,20 @@ class Worker:
 
     def _sweep_holds(self) -> None:
         try:
-            try:
-                self.hold_sweep = reconcile_holds(self.store)
-            except Exception:  # noqa: BLE001 - reconciliation is never allowed to stop work
-                log.exception("recovery-hold reconciliation failed")
-            try:
-                self.superseded_sweep = reconcile_superseded(self.store)
-            except Exception:  # noqa: BLE001 - same rule for the superseded-batch cleanup
-                log.exception("superseded-batch reconciliation failed")
+            self.hold_sweep = reconcile_holds(self.store)
+        except Exception:  # noqa: BLE001 - reconciliation is never allowed to stop work
+            log.exception("recovery-hold reconciliation failed")
         finally:
             self._sweeping.clear()
+
+    def _sweep_superseded(self) -> None:
+        """The 0.2.211 cleanup's own thread; never raises, never blocks the hold sweep."""
+        try:
+            self.superseded_sweep = reconcile_superseded(self.store)
+        except Exception:  # noqa: BLE001 - a cleanup must never stop dispatch or holds
+            log.exception("superseded-batch reconciliation failed")
+        finally:
+            self._superseded_sweeping.clear()
 
     def liveness(self) -> dict[str, Any]:
         """Whether dispatch is actually moving, in the three fields `/health` publishes.

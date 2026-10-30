@@ -128,6 +128,9 @@ def sources() -> list[tuple[str, Path]]:
         ("gateway/data/models_cache.json", data / "models_cache.json"),
         ("gateway/data/retention.json", data / "retention.json"),
         ("gateway/data/fleet_health.json", data / "fleet_health.json"),
+        # Both orphan switches (0.2.211): the general auto-stop, and the superseded-copy stop
+        # that starts on. One file, so a restore brings back the owner's two deliberate choices.
+        ("gateway/data/fleet_orphans.json", data / "fleet_orphans.json"),
     ]
 
 

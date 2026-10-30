@@ -41,6 +41,7 @@ _SANDBOX = sandbox_env("gateway-superseded-")
 import httpx  # noqa: E402
 
 from gateway import concurrency  # noqa: E402
+from gateway import orphans as orphans_module  # noqa: E402
 from gateway import worker as worker_module  # noqa: E402
 from gateway.adapters import BackendError  # noqa: E402
 from gateway.adapters import studio_hub as hub_module  # noqa: E402
@@ -407,9 +408,12 @@ class SettledJobNeverDispatchesAgainTests(_Case):
                            artifacts=[{"asset_id": "0", "path": "/already.png",
                                        "media_type": "image/png", "bytes": 1}],
                            result={"text": None, "payload": {}})
+        before = self.store.get(row["id"])["updated_at"]
         self.assertFalse(self.store.record_upstream_acceptance(row["id"], "batch-late"))
         after = self.store.get(row["id"])
         self.assertIsNone(after["upstream_job_id"], "a settled row is never re-pointed")
+        self.assertEqual(after["updated_at"], before,
+                         "a late accept is not a change to the settled job's own history")
         entries = self.store.superseded_batches(row["id"])
         self.assertEqual([entry["batch_id"] for entry in entries], ["batch-late"],
                          "the accepted batch is owned by the cleanup, not orphaned")
@@ -444,6 +448,310 @@ class SettledJobNeverDispatchesAgainTests(_Case):
         after = self.store.get(job_id)
         self.assertEqual(after["state"], "succeeded")
         self.assertEqual(after["late_result_state"], "failed")
+
+
+class FlappingSiteTests(_Case):
+    """Following a still-running batch is bounded (2 follows), not open-ended."""
+
+    def test_a_flapping_hub_cannot_hold_a_job_running_for_ever(self) -> None:
+        row = self.job("flap-1")
+        self.assertTrue(self.store.mark_running(row["id"]))
+        self.assertTrue(self.store.begin_dispatch(row["id"]))
+        self.store.record_upstream_acceptance(row["id"], "batch-a")
+        calls = {"resume": 0, "generate": 0}
+
+        class _Adapter:
+            def resume(self, request):
+                calls["resume"] += 1
+                if calls["resume"] > 5:
+                    # Old code would keep looping; this ends the test instead of hanging it.
+                    raise BackendError("too many follows", code="PROVIDER_FAILED",
+                                       upstream_settled=True)
+                raise BackendError(
+                    "lost contact with https://hub-a.test while polling batch batch-a",
+                    code="PROVIDER_SUBMISSION_UNCERTAIN", upstream_accepted=True,
+                    recovery={"location": BASE[A], "batch_id": "batch-a", "item_index": 0,
+                              "jobs_path": "/api/hub/jobs", "lost_contact": True})
+
+            def generate(self, request):
+                calls["generate"] += 1
+                return BackendResult(content=PNG + b"-from-b", media_type="image/png",
+                                     deliver=lambda: {"ok": True})
+
+        with patch.object(worker_module, "registry", _Registry()), \
+                patch.object(worker_module.fleet, "route", self.route), \
+                patch.object(worker_module, "adapter_for", lambda _d: _Adapter()), \
+                patch.object(hub_module, "batch_snapshot",
+                             lambda *_a, **_k: {"known": True, "state": "running"}):
+            worker_module.execute_job(self.store.get(row["id"]), self.store, resume=True)
+
+        job = self.store.get(row["id"])
+        self.assertEqual(calls["resume"], worker_module.FOLLOW_LIMIT + 1,
+                         "the initial lost contact plus the bounded follows, then a move")
+        self.assertEqual(calls["generate"], 1)
+        self.assertEqual((job["state"], job["provider_id"]), ("succeeded", B))
+        entry = self.store.superseded_batches(row["id"])[0]
+        self.assertEqual((entry["batch_id"], entry["status"]), ("batch-a", "open"))
+
+
+class OpenEntryScanTests(_Case):
+    def test_an_open_entry_older_than_fifty_resolved_movers_is_still_found(self) -> None:
+        old = self.job("old-open")
+        self.store.record_superseded_batch(old["id"], {
+            "batch_id": "batch-old", "item_index": 0, "provider_id": A,
+            "location": BASE[A], "modality": "image"})
+        for index in range(55):
+            row = self.job(f"resolved-{index}")
+            self.store.record_superseded_batch(row["id"], {
+                "batch_id": f"batch-{index}", "item_index": 0, "provider_id": A,
+                "location": BASE[A], "modality": "image"})
+            self.store.resolve_superseded_batch(row["id"], f"batch-{index}", status="stopped")
+        # Every resolved mover is newer than the one open entry: a "50 newest jobs" scan misses it.
+        self.store._conn.execute("UPDATE jobs SET updated_at = 1.0 WHERE id = ?", (old["id"],))
+        self.store._conn.commit()
+
+        found = [entry["batch_id"] for _job, entry in self.store.open_superseded_batches(limit=50)]
+        self.assertEqual(found, ["batch-old"])
+
+
+class RejectedResultTests(_Case):
+    def _running_with_superseded(self, key: str) -> dict[str, Any]:
+        row = self.job(key)
+        self.store.record_route(row["id"], B)
+        self.assertTrue(self.store.mark_running(row["id"]))
+        self.assertTrue(self.store.begin_dispatch(row["id"]))
+        self.store.record_upstream_acceptance(row["id"], "batch-b")
+        self.store.record_superseded_batch(row["id"], {
+            "batch_id": "batch-a", "item_index": 0, "provider_id": A,
+            "location": BASE[A], "modality": "image", "jobs_path": "/api/hub/jobs"})
+        return self.store.get(row["id"])
+
+    def test_a_rejected_result_is_named_once_and_never_retried(self) -> None:
+        row = self._running_with_superseded("reject-1")
+        fleet = _Fleet(a_answers_gets=True, a_states=["done"])
+
+        def adopt(*_a, **_k):
+            return BackendResult(content=b"", media_type="image/png")  # INVALID_ARTIFACT
+
+        with patch.object(worker_module, "registry", _Registry()), \
+                self.client_patch(fleet), \
+                patch.object(hub_module, "adopt_batch", adopt):
+            out = worker_module.reconcile_superseded(self.store)
+        with patch.object(worker_module, "registry", _Registry()), self.client_patch(fleet):
+            again = worker_module.reconcile_superseded(self.store)
+
+        self.assertEqual(out["closed"], 1, out)
+        entry = self.store.superseded_batches(row["id"])[0]
+        self.assertEqual(entry["status"], "result_rejected")
+        self.assertIn("INVALID_ARTIFACT", entry["detail"])
+        self.assertEqual(again["checked"], 0, "a refused result is not downloaded again")
+        self.assertEqual(self.store.get(row["id"])["state"], "running")
+
+    def test_a_rejected_adoption_moves_the_job_on_instead_of_an_internal_error(self) -> None:
+        fleet = _Fleet(a_answers_gets=False)
+        row = self.job("reject-2")
+
+        def adopt(*_a, **_k):
+            return BackendResult(content=b"", media_type="image/png")
+
+        with patch.object(worker_module, "registry", _Registry()), \
+                patch.object(worker_module.fleet, "route", self.route), \
+                self.client_patch(fleet), \
+                patch.object(hub_module, "POLL_INTERVAL_S", 0), \
+                patch.object(hub_module, "POLL_DROP_GRACE_S", 0.05), \
+                patch.object(hub_module, "batch_snapshot",
+                             lambda *_a, **_k: {"known": True, "state": "done"}), \
+                patch.object(hub_module, "adopt_batch", adopt):
+            worker_module.execute_job(row, self.store)
+            self.wait_for(lambda: not any(t.name.startswith("gateway-cancel") and t.is_alive()
+                                          for t in __import__("threading").enumerate()))
+
+        job = self.store.get(row["id"])
+        self.assertEqual((job["state"], job["provider_id"]), ("succeeded", B),
+                         job.get("error_detail"))
+        self.assertIsNone(job["error_code"])
+        entry = self.store.superseded_batches(job["id"])[0]
+        self.assertEqual((entry["batch_id"], entry["status"]), ("batch-a", "open"))
+
+
+class HoldTests(_Case):
+    def test_an_unresolved_hold_is_not_settled_so_its_batch_is_not_stopped(self) -> None:
+        from gateway.store import RECOVERY_UNKNOWN
+
+        row = self.job("hold-1")
+        self.assertTrue(self.store.mark_running(row["id"]))
+        self.store.fail(row["id"], code="UNKNOWN_OUTCOME", detail="outcome unknown",
+                        recovery_state=RECOVERY_UNKNOWN, recovery_detail="outcome unknown")
+        self.store.record_superseded_batch(row["id"], {
+            "batch_id": "batch-a", "item_index": 0, "provider_id": A,
+            "location": BASE[A], "modality": "image"})
+        fleet = _Fleet(a_answers_gets=True, a_states=["running"])
+
+        out = self.sweep(fleet)
+
+        self.assertEqual(out["stopped"], 0, out)
+        self.assertEqual(fleet.deletes, [],
+                         "the hold is still waiting for this batch's answer; it is not stoppable")
+        self.assertEqual(self.store.superseded_batches(row["id"])[0]["status"], "open")
+
+
+class SweepBudgetTests(_Case):
+    def test_the_cleanup_has_its_own_thread_and_never_queues_behind_holds(self) -> None:
+        worker = worker_module.Worker(self.store)
+        cleaned: list[int] = []
+        with patch.object(worker_module, "reconcile_holds", lambda _s: {"checked": 0}), \
+                patch.object(worker_module, "reconcile_superseded",
+                             lambda _s: cleaned.append(1) or {}):
+            worker._sweep_holds()
+            self.assertEqual(cleaned, [], "the hold sweep must not carry the cleanup")
+            worker._sweep_superseded()
+            self.assertEqual(cleaned, [1])
+
+    def test_one_sweep_stops_at_its_wall_clock_budget(self) -> None:
+        row = self.job("budget-1")
+        self.assertTrue(self.store.mark_running(row["id"]))
+        self.store.record_superseded_batch(row["id"], {
+            "batch_id": "batch-a", "item_index": 0, "provider_id": A,
+            "location": BASE[A], "modality": "image"})
+        with patch.object(worker_module, "SUPERSEDED_SWEEP_BUDGET_S", 0.0):
+            with patch.object(worker_module, "registry", _Registry()), \
+                    self.client_patch(_Fleet(a_answers_gets=True, a_states=["running"])):
+                out = worker_module.reconcile_superseded(self.store)
+        self.assertEqual(out["checked"], 0, out)
+
+
+class NoMoveTests(_Case):
+    def test_a_batch_is_recorded_even_when_no_other_site_can_take_the_job(self) -> None:
+        self.next_site = []
+        fleet = _Fleet(a_answers_gets=False)
+        job = self.run_job(fleet, self.job("nomove-1"))
+        self.assertEqual(job["state"], "failed")
+        self.assertTrue(job["recovery_required"])
+        entry = self.store.superseded_batches(job["id"])[0]
+        self.assertEqual((entry["batch_id"], entry["status"]), ("batch-a", "not_moved"),
+                         "recorded before the move, then closed because the job stayed")
+
+
+class DiskLowTests(_Case):
+    def test_a_finished_batch_the_disk_refused_is_recorded_for_the_sweep(self) -> None:
+        from gateway import diskguard
+
+        row = self.job("disk-1")
+        self.assertTrue(self.store.mark_running(row["id"]))
+        self.assertTrue(self.store.begin_dispatch(row["id"]))
+        self.store.record_upstream_acceptance(row["id"], "batch-a")
+        fleet = _Fleet(a_answers_gets=False)
+
+        def adopt(*_a, **_k):
+            return BackendResult(content=PNG, media_type="image/png")
+
+        with patch.object(worker_module, "registry", _Registry()), \
+                patch.object(worker_module.fleet, "route", self.route), \
+                self.client_patch(fleet), \
+                patch.object(hub_module, "POLL_INTERVAL_S", 0), \
+                patch.object(hub_module, "POLL_DROP_GRACE_S", 0.05), \
+                patch.object(hub_module, "batch_snapshot",
+                             lambda *_a, **_k: {"known": True, "state": "done"}), \
+                patch.object(hub_module, "adopt_batch", adopt), \
+                patch.object(diskguard, "require_room",
+                             side_effect=diskguard.DiskLow("not enough free space")):
+            worker_module.execute_job(self.store.get(row["id"]), self.store, resume=True)
+
+        job = self.store.get(row["id"])
+        self.assertEqual((job["state"], job["error_code"]), ("failed", "DISK_LOW"))
+        entry = self.store.superseded_batches(row["id"])[0]
+        self.assertEqual((entry["batch_id"], entry["status"]), ("batch-a", "open"),
+                         "the finished work is not forgotten when the disk said no")
+
+
+class PaidLaneTests(_Case):
+    def test_a_paid_adapter_cancel_is_never_called(self) -> None:
+        called: list[str] = []
+
+        class _Paid:
+            def cancel(self, request):
+                called.append(request.provider_id)
+                return {"ok": True}
+
+        registry = _Registry()
+        registry.kind_of[A] = "openai_compat"
+        with patch.object(worker_module, "registry", registry), \
+                patch.object(worker_module, "adapter_for", lambda _d: _Paid()):
+            answer = worker_module._cancel_hub_batch(A, "image", "batch-a", 0, BASE[A])
+        self.assertFalse(answer["ok"])
+        self.assertEqual(called, [], "a paid lane's cancel has billing consequences and is not ours")
+
+
+class GuestRowTests(unittest.TestCase):
+    def test_the_guest_reachable_job_row_never_carries_a_site_address(self) -> None:
+        from gateway import admin
+
+        view = admin.superseded_view({"superseded_batches": [
+            {"batch_id": "batch-a", "provider_id": A, "location": BASE[A], "status": "open"}]})
+        self.assertEqual(view[0]["batch_id"], "batch-a")
+        self.assertEqual(view[0]["provider_id"], A)
+        self.assertNotIn("location", view[0], "the address is fleet topology, not a guest's history")
+
+
+class SwitchTests(_Case):
+    def _settings(self) -> Path:
+        # One file per test: the switches are global state in the process, and a shared path
+        # would let one test read another's choice.
+        path = Path(_SANDBOX.name) / f"fleet-orphans-{self.id().split('.')[-1]}.json"
+        patcher = patch.object(orphans_module, "SETTINGS_PATH", path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return path
+
+    def test_the_replaced_copy_switch_is_on_by_default_and_independent(self) -> None:
+        self._settings()
+        self.assertTrue(orphans_module.settings()["superseded_stop"])
+        self.assertFalse(orphans_module.settings()["auto_stop"])
+        orphans_module.set_settings({"auto_stop": True})
+        self.assertTrue(orphans_module.settings()["superseded_stop"],
+                        "the general switch never changes this one")
+        orphans_module.set_settings({"superseded_stop": False})
+        self.assertTrue(orphans_module.settings()["auto_stop"],
+                        "this switch never changes the general one")
+        self.assertFalse(orphans_module.settings()["superseded_stop"])
+
+    def test_off_stops_nothing_but_a_finished_copy_is_still_collected(self) -> None:
+        self._settings()
+        orphans_module.set_settings({"superseded_stop": False})
+        fleet = _Fleet(a_answers_gets=False)
+        job = self.run_job(fleet, self.job("switch-1"))
+        self.assertEqual(job["state"], "succeeded")
+        fleet.answer["a"] = {"gets": True, "states": ["running"]}
+        out = self.sweep(fleet)
+        self.assertEqual(out["stopped"], 0, out)
+        self.assertEqual(fleet.deletes, [], "the owner turned the automatic stop off")
+
+        # Collection is not a stop: a finished copy is still adopted with the switch off.
+        row = self.job("switch-2")
+        self.store.record_route(row["id"], B)
+        self.assertTrue(self.store.mark_running(row["id"]))
+        self.assertTrue(self.store.begin_dispatch(row["id"]))
+        self.store.record_upstream_acceptance(row["id"], "batch-b")
+        self.store.record_superseded_batch(row["id"], {
+            "batch_id": "batch-a", "item_index": 0, "provider_id": A,
+            "location": BASE[A], "modality": "image"})
+        fleet.answer["a"] = {"gets": True, "states": ["done"]}
+        fleet.answer["b"] = {"gets": True, "states": ["running"]}
+        carried = self.sweep(fleet)
+        self.assertEqual(carried["adopted"], 1, carried)
+        self.assertEqual(fleet.deletes, [], "the losing copy is not stopped while the switch is off")
+        statuses = {entry["batch_id"]: entry["status"]
+                    for entry in self.store.superseded_batches(row["id"])}
+        self.assertEqual(statuses["batch-b"], "open",
+                         "the loser is recorded for the page and a later switch-on")
+
+    def test_both_switches_are_in_the_backup(self) -> None:
+        from gateway import backup, config
+
+        declared = dict(backup.sources())["gateway/data/fleet_orphans.json"]
+        self.assertEqual(declared, Path(config.DATA_DIR) / "fleet_orphans.json")
+        self.assertEqual(backup.target_for("gateway/data/fleet_orphans.json"),
+                         Path(config.DATA_DIR) / "fleet_orphans.json")
 
 
 class StoreMigrationTests(unittest.TestCase):
