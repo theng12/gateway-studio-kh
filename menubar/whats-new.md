@@ -10,6 +10,21 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.214 — 2026-10-30
+
+### A slow site no longer makes its Macs vanish from the Fleet page
+When a site took longer than six seconds to answer, its Macs used to disappear from the list — so a
+Mac could look missing only because its site was busy. They now stay in the list, marked **Last
+report 12:31** (the time they last answered). A carried row is never counted as online and never
+counted as down, and it is never given work: routing, capacity and the health history still see
+only what was measured this read.
+
+Disk, Memory, Network and the action buttons stay blank on such a row, because the Gateway did not
+read them this time. A Mac that last answered more than an hour ago is not shown at all; the site's
+own line still says when it last reported.
+
+---
+
 ## 0.2.213 — 2026-10-30
 
 ### The Gateway stops nothing by itself until you switch it on

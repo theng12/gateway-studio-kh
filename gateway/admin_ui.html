@@ -423,6 +423,13 @@
   .fleet-day { display: inline-block; width: 9px; height: 12px; border-radius: 2px;
     background: var(--panel2); border: 1px solid var(--line); overflow: hidden; }
   .fleet-day i { display: block; height: 100%; }
+  /* A Mac shown from its site's last answer, because the site was slow to answer this read. The
+     hatch is the same signal as a day nobody observed: drawn, clearly marked, and never counted as
+     online or as down. */
+  .fleet-last-known { background: repeating-linear-gradient(45deg,
+      color-mix(in srgb, var(--line) 45%, transparent) 0 6px, transparent 6px 12px); }
+  .ftable tr.fleet-last-known td { background: repeating-linear-gradient(45deg,
+      color-mix(in srgb, var(--line) 40%, transparent) 0 6px, transparent 6px 12px); }
   /* ---- Fleet ----------------------------------------------------------------
      Two levels, like the native page: the tab strip, then one pane. The Machines
      and Locations tables are the native tables, so they share the native words —
@@ -5039,6 +5046,8 @@ function fleetItems(d) {
 
 function fleetOfflineNow(item) {
   const row = item.row;
+  // A row kept from its site's last answer is neither up nor down; its site was slow to answer.
+  if (row.last_known === true) return false;
   if (item.kind === 'site') return row.reachable === false;
   return row.reachable === false || row.state === 'offline';
 }
@@ -5151,6 +5160,18 @@ function fleetCauseTooltip(causes) {
 }
 
 function fleetMac(m) {
+  // **From its site's last answer.** The site timed out this read, so the Mac is listed — it did
+  // not vanish — with the time it last reported and no live state. Its old state is not drawn as
+  // now, and it is never counted as down.
+  if (m.last_known === true) {
+    return `<div class="fleet-mac fleet-last-known">
+      <div class="row"><span class="name">${esc(m.label || m.machine)}</span>
+        <span class="badge">${esc(m.state_text || 'Last report')}</span></div>
+      <div class="hint">${esc([m.location ? 'Site: ' + m.location : '',
+        'shown from its last answer', 'not counted as online — its site did not answer this read']
+        .filter(Boolean).join(' · '))}</div>
+    </div>`;
+  }
   const word = typeof fleetStateLabel === 'function'
     ? fleetStateLabel(m) : (FLEET_STATES[m.state] || ['', m.state || (m.reachable ? 'Online' : 'Offline')])[1];
   const cls = typeof fleetBadgeHealth === 'function'
@@ -5196,6 +5217,9 @@ function fleetSite(L) {
   const badge = online ? '<span class="badge ok">Online</span>'
     : L.reachable === false ? '<span class="badge bad">Unreachable</span>' : '<span class="badge">Not read</span>';
   const macs = fleetMachineRows.filter(m => m.location_id === L.id);
+  // A row kept from this site's last answer is a member, not a faulty Mac: saying "0 offline"
+  // beside it is honest, and the count says which of them were not measured this read.
+  const carried = macs.filter(m => m.last_known === true).length;
   const offline = macs.filter(m => m.reachable === false || m.state === 'offline').length;
   return `<div class="fleet-mac">
     <div class="row"><span class="name">${esc(L.label || L.id)}</span><span class="badge">Site</span>${badge}${
@@ -5204,7 +5228,8 @@ function fleetSite(L) {
     ${L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
     ${fleetCause({ kind: 'site', row: L })}
     <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(L.history)}<span>${esc(fleetHistoryLine({ kind: 'site', row: L }))}</span></div>
-    <div class="hint">${esc([`${macs.length} Mac${macs.length === 1 ? '' : 's'}${offline ? ` · ${offline} offline` : ''}`,
+    <div class="hint">${esc([`${macs.length} Mac${macs.length === 1 ? '' : 's'}${
+        carried ? ` (${carried} from their last report)` : ''}${offline ? ` · ${offline} offline` : ''}`,
       L.version ? `Hub ${L.version}` : '', `${(L.running_jobs || []).length} running`,
       L.capacity && L.capacity.queue_depth ? `${L.capacity.queue_depth} queued` : ''].filter(Boolean).join(' · '))}</div>
   </div>`;
@@ -5285,7 +5310,10 @@ function fleetShortSummary(history) {
 }
 
 // Is it offline now? The controller's answer and the Hub's word each count; `null` is unknown.
+// **A row carried from its site's last answer is not down**: its site was slow, not its Macs, and
+// the Gateway did not measure them this read. `reachable` is `null` on such a row for that reason.
 function fleetOfflineMachine(m) {
+  if (m.last_known === true) return false;
   if (m.reachable === false) return true;
   return String(m.state || '').toLowerCase() === 'offline';
 }
@@ -5298,6 +5326,9 @@ function fleetIsNode(m) {
 // The state word on a badge: Title Case, and a refused credential is not "offline" — a
 // different fault with a different fix.
 function fleetStateLabel(m) {
+  // **A row from a slow site's last answer says when, and never a live state.** Its old state is
+  // on `last_known_state`; the badge shows only the time, so a stale "working" cannot read as now.
+  if (m.last_known === true) return m.state_text || 'Last report';
   if (m.node_paused === true) return 'Paused';
   if (m.lite_off === true) return 'Off';
   if (String(m.node_state || '').toLowerCase() === 'unauthorized') return 'Credential refused';
@@ -5311,6 +5342,8 @@ function fleetStateLabel(m) {
 // The colour of the State badge: a working Mac runs a job so it is blue like any running state;
 // everything else follows the fault verdict.
 function fleetBadgeHealth(m) {
+  // Not observed this read: neutral, never healthy green and never the red of a fault.
+  if (m.last_known === true) return '';
   const word = String(m.state || '').toLowerCase();
   if (word === 'working' && m.node_paused !== true && m.reachable !== false) return 'info';
   if (m.node_paused === true) return '';
@@ -5521,7 +5554,7 @@ function fleetMachineRowsFor(d) {
     && (fleetFilter === 'all'
       || (fleetFilter === 'offline' && fleetOfflineMachine(m))
       || (fleetFilter === 'problematic' && m.history && m.history.problematic === true))
-    && fleetMatchesSearch([m.label, m.machine, m.location, fleetStateLabel(m), m.chip,
+    && fleetMatchesSearch([m.label, m.machine, m.location, fleetStateLabel(m), m.state_text, m.chip,
       m.limitation, fleetCauseLine(m.causes)], fleetQuery));
   if (!machineSort.key) return rows;
   return rows.slice().sort((a, b) => {
@@ -5546,49 +5579,63 @@ function fleetSortHeader(key, title) {
 
 function fleetMachineRow(m) {
   const name = fleetMachineName(m);
+  // **Carried from its site's last answer** (the site was slow this read). Identity and the old
+  // state are shown; nothing that would read as a live measurement is, and no action is offered on
+  // a row the Gateway cannot currently reach.
+  const carried = m.last_known === true;
   const facts = [m.location && m.location !== name ? m.location : '',
     m.network ? `Network ${m.network}` : '', fleetHardwareText(m),
     fleetIsNode(m) ? '' : 'controller'].filter(Boolean).join(' · ');
   const stateWord = fleetStateLabel(m);
-  const stateCaption = m.lite_mode_pending != null ? 'Lite Mode waiting'
+  const stateCaption = carried ? 'not counted as online'
+    : m.lite_mode_pending != null ? 'Lite Mode waiting'
     : fleetIsNode(m) ? 'seen ' + fleetSeenText(fleetLastSeenEpoch(m)) : '';
-  const verdict = fleetVerdict(m.history, fleetOfflineMachine(m));
-  const version = fleetVersionBadge(m, lastFleetPayload && lastFleetPayload.summary);
-  const versionCaption = version && m.hub_version && !version.text.includes(m.hub_version) ? m.hub_version : '';
-  const cause = fleetCauseLine(m.causes) || '—';
-  const causeTip = fleetCauseTooltip(m.causes);
+  const verdict = carried
+    ? { text: '—', health: '', tip: 'Not observed in this read — this row is from its site\'s last answer, so there is no fresh verdict.' }
+    : fleetVerdict(m.history, fleetOfflineMachine(m));
+  const version = carried ? null : fleetVersionBadge(m, lastFleetPayload && lastFleetPayload.summary);
+  const versionCaption = carried ? (m.hub_version ? `as of ${esc(m.state_text || 'last report')}` : '')
+    : version && m.hub_version && !version.text.includes(m.hub_version) ? m.hub_version : '';
+  const cause = carried ? '—' : (fleetCauseLine(m.causes) || '—');
+  const causeTip = carried ? '' : fleetCauseTooltip(m.causes);
   const diskFree = fleetDiskFree(m);
   const memoryFree = m.available_gb;
   const conn = m.connection || null;
-  const seen = fleetSeenText(fleetLastSeenEpoch(m));
+  const seen = fleetSeenText(carried ? m.as_of : fleetLastSeenEpoch(m));
   // Each cell's content is ONE child, so the phone's two-column row (label, value) keeps the
   // value together instead of splitting a badge from its caption.
-  return `<tr>
+  return `<tr${carried ? ' class="fleet-last-known"' : ''}>
     <td class="ft-lead" data-label="Machine">
       <div class="ft-name">${esc(name)}</div>
       ${facts ? `<div class="ft-sub" title="${esc(facts)}">${esc(facts)}</div>` : ''}
+      ${carried ? `<div class="ft-sub">${esc(m.state_text || 'Last report')} — shown from its last answer</div>` : ''}
     </td>
     <td class="nowrap" data-label="State"><div>${fleetBadge(stateWord, fleetBadgeHealth(m))}${
       stateCaption ? `<div class="ft-sub">${esc(stateCaption)}</div>` : ''}</div></td>
     <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">
       <div>${fleetBadge(verdict.text, verdict.health)}</div></td>
     <td class="nowrap" data-label="Seen" title="Last seen up: ${esc(seen)}"><div>${esc(seen)}</div></td>
-    <td data-label="Drops · 7 days" title="${esc(fleetStripTooltip(m.history))}">
-      <div><div class="cell-line">${fleetStrip(m.history)}</div>
-      <div class="ft-sub">${esc(fleetShortSummary(m.history))}</div></div></td>
+    <td data-label="Drops · 7 days" title="${esc(carried
+      ? 'Not observed in this read — no drop figure is drawn from a row that was not measured.'
+      : fleetStripTooltip(m.history))}">
+      <div><div class="cell-line">${carried ? '—' : fleetStrip(m.history)}</div>
+      <div class="ft-sub">${esc(carried ? 'Not measured this read' : fleetShortSummary(m.history))}</div></div></td>
     <td data-label="Likely cause" title="${esc(causeTip)}">
       <div class="ft-cause" title="${esc(cause)}"
         style="${fleetCauseHealth(m.causes) === 'warn' ? 'color:var(--warn-text)' : ''}">${esc(cause)}</div></td>
-    <td class="nowrap" data-label="Version"><div>${version
-      ? fleetBadge(version.text, version.health) : esc(m.hub_version || '—')}${
-      versionCaption ? `<div class="ft-sub">${esc(versionCaption)}</div>` : ''}</div></td>
-    <td class="nowrap" data-label="Disk"><div>${m.reachable === false ? '—'
+    <td class="nowrap" data-label="Version"><div>${carried
+      ? esc(m.hub_version || '—')
+      : (version ? fleetBadge(version.text, version.health) : esc(m.hub_version || '—'))}${
+      versionCaption ? `<div class="ft-sub">${versionCaption}</div>` : ''}</div></td>
+    <td class="nowrap" data-label="Disk"><div>${carried || m.reachable === false ? '—'
       : `${esc(fleetGb(diskFree) + ' free')}${fleetMeter(fleetFraction(diskFree, fleetDiskTotal(m)), fleetDiskHealth(m))}`}</div></td>
-    <td class="nowrap" data-label="Memory"><div>${m.reachable === false ? '—'
+    <td class="nowrap" data-label="Memory"><div>${carried || m.reachable === false ? '—'
       : `${esc(fleetGb(memoryFree) + ' free')}${fleetMeter(fleetFraction(memoryFree, m.memory_gb), fleetMemoryHealth(m))}`}</div></td>
-    <td class="nowrap" data-label="Network" title="${esc(fleetConnectionTooltip(conn))}">
-      <div>${fleetBadge(fleetConnectionDisplay(conn), fleetConnectionHealth(conn))}</div></td>
-    ${fleetMachineActionCell(m)}
+    <td class="nowrap" data-label="Network" title="${esc(carried
+      ? 'Not observed in this read.' : fleetConnectionTooltip(conn))}">
+      <div>${carried ? '<span class="ft-sub">—</span>'
+        : fleetBadge(fleetConnectionDisplay(conn), fleetConnectionHealth(conn))}</div></td>
+    ${carried ? '<td data-label="Actions">—</td>' : fleetMachineActionCell(m)}
   </tr>`;
 }
 
@@ -5627,6 +5674,9 @@ function fleetStatusLine(rows, machines) {
     : `${rows.length} of ${machines.length} machines match the filter.`;
   const s = (lastFleetPayload && lastFleetPayload.summary) || {};
   const parts = [esc(count)];
+  // Said out loud: these rows are drawn, but they were not measured in this read.
+  const carried = machines.filter(m => m.last_known === true).length;
+  if (carried) parts.push(`${carried} shown from their last report — not counted as online.`);
   if (s.hub_latest) {
     const version = [`On latest ${s.on_latest ?? 0}/${s.version_known ?? 0} (Studio Hub ${s.hub_latest})`];
     if (s.hub_updating > 0) version.push(`${s.hub_updating} updating`);
@@ -8111,6 +8161,11 @@ function renderFleetGroups(d) {
   const problematic = items.filter(fleetProblematic).length;
   summary.innerHTML = [
     `<span><b>${s.machines_online ?? '?'}</b> of ${s.machines ?? '?'} Macs online</span>`,
+    // **Which figures were measured.** A slow site's Macs are in the list below but not in these
+    // counts; the number carried is said here so the two never read as the same kind of fact.
+    (s.machines_last_known > 0
+      ? `<span title="Their site was slow to answer this read. They are listed from their last report and are not counted as online.">`
+        + `${s.machines_last_known} shown from their last report</span>` : ''),
     `<span><b>${s.pulse?.working ?? 0}</b> working</span>`,
     `<span><b>${s.locations_up ?? '?'}</b> of ${s.locations ?? '?'} locations up</span>`,
     `<span>Queue <b>${q.waiting ?? 0}</b> waiting, <b>${q.running ?? 0}</b> running</span>`,

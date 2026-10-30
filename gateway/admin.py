@@ -4152,6 +4152,22 @@ def _enrich_location(row: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def _with_last_known_machines(live: list[dict[str, Any]], carried: list[dict[str, Any]],
+                              locations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The measured machine rows, plus each carried row beside its own site.
+
+    A carried row belongs to a location that timed out this read, so that site has no live rows
+    to sit among; placing it where that site would be keeps the page's default order grouped by
+    site. A row naming a location no longer in the roster is dropped, the same way `with_roster`
+    drops a removed one. Stable within a site: live rows first, then carried.
+    """
+    order = {str(row.get("id")): index for index, row in enumerate(locations)}
+    kept = [row for row in carried if str(row.get("location_id")) in order]
+    if not kept:
+        return live
+    return sorted(live + kept, key=lambda row: order.get(str(row.get("location_id")), len(order)))
+
+
 @router.get("/api/fleet", dependencies=[Depends(require_admin)])
 def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     """Every location, its machines and its in-flight work.
@@ -4174,6 +4190,9 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     # row touched are copied instead.
     out = dict(data)
     out["locations"] = [_enrich_location(row) for row in data.get("locations") or []]
+    # **The summary is copied before anything writes to it**, because the cached dict routing
+    # reads must not gain the Fleet page's own count of carried rows below.
+    out["summary"] = dict(data.get("summary") or {})
     # **The machine rows are copied too, because the reachability history is annotated onto them.**
     # `fleet.snapshot()` returns the cached dict that routing and admission read; writing a
     # settings-dependent verdict into it would make this page's threshold leak into the router and
@@ -4189,6 +4208,16 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     # for the same reason the history does — the cached snapshot must not carry a settings-dependent
     # answer into routing.
     orphans.annotate(out, store=store)
+    # **A slow site's Macs, added last and only to this read's copy.** They are deliberately not in
+    # `data["machines"]` (routing, admission, capacity and the history read that list), and they are
+    # added after `annotate` so no history verdict or cause is invented for a row nobody observed
+    # this time. Each row says when it was last reported and is never counted as online.
+    carried = [dict(row) for row in data.get("last_known_machines") or [] if isinstance(row, dict)]
+    out["machines"] = _with_last_known_machines(out["machines"], carried, out["locations"])
+    out["summary"]["machines_last_known"] = sum(
+        1 for row in out["machines"] if row.get("last_known") is True)
+    out["summary"]["locations_last_known"] = len({
+        str(row.get("location_id")) for row in out["machines"] if row.get("last_known") is True})
     # Read live, never from the cache: hiding a warning kind must show on the next read.
     out["fleet_warnings"] = fleet.warnings_setting()
     # **What the fleet should hold, and what it does.** The publisher identity and

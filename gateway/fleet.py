@@ -3895,6 +3895,9 @@ def _empty_snapshot() -> dict:
     return {
         "locations": rows,
         "machines": machines_flat(rows),
+        # Carried rows are a Fleet-page view of a slow site (see `_carry_last_known_machines`),
+        # never capacity; an empty fleet has none.
+        "last_known_machines": [],
         "running": running_flat(rows),
         "summary": _summarise(rows),
         "issues": [],
@@ -3928,6 +3931,11 @@ def _refresh() -> dict:
     value = {
         "locations": rows,
         "machines": machines,
+        # **A slow site's Macs, kept apart from `machines` on purpose.** Routing, admission,
+        # capacity and the reachability history read `machines`, and a row that was not measured
+        # in this fan-out must never look like capacity. Only `admin.fleet_snapshot` adds these
+        # to a Fleet-page copy (see `_carry_last_known_machines`).
+        "last_known_machines": _carry_last_known_machines(rows, previous),
         "running": running_flat(rows),
         "summary": summary,
         "issues": sorted(_issues(rows) + lite_issues, key=_issue_order),
@@ -3968,6 +3976,63 @@ def _refresh() -> dict:
 
 #: What a slow location keeps from its last answer: who it is and what it runs, never its live state.
 _LAST_KNOWN_KEYS = ("role", "version", "hub_version_relation", "release", "site_id", "controller_id")
+
+#: How old a carried machine row may be and still be shown on the Fleet page. One hour: the owner
+#: walks between sites, and a Mac that answered an hour ago is still the likely truth; beyond that
+#: the location row's own "last report HH:MM" is the honest answer and the rows are not invented.
+LAST_KNOWN_MAX_AGE_S = 3600.0
+
+
+def _carry_last_known_machines(rows: list[dict], previous: dict | None) -> list[dict]:
+    """A slow site's machine rows from its last answer, **kept out of `value["machines"]`**.
+
+    Only the Fleet page shows these, on the copies `admin.fleet_snapshot` makes. Routing,
+    admission, capacity, orphan detection and the reachability history read `machines`, and a row
+    that was not measured in this fan-out is not capacity — so it is carried separately and every
+    row is marked (`last_known`, `as_of`, `state_text`) and its old live state kept under
+    `last_known_state`. `reachable` is `None`: unknown now, never online and never offline.
+
+    **Only `slow`** (it timed out but has answered before). A refused, rejected or dropped
+    connection is not carried: the location row already says why, and `_last_known_members` names
+    the members it last knew. Nothing is carried for a site never seen up, nor for rows older than
+    `LAST_KNOWN_MAX_AGE_S` — the row keeps saying when it last reported instead.
+    """
+    if not previous:
+        return []
+    # Both lists, so a site that has been slow for several fan-outs keeps being carried: the
+    # previous read's carried rows are still the last thing it said.
+    before: dict[str, list[dict]] = {}
+    for machine in [*(previous.get("machines") or []), *(previous.get("last_known_machines") or [])]:
+        if not isinstance(machine, dict):
+            continue
+        location_id = str(machine.get("location_id") or "")
+        if location_id:
+            before.setdefault(location_id, []).append(machine)
+    now = time.time()
+    carried: list[dict] = []
+    for row in rows:
+        if row.get("reachable") or not row.get("slow"):
+            continue
+        as_of = row.get("answered_at")
+        if not isinstance(as_of, (int, float)) or isinstance(as_of, bool) or not as_of:
+            continue
+        age = now - float(as_of)
+        if age < 0 or age > LAST_KNOWN_MAX_AGE_S:
+            continue
+        for machine in before.get(str(row.get("id")), []):
+            carried.append({
+                **machine,
+                "last_known": True,
+                "as_of": float(as_of),
+                # The old state stays available, but never as the live word: the row says when it
+                # was last reported, and `state` has a value no live badge can be mistaken for.
+                "last_known_state": machine.get("state"),
+                "state": "last_known",
+                "state_text": time.strftime("Last report %H:%M", time.localtime(as_of)),
+                "reachable": None,
+                "location_reachable": row.get("reachable"),
+            })
+    return carried
 
 
 def _keep_last_known(rows: list[dict], previous: dict | None) -> None:
