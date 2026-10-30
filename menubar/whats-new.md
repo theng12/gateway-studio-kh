@@ -41,8 +41,11 @@ and **Revoke** are right there, and disabling or removing the guest stops it at 
 *the same guest*, not a second account: free and local models only unless you tick paid models for
 that guest, their own jobs and files only, and every job it starts says **Requested by … (guest)**.
 It opens the Create API and nothing else — every other console route and **every `/v1` route**
-refuses it, including on this Mac's own loopback. The connector itself is
-`connectors/mcp/` — a small `python3` MCP server with a ready-to-paste config in its README.
+refuses it, including on this Mac's own loopback. That API also gained the one job a guest could
+not start before: **image-to-video from a scene image**, the same image-to-video-only rule the
+rest of the Gateway follows. The connector itself is `connectors/mcp/` — a small `python3` MCP
+server with a ready-to-paste config in its README, shipped inside the app so an installed Mac
+can point its own client at it.
 
 ## 0.2.210 — 2026-10-30
 
