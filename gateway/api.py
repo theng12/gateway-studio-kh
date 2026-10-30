@@ -4602,7 +4602,12 @@ def sounds_search(
     from .sound_sources import all_sources
     sources = all_sources(_registry.credentials)
     results: list[dict[str, Any]] = []
+    #: One row per configured source, so a caller can tell "this source could not be
+    #: reached" from "this source matched nothing". The answer to those two questions
+    #: must not be the same empty list.
+    reports: list[dict[str, Any]] = []
     exhausted = False
+    failed = False
     for src in sources:
         if not src.is_configured():
             continue
@@ -4621,8 +4626,12 @@ def sounds_search(
                     "category": h.category,
                     "genres": list(h.genres),
                 })
+            reports.append({"id": src.id, "ok": True})
         except Exception as exc:
-            log.warning("Sound search failed for %s: %s", src.id, exc)
+            failed = True
+            reports.append({"id": src.id, "ok": False, "error": str(exc)})
+            logging.getLogger("gateway.api").warning(
+                "Sound search failed for %s: %s", src.id, exc)
         if src.quota.exhausted:
             exhausted = True
     # Deduplicate by source_id + source
@@ -4637,8 +4646,10 @@ def sounds_search(
     unique.sort(key=lambda x: (0 if x["licence"] == "cc0" else 1, x["title"].casefold()))
 
     library_only = False
-    if exhausted and not unique:
-        # Fall back to local library when upstream quota is exhausted
+    if not unique and (exhausted or failed):
+        # The library is the fallback whenever upstream cannot answer — not only when its
+        # quota is gone. A dead site and an exhausted one both leave the customer with a
+        # usable library.
         from .sound_library import search_library
         lib_hits = search_library(q, kind=kind)
         for clip in lib_hits:
@@ -4656,7 +4667,20 @@ def sounds_search(
             })
         library_only = True
 
-    return {"results": unique, "quota_exhausted": exhausted, "library_only": library_only}
+    answer: dict[str, Any] = {
+        "results": unique,
+        "quota_exhausted": exhausted,
+        "library_only": library_only,
+        "sources": reports,
+    }
+    if failed:
+        # The id and the reason, so an empty picker is not read as "nothing matched".
+        answer["note"] = (
+            f"Could not reach {', '.join(r['id'] for r in reports if not r['ok'])}; "
+            + ("showing the Gateway's own library." if library_only
+               else "search the Gateway's library instead.")
+        )
+    return answer
 
 @app.post("/v1/sounds/library", dependencies=[Depends(require_auth)])
 def sounds_add_to_library(payload: dict[str, Any]) -> dict[str, Any]:

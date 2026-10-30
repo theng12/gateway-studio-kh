@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -293,6 +293,20 @@ def start_mock_server(port: int = 18999):
     return server
 
 
+class HangHandler(BaseHTTPRequestHandler):
+    """Accepts the connection, reads the request, and never answers.
+
+    This is the 2026-10-30 shape at api.openverse.org: DNS and TLS completed and then no
+    response bytes arrived. The client's own timeout is what must end the wait.
+    """
+
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        time.sleep(5)
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -552,6 +566,57 @@ class SoundLibraryTests(unittest.TestCase):
                 sound_library._write_index(index)
         self.assertIn(sha, [c["sha256"] for c in sound_library.list_clips()])
         self.assertIn(sha, [c["sha256"] for c in sound_library.search_library("legacy")])
+
+    # -- an unreachable source -------------------------------------------------
+    def test_the_search_client_is_bounded(self):
+        from gateway.sound_sources import source_for
+        timeout = source_for("openverse", self.registry.credentials)._get_client().timeout
+        # 2026-10-30: a 30 s read timeout let one silent site hold a search for over 30 s.
+        self.assertLessEqual(timeout.read, 10.0)
+        self.assertLessEqual(timeout.connect, 5.0)
+
+    def test_a_dead_source_is_named_and_the_library_answers(self):
+        import httpx
+        from gateway import api, sound_library, sound_sources
+        from gateway.sound_sources import SoundSourceError, source_for
+
+        # A library clip, so the fallback has something real to offer.
+        kept = sound_library.download_into_library(
+            "openverse", "cc0-clip-1", self.registry.credentials)
+        src = source_for("openverse", self.registry.credentials)
+        hang = ThreadingHTTPServer(("127.0.0.1", 0), HangHandler)
+        hang.daemon_threads = True
+        threading.Thread(target=hang.serve_forever, daemon=True).start()
+        old_base = sound_sources._OPENVERSE_BASE
+        old_client = src._client
+        try:
+            sound_sources._OPENVERSE_BASE = f"http://127.0.0.1:{hang.server_address[1]}/v1"
+            src._client = httpx.Client(timeout=httpx.Timeout(0.3, connect=0.3))
+            src._cache.clear()
+            started = time.monotonic()
+            with self.assertRaises(SoundSourceError) as ctx:
+                src.search(query="rain", min_sec=None, max_sec=None, category=None, page_size=5)
+            self.assertEqual(ctx.exception.code, "SOURCE_UNREACHABLE")
+            body = api.sounds_search(q="rain")
+            elapsed = time.monotonic() - started
+        finally:
+            sound_sources._OPENVERSE_BASE = old_base
+            src._client = old_client
+            src._cache.clear()
+            hang.shutdown()
+            hang.server_close()
+
+        self.assertLess(elapsed, 5.0, "a silent source must not hold the search open")
+        # The response says which source failed and why, instead of an empty list that
+        # would read as "nothing matched".
+        self.assertEqual([r["id"] for r in body["sources"]], ["openverse"])
+        self.assertFalse(body["sources"][0]["ok"])
+        self.assertTrue(body["sources"][0]["error"])
+        self.assertIn("openverse", body["note"])
+        # The library still answers.
+        self.assertTrue(body["library_only"])
+        self.assertEqual([r["source"] for r in body["results"]], ["library"])
+        self.assertIn(kept["sha256"], [r["source_id"] for r in body["results"]])
 
 
 if __name__ == "__main__":

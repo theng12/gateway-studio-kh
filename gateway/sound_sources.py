@@ -403,8 +403,13 @@ class OpenverseSource(SoundSource):
     # -- HTTP ------------------------------------------------------------
     def _get_client(self) -> httpx.Client:
         if self._client is None:
+            # **A dead upstream must not hang a search.** api.openverse.org answered DNS and
+            # TLS on 2026-10-30 and then sent nothing; with a 30 s read timeout
+            # `GET /v1/sounds/search` took more than 30 s. A search gets 8 s to answer and
+            # 5 s to connect, so the whole call is bounded well under Story's 20 s. A
+            # download passes its own longer timeout to `stream()`.
             self._client = httpx.Client(
-                timeout=httpx.Timeout(connect=8.0, read=30.0, write=8.0, pool=8.0),
+                timeout=httpx.Timeout(connect=5.0, read=8.0, write=8.0, pool=5.0),
                 follow_redirects=True,
                 headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
             )
@@ -444,8 +449,13 @@ class OpenverseSource(SoundSource):
         try:
             response = client.get(url, headers=self._auth_headers())
         except httpx.HTTPError as exc:
+            # Not an empty answer. The route records which source failed and why, so a
+            # caller can tell "this source is unreachable" from "nothing matched".
             log.warning("Openverse search network error: %s", exc)
-            return []
+            raise SoundSourceError(
+                f"Openverse could not be reached: {exc}",
+                status=502, code="SOURCE_UNREACHABLE",
+            ) from exc
 
         exhausted = response.status_code in (429, 403)
         self.quota.ingest(response.headers, exhausted=exhausted)
