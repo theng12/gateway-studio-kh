@@ -12,6 +12,7 @@ import base64
 import gzip
 import hashlib
 import json
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -445,14 +446,15 @@ class ReleaseDelta(unittest.TestCase):
         self.assertIn("disk full", outcome["detail"])
         self.assertEqual(self.mounts, {"entered": 1, "exited": 1})
 
-    def test_hdiutil_attach_is_read_only_and_detach_always_runs(self) -> None:
+    def test_hdiutil_attach_is_read_only_and_detach_names_the_device(self) -> None:
         for patch_p in self.patches:
             patch_p.stop()
         calls: list[list[str]] = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+            plist = plistlib.dumps({"system-entities": [{"dev-entry": "/dev/disk99s1"}, {"dev-entry": "/dev/disk99"}]}).decode()
+            return subprocess.CompletedProcess(cmd, 0, plist, "")
 
         try:
             with patch.object(rp.subprocess, "run", fake_run):
@@ -460,15 +462,15 @@ class ReleaseDelta(unittest.TestCase):
                     with rp._mounted(self.dmg):
                         raise KeyError("boom")
                 self.assertEqual(calls[0][:5], ["hdiutil", "attach", "-readonly", "-nobrowse", "-noverify"])
-                self.assertEqual(calls[-1][:2], ["hdiutil", "detach"])
+                self.assertEqual(calls[-1], ["hdiutil", "detach", "-force", "/dev/disk99"])
                 calls.clear()
-                # attach itself failing must still try to detach
+                # attach failing names no device, so there is nothing safe to detach
                 failing = lambda cmd, **kw: (calls.append(cmd), subprocess.CompletedProcess(cmd, 1, "", "no"))[1]  # noqa: E731
                 with patch.object(rp.subprocess, "run", failing):
                     with self.assertRaises(rp.ReleaseError):
                         with rp._mounted(self.dmg):
                             pass
-                self.assertEqual(calls[-1][:2], ["hdiutil", "detach"])
+                self.assertEqual([cmd[1] for cmd in calls], ["attach"])
         finally:
             for patch_p in self.patches:
                 patch_p.start()
