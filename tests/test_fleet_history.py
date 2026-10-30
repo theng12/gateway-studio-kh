@@ -541,6 +541,140 @@ class ACauseCitesItsEvidence(HistoryCase):
         self.assertEqual([cause["code"] for cause in causes], ["fine"])
 
 
+class EveryCauseSaysHowBadItIs(HistoryCase):
+    """The owner, 2026-10-30: red is broken or down, yellow is degraded but running, blue is fine.
+
+    The severity lives beside the code in `fleet_history.py` so the page reads it instead of
+    keeping a second list of cause codes in JavaScript. An unknown or missing severity is neutral
+    (never red), and a new code cannot be added without stating one.
+    """
+
+    #: Code → the only severity it may carry. A new code must be added here, which is the point:
+    #: it forces a conscious colour at the same time as the code.
+    EXPECTED = {
+        "no_evidence": "none", "fine": "none",
+        "site_down": "bad", "unauthorized": "bad", "never_connected": "bad",
+        "hub_not_running": "bad", "asleep_or_off": "bad", "probe_failed": "bad",
+        "controller_refused": "bad", "controller_silent": "bad",
+        "controller_disconnected": "bad", "controller_error": "bad",
+        "local_hub_down": "bad", "controller_failed": "bad",
+        "services_not_starting": "warn", "not_open_at_login": "warn",
+        "studios_down": "warn", "studios_missing": "warn", "slow_link": "warn",
+        "hub_behind": "warn", "flapping": "warn", "nightly_drops": "warn",
+        "on_wifi": "info",
+    }
+
+    def severities(self, causes: list[dict]) -> dict[str, str]:
+        return {cause["code"]: cause["severity"] for cause in causes}
+
+    #: Which codes each builder can produce, so the two tests together cover every one.
+    SITE_CODES = {"controller_refused", "controller_silent", "controller_disconnected",
+                  "controller_error", "local_hub_down", "controller_failed",
+                  "flapping", "fine", "no_evidence"}
+    MACHINE_CODES = set(EXPECTED) - (SITE_CODES - {"flapping", "fine", "no_evidence"})
+
+    def test_every_machine_cause_code_and_its_severity(self) -> None:
+        site = {"id": "L1", "label": "Blue Room", "reachable": False,
+                "error": "no answer", "members_from": T0 - 60}
+        wifi = {"status": "measured", "kind": "wifi", "speed_mbps": None, "slow": False,
+                "text": "Wi-Fi 432 Mb/s"}
+        slow = {"status": "measured", "kind": "ethernet", "speed_mbps": 100, "duplex": "full",
+                "slow": True, "text": "Ethernet 100 Mb/s full"}
+        seen: dict[str, str] = {}
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(up=False, location_reachable=False), {}, site, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(up=False, node_state="unauthorized", node_detail="token refused"), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(up=False, node_never_connected=True), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(up=False, reach_reason="no_hub"), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(up=False, reach_reason="unreachable"), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(up=False, node_detail="the controller's own sentence"), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(up=False, reach_reason="no_hub", startup={
+                "start_services_on_launch": False, "open_at_login": False}), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(startup={"services_running": {"up": 2, "total": 5}}), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(not_installed_studios=["Music"]), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(connection=slow), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(up=False, reach_reason="no_hub", connection=wifi), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(up=False, reach_reason="unreachable", version_status="behind",
+                    hub_version="0.6.190"), {}, None, 4, {"version": "0.6.206"}))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(), {"observed": True, "problematic": True, "drops_day": 5,
+                        "drops_week": 20, "problematic_basis": "5 drops in 24 h"}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(
+            machine(), {"observed": True, "pattern": {
+                "code": "nightly_drops", "severity": "warn", "text": "nightly", "evidence": "4 of 4"}},
+            None, 4))
+        seen |= self.severities(fleet_history.machine_causes(machine(), {}, None, 4))
+        seen |= self.severities(fleet_history.machine_causes(machine(up=False), {}, None, 4))
+
+        self.assertEqual(seen, {code: self.EXPECTED[code] for code in seen},
+                         f"unexpected code/severity: {seen}")
+        self.assertEqual(set(seen), self.MACHINE_CODES,
+                         "every cause code machine_causes can build is classified here")
+
+    def test_every_site_cause_code_and_its_severity(self) -> None:
+        seen: dict[str, str] = {}
+        for kind in ("refused", "timeout", "server_disconnected", "http", "local_hub_down"):
+            seen |= self.severities(fleet_history.site_causes(
+                location(up=False, error_kind=kind, error="the probe's sentence"), {}, 4))
+        seen |= self.severities(fleet_history.site_causes(
+            location(up=False, error="the probe's sentence"), {}, 4))
+        seen |= self.severities(fleet_history.site_causes(
+            location(up=False), {}, 4))
+        seen |= self.severities(fleet_history.site_causes(
+            location(), {"observed": True, "problematic": True, "drops_day": 5,
+                         "drops_week": 20}, 4))
+        seen |= self.severities(fleet_history.site_causes(location(), {}, 4))
+
+        self.assertEqual(seen, {code: self.EXPECTED[code] for code in seen},
+                         f"unexpected code/severity: {seen}")
+        self.assertEqual(set(seen), self.SITE_CODES,
+                         "every cause code site_causes can build is classified here")
+
+    def test_a_cause_cannot_be_built_without_a_known_severity(self) -> None:
+        # A new code with no severity is a TypeError, not a silently red line on the page.
+        with self.assertRaises(TypeError):
+            fleet_history._cause("a_new_code", "text", None)
+        with self.assertRaises(ValueError):
+            fleet_history._cause("a_new_code", "text", None, severity="critical")
+        with self.assertRaises(ValueError):
+            fleet_history._cause("a_new_code", "text", None, severity="")
+
+    def test_an_unclassified_pattern_is_neutral_never_red(self) -> None:
+        causes = fleet_history.machine_causes(
+            machine(), {"observed": True, "pattern": {"code": "mystery", "text": "a pattern"}},
+            None, 4)
+        self.assertEqual(causes[0]["severity"], "none")
+
+    def test_every_cause_call_site_states_its_severity(self) -> None:
+        # Source-level, so a code added later fails here even before a test scenario reaches it.
+        import ast
+        tree = ast.parse(Path(fleet_history.__file__).read_text(encoding="utf-8"))
+        calls = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                 and node.func.id == "_cause"]
+        self.assertGreaterEqual(len(calls), 20)
+        for call in calls:
+            stated = {keyword.arg: keyword.value for keyword in call.keywords}
+            self.assertIn("severity", stated, f"line {call.lineno}: {ast.unparse(call)[:90]}")
+            value = stated["severity"]
+            # A literal is checked here; the pattern pass-through is normalised at runtime and
+            # `_cause` refuses anything outside CAUSE_SEVERITIES.
+            if isinstance(value, ast.Constant):
+                self.assertIn(value.value, fleet_history.CAUSE_SEVERITIES,
+                              f"line {call.lineno}: {value.value!r}")
+
+
 class TheSnapshotCarriesIt(HistoryCase):
     def test_annotate_publishes_history_causes_and_the_threshold(self) -> None:
         self.observe([machine()])

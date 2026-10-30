@@ -10,6 +10,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.215 — 2026-10-30
+
+### Colours on the Fleet page now mean what they say
+Red is only for something broken or down: a Mac that is offline, a site that is not answering, a
+refused credential. Yellow is for a Mac that is still working but wants attention: a slow Ethernet
+link, drops, a studio that is not running. Blue is information, such as a Mac running fine on
+Wi-Fi. The words are unchanged — the colour just stops shouting "down" at a Mac that is up. A
+cause the page does not recognise is drawn in the ordinary text colour, never red.
+
 ## 0.2.214 — 2026-10-30
 
 ### A retired pack no longer blocks every Content Pack install

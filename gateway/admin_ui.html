@@ -277,6 +277,7 @@
   .actions { display: flex; gap: var(--s8); margin-top: var(--s12); flex-wrap: wrap; align-items: center; }
   .msg { font-size: 12px; }
   .msg.ok { color: var(--ok-text); } .msg.bad { color: var(--bad-text); }
+  .msg.warn { color: var(--warn-text); } .msg.info { color: var(--info-text); }
 
   /* Tables: header 11/600 secondary, cells 12, separators only (no zebra, nothing
      sticky). The first text column is the flexible one and cells wrap rather than
@@ -5131,8 +5132,7 @@ function fleetCause(item) {
   const causes = item.row.causes || [];
   const main = causes[0];
   if (!main) return '';
-  // "Nothing wrong reported" and "No evidence yet" are not alarms: only a real hint is drawn as one.
-  const cls = main.code === 'fine' || main.code === 'no_evidence' ? 'hint' : 'msg bad';
+  const cls = fleetCauseMsgClass(fleetCauseHealth(causes, item.row));
   const more = causes.slice(1).filter(c => c.code !== 'fine');
   const body = `<div class="${cls}">Likely cause: ${esc(main.text)}</div>` +
     more.map(c => `<div class="hint" title="${esc(c.evidence || '')}">also: ${esc(c.text)}</div>`).join('');
@@ -5147,12 +5147,41 @@ function fleetCauseLine(causes) {
   const first = (causes || [])[0];
   return first && first.text ? first.text : '';
 }
-function fleetCauseHealth(causes) {
-  const code = ((causes || [])[0] || {}).code;
-  if (code === 'fine') return 'ok';
-  if (!code || code === 'no_evidence') return '';
-  return 'warn';
+
+// **The colour is the cause's own severity, read from the Gateway** — `bad` (broken or down),
+// `warn` (degraded but running), `info` (running fine, e.g. on Wi-Fi). There is deliberately no
+// list of cause codes here: a new code arrives already classified, and an unknown or missing
+// severity is neutral, never red.
+function fleetCauseHealth(causes, row) {
+  const severity = ((causes || [])[0] || {}).severity;
+  if (severity !== 'bad' && severity !== 'warn' && severity !== 'info') return '';
+  // **A cause cannot look healthier than the thing it describes.** On a Mac or site that is down,
+  // an informational cause (Wi-Fi, say) is honestly secondary: the state pill carries the red, and
+  // the line is drawn as plain text rather than blue, which would read as "running fine".
+  if (severity === 'info' && fleetSubjectDown(row)) return '';
+  return severity;
 }
+
+function fleetCauseStyle(health) {
+  return health === 'bad' ? 'color:var(--bad-text)'
+    : health === 'warn' ? 'color:var(--warn-text)'
+      : health === 'info' ? 'color:var(--info-text)' : '';
+}
+
+function fleetCauseMsgClass(health) {
+  return health === 'bad' ? 'msg bad' : health === 'warn' ? 'msg warn'
+    : health === 'info' ? 'msg info' : 'hint';
+}
+
+// Is this row down right now? The same facts the State badge uses; a carried row is neither up
+// nor down, and a paused or deliberately-off Mac is not a fault.
+function fleetSubjectDown(row) {
+  if (!row || row.last_known === true) return false;
+  if (row.reachable === false) return true;
+  if (String(row.state || '').toLowerCase() === 'offline') return true;
+  return String(row.node_state || '').toLowerCase() === 'unauthorized';
+}
+
 function fleetCauseTooltip(causes) {
   const lines = (causes || []).filter(c => c.text).map(c =>
     c.evidence ? `${c.text}\n   Evidence: ${c.evidence}` : c.text);
@@ -5203,9 +5232,9 @@ function fleetMac(m) {
       m.history && m.history.problematic === true
         ? `<span class="badge warn" title="${esc(m.history.problematic_basis || '')}">Problematic</span>` : ''}</div>
     ${doing ? `<div class="cat">${esc(doing)}</div>` : ''}
-    ${m.attention ? `<div class="msg bad">${esc(m.attention)}</div>` : ''}
+    ${m.attention ? `<div class="msg warn">${esc(m.attention)}</div>` : ''}
     ${offlineSince}
-    ${conn && conn.slow ? `<div class="msg bad">Slow link — check cable/port (${esc(connText)})</div>` : ''}
+    ${conn && conn.slow ? `<div class="msg warn">Slow link — check cable/port (${esc(connText)})</div>` : ''}
     ${fleetCause({ kind: 'machine', row: m })}
     <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(history)}<span>${esc(fleetHistoryLine({ kind: 'machine', row: m }))}</span></div>
     <div class="hint" title="${esc(connTitle)}">${esc([`Network: ${connText}`, ...facts].join(' · '))}</div>
@@ -5461,7 +5490,8 @@ function fleetConnectionDisplay(c) {
 function fleetConnectionHealth(c) {
   if (!c || c.status !== 'measured') return '';
   if (c.slow === true) return 'warn';
-  if (c.kind === 'wifi') return '';
+  // Wi-Fi is not a fault: a Mac running fine on it reads as information (blue), not a warning.
+  if (c.kind === 'wifi') return 'info';
   return 'ok';
 }
 function fleetConnectionSort(c) {
@@ -5622,7 +5652,7 @@ function fleetMachineRow(m) {
       <div class="ft-sub">${esc(carried ? 'Not measured this read' : fleetShortSummary(m.history))}</div></div></td>
     <td data-label="Likely cause" title="${esc(causeTip)}">
       <div class="ft-cause" title="${esc(cause)}"
-        style="${fleetCauseHealth(m.causes) === 'warn' ? 'color:var(--warn-text)' : ''}">${esc(cause)}</div></td>
+        style="${carried ? '' : fleetCauseStyle(fleetCauseHealth(m.causes, m))}">${esc(cause)}</div></td>
     <td class="nowrap" data-label="Version"><div>${carried
       ? esc(m.hub_version || '—')
       : (version ? fleetBadge(version.text, version.health) : esc(m.hub_version || '—'))}${
@@ -5828,7 +5858,8 @@ function fleetLocationRow(L) {
       <div class="ft-name">${esc(L.label || L.id || '—')}</div>
       ${caption ? `<div class="ft-sub">${esc(caption)}</div>` : ''}</td>
     <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">${fleetBadge(verdict.text, verdict.health)}</td>
-    <td data-label="Likely cause" title="${esc(fleetCauseTooltip(L.causes))}">${esc(fleetCauseLine(L.causes) || '—')}</td>
+    <td data-label="Likely cause" title="${esc(fleetCauseTooltip(L.causes))}"
+      style="${fleetCauseStyle(fleetCauseHealth(L.causes, L))}">${esc(fleetCauseLine(L.causes) || '—')}</td>
     <td class="nowrap" data-label="Network">${esc(L.network || '—')}</td>
     <td class="nowrap" data-label="Hub">${esc(fleetLocationHub(L))}</td>
     <td data-label="Members" title="${esc(fleetMembersTooltip(L))}"

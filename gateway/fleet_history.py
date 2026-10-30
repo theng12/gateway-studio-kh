@@ -649,6 +649,7 @@ def _pattern(own_events: list, now: float) -> dict | None:
     window = f"{_hhmm(best_start)}–{_hhmm((best_start + 60) % (24 * 60))}"
     return {
         "code": "nightly_drops",
+        "severity": "warn",
         "text": f"Drops at about the same time every day ({window}) — likely a sleep, power or "
                 f"schedule on that Mac",
         "evidence": f"{best} of {len(drops)} drops in the last {WINDOW_DAYS} days fell between "
@@ -665,14 +666,32 @@ def _hhmm(minutes: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _cause(code: str, text: str, evidence: str | None) -> dict:
-    return {"code": code, "text": text, "evidence": evidence}
+#: How a cause may be drawn, decided here once so the page keeps no second list of codes.
+#:
+#: * ``bad`` — broken or down: a site, controller, Hub or Mac that is not answering, or a refused
+#:   credential. The only red.
+#: * ``warn`` — degraded but running: a slow link, drops, a partial studio set, a config that will
+#:   bite later.
+#: * ``info`` — informational and healthy: on Wi-Fi, which drops more than a cable but is not a fault.
+#: * ``none`` — no claim either way ("Nothing wrong reported", "No evidence yet", or a reader that
+#:   does not know the code). Never red.
+#:
+#: The owner, 2026-10-30: *"slow link should be yellow and not red. red means it's either broken or
+#: down. slow is yellow."* and *"on wifi … should be blue … as long as it's still running fine."*
+CAUSE_SEVERITIES = ("bad", "warn", "info", "none")
+
+
+def _cause(code: str, text: str, evidence: str | None, *, severity: str) -> dict:
+    """One evidence-cited cause. `severity` is required: a new code cannot arrive unclassified."""
+    if severity not in CAUSE_SEVERITIES:
+        raise ValueError(f"unknown cause severity {severity!r} for {code!r}")
+    return {"code": code, "text": text, "evidence": evidence, "severity": severity}
 
 
 NO_EVIDENCE = _cause(
     "no_evidence", "No evidence yet",
-    "Nothing this Mac or its controller reports points at a cause.")
-NOTHING_WRONG = _cause("fine", "Nothing wrong reported", None)
+    "Nothing this Mac or its controller reports points at a cause.", severity="none")
+NOTHING_WRONG = _cause("fine", "Nothing wrong reported", None, severity="none")
 
 
 def _age(seconds: float | None) -> str:
@@ -720,7 +739,7 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
             "site_down",
             f"Its whole site is down — {site_label} is not answering, so this Mac cannot be reached "
             f"either. Fix the controller, not the Mac.",
-            evidence))
+            evidence, severity="bad"))
 
     state = str(machine.get("node_state") or "").lower()
     reason = str(machine.get("reach_reason") or "").lower()
@@ -733,7 +752,7 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
         causes.append(_cause(
             "unauthorized",
             "Its controller refused that Mac's token — a credential problem, not the network.",
-            detail or "The node is listed as unauthorized by its controller."))
+            detail or "The node is listed as unauthorized by its controller.", severity="bad"))
     elif offline and not site_down:
         if machine.get("node_never_connected") is True:
             causes.append(_cause(
@@ -742,23 +761,24 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
                 "controller cannot reach.",
                 f"It has not answered once"
                 + (f" since it joined {seen_text}" if seen_text else "")
-                + (f", at {address}" if address else "") + "."))
+                + (f", at {address}" if address else "") + ".", severity="bad"))
         elif reason == "no_hub":
             causes.append(_cause(
                 "hub_not_running",
                 "Studio Hub is not running on this Mac — the Mac is awake and answered.",
                 f"Its controller reached the Mac but found nothing listening on the Hub port"
                 + (" (the probe said no_hub)" if detail else "")
-                + (f", last heard {seen_text}" if seen_text else "") + "."))
+                + (f", last heard {seen_text}" if seen_text else "") + ".", severity="bad"))
         elif reason == "unreachable":
             causes.append(_cause(
                 "asleep_or_off",
                 "It is not answering at all — asleep, switched off, or off the network.",
                 f"Every connection attempt failed" + (f" and it was last heard {seen_text}" if seen_text else "")
-                + (" — the controller's own sentence: " + detail if detail else "") + "."))
+                + (" — the controller's own sentence: " + detail if detail else "") + ".",
+                severity="bad"))
         elif detail:
             causes.append(_cause("probe_failed", "Its controller could not reach it.",
-                                 detail))
+                                 detail, severity="bad"))
 
     # What the Mac itself reports about being reachable-but-wrong.
     startup = machine.get("startup") if isinstance(machine.get("startup"), dict) else {}
@@ -769,25 +789,27 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
             "services_not_starting",
             "This Mac does not start its services when it starts, so they stay down until someone "
             "opens Studio Hub.",
-            "The Mac's own startup report says \"start services on launch\" is off."))
+            "The Mac's own startup report says \"start services on launch\" is off.", severity="warn"))
     if (offline or reason == "no_hub") and startup.get("open_at_login") is False:
         causes.append(_cause(
             "not_open_at_login",
             "Studio Hub is not set to open when this Mac starts.",
-            "The Mac's own startup report says \"open at login\" is off."))
+            "The Mac's own startup report says \"open at login\" is off.", severity="warn"))
     if isinstance(up_services, int) and isinstance(total_services, int) and total_services > 0 \
             and up_services < total_services and not offline:
         causes.append(_cause(
             "studios_down",
             "Studio Hub is up but some of its studios are not running, so it has less to offer than "
             "it should.",
-            f"{up_services} of {total_services} services running, as this Mac reports."))
+            f"{up_services} of {total_services} services running, as this Mac reports.",
+            severity="warn"))
     missing = machine.get("not_installed_studios")
     if isinstance(missing, list) and missing:
         causes.append(_cause(
             "studios_missing",
             "Some studios the controller lists for this Mac are not installed on it.",
-            "Not installed: " + ", ".join(str(name) for name in missing[:6]) + "."))
+            "Not installed: " + ", ".join(str(name) for name in missing[:6]) + ".",
+            severity="warn"))
 
     connection = machine.get("connection") if isinstance(machine.get("connection"), dict) else None
     if connection and connection.get("status") == "measured":
@@ -798,7 +820,8 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
                 "slow_link",
                 f"Its Ethernet link runs at {speed} Mb/s — a cable or switch port to replace, and "
                 f"the likely reason work there crawls or drops.",
-                f"Its own Hub measured {connection.get('text') or 'a link below 1 Gb/s'}."))
+                f"Its own Hub measured {connection.get('text') or 'a link below 1 Gb/s'}.",
+                severity="warn"))
         elif kind == "wifi" and (offline or (history.get("drops_day") or 0) > 0):
             drops = history.get("drops_day") or 0
             causes.append(_cause(
@@ -806,7 +829,7 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
                 "It is on Wi-Fi, which drops in and out more than a cable.",
                 f"Its own Hub measured {connection.get('text') or 'Wi-Fi'}"
                 + (f", and it dropped {drops} time{'s' if drops != 1 else ''} in the last 24 h."
-                   if drops else ".")))
+                   if drops else "."), severity="info"))
 
     status = str(machine.get("version_status") or "")
     if status == "behind" and offline:
@@ -817,12 +840,15 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
             "nobody tested.",
             f"This Mac reports Studio Hub {machine.get('hub_version') or '(no version)'}"
             + (f"; the newest release this Gateway published is {newest}." if newest else
-               "; it is behind the newest release this Gateway published.")))
+               "; it is behind the newest release this Gateway published."), severity="warn"))
 
     pattern = history.get("pattern")
     if isinstance(pattern, dict) and pattern.get("text"):
+        # A pattern's own severity, when it states a known one; anything else is no claim.
+        severity = pattern.get("severity")
         causes.append(_cause(str(pattern.get("code") or "pattern"), str(pattern["text"]),
-                             pattern.get("evidence")))
+                             pattern.get("evidence"),
+                             severity=severity if severity in CAUSE_SEVERITIES else "none"))
 
     if causes:
         return causes[:4]
@@ -833,7 +859,7 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
             "flapping", f"It keeps dropping out — {history.get('drops_day')} drops in the last 24 h.",
             history.get("problematic_basis")
             or f"The threshold is {threshold} drops in 24 h; this Mac has "
-               f"{history.get('drops_week')} in the last {WINDOW_DAYS} days.")]
+               f"{history.get('drops_week')} in the last {WINDOW_DAYS} days.", severity="warn")]
     return [NOTHING_WRONG]
 
 
@@ -846,7 +872,7 @@ def site_causes(location: dict, history: dict, threshold: int) -> list[dict]:
                 f"This site keeps dropping out — {history.get('drops_day')} drops in the last 24 h.",
                 history.get("problematic_basis")
                 or f"The threshold is {threshold} drops in 24 h; it has "
-                   f"{history.get('drops_week')} in the last {WINDOW_DAYS} days.")]
+                   f"{history.get('drops_week')} in the last {WINDOW_DAYS} days.", severity="warn")]
         return [NOTHING_WRONG]
     kind = location.get("error_kind")
     error = location.get("error")
@@ -874,9 +900,10 @@ def site_causes(location: dict, history: dict, threshold: int) -> list[dict]:
     }
     entry = table.get(str(kind or ""))
     if entry:
-        return [_cause(entry[0], entry[1], entry[2] or f"{label} did not answer.")]
+        return [_cause(entry[0], entry[1], entry[2] or f"{label} did not answer.", severity="bad")]
     if error:
-        return [_cause("controller_failed", "The controller did not answer.", str(error))]
+        return [_cause("controller_failed", "The controller did not answer.", str(error),
+                       severity="bad")]
     return [NO_EVIDENCE]
 
 
