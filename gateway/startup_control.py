@@ -413,6 +413,29 @@ def set_node_work_policy(controller_id: str, machine_id: str, priority_order: ob
     return policy if isinstance(policy, dict) else answered
 
 
+def set_node_preferred_work(controller_id: str, machine_id: str, preferred_work: object, *,
+                            client: httpx.Client | None = None) -> dict[str, Any]:
+    """Set the preference through the controller; the Mac validates its own choices."""
+    if not isinstance(preferred_work, dict):
+        raise StartupError(400, {"ok": False, "code": "BAD_PREFERRED_WORK",
+                                 "detail": "preferred_work must be an object."})
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    current = get_node_work_policy(controller_id, machine_id, client=client)
+    if current.get("queued") is True or not isinstance(current.get("preferred_choices"), list):
+        raise StartupError(503, {"ok": False, "code": "PREFERRED_WORK_UNKNOWN",
+                                 "detail": "This Mac did not confirm its preferred work. Check that it is reachable and its Studio Hub is up to date."})
+    answered = _node_post(
+        controller_id, machine_id, "work-policy", {"preferred_work": preferred_work},
+        event="preferred_work",
+        too_old="This controller's Studio Hub cannot change preferred work yet. Update Studio Hub first (Fleet > Release).",
+        refused="The controller refused this gateway's credential for changing preferred work.",
+        audit_fields={"preferred_work": preferred_work}, client=client,
+    )
+    policy = answered.get("work_policy")
+    return policy if isinstance(policy, dict) else answered
+
+
 def set_node_function_enabled(controller_id: str, machine_id: str, function_enabled: object, *,
                               client: httpx.Client | None = None) -> dict[str, Any]:
     """Switch one or more functions on or off in one Mac's work order (owner, 2026-10-28)."""
