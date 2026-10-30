@@ -12,6 +12,24 @@ every feature title, and they are left as they were written.
 
 ## 0.2.217 — 2026-10-30
 
+### A kept sound can be fetched by another Mac
+The Gateway's sound library could list a clip but never hand over its audio, so Story on a second
+Mac could not use one. `GET /v1/sounds/library/{sha256}/audio` now serves the stored bytes with
+their real media type, guarded by the same key as the routes beside it. An id that is not a
+sha256 is refused, and a clip the library does not hold answers 404.
+
+### Sounds keep their tags
+Openverse describes each clip with tags, a category and genres, and the Gateway used to drop them.
+They now travel with a search result and are stored beside a kept clip, so a search can find a
+sound by what it is. A clip kept before this release still loads, with no tags rather than an
+error.
+
+### A silent sound site no longer stalls a search
+When Openverse accepted the connection and then sent nothing, a search could wait over 30 seconds
+and then look like it had found nothing. A search now gives up in a few seconds. The answer names
+the source that could not be reached and why, and the Gateway's own library answers in its place
+when it has a matching clip.
+
 ### Fleet says what its controller actually knows
 A Mac that does not answer its controller may be asleep, off the network, or have a Studio Hub
 that is frozen or waiting on a permission prompt. The problem stays red, but the description no
