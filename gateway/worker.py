@@ -362,11 +362,14 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
 
 #: The Hub finished it and there is an artifact: not a failure, so not closed as one.
 _DONE_UPSTREAM_STATES = frozenset({"succeeded", "success", "done", "complete", "completed"})
-#: The Hub's terminal words, as `studio_hub` already names them. `cancelled_items` is the Hub's
-#: batch-level rollup spelling when its items were cancelled; without it a superseded batch that
-#: ended that way looked "still running" to the cleanup and was asked about for ever.
+#: The Hub's terminal **state words** — what an item's `state` or a summary's `status` says — as
+#: `studio_hub` already names them. `partial` is the rollup for a job the Hub finished with some
+#: sections produced and others not; without it that batch looked "still running" to the cleanup
+#: and was asked about for ever. A count is not a state word: `cancelled_items` (a number in the
+#: Hub's batch summary) was in this set and could never match, so it is gone rather than kept as
+#: decoration — `cancelled`/`canceled` are the words it was standing in for.
 _TERMINAL_UPSTREAM_STATES = frozenset(
-    {"failed", "error", "cancelled", "canceled", "cancelled_items", "refused", "expired"}
+    {"failed", "error", "cancelled", "canceled", "refused", "expired", "partial"}
 )
 
 
@@ -395,10 +398,12 @@ _TERMINAL_UPSTREAM_STATES = frozenset(
 #: which records the batch and moves the job.
 FOLLOW_LIMIT = 2
 
-#: One cleanup pass stops after this long. It also has **its own timer and thread** (see
-#: `_SUPERSEDED_SWEEP_S`), so the hold reconciliation is never queued behind it; this budget
-#: bounds one pass so a dead or slow site cannot pin its thread indefinitely. Leftovers stay open
-#: for the next minute, which is why the budget is a per-pass number rather than a longer one.
+#: One cleanup pass stops **before starting another entry** after this long. It also has **its own
+#: timer and thread** (see `_SUPERSEDED_SWEEP_S`), so the hold reconciliation is never queued
+#: behind it; this budget bounds one pass so a dead or slow site cannot pin its thread
+#: indefinitely. It is checked between entries, so a single slow read can overrun it by that read
+#: — the budget bounds the number of sites asked, not the wall clock of the pass. Leftovers stay
+#: open for the next minute, which is why the budget is a per-pass number rather than a longer one.
 SUPERSEDED_SWEEP_BUDGET_S = 90.0
 
 #: One settlement at a time per job. A superseded batch can finish while the job's *other* copy is
@@ -511,12 +516,20 @@ def _adopt_hub_batch(job: dict[str, Any], provider_id: str, modality: str, batch
         return False, False, None
     try:
         settled = settle_result(job["id"], result, store)
-    except Exception as exc:  # noqa: BLE001 - **the same rule as `reconcile_holds`**: a refused
-        # result (a corrupt or empty artifact, a disk refusal) is a report about this batch, not
-        # an exception to escape the sweep and re-download the same bytes every minute.
-        log.warning("job %s: superseded batch %s was refused by the done path: %s",
+    except Exception as exc:  # noqa: BLE001 - a failed adoption is a report, like `reconcile_holds`
+        # **Only a refused result is a verdict.** `INVALID_ARTIFACT` says the bytes are wrong, so
+        # asking the Hub for the same file again would never change the answer: that one closes
+        # the entry for good. Everything else — a disk that filled, a sqlite lock, a delivery
+        # receipt that could not be sent — is a bad moment, and closing the entry on it loses the
+        # only name of a batch nobody has collected yet. Those stay open for the next sweep.
+        if (isinstance(exc, BackendError)
+                and str(getattr(exc, "code", "") or "") == "INVALID_ARTIFACT"):
+            log.warning("job %s: superseded batch %s was refused by the done path: %s",
+                        job.get("id"), batch_id, exc)
+            return True, False, f"INVALID_ARTIFACT: {exc}"
+        log.warning("job %s: superseded batch %s could not be settled yet; left open: %s",
                     job.get("id"), batch_id, exc)
-        return True, False, f"{type(exc).__name__}({getattr(exc, 'code', None) or 'no code'}): {exc}"
+        return True, False, None
     return True, settled, None
 
 
@@ -585,9 +598,10 @@ def reconcile_superseded(store: JobStore) -> dict[str, int]:
 
     **Bounded per sweep, on its own clock.** It has its own timer and thread
     (`_SUPERSEDED_SWEEP_S`), so the hold reconciliation that runs on the other sweep thread is
-    never queued behind it; and one pass stops after `SUPERSEDED_SWEEP_BUDGET_S`, so a dead or
-    slow site cannot pin its own thread either. Anything not reached stays open for the next
-    minute.
+    never queued behind it; and one pass starts no entry after `SUPERSEDED_SWEEP_BUDGET_S` has
+    passed, so a dead or slow site cannot pin its own thread either. The check is between
+    entries, so one long read may overrun the budget by that read. Anything not reached stays
+    open for the next minute.
 
     Never raises: one unreadable entry must not starve the rest, and reconciliation must never
     stop dispatch. Only jobs whose own record names a batch reach this function, so an
@@ -1792,6 +1806,17 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 # seconds; a cancel, or the other copy settling the job, may have happened since.
                 current = store.get(job_id) if hasattr(store, "get") else current
                 current = current or {}
+                if str(current.get("recovery_state") or "") == RECOVERY_UNKNOWN:
+                    # **A hold is not settled by this attempt's failure.** `store.fail` settles a
+                    # hold with the arriving failure and wipes `recovery_context` — which is the
+                    # only record of the batch this hold is waiting on. `record_superseded_batch`
+                    # has not run yet, so the name would be gone before the cleanup could keep
+                    # it. The hold's own reconciliation (`reconcile_holds`) owns that batch;
+                    # leave it exactly as it is.
+                    log.warning("job %s: became a hold while its batch was being re-read; "
+                                "leaving the hold alone to reconcile batch %s",
+                                job_id, batch_id)
+                    return
                 if str(current.get("state") or "") in TERMINAL_STATES:
                     log.warning("job %s: settled while its batch was being re-read; recording "
                                 "this attempt's answer instead of moving it", job_id)
@@ -2852,12 +2877,8 @@ class Worker:
             # sweeps are network-bound; sharing one thread queued one behind the other, and a
             # slow site could make a hold wait behind a duplicate's read. Separate events mean a
             # slow cleanup does not delay a hold, or the next dispatch pass.
-            if (time.time() - self._last_superseded_sweep >= _SUPERSEDED_SWEEP_S
-                    and not self._superseded_sweeping.is_set()):
-                self._last_superseded_sweep = time.time()
-                self._superseded_sweeping.set()
-                threading.Thread(target=self._sweep_superseded,
-                                 name="gateway-superseded-sweep", daemon=True).start()
+            if time.time() - self._last_superseded_sweep >= _SUPERSEDED_SWEEP_S:
+                self._start_superseded_sweep()
 
             # **A running job that has said nothing gets asked** (`_check_running_liveness`). It is
             # row reads only, on this thread, so it cannot park dispatch behind a network call --
@@ -2982,6 +3003,31 @@ class Worker:
                     "queue before anything ran. Nothing was started or charged; run it again when the "
                     "Macs are free."),
         )
+        return True
+
+    def _start_superseded_sweep(self) -> bool:
+        """Start the 0.2.211 cleanup on its own thread, at most one at a time.
+
+        **A refused `start()` must not leave the running flag set.** The flag is what stops two
+        passes from overlapping; if it stayed set after a failed `start()` (a thread limit, an
+        interpreter shutting down) every later pass would skip the cleanup and nothing would say
+        so — the silent death this whole release is about. Clear it and let the next pass try.
+        Never raises: this runs inside the dispatch loop, and a refused thread is not a reason to
+        stop dispatching.
+
+        Returns whether a thread was started (the tests read this).
+        """
+        if self._superseded_sweeping.is_set():
+            return False
+        self._last_superseded_sweep = time.time()
+        self._superseded_sweeping.set()
+        try:
+            threading.Thread(target=self._sweep_superseded,
+                             name="gateway-superseded-sweep", daemon=True).start()
+        except Exception:  # noqa: BLE001 - a thread that cannot start must not end dispatch
+            self._superseded_sweeping.clear()
+            log.exception("could not start the superseded-batch sweep; the next pass will try again")
+            return False
         return True
 
     def _sweep_holds(self) -> None:

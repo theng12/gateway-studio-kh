@@ -2647,14 +2647,18 @@ class JobStore:
         **The open filter is in SQL, not only in this loop.** Reading the fifty newest jobs that
         merely *have* the column let a busy outage bury an old open entry: once more than fifty
         movers carried fully resolved history, the oldest open batch was never reached again.
-        `"status": "open"` is how `record_superseded_batch` writes an unresolved entry (the
-        default `json.dumps` separators make the spelling stable), so the scan only sees jobs with
-        something to do; the partial index still makes `ORDER BY updated_at` a walk of the index.
+        An unresolved entry is written as `"status": "open"` (the default `json.dumps`
+        separators) and this test accepts the compact spelling too, so a row written by anything
+        that omits the spaces — a hand repair, a future writer, a copied field — is still found
+        rather than silently skipped. This is a pre-filter only: the exact `status` test below is
+        the authority, and a row this SQL does not match is never *wrongly* closed, only late.
+        The partial index still makes `ORDER BY updated_at` a walk of the index.
         """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM jobs WHERE superseded_batches IS NOT NULL "
-                "AND instr(superseded_batches, '\"status\": \"open\"') > 0 "
+                "AND (instr(superseded_batches, '\"status\": \"open\"') > 0 "
+                "     OR instr(superseded_batches, '\"status\":\"open\"') > 0) "
                 "ORDER BY updated_at DESC LIMIT ?",
                 (max(1, int(limit)),),
             ).fetchall()

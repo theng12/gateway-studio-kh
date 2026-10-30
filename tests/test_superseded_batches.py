@@ -246,6 +246,83 @@ class AdoptBeforeRedispatchTests(_Case):
         self.assertEqual(self.routed, [])
 
 
+    def test_a_hold_that_appears_mid_read_is_left_alone_so_its_batch_name_survives(self) -> None:
+        """The re-read must not settle a hold with this attempt's failure.
+
+        `store.fail` settles an `unknown_outcome` hold with the arriving failure and with it
+        `recovery_context` — the only place the batch id lives until `record_superseded_batch`
+        runs. Measured on review 2026-10-30: the re-read reported the attempt's answer for a row
+        the hold sweep had taken, so the cleanup was handed a job that no longer named a batch.
+        """
+        from gateway.store import RECOVERY_UNKNOWN
+
+        row = self._running_job("hold-reread-1")
+        self.next_site = [B]
+        adapter, _calls = self._flaky()
+        real_answer = worker_module._hub_batch_answer
+        turned: list[int] = []
+
+        def answer_then_hold(*a: Any, **k: Any):
+            # The hold lands while the job's batch is being asked about: the other copy gave up,
+            # or a restart wrote one. This is the window the re-read was added for.
+            if not turned:
+                turned.append(1)
+                self.store.fail(row["id"], code="UNKNOWN_OUTCOME", detail="outcome unknown",
+                                recovery_state=RECOVERY_UNKNOWN,
+                                recovery_detail="outcome unknown",
+                                recovery_context={"batch_id": "batch-a", "item_index": 0,
+                                                  "provider_id": A, "location": BASE[A],
+                                                  "modality": "image",
+                                                  "jobs_path": "/api/hub/jobs"})
+            return real_answer(*a, **k)
+
+        with patch.object(worker_module, "registry", _Registry()), \
+                patch.object(worker_module.fleet, "route", self.route), \
+                patch.object(worker_module, "adapter_for", lambda _d: adapter), \
+                patch.object(worker_module, "FOLLOW_LIMIT", 0), \
+                patch.object(worker_module, "_hub_batch_answer", answer_then_hold), \
+                patch.object(hub_module, "batch_snapshot",
+                             lambda *_a, **_k: {"known": True, "state": "running"}):
+            worker_module.execute_job(row, self.store, resume=True)
+
+        job = self.store.get(row["id"])
+        self.assertEqual(job["state"], "failed")
+        self.assertEqual(job["recovery_state"], RECOVERY_UNKNOWN,
+                         "the hold was not settled by this attempt's own failure")
+        self.assertEqual((job.get("recovery_context") or {}).get("batch_id"), "batch-a",
+                         "the only record of the batch the hold is waiting on is still there")
+        self.assertEqual(self.store.superseded_batches(row["id"]), [],
+                         "the hold's own reconciliation owns it; nothing is recorded twice")
+        self.assertEqual(self.routed, [], "the job was not moved off its hold")
+
+
+class SweepStartTests(_Case):
+    """The cleanup's thread, and the states it must treat as finished (review 2026-10-30)."""
+
+    def test_a_thread_that_cannot_start_leaves_the_cleanup_able_to_run_again(self) -> None:
+        worker = worker_module.Worker(self.store)
+        started: list[int] = []
+
+        class _Refuses:
+            def __init__(self, *a: Any, **k: Any) -> None:
+                pass
+
+            def start(self) -> None:
+                raise RuntimeError("can't start new thread")
+
+        with patch.object(worker_module.threading, "Thread", _Refuses):
+            self.assertFalse(worker._start_superseded_sweep(),
+                             "a start() that raised is reported, never swallowed as success")
+        self.assertFalse(worker._superseded_sweeping.is_set(),
+                         "the event is cleared, or every later pass would skip the cleanup for ever")
+
+        with patch.object(worker_module, "reconcile_superseded",
+                          lambda _s: started.append(1) or {"checked": 0}):
+            self.assertTrue(worker._start_superseded_sweep(), "the next pass tried again")
+            self.wait_for(lambda: not worker._superseded_sweeping.is_set())
+        self.assertEqual(started, [1])
+
+
 class SupersededCleanupTests(_Case):
     """After a re-dispatch: record it, then reconcile when the old site answers."""
 
@@ -345,6 +422,27 @@ class SupersededCleanupTests(_Case):
         self.assertEqual(job["late_result_state"], "succeeded")
         self.assertEqual(out["duplicates"], 1, out)
         self.assertEqual(fleet.deletes, [], "a failed job with a kept artifact is never stopped")
+
+    def test_a_partial_rollup_is_a_finished_batch_not_one_asked_about_for_ever(self) -> None:
+        """`partial` is a rollup word; `cancelled_items` is a count and could never match."""
+        self.assertIn("partial", worker_module._TERMINAL_UPSTREAM_STATES)
+        self.assertNotIn("cancelled_items", worker_module._TERMINAL_UPSTREAM_STATES,
+                         "a number in the Hub's summary is not a state word")
+
+        row = self.job("partial-1")
+        self.assertTrue(self.store.mark_running(row["id"]))
+        self.store.record_superseded_batch(row["id"], {
+            "batch_id": "batch-a", "item_index": 0, "provider_id": A,
+            "location": BASE[A], "modality": "image", "jobs_path": "/api/hub/jobs"})
+        fleet = _Fleet(a_answers_gets=True, a_states=["partial"])
+
+        out = self.sweep(fleet)
+        self.assertEqual(out["closed"], 1, out)
+        entry = self.store.superseded_batches(row["id"])[0]
+        self.assertEqual(entry["status"], "finished_partial", entry)
+
+        again = self.sweep(fleet)
+        self.assertEqual(again["checked"], 0, "a closed batch is never asked about again")
 
     def test_a_batch_the_hub_never_heard_of_is_closed_not_stopped(self) -> None:
         fleet = _Fleet(a_answers_gets=True, a_states=["done"])
@@ -513,6 +611,23 @@ class OpenEntryScanTests(_Case):
         found = [entry["batch_id"] for _job, entry in self.store.open_superseded_batches(limit=50)]
         self.assertEqual(found, ["batch-old"])
 
+    def test_an_open_entry_written_without_json_spaces_is_still_found(self) -> None:
+        """The SQL pre-filter accepts both spellings; the exact `status` test stays the authority."""
+        row = self.job("compact-open")
+        compact = json.dumps([{
+            "batch_id": "batch-compact", "item_index": 0, "provider_id": "studio-hub-a",
+            "location": "https://hub-a.test", "modality": "image",
+            "jobs_path": "/api/hub/jobs", "status": "open"}], separators=(",", ":"))
+        self.store._conn.execute(
+            "UPDATE jobs SET superseded_batches = ? WHERE id = ?", (compact, row["id"]))
+        self.store._conn.commit()
+        raw = self.store._conn.execute(
+            "SELECT superseded_batches FROM jobs WHERE id = ?", (row["id"],)).fetchone()[0]
+        self.assertNotIn('": "', raw, "the row really is the compact spelling")
+
+        found = [entry["batch_id"] for _job, entry in self.store.open_superseded_batches(limit=50)]
+        self.assertEqual(found, ["batch-compact"])
+
 
 class RejectedResultTests(_Case):
     def _running_with_superseded(self, key: str) -> dict[str, Any]:
@@ -525,6 +640,33 @@ class RejectedResultTests(_Case):
             "batch_id": "batch-a", "item_index": 0, "provider_id": A,
             "location": BASE[A], "modality": "image", "jobs_path": "/api/hub/jobs"})
         return self.store.get(row["id"])
+
+    def test_a_finished_result_the_done_path_could_not_keep_yet_stays_open(self) -> None:
+        """Only `INVALID_ARTIFACT` is a verdict; a bad moment is retried on the next sweep."""
+        row = self._running_with_superseded("transient-1")
+        fleet = _Fleet(a_answers_gets=True, a_states=["done"])
+
+        def adopt(*_a, **_k):
+            return BackendResult(content=PNG, media_type="image/png")
+
+        with patch.object(worker_module, "registry", _Registry()), \
+                self.client_patch(fleet), \
+                patch.object(hub_module, "adopt_batch", adopt), \
+                patch.object(worker_module, "settle_result",
+                             side_effect=OSError("the artifact directory went away")):
+            out = worker_module.reconcile_superseded(self.store)
+        entry = self.store.superseded_batches(row["id"])[0]
+        self.assertEqual(out["closed"], 0, out)
+        self.assertEqual(entry["status"], "open", "a disk error closed the only copy's name")
+        self.assertEqual(out["left"], 1, out)
+
+        # The next sweep asks the site again and settles it normally.
+        with patch.object(worker_module, "registry", _Registry()), \
+                self.client_patch(fleet), \
+                patch.object(hub_module, "adopt_batch", adopt):
+            again = worker_module.reconcile_superseded(self.store)
+        self.assertEqual(again["adopted"], 1, again)
+        self.assertEqual(self.store.superseded_batches(row["id"])[0]["status"], "adopted")
 
     def test_a_rejected_result_is_named_once_and_never_retried(self) -> None:
         row = self._running_with_superseded("reject-1")

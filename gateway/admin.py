@@ -1646,13 +1646,21 @@ def set_fleet_health(payload: dict[str, Any]) -> Any:
 
 @router.get("/api/settings/fleet-orphans", dependencies=[Depends(require_admin)])
 def get_fleet_orphans() -> dict[str, Any]:
-    """Whether an orphaned Hub batch is stopped automatically. Off unless the owner said so."""
+    """The two orphan switches, each with the value the owner chose.
+
+    **They do not share a default.** `auto_stop` (a batch no Gateway job names) starts **off** —
+    an automatic action the owner never asked for. `superseded_stop` (a copy this Gateway itself
+    replaced) starts **on**, because that cleanup is the fix he did ask for. Neither changes the
+    other, and both go through the same `orphans.stop_allowed` guard as the Fleet Stop button.
+    """
     return orphans.settings()
 
 
 @router.put("/api/settings/fleet-orphans", dependencies=[Depends(require_admin)])
 def set_fleet_orphans(payload: dict[str, Any]) -> Any:
-    """The auto-stop switch. A value that is not a real boolean is a 422, never a coercion."""
+    """The orphan switches, one or both. A value that is not a real boolean is a 422, never a
+    coercion, and a key left out keeps what it has — so turning one off cannot quietly move the
+    other."""
     try:
         return orphans.set_settings(payload)
     except ValueError as exc:

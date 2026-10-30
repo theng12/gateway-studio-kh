@@ -29,7 +29,9 @@ there: if the Mac has come back and the batch is still running, it keeps followi
 finished, it collects it. No second batch is started in those cases.
 
 This is only for batches the Gateway replaced itself, it gives up following a site that keeps
-dropping after two tries, and it is a **switch of its own under Fleet → Jobs, on by default** — the
+dropping after two tries, and when the kept copy cannot be saved at that moment — the disk is
+full, or the Mac is busy — the batch stays on the list and is tried again a minute later rather
+than being written off. It is a **switch of its own under Fleet → Jobs, on by default** — the
 owner asked for this cleanup, and turning it off leaves the duplicate to the Stop button. The older
 **Automatic stop** switch beside it still starts off and keeps its meaning; a batch no Gateway job
 names is still never stopped automatically.
