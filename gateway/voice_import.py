@@ -346,7 +346,7 @@ def update_voice(voice_id: str, *, language: str | None = None, include: bool | 
                 "gender": str(entry.get("gender") or ""),
                 "include_reference_transcript": transcript_included(entry),
                 "reference_transcript": str(entry.get("reference_transcript") or ""),
-                "tags": list(_read_tags(entry.get("tags")))}
+                **({"tags": list(_read_tags(entry.get("tags")))} if tags is not None else {})}
     raise KeyError(voice_id)
 
 

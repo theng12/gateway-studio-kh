@@ -3002,10 +3002,14 @@ def set_voice_settings(payload: dict[str, Any]) -> Any:
             or (gender is not None and not isinstance(gender, str))):
         return _error(422, "expected {'voice_id': str, 'language'?: str, 'include'?: bool, "
                            "'transcript'?: str, 'gender'?: 'm'|'f'|'n', 'tags'?: [str]}")
-    voice = voice_registry().find(voice_id)
-    if voice is None:
-        return _error(404, f"no voice {voice_id!r} on this Mac")
     try:
+        if "::" not in voice_id or voice_id.startswith("studio-hub-local::"):
+            return voice_import.update_voice(voice_id, language=language, include=include,
+                                             transcript=transcript, gender=gender,
+                                             tags=cleaned_tags)
+        voice = voice_registry().find(voice_id)
+        if voice is None:
+            raise KeyError(voice_id)
         if voice.source == SOURCE_LOCAL:
             return voice_import.update_voice(voice_id, language=language, include=include,
                                              transcript=transcript, gender=gender,
