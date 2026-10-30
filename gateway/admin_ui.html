@@ -662,8 +662,9 @@
       <div class="tablewrap" id="fleet-jobs-wrap"></div>
       <!-- A Hub batch still running at a site for work that already finished. -->
       <div id="fleet-orphans"></div>
-      <!-- One switch, off by default: an automatic action is the owner's deliberate choice. It uses
-           the same guard as the Stop button, and a batch no Gateway job knows is never touched. -->
+      <!-- Two separate switches on one door. The general one starts off; stopping a copy this
+           Gateway replaced starts on, because that cleanup is the fix the owner asked for. Turning
+           either off never changes the other, and a batch no Gateway job knows is never touched. -->
       <details class="card" id="fleet-orphan-setting">
         <summary>Orphaned Hub batches: automatic stop is off</summary>
         <div class="row">
@@ -672,6 +673,15 @@
           <span class="hint" id="fleet-orphan-note">The same check as Stop: the Gateway job succeeded
             with its artifacts on disk, or failed or was cancelled with nothing left to collect. A
             batch no Gateway job knows is never stopped automatically.</span>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="fleet-orphan-superseded" checked
+            onchange="saveOrphanSupersededStop(this.checked)">
+            Stop copies this Gateway replaced itself</label>
+          <span class="hint" id="fleet-orphan-superseded-note">On by default. When a site went
+            silent and the job ran elsewhere, the copy left behind is collected if it finished
+            first, or stopped under the same check once the other copy is kept. A batch no Gateway
+            job names is never touched.</span>
         </div>
       </details>
       <div id="fleet-jobs-problems"></div>
@@ -4958,6 +4968,9 @@ let lastFleetPayload = null;
 let fleetMachineRows = [];
 let fleetHealthSetting = null;
 let fleetOrphanAutoStop = false;
+// The copies this Gateway replaced have their own switch, and it starts **on** (the owner asked
+// for that cleanup). Separate from the general orphan auto-stop above, which stays off.
+let fleetOrphanSupersededStop = true;
 // What the Hub said for a batch we just asked to stop, kept across the 15 s redraw so the answer
 // does not vanish under the person reading it. "Signalled" is not "stopped".
 let fleetOrphanAnswers = {};
@@ -7720,6 +7733,10 @@ function fleetControls() {
     orphanSummary.textContent = `Orphaned Hub batches: automatic stop is ${fleetOrphanAutoStop ? 'on' : 'off'}`;
     const checkbox = document.getElementById('fleet-orphan-auto');
     if (checkbox && document.activeElement !== checkbox) checkbox.checked = fleetOrphanAutoStop;
+    const replaced = document.getElementById('fleet-orphan-superseded');
+    if (replaced && document.activeElement !== replaced) {
+      replaced.checked = fleetOrphanSupersededStop;
+    }
     orphanSummary.dataset.done = '1';
   }
 }
@@ -7931,7 +7948,7 @@ async function saveOrphanAutoStop(enabled) {
     if (note) {
       note.textContent = fleetOrphanAutoStop
         ? 'Saved: the Gateway stops an orphan by itself when the same guard as Stop allows it. A batch no Gateway job names is never stopped.'
-        : 'Saved: off. Only the Stop button stops an orphan.';
+        : 'Saved: off. Only the Stop button stops an orphan; the copies this Gateway replaced have their own switch below.';
     }
     const box = document.getElementById('fleet-orphan-setting');
     if (box) box.querySelector('summary').dataset.done = '';
@@ -7939,6 +7956,25 @@ async function saveOrphanAutoStop(enabled) {
   } catch (e) {
     const input = document.getElementById('fleet-orphan-auto');
     if (input) input.checked = fleetOrphanAutoStop;
+    if (note) note.textContent = e.message;
+  }
+}
+
+async function saveOrphanSupersededStop(enabled) {
+  const note = document.getElementById('fleet-orphan-superseded-note');
+  try {
+    const answer = await api('/settings/fleet-orphans', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      // Only this key: the general orphan auto-stop is a different decision and is not touched.
+      body: JSON.stringify({ superseded_stop: enabled }),
+    });
+    fleetOrphanSupersededStop = answer.superseded_stop !== false;
+    const box = document.getElementById('fleet-orphan-setting');
+    if (box) box.querySelector('summary').dataset.done = '';
+    fleetControls();
+  } catch (e) {
+    const input = document.getElementById('fleet-orphan-superseded');
+    if (input) input.checked = fleetOrphanSupersededStop;
     if (note) note.textContent = e.message;
   }
 }
@@ -8009,6 +8045,8 @@ async function loadFleet(force) {
   fleetMachineRows = d.machines || [];
   fleetHealthSetting = d.fleet_health || fleetHealthSetting;
   fleetOrphanAutoStop = d.orphans_auto_stop === true;
+  // Absent in an older Gateway's payload: the replaced-copy cleanup starts on, so that reads on.
+  fleetOrphanSupersededStop = d.orphans_superseded_stop !== false;
   fleetControls();
   renderFleetTabs();
   renderFleet(d);

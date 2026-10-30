@@ -10,9 +10,29 @@ every feature title, and they are left as they were written.
 
 ---
 
----
+## 0.2.211 — 2026-10-30
 
----
+### A site that drops off is cleaned up, not left with a duplicate batch
+When a Mac's Hub went silent mid-job, the Gateway moved the work to another site — and the old
+batch kept running on the Mac that came back. The job still succeeded, so nothing looked wrong, and
+somebody had to notice the duplicate and stop it by hand.
+
+Now the Gateway writes down the exact batch it left, in the job's own record. When that Mac answers
+again, **whichever copy finished first is the one kept**: a finished old batch is collected if the
+job still needs a result, and its bytes are never fetched twice if the job already delivered. A copy
+still running is stopped **only** when the same check the Fleet Stop button uses proves the kept
+work is safe — a job that succeeded with every file on disk, or one that failed with nothing left to
+collect. Each automatic stop is written to the Gateway's audit log.
+
+Before moving a job off a silent site, the Gateway now asks once more whether that batch is still
+there: if the Mac has come back and the batch is still running, it keeps following it; if it has
+finished, it collects it. No second batch is started in those cases.
+
+This is only for batches the Gateway replaced itself, it gives up following a site that keeps
+dropping after two tries, and it is a **switch of its own under Fleet → Jobs, on by default** — the
+owner asked for this cleanup, and turning it off leaves the duplicate to the Stop button. The older
+**Automatic stop** switch beside it still starts off and keeps its meaning; a batch no Gateway job
+names is still never stopped automatically.
 
 ## 0.2.210 — 2026-10-30
 

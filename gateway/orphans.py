@@ -52,6 +52,11 @@ SETTINGS_PATH = Path(os.environ.get("GATEWAY_ORPHANS_SETTINGS") or (DATA_DIR / "
 #: Auto-stop is a deliberate switch and it is **off** unless the owner turned it on.
 AUTO_STOP_DEFAULT = False
 
+#: Stopping a batch **this Gateway replaced itself** is a different switch, and it starts **on**:
+#: the owner asked for the source of the duplicate to be cleaned up. Off is respected the moment
+#: he turns it off. It never widens to any other batch — see `worker.reconcile_superseded`.
+SUPERSEDED_STOP_DEFAULT = True
+
 #: How long one batch may go between automatic stop requests. The Hub answers "signalled, not yet
 #: stopped", so the batch keeps appearing on the next read; without this the Gateway would ask
 #: again on every fan-out.
@@ -68,30 +73,53 @@ _WORD = re.compile(r"[A-Za-z0-9]")
 
 
 def settings() -> dict:
-    """`{"auto_stop": bool, "default": False}` — read fresh, so a change shows on the next read."""
-    return {"auto_stop": _read_auto_stop(), "default": AUTO_STOP_DEFAULT}
+    """Both switches, read fresh so a change shows on the next read.
+
+    `auto_stop` (the general orphan Stop) defaults **off**; `superseded_stop` (the copies this
+    Gateway replaced after a site went silent) defaults **on**, because that cleanup is the fix
+    the owner asked for. They are separate keys in one file and one door, so turning either off
+    never changes the other.
+    """
+    raw = _read_settings_file()
+    stated = raw.get("auto_stop") if isinstance(raw, dict) else None
+    superseded = raw.get("superseded_stop") if isinstance(raw, dict) else None
+    return {
+        "auto_stop": stated if isinstance(stated, bool) else AUTO_STOP_DEFAULT,
+        "default": AUTO_STOP_DEFAULT,
+        "superseded_stop": (superseded if isinstance(superseded, bool)
+                            else SUPERSEDED_STOP_DEFAULT),
+        "superseded_default": SUPERSEDED_STOP_DEFAULT,
+    }
 
 
-def _read_auto_stop() -> bool:
+def _read_settings_file() -> dict:
+    """The file as written, or `{}`. An unreadable file is both defaults, never a refusal."""
     try:
         raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError, AttributeError):
-        return AUTO_STOP_DEFAULT
-    stated = raw.get("auto_stop") if isinstance(raw, dict) else None
-    # Only a real boolean turns it on. A string `"false"` is not a deliberate yes.
-    return stated is True
+        return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def set_settings(payload: object) -> dict:
-    """Replace the switch. Raises `ValueError` with a sentence rather than coercing a value."""
+    """Replace one or both switches. Raises `ValueError` rather than coercing a value."""
     if not isinstance(payload, dict):
-        raise ValueError("Send an object with 'auto_stop'.")
-    value = payload.get("auto_stop")
-    if not isinstance(value, bool):
-        raise ValueError("'auto_stop' must be true or false.")
+        raise ValueError("Send an object with 'auto_stop' and/or 'superseded_stop'.")
+    keys = [key for key in ("auto_stop", "superseded_stop") if key in payload]
+    if not keys:
+        raise ValueError("Send 'auto_stop' and/or 'superseded_stop' as true or false.")
+    for key in keys:
+        if not isinstance(payload[key], bool):
+            raise ValueError(f"'{key}' must be true or false.")
+    # The key not in this payload keeps what is on disk: two switches, one door.
+    current = settings()
+    value = {
+        "auto_stop": payload.get("auto_stop", current["auto_stop"]),
+        "superseded_stop": payload.get("superseded_stop", current["superseded_stop"]),
+    }
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     scratch = SETTINGS_PATH.with_name(SETTINGS_PATH.name + ".tmp")
-    scratch.write_text(json.dumps({"auto_stop": value}, indent=2), encoding="utf-8")
+    scratch.write_text(json.dumps(value, indent=2), encoding="utf-8")
     os.replace(scratch, SETTINGS_PATH)
     return settings()
 
@@ -164,7 +192,9 @@ def annotate(snapshot: dict, *, store: Any = None, now: float | None = None) -> 
     snapshot["orphan_batches"] = result["count"]
     snapshot["orphans_checked_sites"] = result["checked_sites"]
     snapshot["orphans_unchecked_sites"] = result["unchecked_sites"]
-    snapshot["orphans_auto_stop"] = settings()["auto_stop"]
+    switches = settings()
+    snapshot["orphans_auto_stop"] = switches["auto_stop"]
+    snapshot["orphans_superseded_stop"] = switches["superseded_stop"]
     return result
 
 
@@ -388,6 +418,19 @@ def _stop_guard(classification: str, job: dict | None, state: dict | None) -> di
     return {"allowed": False,
             "reason": f"Its Gateway job is still {job_state or 'running'} — the work is not "
                       "finished, so the old batch must not be stopped."}
+
+
+def stop_allowed(job: dict | None) -> dict:
+    """**The orphan Stop guard, for a job this Gateway already settled.**
+
+    The same rule the Fleet Stop button and the automatic stop use, exposed for the one other
+    caller that stops a batch without a person: cleaning up an attempt this Gateway superseded
+    itself (0.2.211, `worker.reconcile_superseded`). It is public and shared rather than
+    re-implemented there, so the automatic cleanup can never hold a weaker rule than a click.
+    """
+    if job is None:
+        return {"allowed": False, "reason": "No Gateway job to check."}
+    return _stop_guard("orphan_superseded", job, _artifact_state(job))
 
 
 def _number(value: object) -> float | None:

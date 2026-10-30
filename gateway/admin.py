@@ -3250,6 +3250,20 @@ def daily_analytics(days: int = Query(7, ge=1, le=31)) -> dict[str, Any]:
     return {"since": since, "days": days, "rows": store.daily_by_model(since)}
 
 
+def superseded_view(job: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The superseded batches a job row publishes — **without each site's address**.
+
+    `/admin/api/jobs` is reachable by a guest session (`require_guest_or_admin`), and a location's
+    address is the owner's fleet topology, not part of a guest's own history. The provider id and
+    the status stay; the URL is read from the store by the cleanup only.
+    """
+    entries = job.get("superseded_batches")
+    if not isinstance(entries, list):
+        return None
+    return [{key: value for key, value in entry.items() if key != "location"}
+            for entry in entries if isinstance(entry, dict)]
+
+
 @router.get("/api/jobs", dependencies=[Depends(require_guest_or_admin)])
 def list_jobs(
     request: Request,
@@ -3387,6 +3401,10 @@ def list_jobs(
                 "recovery_action": recovery_action(job),
                 "recovery_context": job.get("recovery_context"),
                 "discard_remote": job.get("discard_remote"),
+                # The batches this job was moved off when a site went silent (0.2.211), with what
+                # the cleanup later found: adopted, stopped, a late duplicate, or still open. The
+                # address is left out (`superseded_view`): this door is guest-reachable.
+                "superseded_batches": superseded_view(job),
                 "outputs": _admin_outputs(job, pinned),
             }
         )
