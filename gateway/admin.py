@@ -1739,6 +1739,25 @@ def get_backup() -> dict[str, Any]:
     return backup.status()
 
 
+@router.get("/api/backup/nightly", dependencies=[Depends(require_admin)])
+def get_nightly_backup() -> dict[str, Any]:
+    from . import backup
+
+    return backup.nightly_settings_status()
+
+
+@router.get("/api/backup/nightly/download", dependencies=[Depends(require_admin)])
+def download_nightly_backup() -> Any:
+    from fastapi.responses import FileResponse
+    from . import backup, config
+
+    latest = backup.nightly_settings_status()["latest"]
+    if latest is None:
+        return _error(404, "No nightly settings archive is available.", "BACKUP_NOT_FOUND")
+    path = Path(config.DATA_DIR) / "backups/nightly" / latest["name"]
+    return FileResponse(path, media_type="application/gzip", filename=latest["name"])
+
+
 @router.put("/api/settings/backup", dependencies=[Depends(require_admin)])
 def set_backup(payload: dict[str, Any]) -> Any:
     from . import backup

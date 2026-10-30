@@ -54,6 +54,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import __version__, config
 from .os_metadata import is_os_metadata
@@ -85,12 +86,20 @@ FORMAT = 1
 META = ("manifest.json", "SHA256SUMS")
 DEFAULTS: dict[str, Any] = {
     "nightly": False,
+    "settings_nightly": False,
     "include_fleet": False,
     "time": "03:00",
     "keep": 5,
     "destinations": {"icloud": True, "ssd": True, "local": True},
 }
 CHECK_INTERVAL_S = 60.0
+
+# ponytail: only reviewed settings files; review a new file's contents before adding it.
+SETTINGS_ROLES = frozenset("gateway/data/" + name for name in (
+    "fleet.json", "providers.local.json", "pools.json", "provider-concurrency.local.json",
+    "model-limits.local.json", "render_optin.json", "fleet_warnings.json", "voices_state.json",
+    "models_cache.json", "retention.json", "fleet_health.json", "fleet_orphans.json",
+))
 
 _lock = threading.Lock()
 
@@ -135,12 +144,14 @@ def sources() -> list[tuple[str, Path]]:
     ]
 
 
-def _files(chosen: dict[str, Any] | None = None) -> tuple[list[tuple[str, Path]], list[str]]:
+def _files(chosen: dict[str, Any] | None = None, *, settings_only: bool = False) -> tuple[list[tuple[str, Path]], list[str]]:
     """Every file to back up, and the sources that are absent on this Mac."""
     chosen = settings() if chosen is None else chosen
     found: list[tuple[str, Path]] = []
     missing: list[str] = []
     for role, path in sources():
+        if settings_only and role not in SETTINGS_ROLES:
+            continue
         if role == "gateway/data/fleet.json" and not chosen["include_fleet"]:
             continue
         if path.is_file() and not path.is_symlink():
@@ -202,6 +213,7 @@ def settings() -> dict[str, Any]:
     raw = _read_json(_settings_path())
     out = json.loads(json.dumps(DEFAULTS))
     out["nightly"] = bool(raw.get("nightly", out["nightly"]))
+    out["settings_nightly"] = raw.get("settings_nightly") is True
     out["include_fleet"] = raw.get("include_fleet") is True
     try:
         out["time"] = _clean_time(raw.get("time", out["time"]))
@@ -224,6 +236,10 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(payload["include_fleet"], bool):
             raise BackupError("Include fleet roster must be true or false.")
         current["include_fleet"] = payload["include_fleet"]
+    if "settings_nightly" in payload:
+        if not isinstance(payload["settings_nightly"], bool):
+            raise BackupError("Settings nightly must be true or false.")
+        current["settings_nightly"] = payload["settings_nightly"]
     if "nightly" in payload:
         current["nightly"] = bool(payload["nightly"])
     if "time" in payload:
@@ -291,13 +307,44 @@ def write_archive(target: Path, chosen: dict[str, Any] | None = None) -> dict[st
         return pack(raw, chosen)
 
 
-def pack(raw: Any, chosen: dict[str, Any] | None = None) -> dict[str, Any]:
+def _check_settings_data(name: str, data: bytes) -> None:
+    """Fail closed on credential-shaped fields or URLs; never put their values in errors."""
+    try:
+        value = json.loads(data)
+    except (ValueError, UnicodeError):
+        raise BackupError(f"{name} is not valid JSON; settings backup refused.") from None
+
+    def check(item: Any) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                key = str(key).lower().replace("-", "_")
+                if re.search(r"(^|_)(api_?key|token|password|secret|credential|authorization|private_key)(_|$)", key):
+                    if child not in (None, "", False):
+                        raise BackupError(f"{name} contains a credential-shaped field; settings backup refused.")
+                check(child)
+        elif isinstance(item, list):
+            for child in item:
+                check(child)
+        elif isinstance(item, str) and "://" in item:
+            try:
+                url = urlsplit(item)
+                if url.username or url.password or url.query or url.fragment:
+                    raise BackupError(f"{name} contains a URL with credentials or parameters; settings backup refused.")
+            except ValueError:
+                raise BackupError(f"{name} contains an invalid URL; settings backup refused.") from None
+
+    check(value)
+
+
+def pack(raw: Any, chosen: dict[str, Any] | None = None, *, settings_only: bool = False) -> dict[str, Any]:
     """Write the archive into an open binary file; returns its manifest."""
-    files, missing = _files(chosen)
+    files, missing = _files(chosen, settings_only=settings_only)
     entries = []
     with tarfile.open(fileobj=raw, mode="w:gz", compresslevel=3) as tar:
         for name, path in files:
             data = path.read_bytes()
+            if settings_only:
+                _check_settings_data(name, data)
             _add(tar, name, data, path.stat().st_mtime)
             entries.append({"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
         manifest = {
@@ -562,6 +609,89 @@ def due(now: datetime, chosen: dict[str, Any], state: dict[str, Any]) -> bool:
     return now >= slot and last < slot.timestamp()
 
 
+_nightly_state_error: dict[str, Any] | None = None
+
+
+def nightly_settings_status() -> dict[str, Any]:
+    state = _read_json(Path(config.DATA_DIR) / "nightly-settings-state.json")
+    if _nightly_state_error is not None:
+        state["last_failure"] = _nightly_state_error
+    folder = Path(config.DATA_DIR) / "backups/nightly"
+    archives = _ours(folder)
+    latest = None
+    if archives:
+        path = archives[-1]
+        try:
+            latest = {"name": path.name, "bytes": path.stat().st_size, "sha256": _sha(path)}
+        except OSError as exc:
+            state["archive_error"] = f"{type(exc).__name__}: {exc}"
+    return {"enabled": settings()["settings_nightly"], "last_success": state.get("last_success"),
+            "last_failure": state.get("last_failure"), "latest": latest,
+            "archive_error": state.get("archive_error")}
+
+
+def _save_nightly_state(path: Path, state: dict[str, Any]) -> None:
+    global _nightly_state_error
+    try:
+        config.write_secret(path, json.dumps(state, indent=2) + "\n")
+    except OSError as exc:
+        _nightly_state_error = {"at": time.time(), "reason": f"Could not save backup status: {type(exc).__name__}: {exc}"}
+        print(f"[backup] {_nightly_state_error['reason']}", flush=True)
+        raise
+    _nightly_state_error = None
+
+
+def run_nightly_settings() -> dict[str, Any]:
+    """Build beside the final archive, verify it, then atomically publish it."""
+    from . import retention
+
+    with _lock:
+        folder = Path(config.DATA_DIR) / "backups/nightly"
+        state_path = Path(config.DATA_DIR) / "nightly-settings-state.json"
+        state = _read_json(state_path)
+        started = time.time()
+        name = datetime.fromtimestamp(started).strftime("kh-backup-%Y%m%d-%H%M%S.tar.gz")
+        partial = folder / (name + ".partial")
+        previous_failure = state.get("last_failure")
+        state["last_failure"] = {"at": started, "reason": "The backup did not finish."}
+        _save_nightly_state(state_path, state)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            final = folder / name
+            if final.exists():
+                raise BackupError("A nightly archive already exists for this second.")
+            fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as raw:
+                pack(raw, settings(), settings_only=True)
+                raw.flush()
+                os.fsync(raw.fileno())
+            inspect(partial)
+            os.rename(partial, final)
+            for old in _ours(folder)[:-14]:
+                if not retention.retire(old, root=folder, namespace="nightly-backups"):
+                    raise BackupError(f"Could not move {old.name} to Gateway trash.")
+        except Exception as exc:
+            if partial.exists():
+                retention.retire(partial, root=folder, namespace="nightly-backups-incomplete")
+            state["last_failure"] = {"at": started, "reason": f"{type(exc).__name__}: {exc}"}
+            _save_nightly_state(state_path, state)
+            print(f"[backup] nightly settings failed: {state['last_failure']['reason']}", flush=True)
+            return {"ok": False, **state["last_failure"]}
+        state["last_success"] = {"at": started, "name": name}
+        state["last_failure"] = previous_failure
+        _save_nightly_state(state_path, state)
+        return {"ok": True, **state["last_success"]}
+
+
+def settings_due(now: datetime, chosen: dict[str, Any], state: dict[str, Any]) -> bool:
+    if not chosen["settings_nightly"]:
+        return False
+    hour, minute = map(int, chosen["time"].split(":"))
+    slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    last = max(float((state.get(key) or {}).get("at") or 0) for key in ("last_success", "last_failure"))
+    return now >= slot and last < slot.timestamp()
+
+
 _scheduler: threading.Thread | None = None
 
 
@@ -575,11 +705,14 @@ def start_scheduler(interval: float = CHECK_INTERVAL_S) -> None:
         while True:
             time.sleep(interval)
             try:
-                if due(datetime.now(), settings(), _state()):
+                chosen = settings()
+                if settings_due(datetime.now(), chosen, _read_json(Path(config.DATA_DIR) / "nightly-settings-state.json")):
+                    run_nightly_settings()
+                if due(datetime.now(), chosen, _state()):
                     result = run("nightly")
                     print(f"[backup] nightly {result['name']}: ok={result['ok']}", flush=True)
-            except Exception:  # noqa: BLE001 - a backup must never take the gateway down
-                pass
+            except Exception as exc:  # noqa: BLE001 - never take the gateway down
+                print(f"[backup] scheduler failed: {type(exc).__name__}: {exc}", flush=True)
 
     _scheduler = threading.Thread(target=loop, name="backup-nightly", daemon=True)
     _scheduler.start()
