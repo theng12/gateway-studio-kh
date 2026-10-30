@@ -4380,6 +4380,32 @@ def publishes_model(row: dict, model_id: str) -> bool | None:
     return False
 
 
+def site_wait_reason(provider_id: str, model_id: str) -> str:
+    """Why a job bound to this location is not running, in the fleet's own words.
+
+    Written onto the job as its deferral reason (`worker._note_waiting`), so a queued
+    job publishes a `waiting` sentence instead of reading `accepted` with nothing to
+    say — which is how a research call sat for twenty minutes with no reason on it
+    (measured 2026-10-30). Every branch is a fact this gateway already holds: no row,
+    a site that is not answering (with its own error), a site that cannot run this
+    model, or one that is merely full.
+    """
+    label = label_for_provider(provider_id) or "its site"
+    try:
+        row = next((r for r in snapshot(allow_stale=True).get("locations") or []
+                    if str(r.get("provider_id") or "") == provider_id), None)
+    except Exception:  # noqa: BLE001 - a sentence shown to a person must never fail a pass
+        row = None
+    if not isinstance(row, dict):
+        return f"waiting for a Mac that can run {model_id}"
+    if row.get("reachable") is False:
+        error = str(row.get("error") or "").strip() or "it is not answering"
+        return f"waiting for {label} to answer — {error}"
+    if publishes_model(row, model_id) is False:
+        return f"waiting for a Mac at {label} that can run {model_id}"
+    return f"waiting for a free Mac at {label}"
+
+
 def location_publishes_model(provider_id: str, model_id: str) -> bool | None:
     """`publishes_model` for a provider id, from the warm snapshot. No row at all is unknown."""
     location_id = controller_id_from(provider_id)
@@ -4393,6 +4419,26 @@ def location_publishes_model(provider_id: str, model_id: str) -> bool | None:
     return None
 
 
+#: How long a location that has answered may stay silent before its models are withdrawn.
+#:
+#: A controller that misses one 6 s overview read while it is busy answering a render is not
+#: offline — measured live on terranash-1600, 2026-10-30: its models flipped `locked: true` and
+#: back on consecutive catalogue reads seconds apart, because `usable_location_ids` read a single
+#: probe. The grace is the last *measured* answer, with its age (`answered_at`, which
+#: `_keep_last_known` keeps across a timeout), not an invented one; a site silent past it is
+#: locked exactly as before.
+#:
+#: Only the catalogue's offer/lock decision reads this. Routing and admission still read the live
+#: `reachable`, so nothing is dispatched to a site that did not answer — a submit against a model
+#: held open by the grace is refused with `why_no_route`'s sentence. That is the honest trade: a
+#: picker that flickers teaches the owner nothing; a clear refusal at submit does.
+#:
+#: ponytail: one flat grace for every location. Ceiling — a site that died seconds ago reads
+#: offered for up to the grace. Upgrade path: read it from the Fleet settings file when the owner
+#: wants to tune it per site.
+LOCK_ANSWER_GRACE_S = 45.0
+
+
 def usable_location_ids() -> set[str]:
     """Locations that can actually take work right now, by id.
 
@@ -4400,13 +4446,27 @@ def usable_location_ids() -> set[str]:
     between one fleet read and one per model. An agent or a drained Hub is left
     out, so a model only they offer reads as unavailable rather than being
     published to Story Studio and then refused on use.
+
+    **A slow read is not a dead site.** A location that answered within
+    `LOCK_ANSWER_GRACE_S` and missed this one probe keeps offering its models;
+    beyond the grace it is out, as before. Without this a busy controller's whole
+    catalogue flipped locked and back between consecutive reads (see the constant).
     """
     try:
-        return {
-            str(row.get("id"))
-            for row in snapshot(allow_stale=True)["locations"]
-            if row.get("reachable") and _takes_customer_jobs(row)
-        }
+        now = time.time()
+        answering: set[str] = set()
+        for row in snapshot(allow_stale=True)["locations"]:
+            if not _takes_customer_jobs(row):
+                continue
+            if row.get("reachable"):
+                answering.add(str(row.get("id")))
+                continue
+            answered = row.get("answered_at")
+            if (row.get("slow") and isinstance(answered, (int, float))
+                    and not isinstance(answered, bool)
+                    and 0 <= now - answered <= LOCK_ANSWER_GRACE_S):
+                answering.add(str(row.get("id")))
+        return answering
     except Exception:  # noqa: BLE001 - a routing hint must never break the catalogue
         return set()
 

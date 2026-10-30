@@ -260,7 +260,12 @@ class APoolAliasPublishesWhatEveryMemberSupportsTest(unittest.TestCase):
                        for model_id in rows]
         models = [{"model_id": model_id, "modality": "image", "raw": {}} for model_id in rows]
         with (
-            patch.object(catalog.Catalog, "_current_signature", return_value=()),
+            # **No rebuild on read.** `_fresh` rebuilds when the catalogue's fingerprint changed,
+            # and this test patches the registry out from under it — so the read would rebuild
+            # with the real (empty) registry and drop the rows just built. The fingerprint is no
+            # longer a bare tuple of models (0.2.216 added the answering fleet to it), so it is
+            # `_fresh` itself that is stubbed here: the intent is "draw these rows", unchanged.
+            patch.object(catalog.Catalog, "_fresh", lambda _self: None),
             patch.object(catalog.Catalog, "_story_row",
                          lambda _self, modality, definition, model, **_: dict(rows[model["model_id"]])),
             patch.object(catalog.registry.models, "enabled_models",
@@ -273,7 +278,9 @@ class APoolAliasPublishesWhatEveryMemberSupportsTest(unittest.TestCase):
             patch.object(catalog.image_assignment, "pool_models", lambda pool: list(rows)),
         ):
             built = catalog.Catalog()
-        return next(row for row in built.rows("image") if row["id"] == "studio-hub::pool")
+            # Read **inside** the patches: `_fresh` is stubbed above, and a read after the
+            # `with` would compare the real fingerprint with the stubbed build's.
+            return next(row for row in built.rows("image") if row["id"] == "studio-hub::pool")
 
     def _member(self, index: int, **changes) -> dict:
         row = {"id": f"studio-hub::m{index}", "display_name": f"m{index}", "legacy_ids": [],

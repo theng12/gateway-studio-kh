@@ -40,8 +40,8 @@ function element(extra = {}) {
 
 function context(payload = null) {
   const nodes = new Map();
-  for (const id of ['fleet-body', 'fleet-summary', 'fleet-issues', 'fleet-filter', 'fleet-threshold',
-    'fleet-machines-wrap', 'fleet-status', 'fleet-warnings', 'fleet-locations-wrap',
+  for (const id of ['fleet-body', 'fleet-summary', 'fleet-issues', 'fleet-filter', 'fleet-sort',
+    'fleet-threshold', 'fleet-machines-wrap', 'fleet-status', 'fleet-warnings', 'fleet-locations-wrap',
     'fleet-locations-status', 'fleet-models-wrap', 'fleet-models-status', 'fleet-jobs-wrap',
     'fleet-jobs-status', 'fleet-jobs-problems', 'fleet-tabs', 'fleet-search', 'fleet-location',
     'fleet-drops', 'fleet-threshold-note']) nodes.set(id, element());
@@ -247,4 +247,89 @@ test('a site cause is coloured by its own severity, and a down controller is red
     /class="msg bad">Likely cause: The site&#39;s address answered nothing in time/);
   assert.match(ctx.nodes.get(LOCATIONS).innerHTML,
     /style="color:var\(--bad-text\)">The site&#39;s address answered nothing in time/);
+});
+
+// ---- Issues: the count, the order, and the filter (owner, 2026-10-30) -------------------------
+//
+// *"how many issues are there? and also why can't i sort by the issues? there's no way to do so."*
+// The count, the order and the Show choices all read the same `severity` that colours the cards.
+// A Mac counts once even with two causes; a row shown from a slow site's last report was not
+// measured, so it is said separately and counted as neither healthy nor broken.
+
+test('the header answers how many issues, one count per Mac at its worst', async () => {
+  const ctx = context(payload([
+    machine({ machine: 'a', label: 'zulu', reachable: false, state: 'offline',
+      history: history({ online: false, offline_since: Math.floor(Date.now() / 1000) - 900 }),
+      causes: [cause('asleep_or_off', 'bad', 'It is not answering at all')] }),
+    // Two degraded causes, one Mac: one issue.
+    machine({ machine: 'b', label: 'yankee',
+      causes: [cause('slow_link', 'warn', 'Its Ethernet link runs at 100 Mb/s'),
+        cause('studios_down', 'warn', 'Some studios are not running')] }),
+    machine({ machine: 'c', label: 'xray', causes: [cause('on_wifi', 'info', 'It is on Wi-Fi')] }),
+    machine({ machine: 'd', label: 'alpha' }),
+    // Carried from its site's last answer: not measured now, so neither down nor healthy.
+    machine({ machine: 'e', label: 'bravo', last_known: true, reachable: null,
+      state_text: 'Last report 12:31', causes: [cause('fine', 'none', 'Nothing wrong reported')] }),
+  ]));
+  await ctx.loadFleet();
+  const summary = ctx.nodes.get('fleet-summary').innerHTML;
+  assert.match(summary, /<b>3<\/b> issues: 1 down · 1 degraded · 1 info/,
+    'a Mac with two causes counts once, at its worst');
+  assert.match(summary, /1 not counted, shown from their last report/,
+    'a row nobody measured is said out loud, never counted either way');
+  assert.doesNotMatch(summary, /2 not counted/, 'the healthy Mac is not carried');
+});
+
+test('issues sort worst first by default, sites with the same rule', async () => {
+  const d = payload([
+    machine({ machine: 'a', label: 'zulu', reachable: false, state: 'offline',
+      causes: [cause('asleep_or_off', 'bad', 'It is not answering at all')] }),
+    machine({ machine: 'b', label: 'yankee',
+      causes: [cause('slow_link', 'warn', 'Its Ethernet link runs at 100 Mb/s')] }),
+    machine({ machine: 'c', label: 'xray', causes: [cause('on_wifi', 'info', 'It is on Wi-Fi')] }),
+    machine({ machine: 'd', label: 'alpha' }),
+    machine({ machine: 'e', label: 'bravo', last_known: true, reachable: null }),
+  ], [
+    location({ id: 'L2', label: 'A quiet room', causes: [cause('fine', 'none')] }),
+    location({ id: 'L3', label: 'A dark room', reachable: false,
+      causes: [cause('controller_silent', 'bad', 'It answered nothing in time')] }),
+  ]);
+  const ctx = context(d);
+  await ctx.loadFleet();
+  const order = Array.from(ctx.fleetVisible(ctx.fleetItems(d)), item => String(item.label));
+  assert.deepEqual(order, ['A dark room', 'zulu', 'yankee', 'xray', 'A quiet room', 'alpha', 'bravo'],
+    'down, then degraded, then info, then fine; a row nobody measured sorts last');
+  // The same order is what is drawn, and the visible control is what chooses it.
+  const body = ctx.nodes.get('fleet-body').innerHTML;
+  assert.ok(body.indexOf('A dark room') < body.indexOf('zulu')
+    && body.indexOf('zulu') < body.indexOf('yankee'), 'the cards follow the same order');
+  assert.match(ctx.nodes.get('fleet-sort').innerHTML, /Issues \(worst first\)/,
+    'the sort is a visible control, not an unreachable function');
+});
+
+test('the Show dropdown gains Down, Degraded and Has any issue, and each filters', async () => {
+  const d = payload([
+    machine({ machine: 'a', label: 'zulu', reachable: false, state: 'offline',
+      causes: [cause('asleep_or_off', 'bad', 'It is not answering at all')] }),
+    machine({ machine: 'b', label: 'yankee',
+      causes: [cause('slow_link', 'warn', 'Its Ethernet link runs at 100 Mb/s')] }),
+    machine({ machine: 'c', label: 'xray', causes: [cause('on_wifi', 'info', 'It is on Wi-Fi')] }),
+    machine({ machine: 'd', label: 'alpha' }),
+  ]);
+  const ctx = context(d);
+  await ctx.loadFleet();
+  const options = ctx.nodes.get('fleet-filter').innerHTML;
+  for (const title of ['Down', 'Degraded', 'Has any issue']) assert.match(options, new RegExp(`>${title}<`));
+  const shown = () => ctx.nodes.get('fleet-body').innerHTML;
+  ctx.fleetSetFilter('down');
+  assert.match(shown(), /zulu/);
+  assert.doesNotMatch(shown(), /yankee|xray|alpha/);
+  ctx.fleetSetFilter('degraded');
+  assert.match(shown(), /yankee/);
+  assert.doesNotMatch(shown(), /zulu|xray|alpha/);
+  ctx.fleetSetFilter('issues');
+  assert.match(shown(), /zulu/);
+  assert.match(shown(), /yankee/);
+  assert.match(shown(), /xray/);
+  assert.doesNotMatch(shown(), /alpha/);
 });

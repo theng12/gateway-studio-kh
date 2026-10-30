@@ -143,6 +143,32 @@ class CanPublishReadinessTests(unittest.TestCase):
         # A Hub that does not publish it must not lose its whole catalogue.
         self.assertTrue(self._publishable(None))
 
+    def _ready_on_a_mac(self, ready: bool | None) -> bool:
+        """The live Hub 0.6.206 row shape for one model at terranash-1600 (2026-10-30)."""
+        raw = {
+            "catalogued": True,
+            # The package list is the **controller's own disk**: the 1600 controller does not
+            # have these files, a joined Mac does.
+            "dispatch_state": "ineligible",
+            "files_state": "not_installed",
+            "memory_eligible": True,
+            "ready_on_a_mac": ready,
+        }
+        return registry.models.can_publish(self.definition, {**self.model, "raw": raw})
+
+    def test_a_joined_mac_that_has_the_model_publishes_despite_the_controllers_disk(self) -> None:
+        # Measured live: `studio-hub::mlx-community/gemma-4-26B-A4B-it-qat-4bit` is published
+        # while the 1600 controller's own row says `ineligible`/`not_installed`, because the
+        # mini at that site reports it cached, ready and fitting. The controller's own disk must
+        # not speak for the whole site.
+        self.assertTrue(self._ready_on_a_mac(True))
+
+    def test_a_site_where_no_mac_has_it_stays_withheld(self) -> None:
+        self.assertFalse(self._ready_on_a_mac(False))
+
+    def test_an_older_hub_that_states_no_per_mac_fact_keeps_the_dispatch_rule(self) -> None:
+        self.assertFalse(self._ready_on_a_mac(None))
+
 
 class DependencyTypeTests(unittest.TestCase):
     """The Hub types Whisper turbo `dependency` (two Qwen3 packages list it) yet catalogues it as

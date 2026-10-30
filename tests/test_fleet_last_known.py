@@ -149,10 +149,14 @@ class ASlowSiteKeepsItsMachinesTest(_Case):
         value = self._read([_slow("c1", "Terranash")])
         self.assertEqual(len(value["last_known_machines"]), 2)
 
-        # The snapshot the router reads has no machine there, and the site is not usable.
+        # The snapshot the router reads has no machine there.
         cached = fleet.snapshot(allow_stale=True)
         self.assertEqual(self._by_location(cached, "c1"), [])
-        self.assertEqual(fleet.usable_location_ids(), set())
+        # **The catalogue keeps the site's models on offer through the grace** (0.2.216): one
+        # missed 6 s read is not an outage, and a site that answered seconds ago is not gone.
+        # Routing and admission still read `reachable`, so no work is sent there while it is
+        # silent — only the picker stops flickering.
+        self.assertEqual(fleet.usable_location_ids(), {"c1"})
 
         # **Not observed as a drop.** The Macs were recorded up on the warm read; a carried row
         # must not make that look like going offline.

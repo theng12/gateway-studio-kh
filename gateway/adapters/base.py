@@ -441,6 +441,45 @@ def staged_data_uris(request: "BackendRequest", paths_key: str, types_key: str) 
     return uris
 
 
+def bounded_max_output_tokens(request: "BackendRequest", stated: Any) -> tuple[Any, dict | None]:
+    """The answer length to **send** when the caller named one, never above what the model accepts.
+
+    `catalog.published_output_cap` is the allowance this gateway publishes — and since
+    2026-10-30 it is capped at the model's context window, because an allowance above
+    the window is not a limit the model can honour. A caller's number above that
+    published figure is lowered to it and reported on the job
+    (`max_tokens_lowered_to`), so the caller learns what was sent instead of waiting
+    for the provider to refuse the request after it has measured the prompt.
+
+    **Nothing is lowered without a published number to lower it to.** `None` cap,
+    no caller value, and a malformed value all travel exactly as before — the last
+    one is the provider's to refuse, under every spelling it may use.
+
+    Lowering stays on the lane whose own contract states a maximum and whose worker
+    would otherwise use a fallback of its own (Studio Hub's chat lane: its contract
+    publishes `max_tokens.maximum` beside a `default` of 128,000 that its own note
+    says "is not a number the model states"). Cloud lanes keep the caller's number:
+    their published limit is the provider's own statement, and their refusal names
+    it in their words (`anthropic._max_tokens_too_large`).
+
+    Room is measured against the published allowance, not against
+    `context − prompt`: the Gateway never holds an input token count before a request
+    is sent, and inventing one from a characters-per-token ratio is the kind of
+    guess the house rules forbid.
+    """
+    if not stated:
+        return stated, None
+    if isinstance(stated, bool) or not isinstance(stated, (int, float)):
+        return stated, None
+    cap = getattr(request, "max_output_tokens", None)
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+        return stated, None
+    if int(stated) <= cap:
+        return stated, None
+    return cap, {"asked": stated, "sent": cap,
+                 "why": "above the output allowance this model publishes"}
+
+
 def caller_max_output_tokens(params: Any) -> Any:
     """The answer length the **caller** asked for, under every spelling — one chooser.
 

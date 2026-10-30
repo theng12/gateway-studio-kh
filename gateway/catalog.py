@@ -1415,9 +1415,36 @@ def _stated(value: Any) -> int | None:
     return int(value)
 
 
-def _published_output_limit(
+def _published_context_limit(
     definition: ProviderDefinition, model_id: str, model: dict[str, Any]
 ) -> tuple[Any, str, str | None]:
+    """The context window this gateway publishes for a chat model — **one chooser**.
+
+    Read every spelling a provider uses (`context_length`, `context_window`,
+    `inputTokenLimit`, …), let a Hub's own sentence win, then the owner's curated
+    file, and publish `None` when nobody stated one. The output chooser reads this
+    too, because an output allowance above the context window is not a limit the
+    model can honour (`_published_output_limit`).
+    """
+    raw = model.get("raw") or {}
+    context = _first_stated(
+        raw, ("context_length", "context_window", "inputTokenLimit", "input_token_limit")
+    )
+    hub_context, hub_context_detail, hub_context_kind = _hub_stated_limit(
+        raw, "context_window_tokens")
+    if hub_context is not None:
+        context = hub_context
+    value, source = _limit_with_source(
+        "context_window_tokens", _stated(context), None, definition.id, model_id
+    )
+    if hub_context is not None and hub_context_kind:
+        source = hub_context_kind
+    return value, source, hub_context_detail
+
+
+def _published_output_limit(
+    definition: ProviderDefinition, model_id: str, model: dict[str, Any]
+) -> tuple[Any, str, str | None, int | None]:
     """The output allowance this gateway publishes for a chat model — **one chooser**.
 
     Providers spell the same figure differently: OpenRouter uses
@@ -1425,7 +1452,18 @@ def _published_output_limit(
     `max_completion_tokens`. Read every spelling, then let a Hub's own sentence
     win (it states where its number came from), then the owner's curated file
     fill a gap, then the gateway's fallback answer. Returns the value, whose
-    number it is, and the Hub's sentence when it gave one.
+    number it is, the Hub's sentence when it gave one, and — when the value was
+    lowered — the number that was lowered.
+
+    **An output allowance above the context window is not a limit.** Measured live
+    2026-10-30: `studio-hub::mlx-community/gemma-4-26B-A4B-it-qat-4bit` published
+    `context_window_tokens: 32768` beside `max_output_tokens: 128000`, because the
+    Hub relayed its own worker fallback (`llm_engine.FALLBACK_MAX_OUTPUT_TOKENS`),
+    which its lane contract says "is not a number the model states". A model cannot
+    answer more tokens than fit in its window, so the published value is the smaller
+    of the two. Nothing is invented: the number published is the model's own
+    published context, and `max_output_tokens_capped_from` names the figure that was
+    withheld so a reader can see both.
 
     **The generation path reads this too** (`published_output_cap`), because a
     separate "what should I send?" reader disagreed with the chooser the moment
@@ -1455,7 +1493,14 @@ def _published_output_limit(
     # has nothing to add to it.
     if hub_output is not None and hub_output_kind:
         source = hub_output_kind
-    return value, source, hub_output_detail
+    capped_from = None
+    context, _context_source, _context_detail = _published_context_limit(
+        definition, model_id, model)
+    if (isinstance(value, int) and not isinstance(value, bool)
+            and isinstance(context, int) and not isinstance(context, bool)
+            and context > 0 and value > context):
+        capped_from, value = value, context
+    return value, source, hub_output_detail, capped_from
 
 
 def published_output_cap(
@@ -1469,7 +1514,8 @@ def published_output_cap(
     """
     if definition is None or not model:
         return None
-    value, _source, _detail = _published_output_limit(definition, model_id, model)
+    value, _source, _detail, _capped_from = _published_output_limit(
+        definition, model_id, model)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
     return value
@@ -1480,10 +1526,9 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # Providers spell the same two figures differently: OpenRouter uses
     # `context_length` / `top_provider.max_completion_tokens`, Google uses
     # `inputTokenLimit` / `outputTokenLimit`. Read every spelling before
-    # concluding a provider said nothing.
-    context = _first_stated(
-        raw, ("context_length", "context_window", "inputTokenLimit", "input_token_limit")
-    )
+    # concluding a provider said nothing — that reading lives in
+    # `_published_context_limit` / `_published_output_limit` below, which the
+    # generation path uses too, so the row and the request cannot disagree.
 
     # Unknown is published as `null`, never as a number or a `false`.
     #
@@ -1633,17 +1678,15 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
     # two orders of magnitude out. The Hub's sentence travels beside the number in
     # `*_source_detail`, so a worker's fallback (its own words) is never mistaken
     # for the checkpoint's fact.
-    hub_context, hub_context_detail, hub_context_kind = _hub_stated_limit(
-        raw, "context_window_tokens")
-    if hub_context is not None:
-        context = hub_context
-    context_window, context_source = _limit_with_source(
-        "context_window_tokens", _stated(context), None, definition.id, model_id
-    )
-    max_output, output_source, hub_output_detail = _published_output_limit(
+    #
+    # **Both limits come from the same two choosers the generation path reads**
+    # (`_published_context_limit` / `_published_output_limit`), so the row and the
+    # request cannot describe different numbers — and the output chooser caps an
+    # allowance above the context window, which is not a limit the model can honour.
+    context_window, context_source, hub_context_detail = _published_context_limit(
         definition, model_id, model)
-    if hub_context is not None and hub_context_kind:
-        context_source = hub_context_kind
+    max_output, output_source, hub_output_detail, max_output_capped_from = \
+        _published_output_limit(definition, model_id, model)
 
     # The Hub states vision support per model, read from its published flag, never the name.
     hub_vision = raw.get("supports_vision")
@@ -1671,6 +1714,12 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         "max_output_tokens": max_output,
         "max_output_tokens_source": output_source,
         "max_output_tokens_source_detail": hub_output_detail,
+        # **The figure that was withheld, when the allowance was above the context window.**
+        # A number the model cannot answer within is not a limit, so the published value is the
+        # context; this names what a producer stated and why it did not survive. Absent (not
+        # null) on every row that needed no cap, so an ordinary row is byte-identical to before.
+        **({"max_output_tokens_capped_from": max_output_capped_from}
+           if max_output_capped_from is not None else {}),
         # **Where the token counts came from, said plainly.** Every chat lane here
         # forwards the usage its provider stated; none of them re-measures it, so
         # `false` is the honest answer on every row rather than a claim that the
@@ -2129,6 +2178,16 @@ class Catalog:
         Rebuilding on a timer alone would leave a toggle invisible for up to
         `REBUILD_TTL_S`; rebuilding on every request would re-sort hundreds of
         models per poll. The signature gives immediacy with a cheap check.
+
+        **Which locations are answering is part of the fingerprint.** A row's
+        `locked`/`availability` is derived from it (`_story_row`), and leaving it out
+        of the signature meant a site that answered again — or went quiet — kept
+        publishing the previous verdict until the 20 s TTL ran out. Measured live
+        2026-10-30: terranash-1600 came back at 14:28:26 and its model stayed locked
+        until 14:28:46. The fleet read is the same cached, non-blocking one
+        `rebuild` already takes (`snapshot(allow_stale=True)`), so the check stays
+        ~O(1) and the catalogue lock/unlock is never older than the fleet answer it
+        describes.
         """
         parts: list[tuple] = []
         for definition in registry.definitions():
@@ -2138,7 +2197,9 @@ class Catalog:
                 continue
             for model in registry.models.models_for(definition.id, include_disabled=False):
                 parts.append((definition.id, model["model_id"], model["modality"]))
-        return tuple(sorted(parts))
+        from . import fleet
+
+        return tuple(sorted(parts)), tuple(sorted(fleet.usable_location_ids()))
 
     def rebuild(self, *, force: bool = False) -> None:
         signature = self._current_signature()
@@ -2164,7 +2225,11 @@ class Catalog:
 
             measured = qualification.published_index(self._store)
 
-        usable = fleet.usable_location_ids()
+        # The same answer the signature was measured from, so the rows and the
+        # fingerprint that decides whether to rebuild cannot describe two moments.
+        # (A test that stubs the signature with `()` gets a fresh read, never an
+        # IndexError — the tuple's second half is an addition, not a contract.)
+        usable = set(signature[1]) if len(signature) > 1 else fleet.usable_location_ids()
         slots = {m: _slots_by_location(m) for m in ("tts", "image")}
         contributed: dict[str, float] = {}
         for modality in MODALITIES:

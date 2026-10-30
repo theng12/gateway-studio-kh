@@ -37,6 +37,7 @@ from .base import (
     BackendRequest,
     BackendResult,
     answer_json,
+    bounded_max_output_tokens,
     caller_max_output_tokens,
     expected_output_header,
     note_request_started,
@@ -2338,7 +2339,7 @@ def _collect_transcription(
     )
 
 
-def _chat_body(request: BackendRequest) -> dict[str, Any]:
+def _chat_body(request: BackendRequest, notes: dict[str, Any] | None = None) -> dict[str, Any]:
     """The OpenAI-shaped body the Hub's chat lane accepts.
 
     **Only the parameters that lane honours.** Hub 0.6.63 trims its own allowlist
@@ -2368,9 +2369,19 @@ def _chat_body(request: BackendRequest) -> dict[str, Any]:
     # (`base.caller_max_output_tokens`) — this lane read all three by hand while the other
     # two read a subset, which is how the same request came to be answered differently
     # depending on which lane served it.
-    max_tokens = caller_max_output_tokens(request.params)
+    #
+    # **Never more than this lane will accept** (`base.bounded_max_output_tokens`): the Hub's
+    # contract states a `max_tokens.maximum` and refuses a larger value by name after measuring
+    # the prompt, so a number above the published allowance is lowered here and reported on the
+    # job rather than sent to earn that refusal.
+    max_tokens, lowered = bounded_max_output_tokens(
+        request, caller_max_output_tokens(request.params))
     if max_tokens:
         body["max_tokens"] = max_tokens
+    if lowered is not None and notes is not None:
+        notes["max_tokens_lowered_to"] = lowered["sent"]
+        notes["max_tokens_asked"] = lowered["asked"]
+        notes["max_tokens_lowered_reason"] = lowered["why"]
     response_format = request.params.get("response_format")
     # **Exactly the two the lane publishes.** The Hub's contract states
     # `structured_output.formats: ["json_object", "json_schema"]` and it refuses
@@ -2499,10 +2510,14 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
     # Hub holds this request open while the model runs.
     queue_wait = chat_queue_wait_seconds(request.provider_id, request.model_id)
     timeout = httpx.Timeout(lane_deadline_seconds(request) + queue_wait + (10 if queue_wait else 0), connect=10.0)
+    # Built once, so the request actually sent and the note reported on the job can never
+    # describe two different allowances (`base.bounded_max_output_tokens`).
+    lowered: dict[str, Any] = {}
+    body = _chat_body(request, lowered)
     try:
-        response = (_queued_chat_post(request, base, headers, _chat_body(request), queue_wait, timeout)
+        response = (_queued_chat_post(request, base, headers, body, queue_wait, timeout)
                     if queue_wait else httpx.post(f"{base}/studio/chat/v1/chat/completions",
-                                                 headers=headers, json=_chat_body(request), timeout=timeout))
+                                                 headers=headers, json=body, timeout=timeout))
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         # Nothing accepted the connection: an unreachable location, not a job
         # failure, so the worker may try the next site that offers the model.
@@ -2558,6 +2573,11 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
         )
 
     payload = answer_json(response, request.provider_id)
+    # **What was actually sent, when it is not what the caller asked for.** Additive, and only on
+    # the requests that needed it — a lowered allowance is part of the answer's provenance, not a
+    # failure (see `base.bounded_max_output_tokens`).
+    if lowered:
+        payload.update(lowered)
     choices = payload.get("choices") or []
     if not choices:
         raise unusable_answer(request.provider_id, "it has no choices")
@@ -2588,6 +2608,10 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
             # The Mac that answered (`local`, or the node a controller relayed it to), as every
             # other Hub lane records it. Absent from a Hub that does not state it.
             "hub_machine": response.headers.get("X-StudioHub-Machine"),
+            # **What was actually sent, when it is not what the caller asked for.** A lowered
+            # answer allowance is part of the answer's provenance, not a failure (see
+            # `base.bounded_max_output_tokens`), and the job's result is where a caller can see it.
+            **lowered,
         },
     )
 

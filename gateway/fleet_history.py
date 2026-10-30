@@ -860,6 +860,18 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
             history.get("problematic_basis")
             or f"The threshold is {threshold} drops in 24 h; this Mac has "
                f"{history.get('drops_week')} in the last {WINDOW_DAYS} days.", severity="warn")]
+    # **A Mac its own Hub flagged is not "nothing wrong".** `needs_attention` carries a reason
+    # (`fleet._attention`) that the page draws in amber, and the Likely-cause cell used to answer
+    # "Nothing wrong reported" beside it — the two sentences contradicting each other on the same
+    # row (seen live on terranash-1403, 2026-10-30). The reason has no cause code of its own
+    # because it is the Hub's word, not a measurement this Gateway made, so the smallest truthful
+    # answer is that word: name it, quote it, and claim nothing more.
+    attention = str(machine.get("attention") or "").strip()
+    if attention:
+        return [_cause(
+            "hub_attention",
+            "Its Hub reports a problem this Gateway cannot see from outside.",
+            f"Its Hub says: {attention}", severity="warn")]
     return [NOTHING_WRONG]
 
 

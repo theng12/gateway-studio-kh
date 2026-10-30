@@ -570,6 +570,7 @@
          the 15 s poll redraws the list and never the control under the owner's hand. -->
     <div class="row" id="fleet-controls">
       <label>Show <select id="fleet-filter" onchange="fleetSetFilter(this.value)"></select></label>
+      <label>Sort <select id="fleet-sort" onchange="fleetSetSort(this.value)"></select></label>
       <select id="fleet-location" aria-label="Location" onchange="fleetSetLocation(this.value)"></select>
       <input type="search" id="fleet-search" placeholder="Filter machines, models, jobs…"
              autocomplete="off" aria-label="Filter machines, models, jobs">
@@ -4987,10 +4988,13 @@ const FLEET_STATES = {
 //
 // Two plain controls, one list. A filter that hides everything is a page nobody can read, so
 // "Problematic" with nothing in it says so and still says how many Macs it looked at.
-let fleetFilter = 'all';    // all | offline | problematic
+let fleetFilter = 'all';    // all | offline | down | degraded | issues | problematic
 let fleetLocation = 'all';  // a location id, or all
 let fleetQuery = '';
-let fleetSort = 'offline';  // the Groups list's order: offline | problematic | site | lastseen | drops | name
+// The Groups list's order. **Issues (worst first) is the default** — the owner, 2026-10-30:
+// *"how many issues are there? and also why can't i sort by the issues?"* — because the page is
+// sorted worst-first without being asked, which is the order someone fixing Macs wants.
+let fleetSort = 'issues';   // issues | offline | problematic | site | lastseen | drops | name
 let fleetTab = 'groups';    // groups | locations | machines | models | jobs | story
 let machineSort = { key: null, ascending: true };   // a header click starts the sort
 // The last read, kept so changing a control re-sorts what is already on screen instead of asking
@@ -5006,7 +5010,14 @@ let fleetOrphanSupersededStop = false;
 // What the Hub said for a batch we just asked to stop, kept across the 15 s redraw so the answer
 // does not vanish under the person reading it. "Signalled" is not "stopped".
 let fleetOrphanAnswers = {};
-const FLEET_FILTERS = [['all', 'All machines'], ['offline', 'Offline now'], ['problematic', 'Problematic']];
+const FLEET_FILTERS = [['all', 'All machines'], ['offline', 'Offline now'],
+  ['down', 'Down'], ['degraded', 'Degraded'], ['issues', 'Has any issue'],
+  ['problematic', 'Problematic']];
+// The Groups list's own orders. One visible control, because `fleetSetSort` existed and nothing
+// rendered it — the owner could not reach the sort at all (2026-10-30).
+const FLEET_SORTS = [['issues', 'Issues (worst first)'], ['offline', 'Offline first'],
+  ['problematic', 'Most problematic'], ['site', 'Site'], ['lastseen', 'Longest unseen'],
+  ['drops', 'Most drops'], ['name', 'Name']];
 const FLEET_TABS = [['groups', 'Groups'], ['locations', 'Locations'], ['machines', 'Machines'],
   ['models', 'Models'], ['jobs', 'Jobs'], ['story', 'Story Studio']];
 const FLEET_STATE_WORDS = { working: 'Working', ready: 'Ready', long_idle: 'Idle',
@@ -5055,6 +5066,70 @@ function fleetOfflineNow(item) {
 
 function fleetProblematic(item) { return item.row.history && item.row.history.problematic === true; }
 
+// **One severity per row, counted once.** Each cause carries the `severity` the Gateway decided
+// (`CAUSE_SEVERITIES`: bad | warn | info | none) and the page colours from that same field, so this
+// keeps no second list of cause codes. A row takes its worst cause; a Mac its own Hub flagged
+// ("Needs attention") is degraded at least; down is red whatever the causes say. `null` means "not
+// measured this read" — a row shown from its site's last report — so it is counted as neither
+// healthy nor broken, and the page says so.
+const FLEET_SEVERITY_ORDER = { bad: 0, warn: 1, info: 2, none: 3 };
+function fleetSeverityRank(severity) {
+  return Object.prototype.hasOwnProperty.call(FLEET_SEVERITY_ORDER, severity)
+    ? FLEET_SEVERITY_ORDER[severity] : 3;
+}
+
+function fleetItemSeverity(item) {
+  const row = item.row || {};
+  if (row.last_known === true) return null;
+  const word = String(row.state || '').toLowerCase();
+  const down = item.kind === 'site' ? row.reachable === false
+    : (fleetOfflineMachine(row) || word === 'offline');
+  if (down) return 'bad';
+  let worst = word === 'needs_attention' ? 'warn' : 'none';
+  for (const c of row.causes || []) {
+    const severity = c && c.severity;
+    if ((severity === 'bad' || severity === 'warn' || severity === 'info')
+        && fleetSeverityRank(severity) < fleetSeverityRank(worst)) worst = severity;
+  }
+  return worst;
+}
+
+function fleetItemHasIssue(item) {
+  const severity = fleetItemSeverity(item);
+  return severity === 'bad' || severity === 'warn' || severity === 'info';
+}
+
+// The Show dropdown, answered for any row the page draws — one rule for Groups, Machines and
+// Locations, so the same choice cannot mean three things.
+function fleetRowMatchesFilter(kind, row) {
+  if (fleetFilter === 'all') return true;
+  const item = { kind, row };
+  if (fleetFilter === 'offline') return fleetOfflineNow(item);
+  if (fleetFilter === 'problematic') return !!(row.history && row.history.problematic === true);
+  const severity = fleetItemSeverity(item);
+  if (fleetFilter === 'down') return severity === 'bad';
+  if (fleetFilter === 'degraded') return severity === 'warn';
+  if (fleetFilter === 'issues') return fleetItemHasIssue(item);
+  return true;
+}
+
+// The header's answer: how many issues, split the same way the cards are coloured. Counted from
+// the rows on screen (both kinds), so the number and the list cannot disagree; a row from a slow
+// site's last report is reported separately rather than counted either way.
+function fleetIssueCounts(items) {
+  const counts = { down: 0, degraded: 0, info: 0, total: 0, not_counted: 0 };
+  for (const item of items) {
+    const severity = fleetItemSeverity(item);
+    if (severity == null) { counts.not_counted += 1; continue; }
+    if (severity === 'bad') counts.down += 1;
+    else if (severity === 'warn') counts.degraded += 1;
+    else if (severity === 'info') counts.info += 1;
+    else continue;
+    counts.total += 1;
+  }
+  return counts;
+}
+
 function fleetDrops(item) { const h = item.row.history; return h && h.drops_day != null ? h.drops_day : -1; }
 
 // How long ago it was last seen: the history's own observation when there is one, else the
@@ -5088,8 +5163,7 @@ function fleetInLocation(row) {
 
 function fleetItemMatches(item) {
   if (!fleetInLocation(item.row)) return false;
-  if (fleetFilter === 'offline' && !fleetOfflineNow(item)) return false;
-  if (fleetFilter === 'problematic' && !fleetProblematic(item)) return false;
+  if (!fleetRowMatchesFilter(item.kind, item.row)) return false;
   if (item.kind === 'site') {
     return fleetMatchesSearch([item.row.label, item.row.id, item.row.error, fleetCauseLine(item.row.causes)], fleetQuery);
   }
@@ -5099,11 +5173,23 @@ function fleetItemMatches(item) {
 
 function fleetVisible(items) {
   const filtered = items.filter(fleetItemMatches);
-  const byName = (a, b) => String(a.label).localeCompare(String(b.label));
+  // **A total order, so a 15 s refresh cannot reshuffle equal rows under the reader.** The name is
+  // the visible key; the kind and id settle the rest, and they never change between reads.
+  const byName = (a, b) => String(a.label).localeCompare(String(b.label))
+    || String(a.kind).localeCompare(String(b.kind))
+    || String(a.row.id ?? a.row.machine ?? '').localeCompare(String(b.row.id ?? b.row.machine ?? ''));
   return filtered.slice().sort((a, b) => {
     switch (fleetSort) {
       case 'site':
         return String(a.site).localeCompare(String(b.site)) || byName(a, b);
+      case 'issues': {
+        // Worst first: down, then degraded, then info, then nothing; an unmeasured row last.
+        const rank = item => {
+          const severity = fleetItemSeverity(item);
+          return severity == null ? 99 : fleetSeverityRank(severity);
+        };
+        return rank(a) - rank(b) || byName(a, b);
+      }
       case 'problematic': {
         const pa = fleetProblematic(a) ? 1 : 0, pb = fleetProblematic(b) ? 1 : 0;
         return pb - pa || fleetDrops(b) - fleetDrops(a) || byName(a, b);
@@ -5374,11 +5460,16 @@ function fleetBadgeHealth(m) {
   // Not observed this read: neutral, never healthy green and never the red of a fault.
   if (m.last_known === true) return '';
   const word = String(m.state || '').toLowerCase();
-  if (word === 'working' && m.node_paused !== true && m.reachable !== false) return 'info';
-  if (m.node_paused === true) return '';
-  if (m.lite_off === true) return '';
+  // **A fault is decided before "working" is.** The refused-credential check used to sit
+  // below the working branch, and a Mac whose node row is `unauthorized` still reports
+  // its own state as `working` — so the pill said "Credential refused" in the same blue
+  // as a healthy running Mac. Red means broken or down (owner, 2026-10-30), and a
+  // refused credential is broken.
   if (String(m.node_state || '').toLowerCase() === 'unauthorized'
       || word === 'offline' || m.reachable === false) return 'bad';
+  if (word === 'working' && m.node_paused !== true) return 'info';
+  if (m.node_paused === true) return '';
+  if (m.lite_off === true) return '';
   if (word === 'needs_attention') return 'warn';
   if (word === 'long_idle' || !word) return '';
   return 'ok';
@@ -5553,6 +5644,14 @@ const FLEET_MACHINE_COLUMNS = [
 
 function fleetMachineName(m) { return m.label || m.machine || '—'; }
 
+// The **Likely-cause** column sorts by the same severity order the cards use (worst first) — not
+// alphabetically by the sentence, which put "Slow link" above "Its whole site is down" and made
+// the sort look random. A row nobody measured sorts last.
+function fleetCauseRank(m) {
+  const severity = fleetItemSeverity({ kind: 'machine', row: m });
+  return severity == null ? null : fleetSeverityRank(severity);
+}
+
 function fleetMachineSortValue(key, m) {
   switch (key) {
     case 'machine': return fleetMachineName(m);
@@ -5560,7 +5659,7 @@ function fleetMachineSortValue(key, m) {
     case 'health': return fleetHealthRank(m.history);
     case 'seen': return fleetLastSeenEpoch(m);
     case 'week': return (m.history && m.history.drops_day != null) ? m.history.drops_day : null;
-    case 'cause': return fleetCauseLine(m.causes) || null;
+    case 'cause': return fleetCauseRank(m);
     case 'version': return ({ behind: 0, unknown: 1, updating: 2, latest: 3 })[m.version_status] ?? 4;
     case 'disk': return fleetDiskFree(m);
     case 'memory': return m.available_gb ?? null;
@@ -5581,9 +5680,7 @@ function fleetCompareValues(a, b) {
 function fleetMachineRowsFor(d) {
   const rows = (d.machines || []).filter(m =>
     fleetInLocation(m)
-    && (fleetFilter === 'all'
-      || (fleetFilter === 'offline' && fleetOfflineMachine(m))
-      || (fleetFilter === 'problematic' && m.history && m.history.problematic === true))
+    && fleetRowMatchesFilter('machine', m)
     && fleetMatchesSearch([m.label, m.machine, m.location, fleetStateLabel(m), m.state_text, m.chip,
       m.limitation, fleetCauseLine(m.causes)], fleetQuery));
   if (!machineSort.key) return rows;
@@ -7467,9 +7564,7 @@ function renderFleetLocations(d) {
   const wrap = document.getElementById('fleet-locations-wrap');
   const status = document.getElementById('fleet-locations-status');
   const rows = (d.locations || []).filter(L => fleetLocation === 'all' || String(L.id) === fleetLocation)
-    .filter(L => fleetFilter === 'all'
-      || (fleetFilter === 'offline' && L.reachable === false)
-      || (fleetFilter === 'problematic' && L.history && L.history.problematic === true))
+    .filter(L => fleetRowMatchesFilter('site', L))
     .filter(L => fleetMatchesSearch([L.label, L.id, L.url, L.error, fleetCauseLine(L.causes)], fleetQuery));
   if (status) {
     const all = (d.locations || []).length;
@@ -7811,6 +7906,8 @@ function fleetControls() {
     `<option value="${esc(k)}"${k === value ? ' selected' : ''}>${esc(title)}</option>`).join('');
   const filter = document.getElementById('fleet-filter');
   if (filter && !filter.options.length) filter.innerHTML = pick(FLEET_FILTERS, fleetFilter);
+  const sort = document.getElementById('fleet-sort');
+  if (sort && !sort.options.length) sort.innerHTML = pick(FLEET_SORTS, fleetSort);
   const location = document.getElementById('fleet-location');
   if (location && lastFleetPayload) {
     const options = [['all', 'All locations']].concat(
@@ -7868,7 +7965,12 @@ function fleetSetSearch(value) {
   fleetSearchTimer = setTimeout(() => { if (lastFleetPayload) renderFleet(lastFleetPayload); }, 120);
 }
 
-function fleetSetSort(value) { fleetSort = value; if (lastFleetPayload) renderFleet(lastFleetPayload); }
+function fleetSetSort(value) {
+  fleetSort = value;
+  const pick = document.getElementById('fleet-sort');
+  if (pick) pick.value = value;
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
+}
 
 function fleetOnlyProblematic() {
   fleetSetFilter('problematic');
@@ -8190,16 +8292,26 @@ function renderFleetGroups(d) {
   if (!summary) return;
   const s = d.summary || {}, q = d.gateway_queue || {};
   const problematic = items.filter(fleetProblematic).length;
+  // **The answer, from the same severity that colours each card.** Counted once per Mac or site
+  // at its worst cause; a row shown from a slow site's last report was not measured, so it is
+  // reported separately and counted as neither healthy nor broken.
+  const issues = fleetIssueCounts(items);
+  const issueTitle = 'Counted once per Mac or site, at its worst cause. Red is broken or down, '
+    + 'yellow is degraded but running, blue is information on a healthy Mac.';
   summary.innerHTML = [
     `<span><b>${s.machines_online ?? '?'}</b> of ${s.machines ?? '?'} Macs online</span>`,
     // **Which figures were measured.** A slow site's Macs are in the list below but not in these
     // counts; the number carried is said here so the two never read as the same kind of fact.
-    (s.machines_last_known > 0
-      ? `<span title="Their site was slow to answer this read. They are listed from their last report and are not counted as online.">`
-        + `${s.machines_last_known} shown from their last report</span>` : ''),
+    (issues.not_counted > 0
+      ? `<span title="Their site was slow to answer this read. They are listed from their last report and are not counted as online, down or degraded.">`
+        + `${issues.not_counted} not counted, shown from their last report</span>` : ''),
     `<span><b>${s.pulse?.working ?? 0}</b> working</span>`,
     `<span><b>${s.locations_up ?? '?'}</b> of ${s.locations ?? '?'} locations up</span>`,
     `<span>Queue <b>${q.waiting ?? 0}</b> waiting, <b>${q.running ?? 0}</b> running</span>`,
+    `<span title="${esc(issueTitle)}">${issues.total
+      ? `<b>${issues.total}</b> issue${issues.total === 1 ? '' : 's'}: ${issues.down} down · `
+        + `${issues.degraded} degraded · ${issues.info} info`
+      : 'No issues'}</span>`,
     // Counted from the rows below, so the figure and the list cannot disagree — and it is the
     // filter the owner asked for, one click away.
     `<button type="button" class="badge ${problematic ? 'warn' : ''}" title="Show only these" onclick="fleetOnlyProblematic()">${problematic} problematic</button>`,

@@ -1476,8 +1476,10 @@ def _contract_fields(job: dict[str, Any]) -> dict[str, Any]:
     """`dispatch_state`, `cancellable`, `cancellation_requested`, `cancelled`, `waiting`.
 
     `pre_dispatch` is "nothing has been sent upstream yet", which is also exactly when a cancel is
-    honoured now (`store.cancel` settles it locally). `waiting` is only ever published while the job
-    is running here but its Hub item is still queued, and is `null` the moment a Mac starts.
+    honoured now (`store.cancel` settles it locally). `waiting` is published while the job is
+    running here but its Hub item is still queued — **and while a queued job carries a deferral
+    reason** (`defer_reason`, written by every busy-fleet and no-room wait), and is `null` the
+    moment a Mac starts.
     """
     state = job["state"]
     pre = state == "accepted" or (
@@ -1489,6 +1491,19 @@ def _contract_fields(job: dict[str, Any]) -> dict[str, Any]:
                    "since": _iso(waiting.get("since"))}
     else:
         waiting = None
+    # **A queued job's own deferral reason is a waiting reason too.** `defer_reason` has held the
+    # sentence all along ("every Mac with this Chat model is busy", "waiting for room — every
+    # location offering X is full"), and `waiting` was published for `running` jobs only — so a
+    # job waiting for a free Mac read as `accepted` with no reason at all for as long as it
+    # waited. Measured 2026-10-30: a research chat job sat that way for 20 minutes and was
+    # cancelled with nothing on the row to say why. The scheduler's own `next_action_at` is
+    # published beside it, so a reader can tell a queue from a stalled job.
+    if waiting is None and state == "accepted":
+        reason = str(job.get("defer_reason") or "").strip()
+        if reason:
+            waiting = {"reason": scrub(reason),
+                       "next_try_at": _iso(job.get("next_action_at")),
+                       "since": None}
     # **A job waiting for a Mac is cancellable too.** The Hub answers a DELETE for an item that is
     # still `queued` by cancelling it on the spot (nothing ran), and the poll then sees
     # `cancelled` and settles the job. Story already offers Cancel for "dispatched + waiting +
@@ -2125,6 +2140,18 @@ def _submit(
             require_capability=capability,
         )
         if why is not None:
+            # **When the published row itself says locked, that is the fuller answer.** The row's
+            # `lock_reason` is the sentence Story Studio was already given while it drew the model
+            # (every Mac offering it unreachable), so refusing here with the same words and a code
+            # that names the condition means the picker and the error cannot tell two stories.
+            # `MODEL_LOCKED` is only for that case; a site that is merely full keeps the old 503.
+            locked = next(
+                (row for row in catalog.rows(modality)
+                 if str(row.get("id")) == str(compound_id) and row.get("locked")),
+                None,
+            )
+            if isinstance(locked, dict) and str(locked.get("lock_reason") or "").strip():
+                raise GatewayError(503, str(locked["lock_reason"]), "MODEL_LOCKED")
             raise GatewayError(503, why, "SITE_CAPACITY_UNAVAILABLE")
         raise GatewayError(
             404,

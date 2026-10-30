@@ -342,12 +342,22 @@ class CatalogueMergeTests(unittest.TestCase):
                 for definition, (_pid, model) in zip(definitions, proposals)
             ]
 
-        with patch.object(self.registry.models, "enabled_models", enabled), \
-                patch.object(self.registry.models, "cached", lambda provider_id: {}), \
-                patch.object(self.fleet, "usable_location_ids", lambda: set(answering)), \
-                patch.object(self.registry, "definitions", lambda: definitions):
+        # **No rebuild on read** (`_fresh` is stubbed below). `_fresh` rebuilds when the
+        # catalogue's fingerprint changed; this test patches the registry out from under it
+        # (and, since 0.2.216, the fingerprint carries the answering fleet too), so a read would
+        # rebuild with the real registry and drop the rows just built. The intent — "draw these
+        # rows" — is unchanged.
+        with (
+            patch.object(self.registry.models, "enabled_models", enabled),
+            patch.object(self.registry.models, "cached", lambda provider_id: {}),
+            patch.object(self.fleet, "usable_location_ids", lambda: set(answering)),
+            patch.object(self.registry, "definitions", lambda: definitions),
+            patch.object(self.catalog.Catalog, "_fresh", lambda _self: None),
+        ):
             rebuilt = self.catalog.Catalog()
-        rows = [row for row in rebuilt.rows("image") if row["id"].endswith("::hub/model")]
+            # Read **inside** the patches: `_fresh` is stubbed above, but a read after the
+            # `with` would compare the real fingerprint with the stubbed build's and rebuild.
+            rows = [row for row in rebuilt.rows("image") if row["id"].endswith("::hub/model")]
         self.assertEqual(len(rows), 1, rows)
         return rows[0]
 

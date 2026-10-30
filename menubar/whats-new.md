@@ -10,6 +10,43 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.216 — 2026-10-30
+
+### A model is not "unavailable" because its site missed one slow answer
+A site that is busy rendering can miss the Gateway's six-second look at it. Until now that one
+miss marked every model at that site as unavailable for a moment, then available again a few
+seconds later — so a model could flip in and out of the picker while nothing was wrong, and a
+research call could look "locked" on one read and fine on the next. A site that answered in the
+last 45 seconds keeps its models offered through a slow read; one that has really gone quiet is
+locked exactly as before. Nothing is sent to a site that did not answer this time, and a job that
+cannot be routed is still refused on the spot with the reason.
+
+### A queued job now says what it is waiting for
+A job waiting for a free Mac used to read as `accepted` with nothing on it at all — which is how a
+research call sat for twenty minutes before being cancelled. The row now publishes the Gateway's
+own reason ("every Mac with this Chat model is busy", "waiting for Terranash-1600 to answer —
+…") and when it will try again. Waiting on a busy Mac is unchanged: the job still waits, it just
+stops being silent, and it still ends at the queue ceiling if nothing frees up.
+
+### A model's output limit can no longer be larger than its context window
+The local Gemma model published a 128,000-token output allowance beside a 32,768-token context
+window: 128,000 is its worker's fallback, not anything the model states. A model cannot write more
+than fits in its window, so the published allowance is now the smaller of the two, and the row says
+the larger figure was dropped (`max_output_tokens_capped_from`). A caller that asks for more than
+the published allowance has it lowered to that number and is told on the job, instead of the Hub
+refusing it after measuring the prompt.
+
+### The Fleet page answers "how many issues?"
+The header now says how many issues there are, split into down, degraded and info — counted from
+the same severity that colours each card, once per Mac or site at its worst cause. Macs shown from
+a slow site's last report are listed separately as "not counted", so the number can never be read
+as including them. Groups are sorted worst-first by default, there is now a visible **Sort** control
+(issues, offline, most problematic, site, longest unseen, most drops, name), and the **Show**
+dropdown gained Down, Degraded and Has any issue. The Machines table's Likely-cause header sorts by
+the same severity order. A row shown from its site's last report is never counted as down or
+healthy. Also: a Mac whose controller refused its credential now shows a red state pill, not the
+blue of a working Mac.
+
 ## 0.2.215 — 2026-10-30
 
 ### Colours on the Fleet page now mean what they say

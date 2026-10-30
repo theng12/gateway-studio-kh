@@ -540,6 +540,24 @@ class ACauseCitesItsEvidence(HistoryCase):
         causes = self.causes(machine())
         self.assertEqual([cause["code"] for cause in causes], ["fine"])
 
+    def test_a_mac_its_hub_flagged_never_says_nothing_wrong(self) -> None:
+        # Seen live on terranash-1403, 2026-10-30: the row said "Needs attention — X studio not
+        # running" in amber beside "Likely cause: Nothing wrong reported". The Hub's own sentence
+        # is the smallest truthful answer; it is not a measurement this Gateway made, so it is
+        # quoted rather than restated as a finding of its own.
+        causes = self.causes(machine(state="needs_attention",
+                                     attention="video studio not running"))
+        self.assertEqual([cause["code"] for cause in causes], ["hub_attention"])
+        self.assertNotEqual(causes[0]["text"], "Nothing wrong reported")
+        self.assertIn("video studio not running", causes[0]["evidence"])
+        self.assertEqual(causes[0]["severity"], "warn")
+
+    def test_a_cause_that_explains_the_attention_still_wins(self) -> None:
+        causes = self.causes(machine(state="needs_attention",
+                                     attention="video studio not running",
+                                     startup={"services_running": {"up": 1, "total": 3}}))
+        self.assertEqual(causes[0]["code"], "studios_down")
+
 
 class EveryCauseSaysHowBadItIs(HistoryCase):
     """The owner, 2026-10-30: red is broken or down, yellow is degraded but running, blue is fine.

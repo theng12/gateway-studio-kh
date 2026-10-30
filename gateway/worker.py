@@ -2848,6 +2848,7 @@ class Worker:
                     if not self._admit(job) and not (self._rebind(job) and self._admit(job)):
                         key = (str(job.get("provider_id") or ""), str(job.get("model_id") or ""))
                         self._ahead[key] = self._ahead.get(key, 0) + 1
+                        self._note_waiting(job)
                         continue
                     self._rebind_backoff.pop(job["id"], None)
                     if not self.store.mark_running(job["id"]):
@@ -2966,6 +2967,32 @@ class Worker:
                 log.debug("liveness: could not read %s", job_id, exc_info=True)
         self.liveness_sweep = out
         return out
+
+    def _note_waiting(self, job: dict[str, Any]) -> None:
+        """Say why a queued fleet job is not running, on the job itself.
+
+        A job that `_admit` refused and `_rebind` could not move simply stayed
+        `accepted` for the next pass — no dispatch, no reason, nothing a person or
+        Story Studio could read. Measured 2026-10-30: a research call sat that way for
+        twenty minutes and was cancelled with every field blank. The sentence is
+        written through `store.defer` (the scheduler's own primitive, so the job stays
+        due) and only when it differs from what the row already says, so a stable wait
+        costs one UPDATE rather than one per 0.4 s pass.
+
+        Never raises: a job that cannot be written is tried again next pass.
+        """
+        provider_id = str(job.get("provider_id") or "")
+        if not provider_id.startswith(fleet.PROVIDER_PREFIX):
+            return
+        defer = getattr(self.store, "defer", None)
+        if defer is None:
+            return
+        try:
+            reason = fleet.site_wait_reason(provider_id, str(job.get("model_id") or ""))
+            if reason and reason[:300] != str(job.get("defer_reason") or ""):
+                defer(job["id"], delay_s=0, reason=reason)
+        except Exception:  # noqa: BLE001 - a sentence is never a reason to lose a job
+            log.debug("could not record why %s is waiting", job.get("id"), exc_info=True)
 
     def _stranded_on_paused(self, job: dict[str, Any]) -> bool:
         """End a queued job whose voice exists only on a location the owner has since paused."""

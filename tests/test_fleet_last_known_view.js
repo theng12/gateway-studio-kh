@@ -200,8 +200,10 @@ test('the summary says how many rows were carried, apart from the measured onlin
   const summary = ctx.nodes.get('fleet-summary').innerHTML;
   // Measured: two Macs in total, both online (g1 ready, b1 offline is not online — so 1).
   assert.match(summary, /<b>1<\/b> of 2 Macs online/);
-  assert.match(summary, /2 shown from their last report/);
-  // The table's own status line says the same.
+  // **Not counted either way** (owner's wording, 2026-10-30): the header's issue count says how
+  // many rows were left out, so "2 issues" can never be read as including them.
+  assert.match(summary, /2 not counted, shown from their last report/);
+  assert.match(summary, /<b>2<\/b> issues: 2 down · 0 degraded · 0 info/);
   assert.match(ctx.nodes.get('fleet-status').innerHTML, /2 shown from their last report/);
 });
 
