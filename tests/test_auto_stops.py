@@ -108,7 +108,10 @@ def settled_job(root: Path, *, batch: str = "b-loser") -> dict:
 class EveryStopKindIsVisible(AuditFile):
     def test_a_copy_this_gateway_replaced_is_listed(self) -> None:
         store = FakeStore(settled_job(self.root))
-        with patch.object(worker.registry, "definition", return_value=HUB_DEFINITION), \
+        # An actual stop sets its own switch on explicitly: both switches start off (0.2.213).
+        with patch.object(orphans, "settings",
+                          return_value={"auto_stop": False, "superseded_stop": True}), \
+                patch.object(worker.registry, "definition", return_value=HUB_DEFINITION), \
                 patch.object(worker, "_cancel_hub_batch", return_value=HUB_ANSWER) as cancel:
             worker._stop_losing_copy(store, "job-1", "b-winner", {"stopped": 0})
         self.assertEqual(cancel.call_count, 1)

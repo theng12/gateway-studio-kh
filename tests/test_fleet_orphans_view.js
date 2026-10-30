@@ -43,10 +43,12 @@ function element(extra = {}) {
 }
 
 function context(snapshot, answer = { ok: true, answer: { queued_cancelled: 2, running_signalled: 1, running_pending: 0 } }, options = {}) {
+  // The switch card's own heading, held still so a test can read the state the page states.
+  const settingsSummary = element();
   const nodes = new Map([
     ['fleet-body', element()], ['fleet-summary', element()], ['fleet-issues', element()],
     ['fleet-filter', element()], ['fleet-sort', element()], ['fleet-threshold', element()],
-    ['fleet-orphan-setting', element({ querySelector: () => element() })],
+    ['fleet-orphan-setting', element({ querySelector: () => settingsSummary })],
     ['fleet-orphan-auto', element()],
     ['fleet-orphan-superseded', element()], ['fleet-orphan-superseded-note', element()],
     ['fleet-orphan-note', element()], ['fleet-orphans', element()],
@@ -59,6 +61,7 @@ function context(snapshot, answer = { ok: true, answer: { queued_cancelled: 2, r
     ['fleet-jobs-status', element()], ['fleet-jobs-problems', element()],
     ['fleet-search', element()], ['fleet-location', element()], ['fleet-drops', element()],
     ['fleet-threshold-note', element()],
+    ['fleet-orphan-summary', settingsSummary],
   ]);
   const calls = [];
   const ctx = vm.createContext({
@@ -233,8 +236,15 @@ test('turning automatic stop on posts a real boolean and never a string', async 
   assert.equal(JSON.parse(sent[0].opts.body).auto_stop, true);
 });
 
-test('the replaced-copy switch is separate, on by default, and sends only its own key', async () => {
-  // The Gateway's answer decides the control; absent means the default, which is on.
+test('the replaced-copy switch is separate, off by default, and sends only its own key', async () => {
+  // The Gateway's answer decides the control, and both switches start off (0.2.213). An absent
+  // value must read off: "nobody said otherwise" is never "on".
+  const absent = context(payload([]));
+  await absent.loadFleet();
+  assert.equal(absent.nodes.get('fleet-orphan-superseded').checked, false, 'absent reads off');
+  assert.equal(absent.nodes.get('fleet-orphan-auto').checked, false,
+    'the general switch stays off');
+
   const on = context(payload([], { orphans_superseded_stop: true }));
   await on.loadFleet();
   assert.equal(on.nodes.get('fleet-orphan-superseded').checked, true);
@@ -252,4 +262,16 @@ test('the replaced-copy switch is separate, on by default, and sends only its ow
   assert.equal(body.superseded_stop, false);
   assert.equal('auto_stop' in body, false,
     'turning this one off must not touch the general orphan switch');
+});
+
+test('the heading states both switches as they are, so a saved on reads on', async () => {
+  const fresh = context(payload([]));
+  await fresh.loadFleet();
+  assert.match(fresh.nodes.get('fleet-orphan-summary').textContent,
+    /automatic stop is off · stopping copies this Gateway replaced is off/);
+
+  const saved = context(payload([], { orphans_superseded_stop: true }));
+  await saved.loadFleet();
+  assert.match(saved.nodes.get('fleet-orphan-summary').textContent,
+    /automatic stop is off · stopping copies this Gateway replaced is on/);
 });

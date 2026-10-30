@@ -32,6 +32,7 @@ _SANDBOX = sandbox_env()
 import httpx  # noqa: E402
 
 from gateway import concurrency  # noqa: E402
+from gateway import orphans as orphans_module  # noqa: E402
 from gateway import worker as worker_module  # noqa: E402
 from gateway.adapters import BackendError  # noqa: E402
 from gateway.adapters import base as adapter_base  # noqa: E402
@@ -127,6 +128,14 @@ class _Case(unittest.TestCase):
     def setUp(self) -> None:
         concurrency.reset_for_tests()
         self.addCleanup(concurrency.reset_for_tests)
+        # The abandoned attempt's best-effort cancel is the replaced-copy switch's job (0.2.211),
+        # and both switches start off (0.2.213). A test that expects a cancel turns it on
+        # explicitly; none of them may lean on a default.
+        path = Path(_SANDBOX.name) / f"fleet-orphans-{self.id().split('.')[-1]}.json"
+        path.write_text(json.dumps({"superseded_stop": True}), encoding="utf-8")
+        settings = patch.object(orphans_module, "SETTINGS_PATH", path)
+        settings.start()
+        self.addCleanup(settings.stop)
         self.store = JobStore(Path(_SANDBOX.name) / f"{self.id().split('.')[-1]}.sqlite3")
         self.addCleanup(self.store.close)
         self.routed: list[set[str]] = []

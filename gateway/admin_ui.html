@@ -662,11 +662,11 @@
       <div class="tablewrap" id="fleet-jobs-wrap"></div>
       <!-- A Hub batch still running at a site for work that already finished. -->
       <div id="fleet-orphans"></div>
-      <!-- Two separate switches on one door. The general one starts off; stopping a copy this
-           Gateway replaced starts on, because that cleanup is the fix the owner asked for. Turning
+      <!-- Two separate switches on one door. Both start off: an automatic stop is the owner's
+           deliberate choice (2026-10-30), and a saved true is what turns either on. Turning
            either off never changes the other, and a batch no Gateway job knows is never touched. -->
       <details class="card" id="fleet-orphan-setting">
-        <summary>Orphaned Hub batches: automatic stop is off</summary>
+        <summary>Orphaned Hub batches: automatic stop is off · stopping copies this Gateway replaced is off</summary>
         <div class="row">
           <label><input type="checkbox" id="fleet-orphan-auto" onchange="saveOrphanAutoStop(this.checked)">
             Stop them automatically when the work is already kept</label>
@@ -675,10 +675,10 @@
             batch no Gateway job knows is never stopped automatically.</span>
         </div>
         <div class="row">
-          <label><input type="checkbox" id="fleet-orphan-superseded" checked
+          <label><input type="checkbox" id="fleet-orphan-superseded"
             onchange="saveOrphanSupersededStop(this.checked)">
             Stop copies this Gateway replaced itself</label>
-          <span class="hint" id="fleet-orphan-superseded-note">On by default. When a site went
+          <span class="hint" id="fleet-orphan-superseded-note">Off by default. When a site went
             silent and the job ran elsewhere, the copy left behind is collected if it finished
             first, or stopped under the same check once the other copy is kept. A batch no Gateway
             job names is never touched.</span>
@@ -4991,9 +4991,10 @@ let lastFleetPayload = null;
 let fleetMachineRows = [];
 let fleetHealthSetting = null;
 let fleetOrphanAutoStop = false;
-// The copies this Gateway replaced have their own switch, and it starts **on** (the owner asked
-// for that cleanup). Separate from the general orphan auto-stop above, which stays off.
-let fleetOrphanSupersededStop = true;
+// The copies this Gateway replaced have their own switch. It starts **off** too (2026-10-30), so
+// the control reads correctly before any Gateway read arrives; a saved true from the Gateway turns
+// it on. Separate from the general orphan auto-stop above, so either can move alone.
+let fleetOrphanSupersededStop = false;
 // What the Hub said for a batch we just asked to stop, kept across the 15 s redraw so the answer
 // does not vanish under the person reading it. "Signalled" is not "stopped".
 let fleetOrphanAnswers = {};
@@ -7995,7 +7996,7 @@ async function saveOrphanSupersededStop(enabled) {
       // Only this key: the general orphan auto-stop is a different decision and is not touched.
       body: JSON.stringify({ superseded_stop: enabled }),
     });
-    fleetOrphanSupersededStop = answer.superseded_stop !== false;
+    fleetOrphanSupersededStop = answer.superseded_stop === true;
     fleetControls();
   } catch (e) {
     const input = document.getElementById('fleet-orphan-superseded');
@@ -8152,8 +8153,9 @@ async function loadFleet(force) {
   fleetMachineRows = d.machines || [];
   fleetHealthSetting = d.fleet_health || fleetHealthSetting;
   fleetOrphanAutoStop = d.orphans_auto_stop === true;
-  // Absent in an older Gateway's payload: the replaced-copy cleanup starts on, so that reads on.
-  fleetOrphanSupersededStop = d.orphans_superseded_stop !== false;
+  // Absent in an older Gateway's payload, or a value that is not a real boolean: both switches
+  // start off, so only a `true` reads on. Never `!== false`, which would turn an unknown into on.
+  fleetOrphanSupersededStop = d.orphans_superseded_stop === true;
   fleetControls();
   renderFleetTabs();
   renderFleet(d);

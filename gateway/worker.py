@@ -589,9 +589,10 @@ def reconcile_superseded(store: JobStore) -> dict[str, int]:
       * **still running, and the job already settled** — stopped only when the orphan guard holds
         (`orphans.stop_allowed`: the job succeeded with every artifact on disk, or failed/was
         cancelled with nothing left to collect) **and** the owner's `superseded_stop` switch is on
-        (default on; it is its own key, separate from the general orphan auto-stop). A job still
-        running, and a job on an unresolved `unknown_outcome` hold, are left alone: their other
-        copy may still finish and be adopted, and the guard never stops unkept work.
+        (default off, like the general orphan auto-stop; a saved `true` wins, and it is its own
+        key, so neither switch moves the other). A job still running, and a job on an unresolved
+        `unknown_outcome` hold, are left alone: their other copy may still finish and be adopted,
+        and the guard never stops unkept work.
       * **no such batch** — closed as `not_found`; nothing to collect or stop.
       * **the site did not answer** — left open for the next sweep. "Could not ask" is never
         "finished".
@@ -771,10 +772,11 @@ def _orphan_stop_verdict(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _superseded_stops_allowed() -> bool:
-    """The owner's switch for stopping copies **this Gateway replaced** (default on).
+    """The owner's switch for stopping copies **this Gateway replaced** (default off).
 
-    Not the general orphan auto-stop: that one still starts off. A settings file that cannot be
-    read is the default, never a reason to stop something the owner did not allow.
+    The same default as the general orphan auto-stop (owner, 2026-10-30): an automatic stop is his
+    choice, so a saved `true` is what turns it on. A settings file that cannot be read is the
+    default, never a reason to stop something the owner did not allow.
     """
     from . import orphans
 
@@ -1845,8 +1847,9 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                                 "the abandoned attempt", job_id, provider_id,
                                 "the Gateway queue (every lane full)" if moved == QUEUED_IN_GATEWAY else moved)
                     # The immediate best-effort stop of the abandoned attempt is the same kind of
-                    # automatic stop as the cleanup's: the owner's switch covers both. (On by
-                    # default; off leaves the duplicate to the Fleet page's Stop.)
+                    # automatic stop as the cleanup's: the owner's switch covers both. It starts
+                    # **off** (2026-10-30) like every other automatic stop, and a saved `true`
+                    # turns it on; off leaves the duplicate to the Fleet page's Stop.
                     if _superseded_stops_allowed():
                         threading.Thread(target=cancel_upstream, args=(abandoned, store),
                                          kwargs={"record": False}, daemon=True,

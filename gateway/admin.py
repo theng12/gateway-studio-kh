@@ -1648,10 +1648,12 @@ def set_fleet_health(payload: dict[str, Any]) -> Any:
 def get_fleet_orphans() -> dict[str, Any]:
     """The two orphan switches, each with the value the owner chose.
 
-    **They do not share a default.** `auto_stop` (a batch no Gateway job names) starts **off** —
-    an automatic action the owner never asked for. `superseded_stop` (a copy this Gateway itself
-    replaced) starts **on**, because that cleanup is the fix he did ask for. Neither changes the
-    other, and both go through the same `orphans.stop_allowed` guard as the Fleet Stop button.
+    **Both default off** (owner, 2026-10-30). `auto_stop` is a batch no Gateway job names;
+    `superseded_stop` is a copy this Gateway itself replaced. An automatic stop is a deliberate
+    choice, so a switch is on only when a `true` is saved — which is how the site that asked for
+    the cleanup keeps it, and changing the default rewrote no stored file. A saved value wins in
+    either direction, neither switch changes the other, and both go through the same
+    `orphans.stop_allowed` guard as the Fleet Stop button.
     """
     return orphans.settings()
 

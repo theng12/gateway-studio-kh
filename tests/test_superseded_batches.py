@@ -126,6 +126,14 @@ class _Case(unittest.TestCase):
     def setUp(self) -> None:
         concurrency.reset_for_tests()
         self.addCleanup(concurrency.reset_for_tests)
+        # The replaced-copy stop starts **off** (0.2.213), so every test here that expects a stop
+        # turns it on explicitly and none of them can lean on a default. `SwitchTests` overrides
+        # this with its own file to exercise the default itself.
+        path = Path(_SANDBOX.name) / f"fleet-orphans-{self.id().split('.')[-1]}.json"
+        path.write_text(json.dumps({"superseded_stop": True}), encoding="utf-8")
+        patcher = patch.object(orphans_module, "SETTINGS_PATH", path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.store = JobStore(Path(_SANDBOX.name) / f"{self.id().split('.')[-1]}.sqlite3")
         self.addCleanup(self.store.close)
         self.routed: list[set[str]] = []
@@ -836,30 +844,94 @@ class GuestRowTests(unittest.TestCase):
 
 
 class SwitchTests(_Case):
+    """The two switches and the one file behind them: **both start off** (0.2.213).
+
+    Owner, 2026-10-30: "make it default off but turn it on." A Gateway that has never been told
+    stops nothing on its own. A saved `true` is what turns a switch on — which is exactly how the
+    site that asked for the replaced-copy cleanup keeps it, with no stored file rewritten.
+    """
+
     def _settings(self) -> Path:
-        # One file per test: the switches are global state in the process, and a shared path
-        # would let one test read another's choice.
-        path = Path(_SANDBOX.name) / f"fleet-orphans-{self.id().split('.')[-1]}.json"
+        # Its own file per test, distinct from the one `_Case.setUp` writes: the switches are
+        # global state in the process, and a shared path would let one test read another's choice.
+        path = Path(_SANDBOX.name) / f"switch-{self.id().split('.')[-1]}.json"
         patcher = patch.object(orphans_module, "SETTINGS_PATH", path)
         patcher.start()
         self.addCleanup(patcher.stop)
         return path
 
-    def test_the_replaced_copy_switch_is_on_by_default_and_independent(self) -> None:
+    def test_both_switches_start_off_and_are_independent(self) -> None:
         self._settings()
-        self.assertTrue(orphans_module.settings()["superseded_stop"])
+        self.assertFalse(orphans_module.settings()["superseded_stop"],
+                         "a fresh Gateway stops no copy on its own")
         self.assertFalse(orphans_module.settings()["auto_stop"])
         orphans_module.set_settings({"auto_stop": True})
-        self.assertTrue(orphans_module.settings()["superseded_stop"],
-                        "the general switch never changes this one")
-        orphans_module.set_settings({"superseded_stop": False})
+        self.assertFalse(orphans_module.settings()["superseded_stop"],
+                         "the general switch never changes this one")
+        orphans_module.set_settings({"superseded_stop": True})
         self.assertTrue(orphans_module.settings()["auto_stop"],
                         "this switch never changes the general one")
+        self.assertTrue(orphans_module.settings()["superseded_stop"])
+
+    def test_an_unreadable_or_non_object_file_reads_off(self) -> None:
+        path = self._settings()
+        path.write_text("{not json at all", encoding="utf-8")
+        switches = orphans_module.settings()
+        self.assertIs(switches["superseded_stop"], False)
+        self.assertIs(switches["auto_stop"], False)
+        path.write_text("[1, 2]", encoding="utf-8")
+        switches = orphans_module.settings()
+        self.assertIs(switches["superseded_stop"], False, "a list is not a settings object")
+        self.assertIs(switches["auto_stop"], False)
+
+    def test_a_saved_true_is_honoured_after_the_default_changed(self) -> None:
+        """The 1301 case: 0.2.212 saved `superseded_stop: true`, and 0.2.213's off default
+        must not take it back."""
+        path = self._settings()
+        path.write_text(json.dumps({"superseded_stop": True}), encoding="utf-8")
+        self.assertTrue(orphans_module.settings()["superseded_stop"])
+
+        fleet = _Fleet(a_answers_gets=False)
+        job = self.run_job(fleet, self.job("saved-true-1"))
+        self.assertEqual(job["state"], "succeeded", job.get("error_detail"))
+        fleet.answer["a"] = {"gets": True, "states": ["running"]}
+        out = self.sweep(fleet)
+        self.assertEqual(out["stopped"], 1, out)
+        self.assertEqual(fleet.deletes, ["a:/api/hub/jobs/batch-a"],
+                         "the saved on still stops the copy it was turned on for")
+
+    def test_no_file_means_off_and_stops_nothing_while_a_result_is_still_collected(self) -> None:
+        self._settings()  # never written: a Gateway nobody has switched anything on
         self.assertFalse(orphans_module.settings()["superseded_stop"])
 
-    def test_off_stops_nothing_but_a_finished_copy_is_still_collected(self) -> None:
+        fleet = _Fleet(a_answers_gets=False)
+        job = self.run_job(fleet, self.job("no-file-1"))
+        self.assertEqual(job["state"], "succeeded", job.get("error_detail"))
+        fleet.answer["a"] = {"gets": True, "states": ["running"]}
+        out = self.sweep(fleet)
+        self.assertEqual(out["stopped"], 0, out)
+        self.assertEqual(fleet.deletes, [], "no switch was ever turned on")
+        self.assertEqual(self.store.superseded_batches(job["id"])[0]["status"], "open",
+                         "recorded for the page and a later switch-on")
+
+        # Collection is not a stop: with no file at all, a finished copy is still adopted.
+        row = self.job("no-file-2")
+        self.store.record_route(row["id"], B)
+        self.assertTrue(self.store.mark_running(row["id"]))
+        self.assertTrue(self.store.begin_dispatch(row["id"]))
+        self.store.record_upstream_acceptance(row["id"], "batch-b")
+        self.store.record_superseded_batch(row["id"], {
+            "batch_id": "batch-a", "item_index": 0, "provider_id": A,
+            "location": BASE[A], "modality": "image"})
+        collected = _Fleet(a_answers_gets=True, a_states=["done"], b_states=["running"])
+        carried = self.sweep(collected)
+        self.assertEqual(carried["adopted"], 1, carried)
+        self.assertEqual(collected.deletes, [], "collecting a finished copy is not a stop")
+
+    def test_a_saved_false_stops_nothing_but_a_finished_copy_is_still_collected(self) -> None:
         self._settings()
         orphans_module.set_settings({"superseded_stop": False})
+        self.assertFalse(orphans_module.settings()["superseded_stop"])
         fleet = _Fleet(a_answers_gets=False)
         job = self.run_job(fleet, self.job("switch-1"))
         self.assertEqual(job["state"], "succeeded")

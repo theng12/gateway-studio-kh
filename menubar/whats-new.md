@@ -10,6 +10,24 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.213 — 2026-10-30
+
+### The Gateway stops nothing by itself until you switch it on
+Both switches under Fleet → Jobs — stopping a Hub batch nothing owns, and stopping a copy the
+Gateway replaced after a site went silent — now **start off** on a Gateway that has never been
+told. An automatic stop is a deliberate choice, so nothing runs one on your behalf out of the box.
+
+**A switch you already turned on stays on.** The Gateway keeps your answer in its settings file,
+and a saved on is what it reads first: changing the default rewrote nothing and took nothing back.
+So a Mac you had switched on keeps cleaning up exactly as before, and the page's heading reads the
+real state of both switches, in words, either way.
+
+The switch on the replaced copies is now written the same way as the other one: only a clear `on`
+counts. A Gateway too old to report the value, or an answer this page cannot read, now reads
+**off** instead of being treated as on.
+
+---
+
 ## 0.2.212 — 2026-10-30
 
 ### Every automatic stop now leaves a list you can read
@@ -53,9 +71,10 @@ finished, it collects it. No second batch is started in those cases.
 This is only for batches the Gateway replaced itself, it gives up following a site that keeps
 dropping after two tries, and when the kept copy cannot be saved at that moment — the disk is
 full, or the Mac is busy — the batch stays on the list and is tried again a minute later rather
-than being written off. It is a **switch of its own under Fleet → Jobs, on by default** — the
-owner asked for this cleanup, and turning it off leaves the duplicate to the Stop button. The older
-**Automatic stop** switch beside it still starts off and keeps its meaning; a batch no Gateway job
+than being written off. It is a **switch of its own under Fleet → Jobs** — the owner asked for this
+cleanup, and turning it off leaves the duplicate to the Stop button. (0.2.213 made it start off on
+a Gateway that has never been told; a switch you had already turned on stays on.) The older
+**Automatic stop** switch beside it is separate and keeps its meaning; a batch no Gateway job
 names is still never stopped automatically.
 
 ### Agents can make things now — with a guest key

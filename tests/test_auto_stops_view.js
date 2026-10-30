@@ -141,3 +141,13 @@ test('the list is read from the Gateway, bounded, and cached until refreshed', a
   await ctx.loadAutoStops(true);           // the Refresh button
   assert.equal(ctx.calls.length, 2);
 });
+
+test('the replaced-copy switch starts off, and an absent value reads off', async () => {
+  // 0.2.213: both switches start off, so "the Gateway said nothing" must never draw as on.
+  assert.match(source, /let fleetOrphanSupersededStop = false;/);
+  assert.match(source, /fleetOrphanSupersededStop = d\.orphans_superseded_stop === true;/);
+  assert.doesNotMatch(source, /superseded_stop !== false/);
+  const tag = between('id="fleet-orphan-superseded"', 'onchange="saveOrphanSupersededStop');
+  assert.doesNotMatch(tag, /checked/, 'the markup must not draw it on before a Gateway read');
+  assert.match(source, /Off by default\. When a site went/);
+});

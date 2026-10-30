@@ -52,10 +52,11 @@ SETTINGS_PATH = Path(os.environ.get("GATEWAY_ORPHANS_SETTINGS") or (DATA_DIR / "
 #: Auto-stop is a deliberate switch and it is **off** unless the owner turned it on.
 AUTO_STOP_DEFAULT = False
 
-#: Stopping a batch **this Gateway replaced itself** is a different switch, and it starts **on**:
-#: the owner asked for the source of the duplicate to be cleaned up. Off is respected the moment
-#: he turns it off. It never widens to any other batch — see `worker.reconcile_superseded`.
-SUPERSEDED_STOP_DEFAULT = True
+#: Stopping a batch **this Gateway replaced itself** is a different switch, and it starts **off**
+#: like the general one (owner, 2026-10-30): a fresh Gateway stops nothing until he turns it on.
+#: A saved `true` on disk wins — that is how the site that asked for the cleanup keeps it, with no
+#: file rewritten. It never widens to any other batch — see `worker.reconcile_superseded`.
+SUPERSEDED_STOP_DEFAULT = False
 
 #: How long one batch may go between automatic stop requests. The Hub answers "signalled, not yet
 #: stopped", so the batch keeps appearing on the next read; without this the Gateway would ask
@@ -75,10 +76,11 @@ _WORD = re.compile(r"[A-Za-z0-9]")
 def settings() -> dict:
     """Both switches, read fresh so a change shows on the next read.
 
-    `auto_stop` (the general orphan Stop) defaults **off**; `superseded_stop` (the copies this
-    Gateway replaced after a site went silent) defaults **on**, because that cleanup is the fix
-    the owner asked for. They are separate keys in one file and one door, so turning either off
-    never changes the other.
+    **Both default off.** `auto_stop` is the general orphan Stop; `superseded_stop` is the copies
+    this Gateway replaced after a site went silent. An automatic stop is never a fresh Gateway's
+    choice to make (owner, 2026-10-30), so a switch is on only when a `true` is saved for it — a
+    saved value wins over the default, in either direction. They are separate keys in one file and
+    one door, so turning either off never changes the other.
     """
     raw = _read_settings_file()
     stated = raw.get("auto_stop") if isinstance(raw, dict) else None
