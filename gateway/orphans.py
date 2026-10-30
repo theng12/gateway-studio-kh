@@ -390,6 +390,19 @@ def _stop_guard(classification: str, job: dict | None, state: dict | None) -> di
                       "finished, so the old batch must not be stopped."}
 
 
+def stop_allowed(job: dict | None) -> dict:
+    """**The orphan Stop guard, for a job this Gateway already settled.**
+
+    The same rule the Fleet Stop button and the automatic stop use, exposed for the one other
+    caller that stops a batch without a person: cleaning up an attempt this Gateway superseded
+    itself (0.2.211, `worker.reconcile_superseded`). It is public and shared rather than
+    re-implemented there, so the automatic cleanup can never hold a weaker rule than a click.
+    """
+    if job is None:
+        return {"allowed": False, "reason": "No Gateway job to check."}
+    return _stop_guard("orphan_superseded", job, _artifact_state(job))
+
+
 def _number(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None

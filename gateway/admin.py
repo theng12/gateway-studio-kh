@@ -3387,6 +3387,10 @@ def list_jobs(
                 "recovery_action": recovery_action(job),
                 "recovery_context": job.get("recovery_context"),
                 "discard_remote": job.get("discard_remote"),
+                # The batches this job was moved off when a site went silent (0.2.211), with what
+                # the cleanup later found: adopted, stopped, a late duplicate, or still open. The
+                # owner's own view, so the site address beside each batch is shown, not scrubbed.
+                "superseded_batches": job.get("superseded_batches"),
                 "outputs": _admin_outputs(job, pinned),
             }
         )

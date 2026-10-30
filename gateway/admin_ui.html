@@ -663,7 +663,9 @@
       <!-- A Hub batch still running at a site for work that already finished. -->
       <div id="fleet-orphans"></div>
       <!-- One switch, off by default: an automatic action is the owner's deliberate choice. It uses
-           the same guard as the Stop button, and a batch no Gateway job knows is never touched. -->
+           the same guard as the Stop button, and a batch no Gateway job knows is never touched.
+           A batch the Gateway itself replaced (a site went silent and the job ran elsewhere) is
+           the one case it handles without this switch — see the hint below. -->
       <details class="card" id="fleet-orphan-setting">
         <summary>Orphaned Hub batches: automatic stop is off</summary>
         <div class="row">
@@ -671,7 +673,9 @@
             Stop them automatically when the work is already kept</label>
           <span class="hint" id="fleet-orphan-note">The same check as Stop: the Gateway job succeeded
             with its artifacts on disk, or failed or was cancelled with nothing left to collect. A
-            batch no Gateway job knows is never stopped automatically.</span>
+            batch no Gateway job knows is never stopped automatically. A batch this Gateway replaced
+            itself after a site went silent is separate: it is collected if it finished first, or
+            stopped under this same check once the other copy is kept.</span>
         </div>
       </details>
       <div id="fleet-jobs-problems"></div>
@@ -7931,7 +7935,7 @@ async function saveOrphanAutoStop(enabled) {
     if (note) {
       note.textContent = fleetOrphanAutoStop
         ? 'Saved: the Gateway stops an orphan by itself when the same guard as Stop allows it. A batch no Gateway job names is never stopped.'
-        : 'Saved: off. Only the Stop button stops an orphan.';
+        : 'Saved: off. Only the Stop button stops an orphan — except a batch this Gateway replaced itself after a site went silent, which it still adopts or stops under the same check.';
     }
     const box = document.getElementById('fleet-orphan-setting');
     if (box) box.querySelector('summary').dataset.done = '';

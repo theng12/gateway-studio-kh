@@ -356,6 +356,13 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # row, its totals, analytics and billing stay. Hidden while `dismissed_at >= updated_at`, so a
     # job that changes afterwards (a late result, a retry) shows again.
     ("dismissed_at", "REAL"),
+    # **The batches this job was moved off, in a structured field** (0.2.211). When a Studio Hub
+    # site went silent mid-job the worker re-dispatched elsewhere under a new batch id and the old
+    # batch kept running — the duplicate `orphans.py` now reports. `attempt_log` keeps the old id
+    # only inside a sentence, which is something to read, not an identity a cleanup can aim at.
+    # A JSON list of `{batch_id, item_index, provider_id, location, modality, status, ...}`; NULL
+    # means this job never superseded an attempt, which is every job before this column.
+    ("superseded_batches", "TEXT"),
 )
 
 _RENDER_STAGING_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -654,6 +661,14 @@ class JobStore:
             for name, sql_type in columns:
                 if name not in existing:
                     self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+        # **After the column exists, never in `_SCHEMA`.** An existing database gets
+        # `superseded_batches` from the loop above, so an index named in `_SCHEMA` (which runs
+        # before it) would fail to open a 0.2.210 store. Partial, so the re-dispatch sweep walks
+        # only the jobs that ever superseded an attempt rather than the whole table every minute.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS jobs_superseded ON jobs(updated_at) "
+            "WHERE superseded_batches IS NOT NULL"
+        )
 
     @staticmethod
     def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -675,7 +690,8 @@ class JobStore:
         # A JSON column we cannot read is "unknown", never a confirmation: an
         # unreadable cancel must not read as a remote stop, and an unreadable
         # recovery context must not look like a resolvable hold.
-        for column in ("cancel_remote", "recovery_context", "discard_remote"):
+        for column in ("cancel_remote", "recovery_context", "discard_remote",
+                       "superseded_batches"):
             raw = result.get(column)
             if raw == "":
                 result[column] = None
@@ -2554,6 +2570,120 @@ class JobStore:
             out.append(self._row_dict(row))
         return out
 
+    # -- superseded upstream batches (0.2.211) ---------------------------------
+
+    #: How many superseded batches one job may remember. A job that loses contact this many times
+    #: has a site problem, not a bookkeeping problem; the oldest entry is dropped rather than
+    #: letting the column grow without bound.
+    _SUPERSEDED_LIMIT = 16
+
+    def record_superseded_batch(self, job_id: str, entry: dict[str, Any]) -> bool:
+        """Record an upstream batch this job was **moved off**, in a structured field.
+
+        Called at the one moment a free Studio Hub location goes silent past the adapter's grace
+        and the worker re-dispatches the job elsewhere: the old batch may still be running there,
+        and nothing in `upstream_job_id` names it afterwards. The entry carries the site (provider
+        id and address), the item and the modality, because the later cleanup has to aim a cancel
+        at exactly that batch — an id parsed back out of an attempt-log sentence could not.
+
+        One entry per batch id, and the batch id is what makes it unique: a second move records a
+        second entry; the same batch recorded twice is a no-op. Returns whether a row changed.
+        """
+        batch_id = str(entry.get("batch_id") or "").strip()
+        if not batch_id:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT superseded_batches FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            entries = [item for item in _loads_list(row["superseded_batches"])
+                       if isinstance(item, dict)]
+            if any(str(item.get("batch_id") or "") == batch_id for item in entries):
+                return False
+            entries.append({
+                **{key: value for key, value in entry.items() if key != "status"},
+                "batch_id": batch_id,
+                "status": "open",
+                "recorded_at": time.time(),
+            })
+            self._conn.execute(
+                "UPDATE jobs SET superseded_batches = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(entries[-self._SUPERSEDED_LIMIT:]), time.time(), job_id),
+            )
+            self._conn.commit()
+            return True
+
+    def superseded_batches(self, job_id: str) -> list[dict[str, Any]]:
+        """Every batch this job was moved off, in order, with its latest status."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT superseded_batches FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        return [item for item in _loads_list(row["superseded_batches"] if row else None)
+                if isinstance(item, dict)]
+
+    def open_superseded_batches(
+        self, *, limit: int = 50,
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """`[(job, entry)]` for every **open** superseded batch, newest job first.
+
+        Bounded like the hold sweep: the cleanup asks one Hub a question per entry, so a cap is
+        what keeps one unreachable site from holding the sweep open. A resolved entry stays beside
+        its job as history and is skipped here — only an open one is worth asking a Hub about.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM jobs WHERE superseded_batches IS NOT NULL "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        out: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for row in rows:
+            job = self._row_dict(row)
+            if job is None:
+                continue
+            for entry in _loads_list(row["superseded_batches"]):
+                if (isinstance(entry, dict) and entry.get("status") == "open"
+                        and str(entry.get("batch_id") or "").strip()):
+                    out.append((job, entry))
+        return out
+
+    def resolve_superseded_batch(self, job_id: str, batch_id: str, *, status: str,
+                                 detail: str | None = None) -> bool:
+        """Close one superseded batch's question with the answer that settled it.
+
+        `status` is the word a reader gets — `stopped`, `finished_after_delivery`, `not_found`,
+        `location_gone` — never a bare boolean: "the Hub has no such batch" and "we asked it to
+        stop" are different facts, and a resolved entry stays in the row as history.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT superseded_batches FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            entries = [item for item in _loads_list(row["superseded_batches"])
+                       if isinstance(item, dict)]
+            changed = False
+            for item in entries:
+                if (str(item.get("batch_id") or "") == batch_id
+                        and item.get("status") == "open"):
+                    item["status"] = str(status)
+                    item["resolved_at"] = time.time()
+                    if detail:
+                        item["detail"] = str(detail)[:300]
+                    changed = True
+            if not changed:
+                return False
+            self._conn.execute(
+                "UPDATE jobs SET superseded_batches = ? WHERE id = ?",
+                (json.dumps(entries), job_id),
+            )
+            self._conn.commit()
+            return True
+
     def defer(self, job_id: str, *, delay_s: float, reason: str, new_round: bool = False,
               unsent: bool = False) -> bool:
         """Put an accepted-nothing job back in the queue instead of failing it.
@@ -2854,11 +2984,31 @@ class JobStore:
             return True
 
     def record_upstream_acceptance(self, job_id: str, upstream_job_id: str) -> bool:
-        """Persist an adapter's id immediately after the remote accepts work."""
+        """Persist an adapter's id immediately after the remote accepts work.
+
+        **An id that arrives after the job settled is recorded as a superseded batch, not
+        dropped.** The job's thread can still be mid-submit when the work is settled elsewhere —
+        the 0.2.211 cleanup adopting the copy that finished first, or the liveness watchdog
+        ending a submit that looked silent. The batch is real and would otherwise have no owner
+        anywhere (the `orphan_unknown` a person cannot act on), so it goes into the structured
+        field and the cleanup stops it under the orphan guard once the kept work allows.
+        """
         identifier = str(upstream_job_id or "").strip()
         if not identifier:
             return False
         with self._lock:
+            row = self._conn.execute(
+                "SELECT state, provider_id, modality FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            if row["state"] in TERMINAL_STATES:
+                self.record_superseded_batch(job_id, {
+                    "batch_id": identifier, "item_index": 0,
+                    "provider_id": str(row["provider_id"] or ""),
+                    "location": "", "modality": str(row["modality"] or ""), "jobs_path": "",
+                })
+                return False
             result = self._conn.execute(
                 """
                 UPDATE jobs SET upstream_job_id = ?, updated_at = ?
