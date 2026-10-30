@@ -5377,6 +5377,29 @@ def story_instance_update(instance: str) -> Any:
 # are protected the same way: `require_admin` — loopback, or the gateway key, or a
 # signed-in browser session whose write must also name this origin (`same_origin`).
 # ---------------------------------------------------------------------------
+@router.post("/api/sounds/library/import", dependencies=[Depends(require_admin)])
+def sounds_import_generated(payload: dict[str, Any]) -> Any:
+    """Add one clip a model generated: `audio_b64` plus title, description, tags, format, model and note."""
+    import base64
+    import binascii
+
+    from .sound_library import import_generated_clip
+
+    encoded = payload.get("audio_b64")
+    if not isinstance(encoded, str):
+        return _error(400, "'audio_b64' is required.")
+    if len(encoded) > 80_000_000:
+        return _error(413, "A generated clip is limited to about 60 MB.")
+    try:
+        audio = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return _error(400, "'audio_b64' is not valid base64.")
+    try:
+        return import_generated_clip(audio, payload)
+    except ValueError as exc:
+        return _error(422, str(exc))
+
+
 @router.get("/api/sounds/quota", dependencies=[Depends(require_admin)])
 def sound_quota_status() -> dict[str, Any]:
     """Return live quota status and configuration guide for sound sources."""

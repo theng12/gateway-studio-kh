@@ -148,6 +148,7 @@ def search_library(query: str, kind: str | None = None) -> list[dict[str, Any]]:
         haystack = " ".join(filter(None, [
             str(clip.get("title", "")),
             str(clip.get("author", "")),
+            str(clip.get("description", "")),
             " ".join(str(t) for t in (clip.get("tags") or [])),
         ])).casefold()
         if q in haystack:
@@ -281,6 +282,89 @@ def download_into_library(
 
     meta["sha256"] = sha
     log.info("sound library: added %s (%s, %s)", sha[:12], meta["title"], licence)
+    return meta
+
+
+#: Licence value of a clip a model made for us. Deliberately its own word: it is never
+#: CC0 and never passes through `normalise_licence`, whose job is downloaded clips.
+GENERATED_LICENCE = "generated"
+_IMPORT_FORMATS = ("wav", "mp3", "ogg", "flac", "m4a")
+
+
+def _generated_text(payload: dict[str, Any], field: str, limit: int) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"'{field}' is required.")
+    if len(value) > limit:
+        raise ValueError(f"'{field}' is limited to {limit} characters.")
+    return value.strip()
+
+
+def import_generated_clip(audio: bytes, payload: dict[str, Any]) -> dict[str, Any]:
+    """Store one clip a model generated, in the same `<sha256>.<ext>` + sidecar shape as a download.
+
+    The licence note and model id are required, because a credit line and a later licence
+    question both read them. Raises ``ValueError`` on refusal; nothing is left on disk.
+    """
+    title = _generated_text(payload, "title", 200)
+    description = _generated_text(payload, "description", 500)
+    model_id = _generated_text(payload, "model_id", 200)
+    licence_note = _generated_text(payload, "licence_note", 500)
+    filetype = str(payload.get("format") or "").lstrip(".").lower()
+    if filetype not in _IMPORT_FORMATS:
+        raise ValueError(f"'format' must be one of {', '.join(_IMPORT_FORMATS)}.")
+    tags = payload.get("tags", [])
+    if not isinstance(tags, list) or not all(isinstance(tag, str) and tag.strip() for tag in tags):
+        raise ValueError("'tags' must be a list of words.")
+    if not audio:
+        raise ValueError("No audio was sent.")
+
+    sha = hash_bytes(audio)
+    existing = get_clip(sha)
+    if existing is not None:
+        return existing
+
+    lib = _library_dir()
+    audio_path = lib / f"{sha}.{filetype}"
+    audio_path.write_bytes(audio)
+    probe = probe_audio(audio_path)
+    duration_s = (probe or {}).get("duration_seconds")
+    if not isinstance(duration_s, (int, float)) or duration_s <= 0:
+        audio_path.unlink(missing_ok=True)
+        raise ValueError("That file could not be read as audio, so it was not added.")
+
+    meta: dict[str, Any] = {
+        "title": title,
+        "author": None,
+        "licence": GENERATED_LICENCE,
+        "licence_version": None,
+        "licence_note": licence_note,
+        "model_id": model_id,
+        "source": "generated",
+        "source_id": sha,
+        "source_url": "",
+        "attribution": None,
+        "description": description,
+        "tags": [tag.strip() for tag in tags],
+        "category": (payload.get("category") if isinstance(payload.get("category"), str) else None),
+        "genres": [],
+        "kind": (payload.get("kind") if payload.get("kind") in ("bed", "spot") else None),
+        "duration_seconds": round(float(duration_s), 3),
+        "format": probe.get("format"),
+        "sample_rate": probe.get("sample_rate"),
+        "channels": probe.get("channels"),
+        "bit_rate": probe.get("bit_rate"),
+        "filesize_bytes": len(audio),
+        "added_at": time.time(),
+    }
+    (lib / f"{sha}.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    with _lock:
+        idx = _read_index()
+        if sha not in idx:
+            idx.insert(0, sha)
+            _write_index(idx)
+    meta["sha256"] = sha
+    log.info("sound library: imported generated %s (%s)", sha[:12], title)
     return meta
 
 

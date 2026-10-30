@@ -428,6 +428,88 @@ class SoundClipBytes(SfxTestCase):
         self.assertEqual(self.remote.get(self.url(self.sha)).status_code, 401)
 
 
+class GeneratedClipImport(SfxTestCase):
+    """`POST /admin/api/sounds/library/import`: clips a model made, labelled as exactly that."""
+
+    @staticmethod
+    def wav() -> bytes:
+        import io
+        import wave
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as out:
+            out.setnchannels(1); out.setsampwidth(2); out.setframerate(8000)
+            out.writeframes(b"\x10\x00" * 8000)
+        return buffer.getvalue()
+
+    def body(self, **changes):
+        import base64
+        body = {"audio_b64": base64.b64encode(self.wav()).decode(), "format": "wav",
+                "title": "Soft whoosh", "description": "A quick airy whoosh for a scene change.",
+                "tags": ["whoosh", "transition"], "category": "cut",
+                "model_id": "stabilityai/stable-audio-3-optimized",
+                "licence_note": "Stability AI Community License"}
+        body.update(changes)
+        return {key: value for key, value in body.items() if value is not None}
+
+    def post(self, **changes):
+        return self.remote.post("/admin/api/sounds/library/import", json=self.body(**changes),
+                                headers=AUTH)
+
+    def probed(self):
+        from unittest.mock import patch
+        return patch.object(sound_library, "probe_audio", return_value={
+            "format": "wav", "duration_seconds": 1.0, "sample_rate": 8000, "channels": 1, "bit_rate": 128000})
+
+    def test_a_clip_is_stored_listed_found_and_served(self):
+        with self.probed():
+            response = self.post()
+        self.assertEqual(response.status_code, 200, response.text)
+        meta = response.json()
+        self.assertEqual(meta["licence"], "generated")
+        self.assertEqual(meta["model_id"], "stabilityai/stable-audio-3-optimized")
+        sha = meta["sha256"]
+        listed = self.remote.get("/v1/sounds/library", headers=AUTH).json()["clips"]
+        self.assertIn(sha, [clip["sha256"] for clip in listed])
+        self.assertEqual([clip["sha256"] for clip in sound_library.search_library("transition")], [sha])
+        audio = self.remote.get(f"/v1/sounds/library/{sha}/audio", headers=AUTH)
+        self.assertEqual(audio.content, self.wav())
+        self.assertEqual(audio.headers["content-type"], "audio/wav")
+
+    def test_the_same_bytes_are_one_clip(self):
+        with self.probed():
+            first = self.post().json()
+            second = self.post(title="Another name").json()
+        self.assertEqual(first["sha256"], second["sha256"])
+        self.assertEqual(second["title"], "Soft whoosh")
+        self.assertEqual(sound_library._read_index().count(first["sha256"]), 1)
+
+    def test_unreadable_audio_is_refused_and_leaves_nothing(self):
+        import base64
+        from unittest.mock import patch
+        with patch.object(sound_library, "probe_audio", return_value=None):
+            response = self.post(audio_b64=base64.b64encode(b"not audio").decode())
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(list(sound_library._library_dir().glob(f"{hashlib.sha256(b'not audio').hexdigest()}*")), [])
+
+    def test_a_missing_note_model_or_description_is_refused(self):
+        with self.probed():
+            for field in ("licence_note", "model_id", "description", "title"):
+                self.assertEqual(self.post(**{field: None}).status_code, 422, field)
+
+    def test_bad_base64_and_format_are_refused(self):
+        self.assertEqual(self.post(audio_b64="@@@").status_code, 400)
+        with self.probed():
+            self.assertEqual(self.post(format="exe").status_code, 422)
+
+    def test_a_remote_peer_must_present_the_key(self):
+        response = self.remote.post("/admin/api/sounds/library/import", json=self.body())
+        self.assertEqual(response.status_code, 401)
+
+    def test_generated_is_not_a_licence_a_download_can_carry(self):
+        from gateway.sound_sources import normalise_licence
+        self.assertIsNone(normalise_licence("generated"))
+
+
 # ---------------------------------------------------------------------------
 # 4. Grouping the Providers page — display only, covering everything
 # ---------------------------------------------------------------------------
