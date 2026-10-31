@@ -5039,8 +5039,9 @@ def fleet_set_work_policy(payload: dict[str, Any]) -> Any:
                       "BAD_WORK_POLICY_REQUEST")
     if len({(row["controller_id"], row["machine_id"]) for row in machines}) != len(machines):
         return _error(400, "Each Mac may appear only once.", "BAD_WORK_POLICY_REQUEST")
-    results = []
-    for row in machines:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def apply_one(row: dict[str, str]) -> dict[str, Any]:
         result = {**row}
         try:
             answer = startup_control.set_node_work_policy(row["controller_id"], row["machine_id"], order)
@@ -5058,8 +5059,11 @@ def fleet_set_work_policy(payload: dict[str, Any]) -> Any:
                           detail=error.body.get("detail") or "The Mac refused the order.")
         except Exception as error:
             result.update(status="refused", detail=f"Could not complete the request ({type(error).__name__}).")
-        results.append(result)
-    return {"results": results}
+        return result
+
+    # In parallel: one slow or silent Mac must not hold the answer for the whole fleet.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return {"results": list(pool.map(apply_one, machines))}
 
 
 @router.get(
