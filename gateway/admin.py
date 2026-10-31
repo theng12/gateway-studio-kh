@@ -2723,7 +2723,7 @@ def list_voices(
         if guest:
             own = {v.id: v for v in voice_registry().voices() if _guest_can_see_voice(guest, v)}
             rows = [{**r, **{k: v for k, v in own[r["id"]].as_dict().items()
-                              if k in ("guest_owner", "guest_status", "guest_error", "has_preview")}}
+                              if k in ("guest_owner", "guest_status", "guest_error", "guest_note", "has_preview")}}
                     for r in rows if r["id"] in own]
         if q:
             needle = q.strip().lower()
@@ -3006,10 +3006,14 @@ async def create_guest_voice(request: Request) -> Any:
     if not guest:
         return _error(403, "Sign in as a guest to add your voice here.")
     form = await request.form()
-    if len(form.getlist("name")) != 1 or any(len(form.getlist(k)) != 1 for k in ("language", "permission", "file")) or set(form.keys()) != {"name", "language", "permission", "file"}:
+    if len(form.getlist("name")) != 1 or any(len(form.getlist(k)) != 1 for k in ("language", "permission", "file")) or len(form.getlist("transcript")) > 1 or set(form.keys()) - {"transcript"} != {"name", "language", "permission", "file"}:
         await form.close()
-        return _error(422, "Only name, language, permission and an audio file are accepted.")
+        return _error(422, "Only name, language, permission, the words spoken and an audio file are accepted.")
     name, language = str(form.get("name") or "").strip(), str(form.get("language") or "").strip()
+    words = str(form.get("transcript") or "").strip()
+    if len(words) > 5000:
+        await form.close()
+        return _error(422, "The words spoken must be 5,000 characters or fewer.")
     upload = form.get("file")
     if (not name or len(name) > 200 or any(c in name for c in "/\\\\") or name.startswith("_")
             or any(ord(c) < 32 for c in name)):
@@ -3056,12 +3060,17 @@ async def create_guest_voice(request: Request) -> Any:
             voice_id = result["imported"][0]["id"]
             payload = voice_import._read_catalog()
             entry = next(v for v in payload["voices"] if v.get("id") == voice_id)
-            entry.update({"guest_owner": requested_by(request), "guest_status": "transcribing",
-                          "guest_error": None, "guest_permission": {"who": requested_by(request), "at": time.time()}})
+            # Whisper cannot read Khmer, and a wrong transcript is worse than none: a Khmer clip
+            # with no typed words clones from the sound alone, like the owner's own Khmer voices.
+            transcribe = not words and language.lower().split("-")[0] != "km"
+            entry.update({"guest_owner": requested_by(request), "guest_status": "transcribing" if transcribe else "ready",
+                          "guest_error": None, "guest_permission": {"who": requested_by(request), "at": time.time()},
+                          "reference_transcript": words or None, "include_reference_transcript": transcribe or bool(words)})
             voice_import.write_voice_files(entry)
             voice_import._write_catalog(payload)
-    threading.Thread(target=voice_import.guest_transcribe, args=(voice_id,), daemon=True).start()
-    return {"id": "studio-hub-local::" + voice_id, "status": "transcribing"}
+    if transcribe:
+        threading.Thread(target=voice_import.guest_transcribe, args=(voice_id,), daemon=True).start()
+    return {"id": "studio-hub-local::" + voice_id, "status": "transcribing" if transcribe else "ready"}
 
 
 @router.post("/api/create/voices/remove", dependencies=[Depends(require_guest_or_admin)])

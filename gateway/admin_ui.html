@@ -4490,6 +4490,7 @@ function renderCreateForm() {
           <label for="guest-voice-name">Voice name</label><input id="guest-voice-name" maxlength="200">
           <label for="guest-voice-language">Language code (for Khmer, km)</label><input id="guest-voice-language" value="km" maxlength="40">
           <label for="guest-voice-file">Recording</label><input id="guest-voice-file" type="file" accept="audio/*">
+          <label for="guest-voice-words">Words spoken in the recording (optional)</label><textarea id="guest-voice-words" rows="3" maxlength="5000"></textarea>
           <label><input id="guest-voice-permission" type="checkbox"> I own this voice or have the person's permission</label>
           <button type="button" class="sm" onclick="addGuestVoice()">Add voice</button><div id="guest-voice-status" class="hint" aria-live="polite"></div>
         </details>` : ''}
@@ -4694,13 +4695,14 @@ async function addGuestVoice() {
   form.append('name', document.getElementById('guest-voice-name').value);
   form.append('language', document.getElementById('guest-voice-language').value);
   form.append('permission', String(document.getElementById('guest-voice-permission').checked));
+  form.append('transcript', document.getElementById('guest-voice-words').value);
   const file = document.getElementById('guest-voice-file').files[0];
   if (!file) { status.textContent = 'Choose a recording.'; return; }
   form.append('file', file);
   try {
     status.textContent = 'Uploading…';
     await api('/create/voices', {method:'POST', body:form});
-    status.textContent = 'Transcribing your voice…';
+    status.textContent = 'Adding your voice…';
     createVoices.modelId = ''; await loadCreateVoices();
     clearTimeout(guestVoiceRefreshTimer); guestVoiceRefreshTimer = setTimeout(refreshGuestVoices, 4000);
   } catch (error) { status.textContent = `Could not add voice: ${error.message}`; }
@@ -4715,7 +4717,7 @@ async function refreshGuestVoices() {
     let pending = false;
     mine.forEach(voice => {
       const row = document.createElement('div'); row.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;overflow-wrap:anywhere';
-      const label = document.createElement('span'); label.textContent = `${voice.display_name}: ${voice.guest_status || 'not ready'}${voice.guest_error ? ' — ' + voice.guest_error : ''}`;
+      const label = document.createElement('span'); label.textContent = `${voice.display_name}: ${voice.guest_status || 'not ready'}${voice.guest_error ? ' — ' + voice.guest_error : ''}${voice.guest_note ? ' — ' + voice.guest_note : ''}`;
       const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'sm'; remove.textContent = 'Remove';
       remove.onclick = async () => { try { await api('/create/voices/remove', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({voice_id:voice.id})}); createVoices.modelId = ''; await loadCreateVoices(); refreshGuestVoices(); } catch (error) { status.textContent = error.message; } };
       row.append(label, remove); status.append(row);

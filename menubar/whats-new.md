@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.219 — 2026-10-31
+
+- A guest's Khmer voice is ready the moment it is added. It clones from the sound of the recording, because the transcriber cannot read Khmer. In 0.2.218 it sat on "transcribing" for many minutes and could then fail.
+- A guest can type the words spoken in their recording. That is used as it is, with no transcribing.
+- A voice in another language whose words can't be read still works, from the sound alone, and says so.
+
 ## 0.2.218 — 2026-10-31
 
 - Generated sound clips can be added on a Mac with no audio tool installed. The Gateway reads WAV and FLAC files itself. For MP3, OGG or M4A it now says it has no ffprobe to read that format, instead of calling a good file unreadable.

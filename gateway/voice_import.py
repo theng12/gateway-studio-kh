@@ -54,6 +54,9 @@ DEFAULT_TTS_MODEL = "Qwen3-TTS-12Hz-0.6B-Base-4bit"
 
 #: Whisper, for the segments. Same default the standalone script used.
 DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-base-mlx"
+# shortcut: the model the fleet's subtitle Macs keep installed (few hold whisper-base), upgrade to asking the Hub which is installed.
+GUEST_TRANSCRIPTION_MODEL = "mlx-community/whisper-large-v3-turbo"
+GUEST_TRANSCRIBE_DEADLINE_S = 300.0
 
 # --- What a *shared* voice has to satisfy -------------------------------
 #
@@ -1328,18 +1331,23 @@ def restore(backup: str) -> dict:
 
 
 def guest_transcribe(voice_id: str) -> None:
-    """Transcribe one guest clip and persist its actual outcome."""
+    """Transcribe one guest clip. A guest is never left waiting on it: the voice is usable either way."""
     entry = next((v for v in voices() if v.get("id") == voice_id), None)
     if not entry:
         return
     segments = None
     error = "No Studio Hub could transcribe this recording."
+    stop_at = time.time() + GUEST_TRANSCRIBE_DEADLINE_S
     try:
-        with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
             for target in annotation_targets():
+                left = stop_at - time.time()
+                if left <= 0:
+                    error = "transcription timed out"
+                    break
                 try:
                     segments = _transcribe(client, target["base"], target["headers"],
-                                           Path(entry["reference_path"]), DEFAULT_TRANSCRIPTION_MODEL)
+                                           Path(entry["reference_path"]), GUEST_TRANSCRIPTION_MODEL, left)
                     if segments:
                         break
                     error = "Transcription returned no timed words."
@@ -1351,10 +1359,13 @@ def guest_transcribe(voice_id: str) -> None:
         payload = _read_catalog()
         for current in payload.get("voices") or []:
             if current.get("id") == voice_id:
-                current["guest_status"] = "ready" if segments else "failed"
-                current["guest_error"] = None if segments else error
+                current["guest_status"] = "ready"
+                current["guest_error"] = None
                 if segments:
                     current["reference_segments"] = segments
+                else:
+                    current["include_reference_transcript"] = False
+                    current["guest_note"] = f"Its words could not be read ({error}). It clones from the sound alone, so a model that needs the words will refuse it."
                 write_voice_files(current)
                 _write_catalog(payload)
                 break
@@ -1385,7 +1396,8 @@ def parse_srt(text: str) -> list[dict]:
     return segments
 
 
-def _transcribe(client: httpx.Client, base: str, headers: dict, audio: Path, model: str) -> list[dict]:
+def _transcribe(client: httpx.Client, base: str, headers: dict, audio: Path, model: str,
+                deadline_s: float = TRANSCRIBE_DEADLINE_S) -> list[dict]:
     with audio.open("rb") as handle:
         response = client.post(
             f"{base}/api/hub/transcription/jobs",
@@ -1399,7 +1411,7 @@ def _transcribe(client: httpx.Client, base: str, headers: dict, audio: Path, mod
     if not batch_id:
         raise RuntimeError("the Hub returned no batch id")
 
-    deadline = time.time() + TRANSCRIBE_DEADLINE_S
+    deadline = time.time() + deadline_s
     item: dict = {}
     while time.time() < deadline:
         summary = client.get(

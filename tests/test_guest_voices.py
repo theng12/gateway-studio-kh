@@ -42,6 +42,34 @@ class GuestVoices(unittest.TestCase):
         return self.client.post('/admin/api/create/voices', cookies=self.alice, headers=self.headers,
                                 data=fields, files={'file': ('ignored.wav', data or wav(self._testMethodName), 'audio/wav')})
 
+    def entry(self, voice_id):
+        return next(v for v in voice_import._read_catalog()['voices'] if v['id'] == voice_import.catalogue_id(voice_id))
+
+    def test_khmer_ready_from_sound(self):
+        response = self.add(); self.assertEqual(response.json()['status'], 'ready', response.text)
+        entry = self.entry(response.json()['id'])
+        self.assertEqual(entry['guest_status'], 'ready')
+        self.assertIs(entry['include_reference_transcript'], False)
+        voice_import.guest_transcribe.assert_not_called()
+
+    def test_typed_words_used(self):
+        response = self.add(extra={'language': 'en', 'transcript': 'hello there'})
+        entry = self.entry(response.json()['id'])
+        self.assertEqual((entry['guest_status'], entry['reference_transcript']), ('ready', 'hello there'))
+        self.assertIs(entry['include_reference_transcript'], True)
+        voice_import.guest_transcribe.assert_not_called()
+
+    def test_failed_words_leave_voice_usable(self):
+        response = self.add(extra={'language': 'en'})
+        self.assertEqual(response.json()['status'], 'transcribing')
+        voice_id = response.json()['id']
+        with patch('gateway.voice_import.annotation_targets', return_value=[]):
+            self.patch.stop(); voice_import.guest_transcribe(voice_import.catalogue_id(voice_id)); self.patch.start()
+        entry = self.entry(voice_id)
+        self.assertEqual((entry['guest_status'], entry['guest_error']), ('ready', None))
+        self.assertIs(entry['include_reference_transcript'], False)
+        self.assertIn('could not be read', entry['guest_note'])
+
     def test_isolation_preview_and_restore(self):
         response = self.add(); self.assertEqual(response.status_code, 200, response.text)
         voice_id = response.json()['id']
@@ -86,10 +114,10 @@ class GuestVoices(unittest.TestCase):
             self.assertEqual(self.add(data=wav('different')).status_code, 409)
 
     def test_failed_transcription_is_persisted(self):
-        response = self.add(); self.assertEqual(response.status_code, 200, response.text)
+        response = self.add(extra={'language': 'en'}); self.assertEqual(response.status_code, 200, response.text)
         raw = voice_import.catalogue_id(response.json()['id'])
         with patch('gateway.voice_import.annotation_targets', return_value=[]):
             self.patch.stop(); voice_import.guest_transcribe(raw); self.patch.start()
         entry = next(v for v in voice_import.voices() if v['id'] == raw)
-        self.assertEqual(entry['guest_status'], 'failed')
-        self.assertIn('No Studio Hub', entry['guest_error'])
+        self.assertEqual(entry['guest_status'], 'ready')
+        self.assertIn('No Studio Hub', entry['guest_note'])
