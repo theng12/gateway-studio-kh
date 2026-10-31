@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.220 — 2026-10-31
+
+- Fleet can apply one work order to the Macs you pick, by site, by memory size or by ticking them. Each Mac's result is listed: confirmed, queued for its next check-in, or refused and why. A silent Mac doesn't hold up the others.
+- Every newly published pack gets a cover. One with none is made by Qwen Image 2.1 Turbo on your own Macs, with no lettering. Until it lands the pack is stored but not offered to Story, and the status says why; a failure can be retried. Packs already published and style packs are left alone.
+
 ## 0.2.219 — 2026-10-31
 
 - A guest's Khmer voice is ready the moment it is added. It clones from the sound of the recording, because the transcriber cannot read Khmer. In 0.2.218 it sat on "transcribing" for many minutes and could then fail.
