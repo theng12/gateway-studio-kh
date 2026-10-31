@@ -145,10 +145,24 @@ async function importAndPublish(archive) {
   if (published.status !== 200) throw Error(`archive import-and-publish: ${await published.text()}`)
   const body = await published.json()
   exactKeys(body, ['archive', 'release', 'replayed'])
-  exactKeys(body.release, ['release_id', 'pack_id', 'version', 'archive_sha256', 'bytes', 'title', 'kind', 'current', 'available', 'published_at'])
+  const fields = ['release_id', 'pack_id', 'version', 'archive_sha256', 'bytes', 'title', 'kind', 'current', 'available', 'published_at']
   assert.equal(body.release.archive_sha256, archive.sha256)
   assert.equal(body.replayed, false)
-  return body.release
+  if (!body.release.cover_status) {
+    exactKeys(body.release, fields)
+    return body.release
+  }
+  // A pack with no cover is stored but withheld. No fleet here, so the cover is placed by hand.
+  exactKeys(body.release, [...fields, 'cover_status', 'cover_detail'])
+  assert.equal(body.release.available, false)
+  await writeFile(join(gatewayData, 'content-library', archive.sha256, 'cover.webp'), 'a cover')
+  for (let i = 0; i < 100; i++) {
+    const shelf = await (await response('/admin/api/content-shelf', { headers: { authorization: `Bearer ${apiKey}` } })).json()
+    const row = shelf.releases.find(item => item.release_id === body.release.release_id)
+    if (row?.available) return Object.fromEntries(fields.map(field => [field, row[field]]))
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw Error(`${body.release.pack_id} stayed withheld after its cover was placed`)
 }
 
 async function importStory() {
