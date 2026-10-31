@@ -159,7 +159,8 @@ GUEST_ALLOWED = {
     "/admin", "/admin/",
     "/admin/login", "/admin/logout",
     "/admin/api/create/models", "/admin/api/create", "/admin/api/create/transcription",
-    "/admin/api/create/video",
+    "/admin/api/create/video", "/admin/api/create/voice-limits", "/admin/api/create/voices",
+    "/admin/api/create/voices/remove", "/admin/api/create/voices/{voice_id:path}/preview",
     "/admin/api/create/status/{job_id}", "/admin/api/create/status/{job_id}/cancel",
     "/admin/api/voices", "/admin/api/jobs", "/admin/api/artifacts/keep",
     "/admin/api/artifacts/{job_id}/outputs/{asset_id}",
@@ -190,7 +191,7 @@ class DenyByDefault(_Base):
     def _filled(self, path: str) -> str:
         return (path.replace("{job_id}", "no-such-job").replace("{asset_id}", "0")
                 .replace("{controller_id}", "c").replace("{provider_id}", "p")
-                .replace("{voice_id}", "v").replace("{release_id}", "r")
+                .replace("{voice_id}", "v").replace("{voice_id:path}", "v").replace("{release_id}", "r")
                 .replace("{pack_id}", "p").replace("{machine}", "m")
                 .replace("{key}", "k").replace("{guest_id}", "g"))
 

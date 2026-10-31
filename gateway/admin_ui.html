@@ -2064,6 +2064,31 @@ async function loadStatus() {
   }
 }
 
+let voiceSampleAudio = null;
+let voiceSampleUrl = null;
+let voiceSampleRequest = 0;
+let guestVoiceRefreshTimer = null;
+async function playVoiceSample(id, status) {
+  const request = ++voiceSampleRequest;
+  try {
+    if (voiceSampleAudio) { voiceSampleAudio.pause(); voiceSampleAudio = null; }
+    if (voiceSampleUrl) { URL.revokeObjectURL(voiceSampleUrl); voiceSampleUrl = null; }
+    status.textContent = 'Loading sample…';
+    const response = await fetch('/admin/api/create/voices/' + encodeURIComponent(id) + '/preview', {headers: adminHeaders()});
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || body.message || `HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    if (request !== voiceSampleRequest) return;
+    voiceSampleUrl = URL.createObjectURL(blob);
+    voiceSampleAudio = new Audio(voiceSampleUrl);
+    await voiceSampleAudio.play();
+    status.textContent = '';
+    voiceSampleAudio.onerror = () => { status.textContent = 'Could not play this audio sample.'; };
+  } catch (error) { status.textContent = `Could not play sample: ${error.message}`; }
+}
+
 /* -------------------------------- voice tags ------------------------------- */
 let voiceTagRows = [];
 let voiceTagLimits = null;
@@ -2096,7 +2121,13 @@ function renderVoiceTags() {
   rows.forEach(voice => {
     const row = document.createElement('div'); row.className = 'card-head';
     const main = document.createElement('div'); main.className = 'card-main';
-    const name = document.createElement('div'); name.className = 'name'; name.textContent = voice.display_name;
+    const name = document.createElement('div'); name.className = 'name'; name.textContent = voice.display_name + (voice.guest_owner ? ` · ${voice.guest_owner.label}` : '');
+    const sampleStatus = document.createElement('span'); sampleStatus.className = 'hint';
+    const sample = document.createElement('button'); sample.className = 'sm'; sample.textContent = voice.has_preview ? 'Play' : 'No sample';
+    const enable = document.createElement('button'); enable.className = 'sm'; enable.textContent = voice.enabled ? 'Disable' : 'Enable';
+    enable.onclick = async () => { try { await api('/voices/enabled', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({items:[voice.id], enabled:!voice.enabled})}); await loadVoiceTags(); } catch (error) { sampleStatus.textContent = error.message; } };
+    sample.disabled = !voice.has_preview; sample.setAttribute('aria-label', `Play ${voice.display_name} sample`);
+    sample.onclick = () => playVoiceSample(voice.id, sampleStatus);
     const tags = document.createElement('div'); tags.className = 'row';
     (voice.tags || []).forEach(tag => {
       const button = document.createElement('button'); button.className = 'sm';
@@ -2109,7 +2140,7 @@ function renderVoiceTags() {
     const add = document.createElement('button'); add.className = 'sm'; add.textContent = 'Add';
     add.onclick = () => { if (input.value.trim()) saveVoiceTags(voice, [...(voice.tags || []), input.value]); };
     input.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); add.click(); } };
-    main.append(name, tags); row.append(main, input, add); container.append(row);
+    main.append(name, sample, sampleStatus, enable, tags); row.append(main, input, add); container.append(row);
   });
   const list = document.createElement('datalist'); list.id = 'voice-tag-suggestions';
   [...document.getElementById('voice-tag-filter').options].slice(1).forEach(option => list.append(new Option(option.value)));
@@ -4451,7 +4482,17 @@ function renderCreateForm() {
       // that — as an explicit last option, because a voice known from a share link is not in the
       // library.
       return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
-        <select id="cf-${f.k}" onchange="createVoiceChoice(this)"></select>
+        <div class="row" style="flex-wrap:wrap"><select style="min-width:0;max-width:100%" id="cf-${f.k}" onchange="createVoiceChoice(this)"></select>
+        <button type="button" class="sm" id="cf-voice-play" disabled onclick="playSelectedVoice()">No sample</button></div>
+        <div class="hint" id="cf-voice-play-status" aria-live="polite"></div>
+        ${typeof GUEST !== 'undefined' && GUEST ? `<details style="margin-top:8px"><summary>Add voice</summary>
+          <div class="hint" id="guest-voice-limits">Loading limits…</div>
+          <label for="guest-voice-name">Voice name</label><input id="guest-voice-name" maxlength="200">
+          <label for="guest-voice-language">Language code (for Khmer, km)</label><input id="guest-voice-language" value="km" maxlength="40">
+          <label for="guest-voice-file">Recording</label><input id="guest-voice-file" type="file" accept="audio/*">
+          <label><input id="guest-voice-permission" type="checkbox"> I own this voice or have the person's permission</label>
+          <button type="button" class="sm" onclick="addGuestVoice()">Add voice</button><div id="guest-voice-status" class="hint" aria-live="polite"></div>
+        </details>` : ''}
         <input type="text" id="cf-${f.k}_manual" placeholder="a voice id"
                style="display:none;margin-top:6px">
         <div class="hint" id="cf-voice-hint"></div></div>`;
@@ -4502,6 +4543,7 @@ function renderCreateForm() {
      <div class="row"><button class="primary" id="cf-go" onclick="submitCreate(this)">Generate</button>
        <span class="msg" id="cf-msg"></span></div>`;
   if (voiceLane && rows.length) loadCreateVoices();
+  if (voiceLane && typeof GUEST !== 'undefined' && GUEST) { loadGuestVoiceLimits(); refreshGuestVoices(); }
   showUploadLimit();
   applyCreateModelControls();
 }
@@ -4617,18 +4659,71 @@ function createVoiceName(v) {
 const VOICE_GENDERS = { m: 'male', f: 'female', n: 'neutral' };
 
 function createVoiceLabel(v) {
+  const state = v.guest_status && v.guest_status !== 'ready' ? ` · ${v.guest_status}${v.guest_error ? ': ' + v.guest_error : ''}` : '';
   const provider = String(v.provider || v.engine_name || '').trim();
   const gender = VOICE_GENDERS[String(v.gender || '').trim().toLowerCase()] || '';
   const name = createVoiceName(v);
-  return [name, gender, provider && provider !== name ? provider : ''].filter(Boolean).join(' · ');
+  return [name, gender, provider && provider !== name ? provider : ''].filter(Boolean).join(' · ') + state;
 }
 
 function createVoiceChoice(select) {
+  const button = document.getElementById('cf-voice-play');
+  const voice = createVoices.rows.find(v => v.id === select.value);
+  if (button) { button.disabled = !voice || !(voice.has_preview || voice.preview_available); button.textContent = button.disabled ? 'No sample' : 'Play sample'; }
+  const status = document.getElementById('cf-voice-play-status');
+  if (status) status.textContent = voice && voice.guest_status && voice.guest_status !== 'ready' ? `${voice.guest_status}${voice.guest_error ? ': ' + voice.guest_error : ''}` : '';
   const manual = document.getElementById('cf-voice_id_manual');
   if (!manual) return;
   const typing = select.value === '__manual__';
   manual.style.display = typing ? '' : 'none';
   if (typing) manual.focus();
+}
+
+function playSelectedVoice() {
+  const select = document.getElementById('cf-voice_id');
+  if (select && select.value) playVoiceSample(select.value, document.getElementById('cf-voice-play-status'));
+}
+async function loadGuestVoiceLimits() {
+  const note = document.getElementById('guest-voice-limits');
+  try { const limits = await api('/create/voice-limits'); if (note) note.textContent = `Up to ${limits.max_voices} voices, ${limits.max_clip_bytes} bytes per recording.`; }
+  catch (error) { if (note) note.textContent = `Could not read limits: ${error.message}`; }
+}
+async function addGuestVoice() {
+  const status = document.getElementById('guest-voice-status');
+  const form = new FormData();
+  form.append('name', document.getElementById('guest-voice-name').value);
+  form.append('language', document.getElementById('guest-voice-language').value);
+  form.append('permission', String(document.getElementById('guest-voice-permission').checked));
+  const file = document.getElementById('guest-voice-file').files[0];
+  if (!file) { status.textContent = 'Choose a recording.'; return; }
+  form.append('file', file);
+  try {
+    status.textContent = 'Uploading…';
+    await api('/create/voices', {method:'POST', body:form});
+    status.textContent = 'Transcribing your voice…';
+    createVoices.modelId = ''; await loadCreateVoices();
+    clearTimeout(guestVoiceRefreshTimer); guestVoiceRefreshTimer = setTimeout(refreshGuestVoices, 4000);
+  } catch (error) { status.textContent = `Could not add voice: ${error.message}`; }
+}
+async function refreshGuestVoices() {
+  const status = document.getElementById('guest-voice-status');
+  if (!status) return;
+  try {
+    const result = await api('/voices');
+    const mine = (result.voices || []).filter(v => v.guest_owner);
+    status.replaceChildren();
+    let pending = false;
+    mine.forEach(voice => {
+      const row = document.createElement('div'); row.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;overflow-wrap:anywhere';
+      const label = document.createElement('span'); label.textContent = `${voice.display_name}: ${voice.guest_status || 'not ready'}${voice.guest_error ? ' — ' + voice.guest_error : ''}`;
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'sm'; remove.textContent = 'Remove';
+      remove.onclick = async () => { try { await api('/create/voices/remove', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({voice_id:voice.id})}); createVoices.modelId = ''; await loadCreateVoices(); refreshGuestVoices(); } catch (error) { status.textContent = error.message; } };
+      row.append(label, remove); status.append(row);
+      if (voice.guest_status === 'transcribing') pending = true;
+    });
+    if (pending) { clearTimeout(guestVoiceRefreshTimer); guestVoiceRefreshTimer = setTimeout(refreshGuestVoices, 4000); }
+    else { createVoices.modelId = ''; await loadCreateVoices(); }
+  } catch (error) { status.textContent = `Could not read voice status: ${error.message}`; }
 }
 
 function createVoiceValue() {

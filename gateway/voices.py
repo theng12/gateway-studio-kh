@@ -229,7 +229,10 @@ class Voice:
             "accent": self.accent,
             "age": self.age,
             "tags": list(self.tags),
-            "has_preview": bool(self.preview_url),
+            "has_preview": has_preview(self),
+            "guest_owner": (self.raw or {}).get("guest_owner"),
+            "guest_status": (self.raw or {}).get("guest_status"),
+            "guest_error": (self.raw or {}).get("guest_error"),
             "owned": self.owned,
             # **Not `tts_model_id`.** That name is a *serving* claim — Story
             # Studio drops any voice whose `tts_model_id` is not the model being
@@ -510,6 +513,9 @@ def _local_voices() -> list[Voice]:
                     # distribute this voice. False until he says so, per voice.
                     "permission_acknowledged": bool(entry.get("permission_acknowledged")),
                     "license": entry.get("license"),
+                    "guest_owner": entry.get("guest_owner"),
+                    "guest_status": entry.get("guest_status"),
+                    "guest_error": entry.get("guest_error"),
                 },
             )
         )
@@ -785,7 +791,7 @@ class VoiceRegistry:
         # Local voices are the owner's own and are on by default, matching how
         # Studio Hub models behave. Everything else is opt-in: a provider
         # library can hold tens of thousands of voices.
-        return voice.source == SOURCE_LOCAL
+        return voice.source == SOURCE_LOCAL and not (voice.raw or {}).get("guest_owner")
 
     def voices(
         self, *, provider_id: str | None = None, include_disabled: bool = True
@@ -811,7 +817,8 @@ class VoiceRegistry:
         return sorted(out, key=lambda v: (v.provider_id, v.display_name.lower()))
 
     def enabled_voices(self) -> list[Voice]:
-        return self.voices(include_disabled=False)
+        return [v for v in self.voices(include_disabled=False)
+                if not (v.raw or {}).get("guest_owner") or (v.raw or {}).get("guest_status") == "ready"]
 
     def find(self, voice_id: str) -> Voice | None:
         for voice in self.voices():
@@ -936,7 +943,7 @@ class VoiceRegistry:
         return len(self._data["custom"][provider_id]) != before
 
     # -- previews ---------------------------------------------------------
-    def preview(self, voice_id: str) -> tuple[bytes, str]:
+    def preview(self, voice_id: str, *, stored_only: bool = False) -> tuple[bytes, str]:
         """Fetch preview audio, proxied through the gateway.
 
         Proxying rather than handing the app a provider URL: preview URLs are
@@ -971,6 +978,8 @@ class VoiceRegistry:
                 media = response.headers.get("content-type", "").split(";")[0].strip()
                 return response.content, media or "audio/mpeg"
 
+        if stored_only:
+            raise KeyError("No stored sample is available.")
         # Nothing stored: synthesise a short sample through the provider.
         return self._synth_preview(voice)
 
@@ -1291,7 +1300,7 @@ def supports_cloning(provider_id: str, model_id: str) -> bool:
     return definition is not None and definition.kind in CLONING_KINDS
 
 
-def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:
+def voices_for_model(compound_model_id: str, *, guest_id: str = "") -> list[dict[str, Any]]:
     """Voices usable with a namespaced catalogue model id.
 
     Two different rules, because the providers genuinely differ:
@@ -1326,14 +1335,19 @@ def voices_for_model(compound_model_id: str) -> list[dict[str, Any]]:
     from .fleet import publish_id
 
     provider_id, _, raw_model = compound_model_id.partition(ID_SEPARATOR)
+    available = [v for v in voice_registry().voices() if
+                 (not (v.raw or {}).get("guest_owner") and voice_registry().is_enabled(v)) or
+                 (bool(guest_id) and ((v.raw or {}).get("guest_owner") or {}).get("guest_id") == guest_id) or
+                 (not guest_id and bool((v.raw or {}).get("guest_owner")) and voice_registry().is_enabled(v)
+                  and (v.raw or {}).get("guest_status") == "ready")]
     if not provider_id:
-        return [story_row(v) for v in voice_registry().enabled_voices()]
+        return [story_row(v) for v in available]
 
     accepted = accepted_voice_providers(provider_id, raw_model)
     takes_reference = reference_support(provider_id, raw_model)
 
     rows: list[dict[str, Any]] = []
-    for voice in voice_registry().enabled_voices():
+    for voice in available:
         if not ({voice.provider_id, publish_id(voice.provider_id)} & accepted):
             continue
         if voice.source == SOURCE_LOCAL and takes_reference is False:

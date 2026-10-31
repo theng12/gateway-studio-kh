@@ -184,6 +184,10 @@ def write_voice_files(entry: dict) -> None:
                 # Free-form labels, kept with the voice so a copied folder carries them.
                 # An older folder has none; readers return an empty list.
                 "tags": list(_read_tags(entry.get("tags"))),
+                "guest_owner": entry.get("guest_owner"),
+                "guest_status": entry.get("guest_status"),
+                "guest_error": entry.get("guest_error"),
+                "guest_permission": entry.get("guest_permission"),
             }, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -1230,6 +1234,8 @@ def import_found(
             # `transcript=False`: audio only, for a language the transcriber cannot understand.
             "include_reference_transcript": bool(transcript),
         })
+        if item.get("guest_owner"):
+            entry.update({key: item[key] for key in ("guest_owner", "guest_status", "guest_permission")})
         if original is not None:
             entry["original_path"] = str(original)
 
@@ -1319,6 +1325,42 @@ def restore(backup: str) -> dict:
 
 # ---------------------------------------------------------------------------
 # Making them usable: the segments
+
+
+def guest_transcribe(voice_id: str) -> None:
+    """Transcribe one guest clip and persist its actual outcome."""
+    entry = next((v for v in voices() if v.get("id") == voice_id), None)
+    if not entry:
+        return
+    segments = None
+    error = "No Studio Hub could transcribe this recording."
+    try:
+        with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+            for target in annotation_targets():
+                try:
+                    segments = _transcribe(client, target["base"], target["headers"],
+                                           Path(entry["reference_path"]), DEFAULT_TRANSCRIPTION_MODEL)
+                    if segments:
+                        break
+                    error = "Transcription returned no timed words."
+                except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"[:200]
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"[:200]
+    with guest_lock:
+        payload = _read_catalog()
+        for current in payload.get("voices") or []:
+            if current.get("id") == voice_id:
+                current["guest_status"] = "ready" if segments else "failed"
+                current["guest_error"] = None if segments else error
+                if segments:
+                    current["reference_segments"] = segments
+                write_voice_files(current)
+                _write_catalog(payload)
+                break
+
+
+guest_lock = threading.RLock()
 
 
 def parse_srt(text: str) -> list[dict]:
