@@ -2173,6 +2173,20 @@ def create_submit(request: Request, payload: dict[str, Any]) -> Any:
             f"{', '.join(internal)} is not a field this page sets; it is the Gateway's own.",
             "INTERNAL_PARAM",
         )
+    guest = guest_identity(request)
+    if guest and modality == "tts":
+        from .voices import resolve
+        for field in ("voice_id", "reference_id"):
+            value = str(params.get(field) or "")
+            if not value:
+                continue
+            voice = resolve(value)
+            if voice is None:
+                voice = resolve("studio-hub-local::" + value)
+            if voice is None or not _guest_can_see_voice(guest, voice) or (not (voice.raw or {}).get("guest_owner") and not voice_registry().is_enabled(voice)):
+                return _error(404, "Voice not found.")
+            if (voice.raw or {}).get("guest_owner") and (voice.raw or {}).get("guest_status") != "ready":
+                return _error(409, "This voice is not ready: " + str((voice.raw or {}).get("guest_error") or (voice.raw or {}).get("guest_status") or "transcription is pending"))
     # The model id belongs in the params the adapter reads; the console sends the
     # rest of the fields and never has to know which of them a lane wants.
     params = {**params, "model_id": model_id}
@@ -2673,8 +2687,14 @@ def _voice_tag_limits() -> dict[str, int]:
     return {"max_tags": MAX_TAGS, "max_length": TAG_MAX_LENGTH}
 
 
+def _guest_can_see_voice(guest: dict, voice: Any) -> bool:
+    owner = (voice.raw or {}).get("guest_owner")
+    return not owner or owner.get("guest_id") == guest.get("guest_id")
+
+
 @router.get("/api/voices", dependencies=[Depends(require_guest_or_admin)])
 def list_voices(
+    request: Request,
     provider_id: str | None = None,
     q: str | None = None,
     source: str | None = None,
@@ -2694,10 +2714,17 @@ def list_voices(
     `provider` rather than this route's own field spellings: those are the published
     names, and the console prints the published name.
     """
+    guest = guest_identity(request)
+    guest_id = str((guest or {}).get("guest_id") or "")
     if model_id:
         from .voices import tag_suggestions, voices_for_model
 
-        rows = voices_for_model(model_id)
+        rows = voices_for_model(model_id, guest_id=guest_id) if guest else voices_for_model(model_id)
+        if guest:
+            own = {v.id: v for v in voice_registry().voices() if _guest_can_see_voice(guest, v)}
+            rows = [{**r, **{k: v for k, v in own[r["id"]].as_dict().items()
+                              if k in ("guest_owner", "guest_status", "guest_error", "has_preview")}}
+                    for r in rows if r["id"] in own]
         if q:
             needle = q.strip().lower()
             rows = [
@@ -2708,6 +2735,8 @@ def list_voices(
                 or needle in (r.get("language") or "").lower()
             ]
         discovered = voice_registry().voices(provider_id=provider_id)
+        if guest:
+            discovered = [v for v in discovered if _guest_can_see_voice(guest, v)]
         return {
             "voices": rows,
             "matched": len(rows),
@@ -2716,7 +2745,7 @@ def list_voices(
             # to "for this model", and these are not it.
             "total": len(discovered),
             "enabled": sum(1 for v in discovered if voice_registry().is_enabled(v)),
-            "summary": voice_registry().summary(),
+            "summary": voice_registry().summary() if not guest else {"discovered": len(discovered), "enabled": sum(1 for v in discovered if voice_registry().is_enabled(v))},
             "tag_limits": _voice_tag_limits(),
             "tag_suggestions": tag_suggestions(discovered),
             "providers": [
@@ -2730,6 +2759,7 @@ def list_voices(
     rows = [
         voice.as_dict() | {"enabled": voices.is_enabled(voice)}
         for voice in voices.voices(provider_id=provider_id)
+        if not guest or _guest_can_see_voice(guest, voice)
     ]
     if source:
         rows = [r for r in rows if r["source"] == source]
@@ -2746,6 +2776,8 @@ def list_voices(
         ]
 
     discovered = voice_registry().voices(provider_id=provider_id)
+    if guest:
+        discovered = [v for v in discovered if _guest_can_see_voice(guest, v)]
     from .voices import tag_suggestions
 
     return {
@@ -2753,7 +2785,7 @@ def list_voices(
         "matched": len(rows),
         "total": len(discovered),
         "enabled": sum(1 for v in discovered if voice_registry().is_enabled(v)),
-        "summary": voice_registry().summary(),
+        "summary": voice_registry().summary() if not guest else {"discovered": len(discovered), "enabled": sum(1 for v in discovered if voice_registry().is_enabled(v))},
         # The editor prints the limits the server enforces, from the same constants.
         "tag_limits": _voice_tag_limits(),
         "tag_suggestions": tag_suggestions(discovered),
@@ -2937,6 +2969,133 @@ def voice_library(provider_id: str, q: str = "", page: int = 0) -> Any:
         "count": len(voices),
         "page": page,
     }
+
+
+# ponytail: one editable file covers both limits; add a settings screen if owners need one.
+GUEST_VOICE_LIMITS = {"max_clip_bytes": 25_000_000, "max_voices": 5}
+
+
+def guest_voice_limits() -> dict:
+    from .config import DATA_DIR
+    import json
+    try:
+        settings = json.loads((DATA_DIR / "guest-voice-limits.json").read_text())
+        if not isinstance(settings, dict):
+            return dict(GUEST_VOICE_LIMITS)
+        from .api import _MAX_UPLOAD_BODY, UPLOAD_ENVELOPE_BYTES
+        return {key: min(value, _MAX_UPLOAD_BODY - UPLOAD_ENVELOPE_BYTES) if key == "max_clip_bytes" else value
+                for key, default in GUEST_VOICE_LIMITS.items()
+                for value in [settings.get(key) if isinstance(settings.get(key), int) and not isinstance(settings.get(key), bool) and settings.get(key) > 0 else default]}
+    except (OSError, ValueError):
+        return dict(GUEST_VOICE_LIMITS)
+
+
+@router.get("/api/create/voice-limits", dependencies=[Depends(require_guest_or_admin)])
+def create_voice_limits() -> dict:
+    return guest_voice_limits()
+
+
+@router.post("/api/create/voices", dependencies=[Depends(require_guest_or_admin)])
+async def create_guest_voice(request: Request) -> Any:
+    import tempfile
+    import threading
+    from . import voice_import
+    from .sound_sources import probe_audio
+
+    guest = guest_identity(request)
+    if not guest:
+        return _error(403, "Sign in as a guest to add your voice here.")
+    form = await request.form()
+    if len(form.getlist("name")) != 1 or any(len(form.getlist(k)) != 1 for k in ("language", "permission", "file")) or set(form.keys()) != {"name", "language", "permission", "file"}:
+        await form.close()
+        return _error(422, "Only name, language, permission and an audio file are accepted.")
+    name, language = str(form.get("name") or "").strip(), str(form.get("language") or "").strip()
+    upload = form.get("file")
+    if (not name or len(name) > 200 or any(c in name for c in "/\\\\") or name.startswith("_")
+            or any(ord(c) < 32 for c in name)):
+        await form.close()
+        return _error(422, "Enter a voice name without a path or control characters.")
+    if not voice_import.LANGUAGE_RE.fullmatch(language):
+        await form.close()
+        return _error(422, "Enter a language code such as km or en.")
+    if form.get("permission") != "true":
+        await form.close()
+        return _error(422, "Confirm that you own this voice or have permission.")
+    if not hasattr(upload, "read"):
+        await form.close()
+        return _error(422, "Choose an audio recording.")
+    limits = guest_voice_limits()
+    data = await upload.read(limits["max_clip_bytes"] + 1)
+    await upload.close()
+    if len(data) > limits["max_clip_bytes"]:
+        return _error(413, f"The recording exceeds {limits['max_clip_bytes']} bytes.")
+    with tempfile.TemporaryDirectory(prefix="gateway-guest-voice-") as directory:
+        kind = (".wav" if data[:4] == b"RIFF" and data[8:12] == b"WAVE" else
+                ".flac" if data[:4] == b"fLaC" else ".mp3" if data[:3] == b"ID3" or
+                (len(data) > 1 and data[0] == 255 and data[1] & 224 == 224) else
+                ".m4a" if data[4:8] == b"ftyp" else ".ogg" if data[:4] == b"OggS" else "")
+        if not kind:
+            return _error(422, "That file is not a readable audio recording.")
+        source = Path(directory) / ("upload" + kind)
+        source.write_bytes(data)
+        probe = probe_audio(source)
+        if not probe or not probe.get("channels") or not probe.get("sample_rate"):
+            return _error(422, "That file is not a readable audio recording.")
+        with voice_import.guest_lock:
+            owned = [v for v in voice_import.voices() if (v.get("guest_owner") or {}).get("guest_id") == guest.get("guest_id")]
+            if len(owned) >= limits["max_voices"]:
+                return _error(409, f"You can add up to {limits['max_voices']} voices. Remove one first.")
+            digest = voice_import.clip_digest(source)
+            item = {"audio": source, "source": str(source), "digest": digest, "display_name": name,
+                    "full_name": name, "language": language, "gender": "", "transcript": "", "slug_id": "",
+                    "guest_owner": requested_by(request), "guest_status": "transcribing",
+                    "guest_permission": {"who": requested_by(request), "at": time.time()}}
+            result = voice_import.import_found([item], [], {str(source): voice_import.KEEP_BOTH})
+            if not result["imported"]:
+                return _error(409, "This recording could not be added; it may already be in the library.")
+            voice_id = result["imported"][0]["id"]
+            payload = voice_import._read_catalog()
+            entry = next(v for v in payload["voices"] if v.get("id") == voice_id)
+            entry.update({"guest_owner": requested_by(request), "guest_status": "transcribing",
+                          "guest_error": None, "guest_permission": {"who": requested_by(request), "at": time.time()}})
+            voice_import.write_voice_files(entry)
+            voice_import._write_catalog(payload)
+    threading.Thread(target=voice_import.guest_transcribe, args=(voice_id,), daemon=True).start()
+    return {"id": "studio-hub-local::" + voice_id, "status": "transcribing"}
+
+
+@router.post("/api/create/voices/remove", dependencies=[Depends(require_guest_or_admin)])
+def remove_guest_voice(request: Request, payload: dict[str, Any]) -> Any:
+    from . import voice_import
+    guest = guest_identity(request)
+    raw = voice_import.catalogue_id(payload.get("voice_id"))
+    with voice_import.guest_lock:
+        entry = next((v for v in voice_import.voices() if v.get("id") == raw), None)
+        if not guest or not entry or (entry.get("guest_owner") or {}).get("guest_id") != guest.get("guest_id"):
+            return _error(404, "Voice not found.")
+        try:
+            return voice_import.remove(raw)
+        except OSError as exc:
+            return _error(500, f"Could not move the voice to backups: {exc}")
+
+
+@router.get("/api/create/voices/{voice_id:path}/preview", dependencies=[Depends(require_guest_or_admin)])
+def create_voice_preview(request: Request, voice_id: str) -> Any:
+    from .voices import resolve, has_preview
+    voice = resolve(voice_id)
+    guest = guest_identity(request)
+    if not voice or (guest and (not _guest_can_see_voice(guest, voice) or
+            (not (voice.raw or {}).get("guest_owner") and not voice_registry().is_enabled(voice)))):
+        return _error(404, "Voice not found.")
+    if not has_preview(voice):
+        return _error(404, "No sample is available for this voice.")
+    try:
+        content, media = voice_registry().preview(voice_id, stored_only=True)
+        if not content:
+            return _error(404, "The sample is empty.")
+        return Response(content=content, media_type=media)
+    except (KeyError, OSError, httpx.HTTPError) as exc:
+        return _error(502, f"Could not play the sample: {exc}")
 
 
 @router.post("/api/voices/add", dependencies=[Depends(require_admin)])

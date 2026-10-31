@@ -104,7 +104,8 @@ GUEST_ALLOWED = {
     "/admin", "/admin/",
     "/admin/login", "/admin/logout",
     "/admin/api/create/models", "/admin/api/create", "/admin/api/create/transcription",
-    "/admin/api/create/video",
+    "/admin/api/create/video", "/admin/api/create/voice-limits", "/admin/api/create/voices",
+    "/admin/api/create/voices/remove", "/admin/api/create/voices/{voice_id:path}/preview",
     "/admin/api/create/status/{job_id}", "/admin/api/create/status/{job_id}/cancel",
     "/admin/api/voices", "/admin/api/jobs", "/admin/api/artifacts/keep",
     "/admin/api/artifacts/{job_id}/outputs/{asset_id}",
@@ -147,7 +148,7 @@ class DenyByDefault(_Base):
             if path in GUEST_ALLOWED:
                 allowed_seen.add(path)
                 # Allowed is not "open": it still needs the session, and this one has it.
-                response = client.get(path.replace("{job_id}", "x").replace("{asset_id}", "0")
+                response = client.get(path.replace("{job_id}", "x").replace("{asset_id}", "0").replace("{voice_id:path}", "x")
                                       if "GET" in methods else path.replace("{job_id}", "x"),
                                       cookies=cookies)
                 self.assertNotIn(response.status_code, (401, 403), f"{path} refused its own guest")

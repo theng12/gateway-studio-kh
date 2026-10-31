@@ -172,6 +172,7 @@ class _UploadTooLarge(Exception):
 _UPLOAD_CEILINGS: tuple[tuple["re.Pattern[str]", int, str, str], ...] = (
     (re.compile(r"^/v1/images/source-images$"), _MAX_UPLOAD_BYTES, "a source image", "upload"),
     (re.compile(r"^/v1/videos/source-images$"), _MAX_UPLOAD_BYTES, "a source image", "upload"),
+    (re.compile(r"^/admin/api/create/voices$"), _MAX_UPLOAD_BODY, "a voice recording", "upload"),
     (re.compile(r"^/admin/api/create/transcription$"), _MAX_UPLOAD_BODY, "a transcription upload",
      "upload"),
     (re.compile(r"^/admin/api/create/video$"), _MAX_UPLOAD_BYTES, "a source image", "upload"),
@@ -197,7 +198,7 @@ _BODY_CEILING_DEFAULT = 4 * 1024 * 1024
 #: The upload doors a **guest API key** may open. Both are the Create surface's own; every
 #: other upload door refuses the key at the route, so `_upload_credentials_ok` must not read
 #: a body for a request that is certain to be refused.
-_GUEST_UPLOAD_PATHS = frozenset({"/admin/api/create/transcription", "/admin/api/create/video"})
+_GUEST_UPLOAD_PATHS = frozenset({"/admin/api/create/transcription", "/admin/api/create/video", "/admin/api/create/voices"})
 
 #: A private render blob is a whole video, streamed by its own route against a size the caller
 #: declares and `render_service` checks. Capping it here would refuse real renders.
@@ -2820,6 +2821,9 @@ def voice_preview(voice_id: str) -> Response:
 
     Published as `preview_url` on the voice row, and only for voices that have one.
     """
+    voice = voice_registry().find(voice_id)
+    if voice and (voice.raw or {}).get("guest_owner") and (not voice_registry().is_enabled(voice) or (voice.raw or {}).get("guest_status") != "ready"):
+        raise GatewayError(404, "No preview is available for this voice.", "PREVIEW_NOT_FOUND")
     try:
         content, media_type = voice_registry().preview(voice_id)
     except KeyError as exc:
@@ -4750,6 +4754,8 @@ _GUEST_ALLOWED = re.compile(
     r"^/admin/?$"                                             # the page itself (it hides what it may not use)
     r"|^/admin/(login|logout)$"
     r"|^/admin/api/create/models$"
+    r"|^/admin/api/create/voice-limits$"
+    r"|^/admin/api/create/voices(?:/remove|/.+/preview)?$"
     r"|^/admin/api/create$"
     r"|^/admin/api/create/transcription$"
     r"|^/admin/api/create/video$"
