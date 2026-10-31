@@ -5023,6 +5023,45 @@ def fleet_machine_pause(controller_id: str, machine_id: str, payload: dict[str, 
         return JSONResponse(status_code=error.status, content=error.body)
 
 
+@router.post("/api/fleet/work-policy", dependencies=[Depends(require_admin)])
+def fleet_set_work_policy(payload: dict[str, Any]) -> Any:
+    """Apply one order to the listed {controller_id, machine_id} pairs, independently."""
+    machines, order = payload.get("machines"), payload.get("priority_order")
+    valid_order = (isinstance(order, list)
+                   and all(isinstance(item, str) and item in startup_control.WORK_PRIORITY_FUNCTIONS for item in order)
+                   and len(order) == len(set(order)))
+    valid_machines = (isinstance(machines, list) and bool(machines)
+                      and all(isinstance(row, dict) and set(row) == {"controller_id", "machine_id"}
+                              and all(isinstance(row[key], str) and row[key].strip() for key in row)
+                              for row in machines))
+    if set(payload) != {"machines", "priority_order"} or not valid_order or not valid_machines:
+        return _error(400, "Provide priority_order and a non-empty machines list of controller_id and machine_id pairs.",
+                      "BAD_WORK_POLICY_REQUEST")
+    if len({(row["controller_id"], row["machine_id"]) for row in machines}) != len(machines):
+        return _error(400, "Each Mac may appear only once.", "BAD_WORK_POLICY_REQUEST")
+    results = []
+    for row in machines:
+        result = {**row}
+        try:
+            answer = startup_control.set_node_work_policy(row["controller_id"], row["machine_id"], order)
+            if answer.get("ok") is False:
+                result.update(status="refused", code=answer.get("code"),
+                              detail=answer.get("detail") or "The Mac refused the order.")
+            elif answer.get("queued") is True:
+                result.update(status="queued", detail=answer.get("detail") or "Queued for the next check-in.")
+            elif answer.get("priority_order") == order:
+                result.update(status="applied", detail="Applied and confirmed by the Mac.")
+            else:
+                result.update(status="refused", detail=answer.get("detail") or "The Mac did not confirm this order.")
+        except startup_control.StartupError as error:
+            result.update(status="refused", code=error.body.get("code"),
+                          detail=error.body.get("detail") or "The Mac refused the order.")
+        except Exception as error:
+            result.update(status="refused", detail=f"Could not complete the request ({type(error).__name__}).")
+        results.append(result)
+    return {"results": results}
+
+
 @router.get(
     "/api/fleet/controllers/{controller_id}/machines/{machine_id}/work-policy",
     dependencies=[Depends(require_admin)],

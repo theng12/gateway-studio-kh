@@ -410,7 +410,7 @@ def set_node_work_policy(controller_id: str, machine_id: str, priority_order: ob
         audit_fields={"priority_order": priority_order}, client=client,
     )
     policy = answered.get("work_policy")
-    return policy if isinstance(policy, dict) else answered
+    return policy if isinstance(policy, dict) and answered.get("queued") is not True else answered
 
 
 def set_node_preferred_work(controller_id: str, machine_id: str, preferred_work: object, *,

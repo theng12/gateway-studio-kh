@@ -385,6 +385,37 @@ test('Work Priorities is read-only when the Mac\'s Hub answers no policy, and ot
   assert.deepEqual(JSON.parse(post.opts.body), { priority_order: ['voice'] });
 });
 
+test('one work order selects live site and memory rows and reports each outcome', async () => {
+  const rows = [machine({ machine: 'a', label: 'Alpha', memory_gb: 16 }),
+    machine({ machine: 'b', label: 'Beta', memory_gb: 16 }),
+    machine({ machine: 'c', label: 'Gamma', location_id: 'L2', location: 'Other', memory_gb: 32 })];
+  const ctx = context(payload(rows), { respond: (route, opts) => {
+    if (route === '/fleet') return payload(rows);
+    if (route === '/fleet/work-policy' && opts) return { results: [
+      { controller_id: 'L1', machine_id: 'a', status: 'applied', detail: 'Confirmed' },
+      { controller_id: 'L1', machine_id: 'b', status: 'queued', detail: 'Next check-in' },
+      { controller_id: 'L2', machine_id: 'c', status: 'refused', detail: 'Unsupported kind' },
+    ] };
+    return { priority_functions: [{ id: 'voice', title: 'Voice' }], priority_order: ['voice'] };
+  } });
+  await ctx.loadFleet();
+  node(ctx, 'fleet-bulk-source').value = '0';
+  await ctx.fleetBulkPriorityOpen({ disabled: false });
+  assert.match(node(ctx, 'fleet-dialog-body').innerHTML, /16 GB/);
+  node(ctx, 'fleet-bulk-memory').value = '16';
+  ctx.fleetBulkSelect();
+  assert.match(node(ctx, 'fleet-bulk-count').textContent, /2 Mac/);
+  ctx.fleetBulkTick(2, true);
+  assert.match(node(ctx, 'fleet-bulk-count').textContent, /3 Mac/);
+  await ctx.fleetBulkPrioritySave({ disabled: false });
+  const post = ctx.calls.find(c => c.route === '/fleet/work-policy');
+  assert.deepEqual(JSON.parse(post.opts.body).priority_order, ['voice']);
+  assert.equal(JSON.parse(post.opts.body).machines.length, 3);
+  assert.match(node(ctx, 'fleet-bulk-results').innerHTML, /Alpha.*Applied and confirmed/);
+  assert.match(node(ctx, 'fleet-bulk-results').innerHTML, /Beta.*Queued for check-in/);
+  assert.match(node(ctx, 'fleet-bulk-results').innerHTML, /Gamma.*Refused.*Unsupported kind/);
+});
+
 test('Install a model posts the package download and reports the run', async () => {
   const machineRow = machine({
     installable_models: [{ package_id: 'qwen-image-turbo', label: 'Qwen Image Turbo', size_gb: 8 }],

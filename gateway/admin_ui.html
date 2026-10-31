@@ -602,6 +602,12 @@
         <button type="button" onclick="fleetResetCounters(this)">Reset Job Counters…</button>
       </div>
       <div id="fleet-machine-action-note" role="status" aria-live="polite"></div>
+      <details class="card" id="fleet-bulk-priority">
+        <summary>Apply one work order to several Macs</summary>
+        <p class="hint">Choose a Mac to read its available work, then choose which Macs receive the order.</p>
+        <div class="row"><label>Read work kinds from <select id="fleet-bulk-source"></select></label>
+          <button type="button" onclick="fleetBulkPriorityOpen(this)">Make work order</button></div>
+      </details>
       <!-- Remote final rendering: one switch per Mac that publishes the final-render worker. Read when
            opened, so a Mac nobody asked about costs nothing. -->
       <details class="card" id="fleet-render-card">
@@ -6904,7 +6910,7 @@ function fleetPriorityBody() {
 }
 
 function fleetPriorityRender() {
-  const body = document.getElementById('fleet-dialog-body');
+  const body = document.getElementById('fleet-pri-editor') || document.getElementById('fleet-dialog-body');
   if (body) body.innerHTML = fleetPriorityBody();
 }
 
@@ -6936,6 +6942,82 @@ function fleetPriorityMove(id, direction) {
     break;
   }
   fleetPriorityRender();
+}
+
+async function fleetBulkPriorityOpen(button) {
+  const machines = (lastFleetPayload?.machines || []).filter(m => m.location_id && m.machine);
+  const source = machines[Number(document.getElementById('fleet-bulk-source').value)];
+  if (!source) return fleetNote('fleet-machine-action-note', 'Choose a Mac to read its work kinds.');
+  button.disabled = true;
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(source.location_id)}/machines/${fleetSeg(source.machine)}/work-policy`);
+    const policy = answer.queued ? null : fleetPriorityModel(answer);
+    if (!policy || !policy.functions.length) throw new Error('This Mac did not publish its work kinds.');
+    fleetPriorityState = { functions: policy.functions, included: new Set(policy.order), custom: policy.order.length > 0 };
+    const sites = [...new Map(machines.map(m => [String(m.location_id), m.location || m.location_id])).entries()];
+    const sizes = [...new Set(machines.map(m => m.memory_gb).filter(n => typeof n === 'number' && Number.isFinite(n)))].sort((a, b) => a - b);
+    fleetDialogOpen({ kind: 'bulk-priority', machines, selected: new Set(),
+      heading: 'Apply a work order',
+      text: `Work kinds read from ${source.label || source.machine}. Each selected Mac checks the order itself.`,
+      body: `<div id="fleet-pri-editor">${fleetPriorityBody()}</div>`
+        + `<h3>Choose Macs</h3><div class="row"><label>Site <select id="fleet-bulk-site" onchange="fleetBulkSelect()"><option value="">Any site</option>`
+        + sites.map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('') + `</select></label>`
+        + `<label>Memory <select id="fleet-bulk-memory" onchange="fleetBulkSelect()"><option value="">Any memory</option>`
+        + sizes.map(n => `<option value="${esc(n)}">${esc(n)} GB</option>`).join('') + `</select></label></div>`
+        + `<p class="hint">Choose filters to select matching Macs, then adjust the ticks by hand.</p>`
+        + `<div id="fleet-bulk-machines"></div><p id="fleet-bulk-count" role="status"></p><div id="fleet-bulk-results" aria-live="polite"></div>`,
+      actions: '<button type="button" class="primary" id="fleet-bulk-apply" onclick="fleetBulkPrioritySave(this)" disabled>Apply order</button>'
+        + '<button type="button" onclick="fleetDialogClose()">Close</button>',
+    });
+    fleetBulkRender();
+  } catch (e) { fleetNote('fleet-machine-action-note', `Work order unavailable — ${e.message}`); }
+  finally { button.disabled = false; }
+}
+
+function fleetBulkRender() {
+  const state = fleetDialogState;
+  if (!state || state.kind !== 'bulk-priority') return;
+  document.getElementById('fleet-bulk-machines').innerHTML = state.machines.map((m, i) =>
+    `<div><label class="check"><input type="checkbox" ${state.selected.has(i) ? 'checked ' : ''}`
+    + `onchange="fleetBulkTick(${i}, this.checked)"> ${esc(m.label || m.machine)} — ${esc(m.location || m.location_id)}`
+    + `${m.memory_gb == null ? '' : ` · ${esc(m.memory_gb)} GB`}</label></div>`).join('');
+  document.getElementById('fleet-bulk-count').textContent = `${state.selected.size} Mac(s) selected to receive this order.`;
+  document.getElementById('fleet-bulk-apply').disabled = !state.selected.size;
+}
+
+function fleetBulkTick(index, checked) {
+  if (checked) fleetDialogState.selected.add(index); else fleetDialogState.selected.delete(index);
+  fleetBulkRender();
+}
+
+function fleetBulkSelect() {
+  const state = fleetDialogState;
+  const site = document.getElementById('fleet-bulk-site').value;
+  const memory = document.getElementById('fleet-bulk-memory').value;
+  state.selected = new Set(state.machines.map((m, i) => ({ m, i })).filter(({ m }) =>
+    (!site || String(m.location_id) === site) && (!memory || String(m.memory_gb) === memory)).map(({ i }) => i));
+  fleetBulkRender();
+}
+
+async function fleetBulkPrioritySave(button) {
+  const state = fleetDialogState, current = fleetPriorityState;
+  if (!state || !current || !state.selected.size) return;
+  const selected = [...state.selected].map(i => state.machines[i]);
+  const priority_order = current.custom ? current.functions.filter(fn => current.included.has(fn.id)).map(fn => fn.id) : [];
+  button.disabled = true;
+  fleetDialogNote('Applying the order…');
+  try {
+    const answer = await api('/fleet/work-policy', fleetPayload({ priority_order,
+      machines: selected.map(m => ({ controller_id: m.location_id, machine_id: m.machine })) }));
+    document.getElementById('fleet-bulk-results').innerHTML = (answer.results || []).map(result => {
+      const m = selected.find(row => row.location_id === result.controller_id && row.machine === result.machine_id);
+      const label = m ? `${m.label || m.machine} — ${m.location || m.location_id}` : result.machine_id;
+      const status = result.status === 'applied' ? 'Applied and confirmed' : result.status === 'queued' ? 'Queued for check-in' : 'Refused';
+      return `<div>${esc(label)}: ${esc(status)} — ${esc(result.detail || '')}</div>`;
+    }).join('');
+    fleetDialogNote('Results for each Mac are shown below.');
+  } catch (e) { fleetDialogNote(`Could not apply the order — ${e.message}`); }
+  finally { button.disabled = false; }
 }
 
 async function fleetPriorityOpen(button, locationId, machineId) {
@@ -8571,6 +8653,13 @@ async function loadFleet(force) {
   if (state.view !== 'fleet') return;
   lastFleetPayload = d;
   fleetMachineRows = d.machines || [];
+  const bulkSource = document.getElementById('fleet-bulk-source');
+  if (bulkSource) {
+    const previous = bulkSource.value;
+    bulkSource.innerHTML = fleetMachineRows.filter(m => m.location_id && m.machine).map((m, i) =>
+      `<option value="${i}">${esc(m.label || m.machine)} — ${esc(m.location || m.location_id)}</option>`).join('');
+    if (previous && [...bulkSource.options].some(option => option.value === previous)) bulkSource.value = previous;
+  }
   fleetHealthSetting = d.fleet_health || fleetHealthSetting;
   fleetOrphanAutoStop = d.orphans_auto_stop === true;
   // Absent in an older Gateway's payload, or a value that is not a real boolean: both switches
