@@ -4136,6 +4136,16 @@ async def import_and_publish_archive(request: Request) -> Any:
         return _error(exc.status, str(exc), exc.code)
 
 
+@router.post("/api/content-library/releases/{release_id}/retry-cover", dependencies=[Depends(require_admin)])
+async def retry_content_cover(release_id: str) -> Any:
+    from . import content_delivery
+    try:
+        await run_in_threadpool(content_delivery.reconcile_covers)
+        return await run_in_threadpool(content_delivery.retry_cover, release_id)
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
 @router.get("/api/content-library/{digest}/archive", dependencies=[Depends(require_admin)])
 def export_content_archive(digest: str) -> Any:
     from . import content_packs

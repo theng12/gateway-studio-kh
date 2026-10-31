@@ -246,6 +246,8 @@ class ContentDeliveryTest(unittest.TestCase):
     def _publish(self, data: bytes):
         # One pack in, one product available: importing is the only publisher now,
         # and every identity fact comes from the archive's own manifest.
+        digest = self._preserve(data)
+        (content_packs.LIBRARY / digest / "cover.webp").write_bytes(_WEBP_BYTES)
         return self.client.post("/admin/api/content-library/import-and-publish", content=data)
 
     def _story_headers(self, key: str = "content-delivery-fixture-key") -> dict[str, str]:
@@ -538,6 +540,8 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         record = _record("no-cover")
         self._install_registry_records([record])
         self._publish(self._build_archive(record, "Plain Pack"))
+        release = next(row for row in content_delivery._read_state()["releases"] if row["pack_id"] == record["pack_id"])
+        (content_packs.LIBRARY / release["archive_sha256"] / "cover.webp").unlink()
         headers = self._story_headers()
         catalog = self.client.get("/v1/content/products", params={"story_version": "1.4.216"},
                                   headers=headers).json()
@@ -679,7 +683,7 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         self.assertTrue(product["owned"])
         self.assertEqual(product["credit_price"], 0)
         self.assertTrue(product["free"])
-        self.assertIsNone(product["cover"])
+        self.assertEqual(product["cover"]["alt"], "Private Ledger")
         self.assertIsNone(product["hero"])
         self.assertEqual(shelves.json()["shelves"][0]["product_ids"], [product["product_id"]])
         keys = public_key.json()

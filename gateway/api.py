@@ -733,6 +733,20 @@ def _pause_dispatch_on_term() -> None:
 async def lifespan(_: FastAPI):
     _pause_dispatch_on_term()
     worker.start()
+    # Cover jobs outlive the publishing request and are reconciled after restarts.
+    from . import content_delivery
+    cover_stop = threading.Event()
+
+    def finish_covers() -> None:
+        while not cover_stop.wait(2):
+            try:
+                if content_delivery._state_path().exists():
+                    content_delivery.reconcile_covers()
+            except Exception:
+                logging.getLogger("gateway.api").exception("Could not reconcile Content Pack covers")
+
+    cover_thread = threading.Thread(target=finish_covers, name="content-covers", daemon=True)
+    cover_thread.start()
     # Keeps the fleet snapshot warm so no request waits on an unreachable site.
     fleet.start_refresher()
     # Catalogue reads are memory copies from here on; the rebuild runs behind them.
@@ -784,6 +798,8 @@ async def lifespan(_: FastAPI):
             logging.getLogger("gateway.api").warning(
                 "shutdown: %d send(s) still unanswered after %.0fs: %s",
                 len(left), _SHUTDOWN_DRAIN_S, ", ".join(left))
+        cover_stop.set()
+        cover_thread.join(timeout=2)
         worker.stop()
         fleet.stop_refresher()
         notifier.stop()

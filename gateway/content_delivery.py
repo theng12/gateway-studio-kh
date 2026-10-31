@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
 import threading
 from typing import Any
 from urllib.parse import quote
@@ -364,6 +365,8 @@ def _available(release: dict[str, Any]) -> bool:
     measured ~155 ms per request. An entry whose stat changes is re-hashed, so a
     corrupted or replaced archive still reads as unavailable.
     """
+    if release.get("cover_pending"):
+        return False
     try:
         digest = release["archive_sha256"]
         expected = release["bytes"]
@@ -529,6 +532,11 @@ def _release_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
             "current": is_available and not is_retired and current.get(row.get("entitlement_family")) is row,
             "available": is_available,
         }
+        if row.get("cover_pending"):
+            entry["cover_status"] = "waiting for its cover"
+            entry["cover_detail"] = row.get("cover_detail") or "Image generation is queued."
+            if row.get("cover_job_id"):
+                entry["cover_job_id"] = row["cover_job_id"]
         if is_retired:
             entry["retired"] = True
             if row.get("retired_at"):
@@ -732,10 +740,151 @@ def publish_archive(digest: str, *, metadata: dict[str, Any] | None = None) -> d
             "bytes": len(data),
             "published_at": _now(),
         }
+        if release["kind"] != "visual-style" and cover_file(release) is None:
+            release["cover_pending"] = True
+            release["cover_detail"] = "Waiting for its cover; image generation has not started."
         state["releases"].append(release)
         _atomic_state(state)
+        if release.get("cover_pending"):
+            _queue_cover(release)
+            _atomic_state(state)
         public = next(row for row in _release_rows(state) if row["release_id"] == release["release_id"])
         return {"release": public, "replayed": False}
+
+
+def _queue_cover(row: dict[str, Any]) -> None:
+    """Queue only the configured local-fleet product; never fall back to a paid lane."""
+    from .api import _submit
+    from .catalog import catalog, decode_model_id
+    from . import fleet
+
+    model = config.get("GATEWAY_CONTENT_COVER_MODEL", "mflux-community/qwen-image-2-1-turbo-mflux-q4").strip()
+    match = next((item for item in catalog.rows("image")
+                  if decode_model_id(str(item.get("id") or "")) == (fleet.FLEET_PROVIDER_ID, model)
+                  and item.get("chargeable") is False), None)
+    if not match:
+        row["cover_detail"] = f"Waiting for its cover: local image model {model or '(not configured)'} is unavailable. Retry after it is available."
+        return
+    if match.get("locked"):
+        row["cover_detail"] = "Waiting for its cover: " + str(match.get("lock_reason") or "the local image model is unavailable.")
+        return
+    prompt = (f"Create an original, visually compelling cover image for {row['title']}. "
+              f"{row['description']} No lettering, text, typography, logos, or watermarks.")
+    try:
+        job, _ = _submit("image", match["id"], {"prompt": prompt},
+                         f"content-cover:{row['release_id']}:{row.get('cover_attempt', 0)}",
+                         caller="Content Pack covers")
+        row["cover_job_id"] = job["id"]
+        row["cover_detail"] = "Waiting for its cover: local image generation is queued."
+    except Exception as exc:
+        # Unknown exceptions may contain credentials; only Gateway's own errors are public.
+        from .api import GatewayError
+        detail = exc.detail if isinstance(exc, GatewayError) else "Could not queue local image generation."
+        row["cover_detail"] = f"Waiting for its cover: {detail} Retry cover generation."
+
+
+def _store_cover(row: dict[str, Any], job: dict[str, Any]) -> None:
+    from .store import artifacts_of
+
+    artifacts = artifacts_of(job)
+    if not artifacts:
+        raise ValueError("The image job returned no image.")
+    source = Path(artifacts[0]["path"])
+    if source.is_symlink() or not source.is_file() or source.stat().st_size < 1024 or source.stat().st_size > 50 * 1024 * 1024:
+        raise ValueError("The generated image is missing or has an invalid size.")
+    ffmpeg, ffprobe, cwebp = shutil.which("ffmpeg"), shutil.which("ffprobe"), shutil.which("cwebp")
+    if not ffmpeg or not ffprobe or not cwebp:
+        raise ValueError("ffmpeg, ffprobe and cwebp are required to verify and save the cover.")
+    try:
+        probe = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                "stream=width,height", "-of", "json", str(source)],
+                               capture_output=True, timeout=30, check=True)
+        streams = json.loads(probe.stdout).get("streams", [])
+        if not streams:
+            raise ValueError("The generated image has no decodable image stream.")
+        width, height = int(streams[0].get("width", 0)), int(streams[0].get("height", 0))
+        if min(width, height) < 256 or max(width, height) > 8192:
+            raise ValueError("The generated image dimensions must be between 256 and 8192 pixels.")
+        decoded = subprocess.run([ffmpeg, "-v", "error", "-i", str(source), "-frames:v", "1",
+                                  "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
+                                 capture_output=True, timeout=60, check=True).stdout
+        image = subprocess.run([cwebp, "-quiet", "-o", "-", "--", "-"], input=decoded,
+                               capture_output=True, timeout=60, check=True).stdout
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("The generated image could not be decoded and converted to WebP.") from exc
+    if len(image) < 1024 or len(image) > 50 * 1024 * 1024:
+        raise ValueError("The converted cover has an invalid size.")
+    folder = content_packs.LIBRARY / row["archive_sha256"]
+    if folder.is_symlink() or not folder.is_dir():
+        raise ValueError("The archive folder is unavailable or unsafe.")
+    temporary = folder / f".cover-{uuid4().hex}.tmp"
+    try:
+        with temporary.open("xb") as output:
+            output.write(image)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, folder / _COVER_FILE)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def reconcile_covers() -> None:
+    """Finish queued covers after restart as well as during normal operation."""
+    from .runtime import store
+
+    with _lock():
+        state = _read_state()
+        changed = False
+        for row in state["releases"]:
+            if not row.get("cover_pending"):
+                continue
+            if cover_file(row) is not None:
+                row.pop("cover_pending", None)
+                row.pop("cover_detail", None)
+                row.pop("cover_job_id", None)
+                changed = True
+                continue
+            job_id = row.get("cover_job_id")
+            if not job_id:
+                if row.get("cover_detail") == "Waiting for its cover; image generation has not started.":
+                    _queue_cover(row)
+                    changed = True
+                continue
+            job = store.get(job_id)
+            if not job or job.get("state") in ("failed", "cancelled"):
+                reason = (job or {}).get("error_detail") or "The image job was lost or cancelled."
+                row["cover_detail"] = f"Waiting for its cover: {reason} Retry cover generation."
+                row.pop("cover_job_id", None)
+                changed = True
+            elif job.get("state") == "succeeded":
+                try:
+                    _store_cover(row, job)
+                    row.pop("cover_pending", None)
+                    row.pop("cover_detail", None)
+                    row.pop("cover_job_id", None)
+                except (OSError, ValueError) as exc:
+                    row["cover_detail"] = f"Waiting for its cover: {exc} Retry cover generation."
+                    row.pop("cover_job_id", None)
+                changed = True
+        if changed:
+            _atomic_state(state)
+
+
+def retry_cover(release_id: str) -> dict[str, Any]:
+    with _lock():
+        state = _read_state()
+        row = next((item for item in state["releases"] if item.get("release_id") == release_id), None)
+        if not row or not row.get("cover_pending"):
+            raise DeliveryError("No release waiting for a cover matches that id.", 404, "CONTENT_COVER_NOT_PENDING")
+        if row.get("cover_job_id"):
+            raise DeliveryError("Cover generation is already running.", 409, "CONTENT_COVER_IN_PROGRESS")
+        row["cover_attempt"] = int(row.get("cover_attempt", 0)) + 1
+        row["cover_detail"] = "Waiting for its cover; image generation has not started."
+        _atomic_state(state)
+        _queue_cover(row)
+        _atomic_state(state)
+        return next(item for item in _release_rows(state) if item["release_id"] == release_id)
 
 
 def import_and_publish(data: bytes) -> dict[str, Any]:
@@ -875,7 +1024,7 @@ def _retired_pack_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
     (as `releases` publishes it), and `remove_from_installs_at` is unix seconds, which is the wire
     contract Story's client is built against.
     """
-    rows = [row for row in _release_rows(state) if row.get("retired")]
+    rows = [row for row in _release_rows(state) if row.get("retired") and not row.get("cover_status")]
     rows.sort(key=lambda row: (str(row.get("pack_id") or ""), _version(row["version"])))
     return [{
         "pack_id": row["pack_id"],
@@ -1002,7 +1151,8 @@ def release_history(family: str, state: dict[str, Any] | None = None) -> dict[st
     mismatch, on the same family.
     """
     state = state if state is not None else _configured_state()
-    matches = [row for row in state["releases"] if row["entitlement_family"] == family]
+    matches = [row for row in state["releases"] if row["entitlement_family"] == family
+               and not row.get("cover_pending")]
     if not matches:
         raise DeliveryError("No such private entitlement.", 404, "CONTENT_ENTITLEMENT_NOT_FOUND")
     public = {row["release_id"]: row for row in _release_rows(state)}

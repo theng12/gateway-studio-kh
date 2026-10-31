@@ -197,6 +197,89 @@ class ContentImportTests(unittest.TestCase):
         self.assertEqual(first["release"]["release_id"], second["release"]["release_id"])
         self.assertTrue(second.get("replayed"))
 
+    def test_required_cover_queue_failure_retry_and_visibility(self) -> None:
+        import struct
+        import zlib
+        from gateway import api, content_packs
+        from gateway.catalog import catalog, encode_model_id
+        from gateway.runtime import store
+
+        model = "mflux-community/qwen-image-2-1-turbo-mflux-q4"
+        model_id = encode_model_id("studio-hub", model)
+        rows = [{"id": model_id, "chargeable": False, "locked": False},
+                {"id": encode_model_id("paid", model), "chargeable": True}]
+        pack_id = "com.storystudio.pack.topic.cover-test-v1"
+        with patch.object(catalog, "rows", return_value=rows), patch.object(api, "_submit", return_value=({"id": "cover-job"}, True)) as submit:
+            result = content_delivery.import_and_publish(_archive(pack_id, title="Cover Test", kind="topic-pack"))
+            release = result["release"]
+            self.assertFalse(release["available"])
+            self.assertEqual(release["cover_status"], "waiting for its cover")
+            self.assertNotIn("Cover Test", [p["title"] for p in content_delivery.products("1.4.216")["products"]])
+            self.assertEqual(submit.call_count, 1)
+            args = submit.call_args.args
+            self.assertEqual(args[0:2], ("image", model_id))
+            self.assertIn("Cover Test", args[2]["prompt"])
+            self.assertIn("Cover Test description", args[2]["prompt"])
+            self.assertIn("No lettering", args[2]["prompt"])
+            with patch.object(store, "get", return_value={"state": "failed", "error_detail": "worker failed"}):
+                content_delivery.reconcile_covers()
+            failed = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)
+            self.assertIn("worker failed", failed["cover_detail"])
+            self.assertFalse(failed["available"])
+            from fastapi.testclient import TestClient
+            with TestClient(api.app, client=("127.0.0.1", 54321)) as client:
+                response = client.post(f"/admin/api/content-library/releases/{release['release_id']}/retry-cover")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(submit.call_count, 2)
+            self.assertNotEqual(submit.call_args_list[0].args[3], submit.call_args_list[1].args[3])
+            # A deterministic, nontrivial PNG is decoded and converted by the real tools.
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            pixels = b"".join(b"\0" + bytes((x * 7 + y * 11 + c * 37 + x * y) % 256 for x in range(256) for c in range(3)) for y in range(256))
+            png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 256, 256, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
+            source = _TEMP_ROOT / "generated.png"
+            source.write_bytes(png)
+            with patch.object(store, "get", return_value={"state": "succeeded", "asset_path": str(source)}):
+                content_delivery.reconcile_covers()
+            published = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)
+            self.assertTrue(published["available"], published)
+            cover = content_packs.LIBRARY / release["archive_sha256"] / "cover.webp"
+            self.assertEqual(cover.read_bytes()[:4], b"RIFF")
+            self.assertIn("Cover Test", [p["title"] for p in content_delivery.products("1.4.216")["products"]])
+
+    def test_unavailable_model_never_uses_paid_fallback(self) -> None:
+        from gateway import api
+        from gateway.catalog import catalog, encode_model_id
+        rows = [{"id": encode_model_id("paid", "mflux-community/qwen-image-2-1-turbo-mflux-q4"), "chargeable": True}]
+        with patch.object(catalog, "rows", return_value=rows), patch.object(api, "_submit") as submit:
+            release = content_delivery.import_and_publish(_archive(
+                "com.storystudio.pack.topic.no-local-v1", kind="topic-pack"))["release"]
+            self.assertFalse(release["available"])
+            self.assertIn("unavailable", release["cover_detail"])
+            submit.assert_not_called()
+
+    def test_existing_cover_style_and_legacy_release(self) -> None:
+        from gateway import content_packs
+        pack_id = "com.storystudio.pack.topic.cover-present-v1"
+        data = _archive(pack_id, kind="topic-pack")
+        entry = content_packs.import_archive(data)
+        cover = content_packs.LIBRARY / entry["archive_sha256"] / "cover.webp"
+        cover.write_bytes(b"existing cover")
+        with patch.object(content_delivery, "_queue_cover") as queue:
+            result = content_delivery.publish_archive(entry["archive_sha256"])
+            self.assertTrue(result["release"]["available"])
+            style = content_delivery.import_and_publish(_archive("com.storystudio.pack.style.cover-exempt-v1"))
+            self.assertTrue(style["release"]["available"])
+            queue.assert_not_called()
+        # A pre-existing release without a cover has no new pending marker.
+        with content_delivery._lock():
+            state = content_delivery._read_state()
+            row = next(r for r in state["releases"] if r["pack_id"] == pack_id)
+            row["archive_sha256"] = style["archive"]["archive_sha256"]
+            row["bytes"] = style["release"]["bytes"]
+            content_delivery._atomic_state(state)
+        self.assertTrue(next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)["available"])
+
     def test_setup_fails_closed_when_the_shipped_list_is_missing(self) -> None:
         """No shipped list is an authority that knows nothing, so setup must refuse."""
         with patch.object(content_delivery, "_HISTORICAL", _TEMP_ROOT / "absent.json"):

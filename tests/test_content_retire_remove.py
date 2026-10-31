@@ -91,6 +91,18 @@ class ContentRetireRemoveTest(unittest.TestCase):
                 shutil.rmtree(p)
         self.client = TestClient(app, base_url="http://127.0.0.1:8787", client=("127.0.0.1", 41001))
         content_delivery.setup()
+        # These tests exercise already-published releases; give each fixture a sidecar.
+        original_import = content_packs.import_archive
+
+        def import_with_cover(data):
+            result = original_import(data)
+            (content_packs.LIBRARY / result["archive_sha256"] / "cover.webp").write_bytes(b"fixture cover")
+            return result
+
+        from unittest.mock import patch
+        cover_fixture = patch.object(content_packs, "import_archive", side_effect=import_with_cover)
+        cover_fixture.start()
+        self.addCleanup(cover_fixture.stop)
 
     def tearDown(self) -> None:
         self.client.close()
