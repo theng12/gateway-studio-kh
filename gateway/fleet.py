@@ -774,26 +774,49 @@ def ruled_out(*names: object) -> bool:
     return any(token in str(name or "").lower() for name in names for token in NEVER_AUTO_ENABLED)
 
 
-def seed_enabled_installed(provider_id: str) -> dict:
-    """Switch on, at a newly added location, every model its own Hub reports installed and ready.
+def seed_enabled_installed(provider_id: str, inventory: Any = None) -> dict:
+    """Switch on, at a location, every model its own Hub reports installed and ready.
 
     The owner's rule (2026-10-09): *"a new group starts with every model it actually has installed switched
     on; you switch off what you don't want in the Gateway. Nothing copied from This Mac."* Installed and ready
     is the Hub's own `files_verified` + `eligible`, a catalogued model (not a dependency) the catalogue could
     publish (`can_publish`: not retired). `NEVER_AUTO_ENABLED` stays off. A model that already has a decision
     there keeps it; nothing else is written.
+
+    *owner, 2026-10-31: "models installed should be on"* — so this is no longer only the add's
+    seeding. `ModelInventory.refresh` runs it after **every** read of a location's inventory, which is
+    the same rule applied to the same facts, just not only once. `inventory` is the store to read and
+    write: always the one that just refreshed, never a second handle on the same file.
+
+    **`enabled` counts what is on now, not what this call switched on.** The rule runs on every read,
+    so a second run must not report "0 switched on" beside a page that had just switched five on.
     """
     from .providers import registry
 
+    # **Only a location's own models.** A cloud provider's catalogue is switched on by
+    # hand from the Models page, never by this rule, so a caller that arrives here
+    # with a vendor's id is refused rather than quietly enabling a vendor's rows.
+    if not is_location_provider(provider_id):
+        return {"provider_id": provider_id, "models_discovered": 0, "enabled": 0, "switched_on": 0,
+                "ruled_out": 0, "sentence": "Only a location's own installed models are switched on like this."}
+    inventory = inventory if inventory is not None else registry.models
     definition = registry.definition(provider_id)
-    rows = registry.models.models_for(provider_id, include_disabled=True)
+    if definition is None:
+        return {"provider_id": provider_id, "models_discovered": 0, "enabled": 0, "switched_on": 0,
+                "ruled_out": 0, "error": f"unknown provider '{provider_id}'",
+                "sentence": "This location is not on the roster any more, so nothing was switched on."}
+    rows = inventory.models_for(provider_id, include_disabled=True)
     ready = [m for m in rows if (m.get("raw") or {}).get("files_state") == "files_verified"
              and (m.get("raw") or {}).get("dispatch_state") == "eligible"
              and (m.get("raw") or {}).get("catalogued") is not False
-             and registry.models.can_publish(definition, m)]
+             and inventory.can_publish(definition, m)]
     kept_off = [m["model_id"] for m in ready if ruled_out(m["model_id"], (m.get("raw") or {}).get("package_id"))]
-    enabled = registry.models.enable_undecided(
-        provider_id, [m["model_id"] for m in ready if m["model_id"] not in kept_off])
+    wanted = [m["model_id"] for m in ready if m["model_id"] not in set(kept_off)]
+    switched_on = inventory.enable_undecided(provider_id, wanted)
+    # **What is on now.** Re-read, because the readiness filter above is the rule and the
+    # bucket is the owner's: a model the owner switched off is on neither list.
+    on = {m["model_id"] for m in inventory.models_for(provider_id, include_disabled=True) if m["enabled"]}
+    enabled = [mid for mid in wanted if mid in on]
     discovered = len({m["model_id"] for m in rows})
     if not discovered:
         sentence = "No models were discovered here, so nothing was switched on."
@@ -804,7 +827,24 @@ def seed_enabled_installed(provider_id: str) -> dict:
             sentence += f"; {len(set(kept_off))} ruled out by the owner left off"
         sentence += ". Switch off what you don't want under Models."
     return {"provider_id": provider_id, "models_discovered": discovered, "enabled": len(enabled),
-            "ruled_out": len(set(kept_off)), "sentence": sentence}
+            "switched_on": len(switched_on), "ruled_out": len(set(kept_off)), "sentence": sentence}
+
+
+def seed_installed_after_refresh(provider_id: str, result: Any, inventory: Any = None) -> dict:
+    """Switch on what a location has installed, after a read of its inventory that answered.
+
+    The rule above, run again — never a second rule. **A failed or partial read writes nothing**: a
+    Hub that did not answer is not a Hub saying "nothing is installed", and a catalogue that did not
+    answer is not an inventory that says what is ready. Either is this pass's ignorance; the next
+    read that does answer seeds. The result is a report, `{}` when nothing was written.
+    """
+    if result is None or getattr(result, "error", None) or getattr(result, "catalogue_missing", False):
+        return {}
+    try:
+        return seed_enabled_installed(provider_id, inventory)
+    except Exception:  # noqa: BLE001 - a seeding failure is never a discovery failure
+        log.warning("installed-model seeding failed for %s", provider_id, exc_info=True)
+        return {"provider_id": provider_id, "error": "seeding failed"}
 
 
 def reconcile_cached_locations() -> list[str]:

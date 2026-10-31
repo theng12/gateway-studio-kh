@@ -175,7 +175,23 @@ class ModelInventory:
                 # beside rows we could not refresh would mark them current.
                 entry["hub_version"] = str(hub_version).strip()
             self._save()
+        # **A model installed later on a location turns itself on** (owner, 2026-10-31:
+        # *"models installed should be on"*). The seeding used to run only when a
+        # location was created, so a model installed on a Mac that was already on the
+        # roster stayed off for ever. This is the one place that knows the read
+        # succeeded, and the rule is fleet's — late import, as `discovery` does for the
+        # local provider. A read that failed or came back partial writes nothing.
+        self._seed_installed(provider_id, result)
         return result
+
+    def _seed_installed(self, provider_id: str, result: Any) -> None:
+        """Switch on what a location has installed, now that its inventory has been read.
+
+        Never raises: a seeding failure is a log line, not a failed discovery.
+        """
+        from ..fleet import seed_installed_after_refresh  # late: fleet imports this module
+
+        seed_installed_after_refresh(provider_id, result, self)
 
     def refresh_all(self, *, only_enabled: bool = False) -> dict[str, dict[str, Any]]:
         outcomes: dict[str, dict[str, Any]] = {}
@@ -541,10 +557,18 @@ class ModelInventory:
     def remove_user_model(self, provider_id: str, model_id: str) -> None:
         with self._lock:
             bucket = self._data["user"].get(provider_id) or []
+            was_user = any(m.get("model_id") == model_id for m in bucket)
             self._data["user"][provider_id] = [
                 m for m in bucket if m.get("model_id") != model_id
             ]
-            (self._data["enabled"].get(provider_id) or {}).pop(model_id, None)
+            # **A decision is only erased for a model this route actually added.**
+            # The erase used to be unconditional, so removing a model the owner had
+            # switched **off** turned "off" back into "never decided" — and the next
+            # installed-model pass switched it on again. "Off" and "never decided" must
+            # not be able to look the same, so a decision about some other model stays
+            # where it is.
+            if was_user:
+                (self._data["enabled"].get(provider_id) or {}).pop(model_id, None)
             self._save()
 
     def cached_provider_ids(self) -> list[str]:
