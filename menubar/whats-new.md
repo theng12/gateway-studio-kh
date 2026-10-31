@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.221 — 2026-11-01
+
+- A model installed later on a Mac already in the fleet now switches on at the next inventory read. A model you switched off stays off, and removing a model no longer forgets that choice. A failed or partial read changes nothing, and a paused Mac stays paused.
+- A Mac whose memory could not be read keeps its image model, rather than having it changed on a guess.
+
 ## 0.2.220 — 2026-10-31
 
 - Fleet can apply one work order to the Macs you pick, by site, by memory size or by ticking them. Each Mac's result is listed: confirmed, queued for its next check-in, or refused and why. A silent Mac doesn't hold up the others.
