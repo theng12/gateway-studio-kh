@@ -132,6 +132,12 @@ def child_env(root: Path, profile: Path) -> dict[str, str]:
         GATEWAY_DATA=str(profile / "data"),
         STUDIOHUB_READY_FILE=str(profile / "no-hub.json"),
         GATEWAY_NO_MIGRATE="1",
+        # Never the owner's real iCloud Drive, drives or backups: listing them can wait for ever
+        # on a macOS permission answer when the gate runs outside an app (launchd).
+        GATEWAY_BACKUP_ICLOUD=str(profile / "backup-icloud"),
+        GATEWAY_BACKUP_LOCAL=str(profile / "backup-local"),
+        GATEWAY_BACKUP_VOLUMES=str(profile / "backup-volumes"),
+        GATEWAY_BACKUP_TRASH=str(profile / "backup-trash"),
         PYTHONDONTWRITEBYTECODE="1",
     )
     env["PYTHONPATH"] = os.pathsep.join(

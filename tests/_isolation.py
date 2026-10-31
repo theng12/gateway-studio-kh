@@ -52,5 +52,10 @@ def sandbox_env(prefix: str = "gateway-test-"):
         "GATEWAY_VOICES_OUT": str(root / "voices.json"),
         "STUDIOHUB_READY_FILE": str(root / "no-hub.json"),
         "GATEWAY_NO_MIGRATE": "1",
+        # Never the owner's real iCloud Drive or drives: see scripts/run_gate.py.
+        "GATEWAY_BACKUP_ICLOUD": str(root / "backup-icloud"),
+        "GATEWAY_BACKUP_LOCAL": str(root / "backup-local"),
+        "GATEWAY_BACKUP_VOLUMES": str(root / "backup-volumes"),
+        "GATEWAY_BACKUP_TRASH": str(root / "backup-trash"),
     })
     return tmp
