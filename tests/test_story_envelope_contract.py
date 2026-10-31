@@ -363,7 +363,7 @@ class VoicePreviewTests(_Case):
         self.assertIsNone(without["preview_url"])
 
     def test_the_public_preview_route_serves_the_sample_and_404s_without_one(self) -> None:
-        good = SimpleNamespace(preview=lambda vid: (b"audio", "audio/wav"))
+        good = SimpleNamespace(find=lambda vid: None, preview=lambda vid: (b"audio", "audio/wav"))
         with patch.object(api, "voice_registry", lambda: good):
             response = self.client.get("/v1/voices/studio-hub-x::v1/preview", headers=READ)
         self.assertEqual((response.status_code, response.content), (200, b"audio"))
@@ -371,8 +371,14 @@ class VoicePreviewTests(_Case):
         def none(vid):
             raise KeyError(vid)
 
-        with patch.object(api, "voice_registry", lambda: SimpleNamespace(preview=none)):
+        with patch.object(api, "voice_registry", lambda: SimpleNamespace(find=lambda vid: None, preview=none)):
             self.assertEqual(self.client.get("/v1/voices/nope/preview", headers=READ).status_code, 404)
+
+        # A guest's own voice stays private here until the owner enables it.
+        guest = SimpleNamespace(raw={"guest_owner": {"guest_id": "g"}, "guest_status": "ready"})
+        private = SimpleNamespace(find=lambda vid: guest, is_enabled=lambda v: False, preview=good.preview)
+        with patch.object(api, "voice_registry", lambda: private):
+            self.assertEqual(self.client.get("/v1/voices/g::v/preview", headers=READ).status_code, 404)
 
     def test_the_preview_route_needs_the_key(self) -> None:
         self.assertEqual(self.client.get("/v1/voices/a::b/preview").status_code, 401)
