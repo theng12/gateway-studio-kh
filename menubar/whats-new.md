@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.218 — 2026-10-31
+
+- Generated sound clips can be added on a Mac with no audio tool installed. The Gateway reads WAV and FLAC files itself. For MP3, OGG or M4A it now says it has no ffprobe to read that format, instead of calling a good file unreadable.
+- The Fleet page can set what work a Mac prefers and how long it holds for that work, with the choices that Mac publishes. A save reads as confirmed only once the Mac confirms it.
+- A nightly settings backup, with keys and passwords left out. It is off until you turn it on, reports its last success and last failure, keeps the last 14, and comes with a recovery guide.
+- Publishing a release unmounts its disk image by device, so it can never eject a real drive.
+
 ## 0.2.217 — 2026-10-30
 
 ### Organize voices with tags
