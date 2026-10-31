@@ -138,6 +138,10 @@ def sync() -> list[dict[str, Any]]:
     for item in view():
         if item["in_sync"] or not item["hub_supports"]:
             continue
+        # No model because this refresh could not read the Mac's memory is not a decision to clear
+        # it: site 1300 was sent None and then its model again, hundreds of times an hour.
+        if item["model"] is None and item["tier"] is None:
+            continue
         try:
             startup_control.set_node_image_model(item["controller_id"], item["machine"], item["model"])
             sent.append({"controller_id": item["controller_id"], "machine": item["machine"], "model": item["model"]})

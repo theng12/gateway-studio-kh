@@ -101,6 +101,14 @@ class ViewAndSync(Base):
         self.assertFalse(view["b"]["in_sync"])
         self.assertFalse(view["old"]["hub_supports"], "a Hub that predates the setting says so")
 
+    def test_sync_does_not_clear_a_mac_whose_memory_was_not_read(self):
+        row = {"controller_id": "c", "machine": "m", "model": None, "reason": "its memory size is not reported",
+               "tier": None, "in_sync": False, "hub_supports": True}
+        with mock.patch.object(self.ia, "view", return_value=[row]), \
+                mock.patch("gateway.startup_control.set_node_image_model") as send:
+            self.assertEqual(self.ia.sync(), [])
+        send.assert_not_called()
+
     def test_sync_sends_only_the_macs_whose_hub_reports_something_else(self):
         sent = []
         from gateway import startup_control
