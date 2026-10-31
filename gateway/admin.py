@@ -4190,7 +4190,7 @@ def content_library_cover(pack_id: str, version: str) -> Any:
         data = path.read_bytes()
     except OSError:
         return _error(404, "This pack has no cover image.", "CONTENT_COVER_NOT_FOUND")
-    return Response(data, media_type="image/webp", headers={
+    return Response(data, media_type="image/jpeg" if path.suffix == ".jpg" else "image/webp", headers={
         # A cover can be replaced in place without a new pack version, so this is
         # long but not immutable; the response is key-gated, so it stays private.
         "Cache-Control": "private, max-age=86400",

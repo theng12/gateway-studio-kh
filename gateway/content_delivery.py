@@ -46,6 +46,8 @@ _DIGEST = re.compile(r"[a-f0-9]{64}")
 _VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
 #: The cover sidecar's fixed name, beside `archive.sspack` in the archive bank.
 _COVER_FILE = "cover.webp"
+#: What the Gateway generates itself; a hand-placed WebP keeps winning.
+_COVER_JPEG = "cover.jpg"
 
 
 class DeliveryError(ValueError):
@@ -413,13 +415,17 @@ def cover_file(row: dict[str, Any]) -> Path | None:
     try:
         if folder.is_symlink():
             return None
-        path = folder / _COVER_FILE
-        if path.is_symlink():
-            return None
-        info = path.lstat()
+        for name in (_COVER_FILE, _COVER_JPEG):
+            path = folder / name
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(info.st_mode):
+                return path
     except OSError:
         return None
-    return path if stat.S_ISREG(info.st_mode) else None
+    return None
 
 
 def cover_for(pack_id: str, version: str, state: dict[str, Any] | None = None) -> Path | None:
@@ -792,38 +798,26 @@ def _store_cover(row: dict[str, Any], job: dict[str, Any]) -> None:
     source = Path(artifacts[0]["path"])
     if source.is_symlink() or not source.is_file() or source.stat().st_size < 1024 or source.stat().st_size > 50 * 1024 * 1024:
         raise ValueError("The generated image is missing or has an invalid size.")
-    ffmpeg, ffprobe, cwebp = shutil.which("ffmpeg"), shutil.which("ffprobe"), shutil.which("cwebp")
-    if not ffmpeg or not ffprobe or not cwebp:
-        raise ValueError("ffmpeg, ffprobe and cwebp are required to verify and save the cover.")
-    try:
-        probe = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
-                                "stream=width,height", "-of", "json", str(source)],
-                               capture_output=True, timeout=30, check=True)
-        streams = json.loads(probe.stdout).get("streams", [])
-        if not streams:
-            raise ValueError("The generated image has no decodable image stream.")
-        width, height = int(streams[0].get("width", 0)), int(streams[0].get("height", 0))
-        if min(width, height) < 256 or max(width, height) > 8192:
-            raise ValueError("The generated image dimensions must be between 256 and 8192 pixels.")
-        decoded = subprocess.run([ffmpeg, "-v", "error", "-i", str(source), "-frames:v", "1",
-                                  "-f", "image2pipe", "-vcodec", "png", "pipe:1"],
-                                 capture_output=True, timeout=60, check=True).stdout
-        image = subprocess.run([cwebp, "-quiet", "-o", "-", "--", "-"], input=decoded,
-                               capture_output=True, timeout=60, check=True).stdout
-    except (subprocess.SubprocessError, OSError, json.JSONDecodeError, TypeError) as exc:
-        raise ValueError("The generated image could not be decoded and converted to WebP.") from exc
-    if len(image) < 1024 or len(image) > 50 * 1024 * 1024:
-        raise ValueError("The converted cover has an invalid size.")
     folder = content_packs.LIBRARY / row["archive_sha256"]
     if folder.is_symlink() or not folder.is_dir():
         raise ValueError("The archive folder is unavailable or unsafe.")
-    temporary = folder / f".cover-{uuid4().hex}.tmp"
+    # /usr/bin/sips ships with macOS: the packaged Gateway has no ffmpeg or cwebp, and sips cannot write WebP.
+    temporary = folder / f".cover-{uuid4().hex}.jpg"
     try:
-        with temporary.open("xb") as output:
-            output.write(image)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, folder / _COVER_FILE)
+        probe = subprocess.run(["/usr/bin/sips", "-g", "pixelWidth", "-g", "pixelHeight", str(source)],
+                               capture_output=True, text=True, timeout=30, check=True).stdout
+        sizes = re.findall(r"pixel(?:Width|Height): (\d+)", probe)
+        if len(sizes) != 2:
+            raise ValueError("The generated image could not be read.")
+        if min(map(int, sizes)) < 256 or max(map(int, sizes)) > 8192:
+            raise ValueError("The generated image dimensions must be between 256 and 8192 pixels.")
+        subprocess.run(["/usr/bin/sips", "-s", "format", "jpeg", "-s", "formatOptions", "85", str(source),
+                        "--out", str(temporary)], capture_output=True, timeout=60, check=True)
+        if temporary.stat().st_size < 1024 or temporary.read_bytes()[:2] != b"\xff\xd8":
+            raise ValueError("The converted cover is not a usable image.")
+        os.replace(temporary, folder / _COVER_JPEG)
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise ValueError("The generated image could not be read and saved as a cover.") from exc
     finally:
         if temporary.exists():
             temporary.unlink()

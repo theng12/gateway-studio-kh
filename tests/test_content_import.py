@@ -232,19 +232,23 @@ class ContentImportTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(submit.call_count, 2)
             self.assertNotEqual(submit.call_args_list[0].args[3], submit.call_args_list[1].args[3])
-            # A deterministic, nontrivial PNG is decoded and converted by the real tools.
+            # A deterministic, nontrivial PNG goes through the real sips, with nothing else on PATH.
             def chunk(kind, data):
                 return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
             pixels = b"".join(b"\0" + bytes((x * 7 + y * 11 + c * 37 + x * y) % 256 for x in range(256) for c in range(3)) for y in range(256))
             png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 256, 256, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
             source = _TEMP_ROOT / "generated.png"
             source.write_bytes(png)
-            with patch.object(store, "get", return_value={"state": "succeeded", "asset_path": str(source)}):
+            with patch.dict(os.environ, {"PATH": "/nonexistent"}), patch.object(store, "get", return_value={"state": "succeeded", "asset_path": str(source)}):
                 content_delivery.reconcile_covers()
             published = next(r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id)
             self.assertTrue(published["available"], published)
-            cover = content_packs.LIBRARY / release["archive_sha256"] / "cover.webp"
-            self.assertEqual(cover.read_bytes()[:4], b"RIFF")
+            cover = content_packs.LIBRARY / release["archive_sha256"] / "cover.jpg"
+            self.assertEqual(cover.read_bytes()[:2], b"\xff\xd8")
+            self.assertEqual(content_delivery.cover_for(pack_id, release["version"]), cover)
+            with TestClient(api.app, client=("127.0.0.1", 54321)) as client:
+                served = client.get(f"/admin/api/content-library/covers/{pack_id}/{release['version']}")
+            self.assertEqual((served.status_code, served.headers["content-type"]), (200, "image/jpeg"))
             self.assertIn("Cover Test", [p["title"] for p in content_delivery.products("1.4.216")["products"]])
 
     def test_unavailable_model_never_uses_paid_fallback(self) -> None:
