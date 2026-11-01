@@ -124,7 +124,7 @@ class TheRowFollowsTheSameAnswerTest(unittest.TestCase):
         row = self._row(set())
         self.assertIs(row["locked"], True)
         self.assertEqual(row["availability"], "unavailable")
-        self.assertIn("No Mac offering this model is reachable", row["lock_reason"])
+        self.assertIn("No Mac able to run this model is available right now", row["lock_reason"])
 
 
 class TheSignatureSeesTheFleetAnswerTest(unittest.TestCase):

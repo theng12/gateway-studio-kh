@@ -331,7 +331,7 @@ class AvailabilityTests(unittest.TestCase):
         self.assertEqual(row["availability"], "unavailable")
         reason = row["lock_reason"] or ""
         # A sentence naming the outage, in the fleet's words...
-        self.assertIn("No Mac offering this model is reachable", reason)
+        self.assertIn("No Mac able to run this model is available right now", reason)
         self.assertIn("offline", reason)
         # ...and never an account/billing code, which is the one reason Story Studio's
         # locked-row sentence turns into an account restriction.

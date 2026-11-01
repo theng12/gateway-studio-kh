@@ -5252,6 +5252,55 @@ def usable_slots(row: dict, model_id: str, eligible: int) -> int:
                                        reachable_only=True), 0)
 
 
+#: When each (site, model) last stated it had a Mac for that model. One Mac missing a heartbeat
+#: reads `eligible 0` for a single fleet read, so a 0 inside the grace is a blip and not a fact;
+#: a 0 past it (or with nothing to protect) is the site's own answer. Keyed per model because
+#: Gemma 4 being gone at 1600 says nothing about Qwen at 1600.
+_ELIGIBLE_AT: dict[tuple[str, str], float] = {}
+
+
+def states_no_mac(row: dict, model_id: str, now: float | None = None) -> bool:
+    """Whether a site states it has **no** Mac that can run `model_id`.
+
+    `True` only for an explicit statement — `model_supply[model_id].eligible == 0`. Unstated
+    supply is unknown and never reads as "none": an older Hub that publishes no per-model row
+    keeps every fallback it had, and a value that is not a number is not a reading.
+
+    **One bad read is not an outage, and this is the same grace `usable_location_ids` gives a
+    slow site answer** (`LOCK_ANSWER_GRACE_S`). A site that stated `eligible > 0` inside the
+    grace still offers the model; past it, a 0 is the site's own answer. A site that has never
+    stated `eligible > 0` since this process started reads as none at once — there is no earlier
+    reading to protect, and the real case (1600 answering with nine Macs up and none for Gemma 4)
+    must not sit for 45 s before the door refuses it.
+
+    The same answer for the row and for routing, because both ask this one function.
+    """
+    supply = (row.get("model_supply") or {}).get(model_id)
+    if not isinstance(supply, dict):
+        return False
+    eligible = supply.get("eligible")
+    if isinstance(eligible, bool) or not isinstance(eligible, (int, float, str)):
+        return False
+    try:
+        eligible = int(eligible)
+    except (TypeError, ValueError):
+        return False
+    now = time.time() if now is None else now
+    key = (str(row.get("id") or ""), str(model_id))
+    if eligible > 0:
+        _ELIGIBLE_AT[key] = now
+        return False
+    if eligible != 0:
+        return False
+    stated_at = _ELIGIBLE_AT.get(key)
+    if stated_at is None:
+        return True
+    if now - stated_at > LOCK_ANSWER_GRACE_S:
+        _ELIGIBLE_AT.pop(key, None)
+        return True
+    return False
+
+
 def _weighted_tiebreak(routing_key: str, location_id: str, compatible_slots: int) -> float:
     """A weighted lottery draw: lower wins, and a bigger site wins more often.
 
@@ -5309,6 +5358,7 @@ def routing_candidates(
     model_id: str, modality: str, *, only_location: str | None = None,
     exclude_locations: set[str] | None = None,
     require_capability: str | None = None,
+    respect_model_supply: bool = True,
 ) -> list[dict]:
     """Every location that can run this model right now, with its pressure.
 
@@ -5328,6 +5378,11 @@ def routing_candidates(
     `require_capability` narrows that set further to the locations whose worker advertises a token
     (`edit` for a reference-guided image). It is a requirement, so a location without it is not a
     candidate — "may this site do this at all" — and its absence leaves the set exactly as it was.
+
+    `respect_model_supply=False` is for an image **pool**, which asks a different question: a pool
+    is a menu of models and a Mac assigned one of them, so the pool's own `assigned_macs` check is
+    the authority. Answering with a site's per-model statement here would drop a member a Mac is
+    assigned and can run. Everything else keeps the default.
     """
     from .providers import registry
 
@@ -5379,6 +5434,18 @@ def routing_candidates(
         # said so itself, deliberately, and re-offering it is what turned one job into 126
         # attempts against a Mac that could not answer any of them.
         if is_draining_provider(definition.id):
+            continue
+
+        # **A site that states it has no Mac for this model is not a candidate.** Its controller
+        # may answer perfectly — 1600 answers with nine Macs up and still has none for Gemma 4 —
+        # so "the site is reachable" is not the question. Falling through to `by_operation`, the
+        # site total and the reachable machine count would override the Hub's own statement and
+        # hand the job to a site that has no Mac to run it on; it then sits until the 3-hour
+        # ceiling. Skipping it here is what makes `route` return nothing when no site can take
+        # the model, and `catalog.resolve` return no route, so the submit is refused at the door.
+        # Unstated supply is unknown, never "none" (see `states_no_mac`), so an older Hub keeps
+        # every fallback below.
+        if respect_model_supply and states_no_mac(row, model_id):
             continue
 
         capacity = row.get("capacity") or {}
@@ -5711,9 +5778,14 @@ def pool_candidates(
     rows = {str(r.get("id")): r for r in snapshot(allow_stale=True).get("locations") or []}
     found: list[dict] = []
     for member in dict.fromkeys(pool_member_model(m) for m in members or [] if str(m).strip()):
+        # `respect_model_supply=False`: a pool is exempt from the per-model statement. Its own
+        # `assigned_macs` below is the authority — a Mac assigned this member and able to run it
+        # is what qualifies a site — and a site's `eligible 0` for one member is not a refusal of
+        # the pool, whose other members it may still run.
         for candidate in routing_candidates(member, modality, only_location=only_location,
                                             exclude_locations=exclude_locations,
-                                            require_capability=require_capability):
+                                            require_capability=require_capability,
+                                            respect_model_supply=False):
             if assigned_macs(rows.get(str(candidate.get("location_id"))) or {}, member, modality):
                 found.append({**candidate, "_member": member})
     return found
