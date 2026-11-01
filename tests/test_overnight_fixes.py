@@ -201,7 +201,9 @@ class RerouteLaneBudgetTests(_Base):
 class FleetOutageTests(unittest.TestCase):
     def setUp(self) -> None:
         hub_module._SILENT.clear()
+        hub_module._OK.clear()
         self.addCleanup(hub_module._SILENT.clear)
+        self.addCleanup(hub_module._OK.clear)
         for name, value in (("POLL_INTERVAL_S", 0.01), ("POLL_DROP_GRACE_S", 0.05)):
             patcher = patch.object(hub_module, name, value)
             patcher.start()
@@ -242,6 +244,18 @@ class FleetOutageTests(unittest.TestCase):
         self.silent_elsewhere("https://hub-b.test", "https://hub-c.test", since=600)
         with self.assertRaises(BackendError):
             self.poll("https://hub-a.test", silent_polls=10_000)
+
+    def test_a_remote_site_that_kept_answering_makes_it_the_sites_fault_not_ours(self) -> None:
+        # 2026-11-01: four controllers died together while the rest of the fleet kept answering, so
+        # this was not our network and the jobs belonged on a site that was still up. The three
+        # silences started 5 s ago and `hub-d` answered since then, so the outage never applies.
+        self.silent_elsewhere("https://hub-a.test", "https://hub-b.test",
+                              "https://hub-c.test", since=5)
+        hub_module._OK["https://hub-d.test"] = time.monotonic()
+        with self.assertRaises(BackendError) as caught:
+            self.poll("https://hub-a.test", silent_polls=300)
+        self.assertTrue(caught.exception.recovery["lost_contact"],
+                        "one remote site answering proves our side of the path works")
 
     def test_this_macs_own_hub_is_not_counted_as_a_remote_site(self) -> None:
         self.silent_elsewhere("https://hub-b.test", "http://127.0.0.1:47873")

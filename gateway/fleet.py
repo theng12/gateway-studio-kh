@@ -4368,6 +4368,20 @@ def _takes_customer_jobs(row: dict) -> bool:
     return row.get("drained") is not True
 
 
+def _able_workers(row: dict, model_id: str) -> list[dict]:
+    """The workers here that could run `model_id`: those listing it, less the Hub's memory refusals.
+
+    Shared by `no_free_mac` and `_all_able_offline` so the two can never disagree about which Macs
+    a question is even about. No such worker at all is "unknown" (an older Hub), never "none".
+    """
+    unfit = {str(m.get("machine")) for m in row.get("local_models") or []
+             if isinstance(m, dict) and model_id in (m.get("model_id"), m.get("model"))
+             and m.get("memory_eligible") is False}
+    return [w for w in row.get("workers") or []
+            if isinstance(w, dict) and model_id in (w.get("models") or [])
+            and str(w.get("machine")) not in unfit]
+
+
 def no_free_mac(row: dict, model_id: str) -> bool:
     """True when a location names the Macs that can run `model_id` and **every one is paused**.
 
@@ -4378,27 +4392,51 @@ def no_free_mac(row: dict, model_id: str) -> bool:
     has no node row). The Macs that could run the model are the workers that list it, less those the
     Hub says cannot fit it (`memory_eligible: False`). No such worker at all is "unknown" (an older
     Hub), never "all paused", so it changes nothing.
+
+    Paused is the whole of this question; a Mac that has gone **offline** is `_all_able_offline`,
+    asked beside it by `location_has_no_free_mac`, so that catalog's "you paused" never labels one.
     """
     paused = {str(n.get("id")) for n in row.get("nodes") or []
               if isinstance(n, dict) and n.get("paused") is True}
-    unfit = {str(m.get("machine")) for m in row.get("local_models") or []
-             if isinstance(m, dict) and model_id in (m.get("model_id"), m.get("model"))
-             and m.get("memory_eligible") is False}
-    able = [w for w in row.get("workers") or []
-            if isinstance(w, dict) and model_id in (w.get("models") or [])
-            and str(w.get("machine")) not in unfit]
+    able = _able_workers(row, model_id)
     return bool(able) and all(w.get("drained") is True or str(w.get("machine")) in paused
                               for w in able)
 
 
+def _all_able_offline(row: dict, model_id: str) -> bool:
+    """Every Mac here that could run `model_id` has gone offline, so none of them can take work.
+
+    **A controller whose Macs have all dropped keeps answering.** On 2026-10-31 its studios stopped
+    at 21:35 while the Fleet still read the location itself as reachable and eleven machines at it
+    as offline; seven free jobs accepted there waited 55 minutes until the studios were restarted by
+    hand, because `no_free_mac` counts only `paused`/`drained` and an offline Mac is neither, so the
+    stranded-queue door in `_poll_batch` never opened. The Hub still lists such workers with
+    `online: false` (measured live 2026-11-02: 56 of them at Shops, every one on a machine the
+    activity read calls `offline`).
+
+    Three answers, never two: `False` while any able worker is online — a site with one working Mac
+    is not dead; `False` when a worker states no `online` at all (an older Hub), because "not read"
+    is never "dead"; and `False` when the location names no able Mac, which stays unknown.
+    """
+    able = _able_workers(row, model_id)
+    return bool(able) and all(w.get("online") is False for w in able)
+
+
 def location_has_no_free_mac(provider_id: str, model_id: str) -> bool:
-    """`no_free_mac` for a provider id, from the warm snapshot. Unknown (no row, no read) is False."""
+    """`no_free_mac` for a provider id, or the same site with every able Mac offline.
+
+    From the warm snapshot. Unknown (no row, no read, no Mac named) is False. This is the predicate
+    `_stranded` polls while a free job sits queued at a location, so it is where "that site cannot
+    take this" has to cover both ways a site stops being able to.
+    """
     location_id = controller_id_from(provider_id)
     try:
         rows = snapshot(allow_stale=True).get("locations") or []
     except Exception:  # noqa: BLE001 - a routing hint must never break a job
         return False
-    return any(str(row.get("id")) == location_id and no_free_mac(row, model_id) for row in rows)
+    return any(str(row.get("id")) == location_id
+               and (no_free_mac(row, model_id) or _all_able_offline(row, model_id))
+               for row in rows)
 
 
 def publishes_model(row: dict, model_id: str) -> bool | None:
