@@ -208,6 +208,20 @@ check(tooltip.contains("100 Mb/s"), "the second hint is missing from the tooltip
 check(FleetHealth.causeHealth(flapping.causes) == .warn, "a real fault is not amber")
 check(FleetHealth.causeHealth([FleetCause(code: "no_evidence", text: "No evidence yet", evidence: nil)]) == .off,
       "no evidence drew as a fault")
+// **A reason this Gateway named itself draws amber, like the severity it carries.** The Gateway
+// classifies every code beside it (`CAUSE_SEVERITIES`) and this app has no list of codes of its
+// own: a code it has never heard of is one the Gateway judged, never a healthy one.
+let namedByGateway = FleetCause(code: "studio_down",
+                                text: "One of its studios is not running, so this Mac cannot take that kind of work.",
+                                evidence: "Voice studio not running")
+check(FleetHealth.causeHealth([namedByGateway]) == .warn,
+      "a studio this Gateway watched go down did not draw amber")
+check(FleetHealth.causeLine([namedByGateway])?.contains("not running") == true,
+      "the cause line lost the Gateway's sentence")
+check(FleetHealth.causeHealth([FleetCause(code: "hub_flagged",
+                                          text: "Its Hub reports a problem this Gateway cannot see from outside.",
+                                          evidence: "Its Hub says: Flagged by its Hub")]) == .warn,
+      "a Hub-only verdict did not draw amber")
 check(FleetHealth.causeLine(nil) == nil, "a machine with no causes invented one")
 
 // MARK: Last seen — what the Seen column sorts on

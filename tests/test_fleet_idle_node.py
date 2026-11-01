@@ -35,9 +35,11 @@ class IdleNode(unittest.TestCase):
         rows = {row["machine"]: row for row in fleet.machines_flat([_location(health)])}
         self.assertEqual(rows["n-1108"]["state"], "needs_attention")
         self.assertIn("No model is ready on this Mac (3 of 3 need downloading)", rows["n-1108"]["attention"])
+        self.assertEqual(rows["n-1108"]["attention_code"], "no_model_ready")
         # One ready model is enough to take work: the sibling stays Ready.
         self.assertEqual(rows["n-1109"]["state"], "ready")
         self.assertIsNone(rows["n-1109"]["attention"])
+        self.assertIsNone(rows["n-1109"]["attention_code"])
 
     def test_a_hub_that_reports_no_model_health_is_left_as_it_said(self):
         rows = {row["machine"]: row for row in fleet.machines_flat([_location([])])}

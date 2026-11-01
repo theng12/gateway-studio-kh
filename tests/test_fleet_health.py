@@ -222,6 +222,68 @@ class RealProblemsStillShowByName(unittest.TestCase):
         self.assertIn("running_stalled", loud(issues))
 
 
+class EveryAttentionReasonCarriesItsCode(unittest.TestCase):
+    """`attention` is the sentence; `attention_code` is what says what it is.
+
+    Without the code, every one of these was drawn as "Its Hub reports a problem this Gateway cannot
+    see from outside" — including a studio this Gateway watched go down and a job it watched fail.
+    A healthy row carries neither.
+    """
+
+    def row(self, row: dict, mid: str = "node-1") -> dict:
+        flat, _, _ = read(row)
+        return flat[mid]
+
+    def test_a_studio_that_should_run_and_is_not(self) -> None:
+        row = group(1)
+        next(w for w in row["workers"] if w["id"] == "node-1:voice").update(online=False, ready=False)
+        got = self.row(row)
+        self.assertEqual(got["state"], "needs_attention")
+        self.assertEqual(got["attention"], "Voice studio not running")
+        self.assertEqual(got["attention_code"], "studio_down")
+
+    def test_a_studio_that_is_up_but_not_ready(self) -> None:
+        row = group(1)
+        next(w for w in row["workers"] if w["id"] == "node-1:voice").update(ready=False)
+        got = self.row(row)
+        self.assertEqual((got["attention"], got["attention_code"]),
+                         ("Voice studio not ready", "studio_not_ready"))
+
+    def test_a_job_that_stopped_making_progress(self) -> None:
+        row = group(1)
+        entry = idle_entry("node-1")
+        entry["stalled_seconds"] = 900
+        row["activity"]["machines"][1] = entry
+        got = self.row(row)
+        self.assertEqual((got["attention"], got["attention_code"]),
+                         ("No progress for 15 min", "job_stalled"))
+
+    def test_a_health_word_the_hub_stated(self) -> None:
+        row = group(1)
+        row["machines"][1]["health"] = "degraded"
+        got = self.row(row)
+        self.assertEqual((got["attention"], got["attention_code"]),
+                         ("Health: degraded", "health_word"))
+
+    def test_a_job_that_failed_in_the_last_quarter_hour(self) -> None:
+        row = group(1)
+        row["activity"]["machines"][1] = idle_entry("node-1", latest_state="error", ago=120)
+        got = self.row(row)
+        self.assertEqual(got["attention_code"], "recent_job_failed")
+        self.assertTrue(got["attention"].startswith("Last job failed"))
+
+    def test_a_verdict_only_the_hub_can_give(self) -> None:
+        row = group(1)
+        row["workers"] = [w for w in row["workers"] if w["studio"] != "video"]
+        got = self.row(row)
+        self.assertEqual((got["attention"], got["attention_code"]),
+                         ("Flagged by its Hub", "hub_flagged"))
+
+    def test_a_mac_reading_healthy_has_neither(self) -> None:
+        got = self.row(group())
+        self.assertEqual((got["attention"], got["attention_code"]), (None, None))
+
+
 class VersionBadges(unittest.TestCase):
     def test_behind_and_not_updating_is_a_warning_naming_the_mac_and_its_version(self) -> None:
         row = group(2)

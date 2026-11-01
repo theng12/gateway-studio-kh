@@ -2991,8 +2991,8 @@ def _studio_word(worker: dict) -> str:
 
 
 def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: object,
-               now: float) -> tuple[str, str | None]:
-    """Re-read a Hub `needs_attention` against what can be seen: `(state, why)`.
+               now: float) -> tuple[str, str | None, str | None]:
+    """Re-read a Hub `needs_attention` against what can be seen: `(state, why, code)`.
 
     The Hub says "needs attention" for a reachable Mac with any studio down, and (≤ 0.6.132) for any
     Mac whose newest job failed, however long ago. Both made a healthy idle fleet read amber: the
@@ -3001,6 +3001,12 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
     a failure in the last 15 minutes (not a TTS_SECTION_* quality rejection, which the Hub re-makes),
     a stalled job, a health word — and says which. When the only
     cause is one of those two artefacts, the state is worked out again the way the Hub would.
+
+    **The code travels with the sentence.** Five of these six reasons are this Gateway's own read of
+    the Mac (a studio down, a job stalled, a job that failed), and quoting them as "Its Hub reports a
+    problem this Gateway cannot see from outside" told the owner to go and look somewhere else. Only
+    the last one is genuinely the Hub's word alone. Each reason names its code so `machine_causes`
+    can state a plain sentence of its own, keeping `why` as the evidence.
     """
     latest = entry.get("latest") if isinstance(entry.get("latest"), dict) else {}
     finished = _num(latest.get("finished_at")) or _num(latest.get("observed_at"))
@@ -3008,33 +3014,36 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
     down = [w for w in workers if w.get("online") is False and w not in phantom]
     if down:
         names = ", ".join(sorted({_studio_word(w) for w in down}))
-        return "needs_attention", f"{names} studio not running"
+        return "needs_attention", f"{names} studio not running", "studio_down"
     stuck = [w for w in workers if w.get("online") and w.get("ready") is False and not w.get("busy")
              and not w.get("drained") and not w.get("maintenance")]
     if stuck:
-        return "needs_attention", ", ".join(sorted({_studio_word(w) for w in stuck})) + " studio not ready"
+        return ("needs_attention",
+                ", ".join(sorted({_studio_word(w) for w in stuck})) + " studio not ready",
+                "studio_not_ready")
     stalled = _num(entry.get("stalled_seconds"))
     if stalled:
-        return "needs_attention", f"No progress for {int(stalled // 60)} min"
+        return "needs_attention", f"No progress for {int(stalled // 60)} min", "job_stalled"
     if str(health or "up").strip().lower() not in {"up", ""}:
-        return "needs_attention", f"Health: {health}"
+        return "needs_attention", f"Health: {health}", "health_word"
     reason = str(latest.get("error_code") or "").strip()
     # A quality rejection (TTS_SECTION_*) means the Hub's check caught one bad piece and re-made it.
     failed_now = (latest.get("state") == "error" and age is not None and age < ATTENTION_ERROR_S
                   and not reason.startswith("TTS_SECTION_"))
     if failed_now:
-        return "needs_attention", "Last job failed" + (f": {reason[:80]}" if reason else "")
+        return ("needs_attention", "Last job failed" + (f": {reason[:80]}" if reason else ""),
+                "recent_job_failed")
     old_failure = latest.get("state") == "error"
     if not phantom and not old_failure:
         # The Hub saw something this Gateway cannot: keep its verdict, and say only that.
-        return "needs_attention", "Flagged by its Hub"
+        return "needs_attention", "Flagged by its Hub", "hub_flagged"
     if isinstance(entry.get("current_job"), dict):
-        return "working", None
+        return "working", None, None
     if age is None:
-        return "ready", None
+        return "ready", None, None
     if latest.get("state") == "done" and age < ATTENTION_ERROR_S:
-        return "just_finished", None
-    return ("long_idle" if age >= _LONG_IDLE_S else "ready"), None
+        return "just_finished", None, None
+    return ("long_idle" if age >= _LONG_IDLE_S else "ready"), None, None
 
 
 def machines_flat(rows: list[dict]) -> list[dict]:
@@ -3115,9 +3124,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             node = nodes.get(mid) or {}
             workers = workers_by_machine.get(mid, [])
             phantom = [w for w in workers if _not_installed(w, _running_studios(startup))]
-            state, why = entry.get("state"), None
+            state, why, code = entry.get("state"), None, None
             if str(state or "").lower() == "needs_attention":
-                state, why = _attention(entry, workers, phantom, machine.get("health"), now)
+                state, why, code = _attention(entry, workers, phantom, machine.get("health"), now)
             # **A Mac with no model it can run is not "Ready".** Its studios are up, so the Hub calls
             # it ready, but routing never picks it: 1108 sat "Ready · 0 done · 0 failed" for days with
             # no model files at all (every model `download_required`) while its siblings worked.
@@ -3125,14 +3134,14 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             if states and "ready" not in states and str(state or "").lower() in {
                     "ready", "long_idle", "just_finished"}:
                 missing = states.count("download_required")
-                state, why = "needs_attention", (
+                state, why, code = "needs_attention", (
                     f"No model is ready on this Mac ({missing} of {len(states)} need downloading), "
                     "so it is never given a job" if missing
-                    else "No model is ready on this Mac, so it is never given a job")
+                    else "No model is ready on this Mac, so it is never given a job"), "no_model_ready"
             # A workstation Mac the shop is using (or in its quiet hours) is busy for now, not offline and not
             # needing attention: its state is the workstation's word. A job still finishing there stays `working`.
             if workstation_resting({"workstation": workstation}) and str(state or "").lower() != "working":
-                state, why = workstation["state"], None
+                state, why, code = workstation["state"], None, None
             # A node's own Hub version, as its controller last read it; the controller's own Mac is
             # the controller's version.
             version = node.get("version") or (startup or {}).get("app_version") \
@@ -3147,6 +3156,11 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             return {
                 "state": state,
                 "attention": why,
+                # The code that says *what* `attention` is, beside it on the row so the Likely-cause
+                # cell can state a sentence of its own instead of quoting the Hub for a studio this
+                # Gateway watched go down. `None` with `attention` set means an older row that never
+                # carried one: the reader falls back to the Hub's own wording.
+                "attention_code": code,
                 "hub_version": version,
                 "version_status": version_status(
                     version, latest,

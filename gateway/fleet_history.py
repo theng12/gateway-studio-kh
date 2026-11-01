@@ -715,6 +715,23 @@ def _clock_at(epoch: float | None) -> str:
     return time.strftime("%b %d, %H:%M", time.localtime(epoch))
 
 
+#: What each `attention_code` from `fleet._attention` means, in a sentence a person can act on.
+#:
+#: Every code here is a fact **this Gateway read itself** — a studio it watched stop, a job it
+#: watched stop moving, a job it watched fail — and each keeps its own `attention` as the evidence.
+#: (The seventh reason, `hub_flagged`, is the Hub's word alone and is drawn further down.) Severity
+#: is `warn` for all of them: the Mac is answering (the only red is a site, controller, Hub or Mac
+#: that is not, or a refused credential), so an amber row is honest.
+ATTENTION_CAUSES = {
+    "studio_down": "One of its studios is not running, so this Mac cannot take that kind of work.",
+    "studio_not_ready": "One of its studios is up but not ready, so it cannot take work yet.",
+    "job_stalled": "Its current job has stopped making progress.",
+    "health_word": "Its Studio Hub reports its own health as something other than up.",
+    "recent_job_failed": "Its most recent job failed.",
+    "no_model_ready": "No model is ready on this Mac, so routing never gives it work.",
+}
+
+
 def machine_causes(machine: dict, history: dict, site: dict | None, threshold: int,
                    latest: dict | None = None) -> list[dict]:
     """Every hint the evidence supports for one Mac, strongest first. Never a guess.
@@ -864,15 +881,25 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
     # **A Mac its own Hub flagged is not "nothing wrong".** `needs_attention` carries a reason
     # (`fleet._attention`) that the page draws in amber, and the Likely-cause cell used to answer
     # "Nothing wrong reported" beside it — the two sentences contradicting each other on the same
-    # row (seen live on terranash-1403, 2026-10-30). The reason has no cause code of its own
-    # because it is the Hub's word, not a measurement this Gateway made, so the smallest truthful
-    # answer is that word: name it, quote it, and claim nothing more.
+    # row (seen live on terranash-1403, 2026-10-30).
+    #
+    # The reason now carries the code that says what it is, and most of those codes are this
+    # Gateway's own read: quoting a studio it watched go down as "the Hub reports a problem this
+    # Gateway cannot see" sent the owner somewhere else to look. Those get a sentence of their own
+    # with the reason as evidence; only a reason this Gateway has no code for — genuinely the Hub's
+    # word alone, an older Gateway's cached row, or a code this build does not know — keeps the old
+    # wording, which stays true for all three.
     attention = str(machine.get("attention") or "").strip()
-    if attention:
+    code = str(machine.get("attention_code") or "").strip()
+    if attention or str(machine.get("state") or "").lower() == "needs_attention":
+        if code in ATTENTION_CAUSES:
+            return [_cause(code, ATTENTION_CAUSES[code], attention, severity="warn")]
         return [_cause(
-            "hub_attention",
+            "hub_flagged",
             "Its Hub reports a problem this Gateway cannot see from outside.",
-            f"Its Hub says: {attention}", severity="warn")]
+            f"Its Hub says: {attention}" if attention
+            else "Its Hub marked this Mac as needing attention without saying why.",
+            severity="warn")]
     return [NOTHING_WRONG]
 
 
