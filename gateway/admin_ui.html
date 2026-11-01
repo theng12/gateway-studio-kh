@@ -767,6 +767,22 @@
 
     </div>
 
+    <section class="card shelf-section" id="archive-bank-section" aria-labelledby="archive-bank-heading">
+      <div class="body">
+        <h2 id="archive-bank-heading">Preserved archives</h2>
+        <p>Keep an exact copy of a <code>.sspack</code> here without adding it to the shelf.
+        Possession of the file is enough to install it; the shelf is optional. Nothing is installed or published here.</p>
+        <label for="archive-preserve-files">Pack file (.sspack, up to 50 MiB each)</label>
+        <input id="archive-preserve-files" type="file" accept=".sspack" multiple>
+        <div class="row" style="margin-top:12px">
+          <button id="archive-preserve-add" class="primary" onclick="preservePackArchives(this)">Preserve Archives</button>
+          <button id="archive-refresh" onclick="loadPreservedArchives()">Refresh Archive Bank</button>
+        </div>
+        <div id="archive-preserve-message" class="msg" role="status" aria-live="polite"></div>
+        <div id="archive-bank-list" style="margin-top:12px" aria-live="polite"></div>
+      </div>
+    </section>
+
   </section>
 </main>
 
@@ -943,7 +959,7 @@ function setView(view) {
   document.getElementById('view-packs').style.display = view === 'packs' ? '' : 'none';
   if (view === 'models') { loadModels(); loadFreshness(); }
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
-  else if (view === 'packs') loadContentShelf();
+  else if (view === 'packs') { loadContentShelf(); loadPreservedArchives(); }
   else if (view === 'fleet') loadFleet();
   else if (view === 'jobs') loadJobs();
   else loadCreate();
@@ -1164,6 +1180,142 @@ async function addReceivedPack(button) {
   } else {
     message.className = 'msg good';
     message.textContent = `${added} pack${added === 1 ? '' : 's'} added to the shelf and available to Story Studio.`;
+  }
+}
+
+// Preserved archives are the offline copy: exact `.sspack` bytes kept without
+// setting up or publishing anything. The bank reads the existing inventory, so a
+// download is by digest and survives a refresh or a later visit.
+const ARCHIVE_MAX_BYTES = 50 * 1024 * 1024;
+const ARCHIVE_DIGEST = /^[a-f0-9]{64}$/;
+const archiveState = {busy:false, refresh:0, rows:[]};
+const archiveNode = id => document.getElementById('archive-' + id);
+function archiveMessage(text, failed=false, good=false) {
+  const node = archiveNode('preserve-message');
+  if (!node) return;
+  node.textContent = text;
+  node.className = failed ? 'msg bad' : (good ? 'msg good' : 'msg');
+}
+function archiveBusy(busy) {
+  archiveState.busy = !!busy;
+  for (const id of ['archive-preserve-add', 'archive-refresh']) {
+    const node = document.getElementById(id);
+    if (node) node.disabled = !!busy;
+  }
+  const section = document.getElementById('archive-bank-section');
+  if (section?.setAttribute) section.setAttribute('aria-busy', busy ? 'true' : 'false');
+}
+function archiveSize(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return 'Unknown size';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+}
+function renderPreservedArchives(archives) {
+  const target = archiveNode('bank-list');
+  if (!target) return;
+  const rows = (Array.isArray(archives) ? archives : [])
+    .filter(row => row && ARCHIVE_DIGEST.test(String(row.archive_sha256 || '')))
+    .slice()
+    .sort((a, b) => String(a.title || a.pack_id || '').localeCompare(String(b.title || b.pack_id || ''))
+      || String(a.archive_sha256).localeCompare(String(b.archive_sha256)));
+  if (!rows.length) {
+    target.innerHTML = '<div class="empty">No preserved archives yet. Preserve a .sspack to keep an exact copy here.</div>';
+    return;
+  }
+  target.innerHTML = '<div class="tablewrap"><table><tbody>' + rows.map(row => {
+    const digest = String(row.archive_sha256);
+    const title = row.title || row.pack_id || 'Untitled pack';
+    const integrity = row.integrity === 'verified' ? 'Verified'
+      : row.integrity === 'unavailable' ? 'Unavailable' : 'Unreadable';
+    return `<tr class="pack-row">
+      <td class="title">${esc(title)}<div class="muted"><span title="${esc(digest)}">${esc(digest.slice(0, 12))}…</span> · v${esc(row.version || '?')}</div></td>
+      <td class="muted">${esc(archiveSize(row.bytes))} · ${esc(integrity)} · Archive copy</td>
+      <td><button class="sm" data-archive-digest="${esc(digest)}" onclick="downloadPreservedArchive(this, '${esc(digest)}')">Download .sspack</button></td>
+    </tr>`;
+  }).join('') + '</tbody></table></div>';
+}
+async function loadPreservedArchives() {
+  const refresh = ++archiveState.refresh;
+  try {
+    const data = await api('/content-library');
+    if (refresh !== archiveState.refresh) return true;
+    archiveState.rows = Array.isArray(data?.archives) ? data.archives : [];
+    renderPreservedArchives(archiveState.rows);
+    return true;
+  } catch (error) {
+    if (refresh !== archiveState.refresh) return true;
+    archiveState.rows = [];
+    const target = archiveNode('bank-list');
+    // Unreadable is not the same answer as empty: never draw "none" for a failed read.
+    if (target) target.innerHTML = '<div class="empty">Archive bank unavailable.</div>';
+    archiveMessage(`Cannot read preserved archives: ${error.message}.`, true);
+    return false;
+  }
+}
+async function preservePackArchives(button) {
+  if (archiveState.busy) return;
+  const input = document.getElementById('archive-preserve-files');
+  const files = Array.from(input?.files || [])
+    .filter(file => String(file.name || '').toLowerCase().endsWith('.sspack'));
+  if (!files.length) {
+    archiveMessage('Choose a .sspack file first.', true);
+    return;
+  }
+  if (button) button.disabled = true;
+  archiveBusy(true);
+  let preserved = 0;
+  const failures = [];
+  try {
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index];
+      archiveMessage(`Preserving ${index + 1} of ${files.length}: ${file.name}…`);
+      try {
+        if (file.size > ARCHIVE_MAX_BYTES) throw new Error('larger than 50 MiB');
+        await api('/content-library/import', {
+          method: 'POST', headers: {'Content-Type': 'application/octet-stream'}, body: file,
+        });
+        preserved++;
+      } catch (error) {
+        failures.push(`${file.name}: ${error.message}`);
+      }
+    }
+  } finally {
+    if (input) input.value = '';
+    archiveBusy(false);
+    if (button) button.disabled = false;
+  }
+  const listed = await loadPreservedArchives();
+  // A successful import and a failed list refresh are different facts; keep both
+  // in the message rather than letting the refresh failure replace the result.
+  const listingError = listed ? '' : (archiveNode('preserve-message')?.textContent || 'Archive bank refresh failed.');
+  if (failures.length) {
+    archiveMessage(`Preserved ${preserved} of ${files.length}. Not preserved — ${failures.slice(0, 4).join('; ')}${listed ? '' : ` ${listingError}`}`, true);
+  } else {
+    const saved = `${preserved} archive${preserved === 1 ? '' : 's'} preserved. Nothing was added to the shelf or published.`;
+    archiveMessage(listed ? saved : `${saved} ${listingError}`, false, listed);
+  }
+}
+async function downloadPreservedArchive(button, digest) {
+  const identity = String(digest || '');
+  if (!ARCHIVE_DIGEST.test(identity)) {
+    archiveMessage('That archive identity is not a SHA-256 digest.', true);
+    return;
+  }
+  const label = button?.textContent;
+  if (button) { button.disabled = true; button.textContent = 'Downloading…'; }
+  archiveMessage(`Downloading ${identity}.sspack…`);
+  try {
+    const blob = await apiBlob(`/content-library/${identity}/archive`);
+    const url = URL.createObjectURL(blob);
+    downloadBlob(url, `${identity}.sspack`);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    archiveMessage(`Downloaded ${identity}.sspack.`, false, true);
+  } catch (error) {
+    archiveMessage(`Could not download ${identity.slice(0, 12)}…: ${error.message}`, true);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = label || 'Download .sspack'; }
   }
 }
 
