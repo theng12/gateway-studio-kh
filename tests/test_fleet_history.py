@@ -547,11 +547,12 @@ class ACauseCitesItsEvidence(HistoryCase):
     def test_a_mac_its_hub_flagged_never_says_nothing_wrong(self) -> None:
         # Seen live on terranash-1403, 2026-10-30: the row said "Needs attention — X studio not
         # running" in amber beside "Likely cause: Nothing wrong reported". The Hub's own sentence
-        # is the smallest truthful answer; it is not a measurement this Gateway made, so it is
-        # quoted rather than restated as a finding of its own.
+        # is the smallest truthful answer for a verdict this Gateway cannot see into; it is quoted
+        # rather than restated as a finding of its own. (A reason this Gateway *can* name now gets
+        # its own cause instead — see `AttentionReasonsNameTheirOwnCause`.)
         causes = self.causes(machine(state="needs_attention",
                                      attention="video studio not running"))
-        self.assertEqual([cause["code"] for cause in causes], ["hub_attention"])
+        self.assertEqual([cause["code"] for cause in causes], ["hub_flagged"])
         self.assertNotEqual(causes[0]["text"], "Nothing wrong reported")
         self.assertIn("video studio not running", causes[0]["evidence"])
         self.assertEqual(causes[0]["severity"], "warn")
@@ -561,6 +562,70 @@ class ACauseCitesItsEvidence(HistoryCase):
                                      attention="video studio not running",
                                      startup={"services_running": {"up": 1, "total": 3}}))
         self.assertEqual(causes[0]["code"], "studios_down")
+
+
+class AttentionReasonsNameTheirOwnCause(HistoryCase):
+    """A studio this Gateway watched go down is not "the Hub reports a problem it cannot see".
+
+    `fleet._attention` names every reason it stands up with a code, and the Likely-cause cell draws
+    a plain sentence from that code with the reason as its evidence. Five of these are this
+    Gateway's own read of the Mac; only a reason with no code of its own — the Hub's verdict alone,
+    an older Gateway's cached row, or a code this build does not know — keeps the Hub's wording.
+    """
+
+    #: (attention_code, the `attention` sentence, the cause text, the cause evidence)
+    REASONS = [
+        ("studio_down", "Voice studio not running",
+         "One of its studios is not running, so this Mac cannot take that kind of work.",
+         "Voice studio not running"),
+        ("studio_not_ready", "Voice studio not ready",
+         "One of its studios is up but not ready, so it cannot take work yet.",
+         "Voice studio not ready"),
+        ("job_stalled", "No progress for 12 min",
+         "Its current job has stopped making progress.", "No progress for 12 min"),
+        ("health_word", "Health: degraded",
+         "Its Studio Hub reports its own health as something other than up.", "Health: degraded"),
+        ("recent_job_failed", "Last job failed: HTTP 500",
+         "Its most recent job failed.", "Last job failed: HTTP 500"),
+        ("no_model_ready", "No model is ready on this Mac, so it is never given a job",
+         "No model is ready on this Mac, so routing never gives it work.",
+         "No model is ready on this Mac, so it is never given a job"),
+        ("hub_flagged", "Flagged by its Hub",
+         "Its Hub reports a problem this Gateway cannot see from outside.",
+         "Its Hub says: Flagged by its Hub"),
+    ]
+
+    def causes(self, row: dict) -> list[dict]:
+        snapshot = {"locations": [location()], "machines": [row], "summary": {}}
+        fleet_history.annotate(snapshot)
+        return snapshot["machines"][0]["causes"]
+
+    def test_one_plain_sentence_per_code(self) -> None:
+        for code, why, text, evidence in self.REASONS:
+            with self.subTest(code=code):
+                causes = self.causes(machine(state="needs_attention", attention=why,
+                                             attention_code=code))
+                self.assertEqual([cause["code"] for cause in causes], [code])
+                self.assertEqual(causes[0]["text"], text)
+                self.assertEqual(causes[0]["evidence"], evidence)
+                self.assertEqual(causes[0]["severity"], "warn")
+
+    def test_an_older_row_with_a_reason_but_no_code_keeps_the_hub_sentence(self) -> None:
+        causes = self.causes(machine(state="needs_attention", attention="Voice studio not running"))
+        self.assertEqual([cause["code"] for cause in causes], ["hub_flagged"])
+        self.assertNotEqual(causes[0]["text"], "Nothing wrong reported")
+        self.assertIn("Voice studio not running", causes[0]["evidence"])
+
+    def test_needs_attention_with_no_reason_at_all_is_still_not_nothing_wrong(self) -> None:
+        causes = self.causes(machine(state="needs_attention"))
+        self.assertEqual([cause["code"] for cause in causes], ["hub_flagged"])
+        self.assertNotEqual(causes[0]["text"], "Nothing wrong reported")
+
+    def test_a_code_this_build_does_not_know_degrades_to_the_hub_sentence(self) -> None:
+        causes = self.causes(machine(state="needs_attention", attention="Something newer",
+                                     attention_code="something_new"))
+        self.assertEqual([cause["code"] for cause in causes], ["hub_flagged"])
+        self.assertIn("Something newer", causes[0]["evidence"])
 
 
 class EveryCauseSaysHowBadItIs(HistoryCase):
@@ -583,6 +648,9 @@ class EveryCauseSaysHowBadItIs(HistoryCase):
         "services_not_starting": "warn", "not_open_at_login": "warn",
         "studios_down": "warn", "studios_missing": "warn", "slow_link": "warn",
         "hub_behind": "warn", "flapping": "warn", "nightly_drops": "warn",
+        "studio_down": "warn", "studio_not_ready": "warn", "job_stalled": "warn",
+        "health_word": "warn", "recent_job_failed": "warn", "hub_flagged": "warn",
+        "no_model_ready": "warn",
         "on_wifi": "info",
     }
 
@@ -637,6 +705,10 @@ class EveryCauseSaysHowBadItIs(HistoryCase):
                 "code": "nightly_drops", "severity": "warn", "text": "nightly", "evidence": "4 of 4"}},
             None, 4))
         seen |= self.severities(fleet_history.machine_causes(machine(), {}, None, 4))
+        # Every attention reason `fleet._attention` can stand up on a row.
+        for code, why, _, _ in AttentionReasonsNameTheirOwnCause.REASONS:
+            seen |= self.severities(fleet_history.machine_causes(
+                machine(state="needs_attention", attention=why, attention_code=code), {}, None, 4))
         seen |= self.severities(fleet_history.machine_causes(machine(up=False), {}, None, 4))
 
         self.assertEqual(seen, {code: self.EXPECTED[code] for code in seen},

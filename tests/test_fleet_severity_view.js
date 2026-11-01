@@ -169,6 +169,32 @@ test('a cause that is broken or down is still red', async () => {
     /style="color:var\(--bad-text\)">It is not answering at all/);
 });
 
+// The Gateway names every attention reason with a code (`fleet._attention`) and states its own
+// severity beside it; the native app has no list of codes and draws an unheard-of one amber too.
+// Both surfaces must land on the same colour for the same cause.
+test('a reason the Gateway named itself is amber, never red and never plain', async () => {
+  const reasons = [
+    ['studio_down', 'One of its studios is not running, so this Mac cannot take that kind of work.'],
+    ['studio_not_ready', 'One of its studios is up but not ready, so it cannot take work yet.'],
+    ['job_stalled', 'Its current job has stopped making progress.'],
+    ['health_word', 'Its Studio Hub reports its own health as something other than up.'],
+    ['recent_job_failed', 'Its most recent job failed.'],
+    ['no_model_ready', 'No model is ready on this Mac, so routing never gives it work.'],
+    ['hub_flagged', 'Its Hub reports a problem this Gateway cannot see from outside.'],
+  ];
+  for (const [code, text] of reasons) {
+    const ctx = context(payload([machine({
+      state: 'needs_attention', attention: 'a reason', attention_code: code,
+      causes: [cause(code, 'warn', text)],
+    })]));
+    await ctx.loadFleet();
+    const card = ctx.nodes.get(GROUPS).innerHTML;
+    assert.ok(card.includes(`class="msg warn">Likely cause: ${text}`), `${code} is not amber`);
+    assert.ok(!card.includes(`class="msg bad">Likely cause: ${text}`), `${code} drew red`);
+    assert.ok(!card.includes(`class="hint">Likely cause: ${text}`), `${code} drew as a plain hint`);
+  }
+});
+
 test('a Wi-Fi line on a Mac that is down is honest secondary text, not blue', async () => {
   const ctx = context(payload([machine({
     reachable: false, state: 'offline',
