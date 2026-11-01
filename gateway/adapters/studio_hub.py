@@ -127,8 +127,7 @@ def _fleet_outage(base: str, now: float) -> bool:
     **And no other remote site answered after that silence began.** Losing our own network silences
     every remote site at once — the 2026-10-09 case this guard exists for, where giving up would have
     re-run 59 renders — while controllers dying on their own silence only themselves: on 2026-11-01
-    four sites went together while the rest of the fleet kept answering, and jobs held on them for
-    hours. A success recorded after `mine[0]` means the path out to a remote site still works, so the
+    four sites went together while the rest of the fleet kept answering. A success recorded after `mine[0]` means the path out to a remote site still works, so the
     silence is theirs. The local Hub answers whatever our network does, so it is never evidence.
     """
     if _is_local_base(base):
