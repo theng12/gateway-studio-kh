@@ -395,7 +395,7 @@ class CatalogueMergeTests(unittest.TestCase):
         self.assertIs(row["available"], False, row)
         # And the reason is the fleet's own sentence about the outage, never the
         # account/billing code Story Studio renders as a paid-account restriction.
-        self.assertIn("No Mac offering this model is reachable", row["lock_reason"])
+        self.assertIn("No Mac able to run this model is available right now", row["lock_reason"])
         self.assertNotIn("account", row["lock_reason"].lower())
         self.assertIn(row["lock_reason"], row["activation_blockers"])
 

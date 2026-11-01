@@ -1923,6 +1923,18 @@ _ROW_BUILDERS = {
 }
 
 
+#: Why a row is locked, in words true for **both** conditions that lock one: no site answering,
+#: and every answering site stating it has no Mac for this model. The earlier sentence named only
+#: the first — "every Studio Hub location that offers it is offline or not taking customer work" —
+#: and read as a lie the moment a controller was up and merely had no Mac for the model (1600
+#: answers, nine Macs reachable, `eligible 0` for Gemma 4). Story Studio prints this sentence
+#: beside the row and the submit refuses with these same words, so both must be true together.
+_NO_MAC_REASON = (
+    "No Mac able to run this model is available right now — every Studio Hub location "
+    "that offers it is offline or has no eligible machine."
+)
+
+
 def _publish_lock(row: dict[str, Any], locked: bool, reason: str | None) -> None:
     """Write every spelling of "can this be offered right now" together.
 
@@ -2230,6 +2242,13 @@ class Catalog:
         # (A test that stubs the signature with `()` gets a fresh read, never an
         # IndexError — the tuple's second half is an addition, not a contract.)
         usable = set(signature[1]) if len(signature) > 1 else fleet.usable_location_ids()
+        # **The site rows, read once for the whole rebuild.** `usable` above came from this same
+        # cached `snapshot(allow_stale=True)` — the one `usable_location_ids` and the signature
+        # already took — so this is the same fleet read, not a second one. Each location's own row
+        # goes to `_story_row` with its model, because a site can be answering and still state it
+        # has no Mac for that model (see `states_no_mac`); a second walk per row would be the
+        # per-model cost this cache exists to avoid.
+        location_rows = {str(r.get("id")): r for r in fleet.snapshot(allow_stale=True).get("locations") or []}
         slots = {m: _slots_by_location(m) for m in ("tts", "image")}
         contributed: dict[str, float] = {}
         for modality in MODALITIES:
@@ -2248,7 +2267,10 @@ class Catalog:
                     fetched = registry.models.cached(definition.id).get("fetched_at")
                     if isinstance(fetched, (int, float)) and fetched > 0:
                         contributed[definition.id] = float(fetched)
-                row = self._story_row(modality, definition, model, usable=usable)
+                row = self._story_row(
+                    modality, definition, model, usable=usable,
+                    location_row=location_rows.get(fleet.controller_id_from(definition.id) or ""),
+                )
                 if modality in slots and definition.kind == KIND_STUDIO_HUB:
                     row["provider_submit_concurrency"] = slots[modality].get(definition.id) or None
                 # **The publisher's number and ours, side by side and never merged.**
@@ -2362,7 +2384,7 @@ class Catalog:
                 locked = not any(not r.get("locked") for _, r in member_rows)
                 lock_reason = None
                 if locked:
-                    lock_reason = "No Mac offering this model is reachable — every Studio Hub location that offers it is offline or not taking customer work."
+                    lock_reason = _NO_MAC_REASON
                 row = dict(first_row)
                 row["id"] = alias
                 row["display_name"] = display
@@ -2418,6 +2440,7 @@ class Catalog:
         model: dict[str, Any],
         *,
         usable: set[str] | None = None,
+        location_row: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from . import fleet
 
@@ -2446,10 +2469,17 @@ class Catalog:
                 # account or billing code, which is what Story Studio's locked-row
                 # sentence is built from: `requires_paid_account` is the only reason it
                 # renders as an account restriction, and a dead fleet is not one.
-                lock_reason = (
-                    "No Mac offering this model is reachable — every Studio Hub location "
-                    "that offers it is offline or not taking customer work."
-                )
+                lock_reason = _NO_MAC_REASON
+            elif location_row is not None and fleet.states_no_mac(location_row, model["model_id"]):
+                # **The site answers, but it states it has no Mac for this model.** The reachable
+                # count is not the question: 1600 answers with nine Macs up and still has none
+                # for Gemma 4, so the old test — "is the controller answering?" — left the row
+                # unlocked and the submit accepted a job nothing could run. `states_no_mac` is
+                # the same function `routing_candidates` asks, so the row and the door can never
+                # tell two stories; and when no row is at hand this check is skipped rather than
+                # guessed — "not checked" is not "failed".
+                locked = True
+                lock_reason = _NO_MAC_REASON
         description = definition.description
         if is_location and definition.id != fleet.provider_id_for(fleet.LOCAL_ID):
             # A controller's description names its address, which is precisely the

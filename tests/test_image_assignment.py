@@ -136,7 +136,7 @@ class Routing(Base):
         from gateway import fleet
 
         def cands(model, modality, only_location=None, exclude_locations=None,
-                  require_capability=None):
+                  require_capability=None, **_kw):
             return [{"location_id": "c1", "provider_id": "studio-hub-c1", "label": "Site 1", "queue": 0, "slots": 1}]
         eligible = {TURBO: {"a": {}}, ZIMG: {"b": {}, "a": {}}}
         with self.snapshot(rows), mock.patch.object(fleet, "routing_candidates", cands), \
