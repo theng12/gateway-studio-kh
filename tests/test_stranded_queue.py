@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -100,7 +101,8 @@ class _HubFleet(_Fleet):
         return super().handler(request)
 
 
-def _generate(fake: _HubFleet, *, stranded: bool = False) -> BackendError:
+def _generate(fake: _HubFleet, *, stranded: bool | None = False) -> BackendError:
+    """Run one generate. `stranded=None` leaves the real `fleet.location_has_no_free_mac` in place."""
     real = httpx.Client
 
     def factory(*a, **k):
@@ -110,10 +112,14 @@ def _generate(fake: _HubFleet, *, stranded: bool = False) -> BackendError:
     request = BackendRequest(provider_id=A, model_id=MODEL, modality="image",
                              params={"prompt": "x", "_job_id": "job-1"}, values={"hub_token": "t"},
                              base_url=BASE[A])
-    with patch.object(hub_module.httpx, "Client", side_effect=factory), \
-            patch.object(hub_module, "POLL_INTERVAL_S", 0), \
-            patch.object(hub_module, "STRANDED_QUEUE_S", 0), \
-            patch.object(fleet, "location_has_no_free_mac", lambda _p, _m: stranded):
+    patches = [patch.object(hub_module.httpx, "Client", side_effect=factory),
+               patch.object(hub_module, "POLL_INTERVAL_S", 0),
+               patch.object(hub_module, "STRANDED_QUEUE_S", 0)]
+    if stranded is not None:
+        patches.append(patch.object(fleet, "location_has_no_free_mac", lambda _p, _m: stranded))
+    with ExitStack() as stack:
+        for patcher in patches:
+            stack.enter_context(patcher)
         try:
             hub_module.StudioHubBackend().generate(request)
         except BackendError as exc:
@@ -175,6 +181,64 @@ class SafetyNetTests(unittest.TestCase):
             self.assertTrue(fleet.location_has_no_free_mac(A, MODEL))
             self.assertFalse(fleet.location_has_no_free_mac(B, MODEL))
             self.assertFalse(fleet.location_has_no_free_mac("studio-hub-unknown", MODEL))
+
+
+class MacsGoneOfflineTests(unittest.TestCase):
+    """A controller that still answers while every Mac it has has dropped (site 1400, 2026-10-31).
+
+    Its studios stopped at 21:35 with the location itself still read as reachable and eleven of its
+    machines as offline; seven free jobs accepted there waited 55 minutes for a restart by hand.
+    The stranded-queue door already moved a job whose Macs were all *paused* — this pins the same
+    door for the state the outage actually left behind, and the states it must not misread.
+    """
+
+    @staticmethod
+    def _site(*, online: list[bool] | None) -> dict:
+        row = _group("a", local_drained=False, node_paused=False)
+        if online is not None:
+            for worker, up in zip(row["workers"], online):
+                worker["online"] = up
+        return row
+
+    @staticmethod
+    def _read(rows: list[dict]) -> bool:
+        with patch.object(fleet, "snapshot", lambda allow_stale=False: {"locations": rows}):
+            return fleet.location_has_no_free_mac(A, MODEL)
+
+    def test_every_able_mac_offline_reads_as_no_free_mac(self) -> None:
+        self.assertTrue(self._read([self._site(online=[False, False])]))
+
+    def test_one_mac_still_online_keeps_the_site_alive(self) -> None:
+        self.assertFalse(self._read([self._site(online=[True, False])]),
+                         "a site with a working Mac must not read as dead")
+
+    def test_a_worker_that_states_no_online_is_unknown_not_offline(self) -> None:
+        self.assertFalse(self._read([self._site(online=None)]),
+                         "'not read' is never 'dead' (an older Hub)")
+
+    def test_a_site_the_hub_names_no_macs_for_is_unknown_not_offline(self) -> None:
+        rows = [_group("a", local_drained=False, node_paused=False, models=[])]
+        self.assertFalse(self._read(rows))
+
+    def test_offline_is_not_how_paused_reads_so_routing_and_catalog_are_unchanged(self) -> None:
+        row = self._site(online=[False, False])
+        self.assertFalse(fleet.no_free_mac(row, MODEL),
+                         "an offline Mac is not a paused one; catalog's 'you paused' must not claim it")
+        self.assertEqual(_candidates([row, _group("b", local_drained=False, node_paused=False)]),
+                         ["a", "b"], "routing's own rule still offers the site; the door is the fix")
+
+    def test_a_queued_item_there_is_withdrawn_at_once_not_left_to_the_queue_ceiling(self) -> None:
+        # The ceiling is the bound the 2026-10-31 jobs actually waited on (55 minutes of a 3-hour
+        # one). Shortened only so this test ends either way; without the fix the item is withdrawn
+        # by that ceiling instead of by the door, and the code says which one happened.
+        fake = _HubFleet("queued")
+        with patch.object(fleet, "snapshot",
+                          lambda allow_stale=False: {"locations": [self._site(online=[False, False])]}), \
+                patch.object(hub_module, "queue_wait_ceiling_s", lambda: 0.2):
+            error = _generate(fake, stranded=None)
+        self.assertEqual(error.code, "NO_AVAILABLE_MACHINE")
+        self.assertTrue(error.upstream_settled, "withdrawn before anything ran")
+        self.assertEqual(fake.saw("a", "DELETE"), ["/api/hub/jobs/batch-a"])
 
 
 class MoveItTests(_Case):

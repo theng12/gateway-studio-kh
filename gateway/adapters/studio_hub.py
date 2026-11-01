@@ -98,6 +98,8 @@ FLEET_OUTAGE_WINDOW_S = 60.0
 #: `base -> [first, last]` monotonic times of a remote Hub's current run of failed polls, shared by
 #: every poll thread. Dropped on the first answer.
 _SILENT: dict[str, list[float]] = {}
+#: When each base last answered, so `_fleet_outage` can tell our network from a site that died.
+_OK: dict[str, float] = {}
 _SILENT_LOCK = threading.Lock()
 
 
@@ -110,6 +112,7 @@ def _note_poll(base: str, now: float, *, failed: bool) -> None:
     with _SILENT_LOCK:
         if not failed:
             _SILENT.pop(base, None)
+            _OK[base] = now
             return
         entry = _SILENT.get(base)
         if entry is None or now - entry[1] > FLEET_OUTAGE_WINDOW_S:
@@ -119,7 +122,15 @@ def _note_poll(base: str, now: float, *, failed: bool) -> None:
 
 
 def _fleet_outage(base: str, now: float) -> bool:
-    """`FLEET_OUTAGE_SITES` remote sites, `base` among them, fell silent within one window and still are."""
+    """`FLEET_OUTAGE_SITES` remote sites, `base` among them, fell silent within one window and still are.
+
+    **And no other remote site answered after that silence began.** Losing our own network silences
+    every remote site at once — the 2026-10-09 case this guard exists for, where giving up would have
+    re-run 59 renders — while controllers dying on their own silence only themselves: on 2026-11-01
+    four sites went together while the rest of the fleet kept answering, and jobs held on them for
+    hours. A success recorded after `mine[0]` means the path out to a remote site still works, so the
+    silence is theirs. The local Hub answers whatever our network does, so it is never evidence.
+    """
     if _is_local_base(base):
         return False
     with _SILENT_LOCK:
@@ -129,7 +140,10 @@ def _fleet_outage(base: str, now: float) -> bool:
         together = sum(1 for other, (first, last) in _SILENT.items()
                        if not _is_local_base(other) and abs(first - mine[0]) <= FLEET_OUTAGE_WINDOW_S
                        and now - last <= FLEET_OUTAGE_WINDOW_S)
-    return together >= FLEET_OUTAGE_SITES
+        if together < FLEET_OUTAGE_SITES:
+            return False
+        return not any(not _is_local_base(other) and seen >= mine[0]
+                       for other, seen in _OK.items())
 # Aligned with the Hub's own claim TTL floor (request timeout 300s + margin).
 JOB_DEADLINE_S = 900.0
 
