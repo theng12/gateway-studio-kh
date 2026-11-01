@@ -1691,6 +1691,16 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
             body["variations_failed"] = payload["variations_failed"]
         if payload.get("usage"):
             body["usage"] = payload["usage"]
+        # **What was actually sent, when it is not what the caller asked for.** The adapter has
+        # written these onto the result payload all along (`studio_hub._generate_chat`,
+        # `anthropic`), but `_job_envelope` published only `output_text`, `finish_reason`,
+        # `generation_seconds` and `usage` — so a lowered answer allowance never reached the job
+        # the caller polls, which is why no job has ever shown one. Published here, for a
+        # re-sent job too: the resize writes the same keys.
+        for key in ("max_tokens_asked", "max_tokens_lowered_to", "max_tokens_lowered_reason",
+                    "prompt_tokens_measured"):
+            if payload.get(key) is not None:
+                body[key] = payload[key]
         # How many voice sections the Mac re-made after its quality check, per section.
         if payload.get("section_quality"):
             body["section_quality"] = payload["section_quality"]
@@ -1704,7 +1714,9 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
             "INCOMPLETE_OUTPUT": "incomplete_output",
         }.get(body["failure_code"], "provider_error")
         body["failure_reason"] = job.get("error_detail") or "generation failed"
-        for key in ("partial_response", "pool_attempts"):
+        for key in ("partial_response", "pool_attempts",
+                    "max_tokens_asked", "max_tokens_lowered_to", "max_tokens_lowered_reason",
+                    "prompt_tokens_measured"):
             if payload.get(key) is not None:
                 body[key] = payload[key]
     elif is_cancelled:
@@ -2180,6 +2192,8 @@ def _submit(
         _refuse_a_delivery_instruction(compound_id, model, params)
     if capability is not None:
         _refuse_references_this_lane_cannot_take(definition, model, params)
+    if modality == "chat":
+        _refuse_a_request_that_cannot_fit(definition, model, params)
     # An idempotency key identifies one request, and a request has a modality.
     # The replay lookup matched on the key alone, so posting to
     # `/v1/images/generations` with a key already used on `/v1/chat/responses`
@@ -2270,6 +2284,85 @@ def _refuse_a_delivery_instruction(compound_id: str, model: dict[str, Any], para
         f"{name} does not take a delivery/emotion instruction. Leave it out, or choose a model "
         f"whose catalogue row publishes the 'delivery_instruction' control.",
         "DELIVERY_INSTRUCTION_UNSUPPORTED",
+    )
+
+
+#: Measured on this Mac's Hub, 2026-11-02 (English, repetitive): 3.90 characters per token on a
+#: 53,098-character prompt the Hub counted as 13,604 tokens, about 4.9 on short prose. No Hub
+#: route counts tokens for a caller — `engine.count_tokens` is the worker's own — so admission
+#: estimates rather than measures. **`shortcut:`** the ratios are a shortcut, not a measurement:
+#: upgrade to the Hub's own count the moment it publishes a route for one.
+_SHORTCUT_CHARS_PER_ASCII_TOKEN = 3.7
+#: Khmer measured beside it: 12,582 characters / 37,098 bytes = 5,869 tokens, i.e. 2.14
+#: characters and 6.32 bytes per token. Counting by characters alone would call a Khmer prompt
+#: far larger than it is and refuse work the model would run, so non-ASCII characters are priced
+#: separately.
+_SHORTCUT_CHARS_PER_NON_ASCII_TOKEN = 2.0
+
+
+def _estimate_request_tokens(params: Any) -> int | None:
+    """An estimate of the request's own size in tokens, or `None` when there is nothing to size.
+
+    All input text in `params` is walked — `messages`, `input`, `prompt`, `text`, `instructions`
+    and any list or dict under them — because a refusal that only counted the field it happened
+    to know about would pass a request the Hub then refuses after measuring it.
+    """
+    if not isinstance(params, dict):
+        return None
+    ascii_chars = 0
+    other_chars = 0
+
+    def walk(value: Any) -> None:
+        nonlocal ascii_chars, other_chars
+        if isinstance(value, str):
+            for char in value:
+                if ord(char) < 128:
+                    ascii_chars += 1
+                else:
+                    other_chars += 1
+        elif isinstance(value, dict):
+            for nested in value.values():
+                walk(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                walk(nested)
+
+    walk(params)
+    if ascii_chars == 0 and other_chars == 0:
+        return None
+    return int(ascii_chars / _SHORTCUT_CHARS_PER_ASCII_TOKEN
+               + other_chars / _SHORTCUT_CHARS_PER_NON_ASCII_TOKEN)
+
+
+def _refuse_a_request_that_cannot_fit(definition: Any, model: dict[str, Any],
+                                      params: Any) -> None:
+    """Refuse at admission a chat request too large for the model's own published window.
+
+    **Refused, never accepted-then-failed.** A request that leaves no room for an answer would
+    otherwise be queued, dispatched and only then refused by the Hub after it measured the prompt
+    — a whole job's worth of waiting to learn the answer was never possible. The estimate is
+    deliberately generous in the caller's favour: it must leave `MIN_ANSWER_TOKENS` after the
+    margin, and a request that slips under the line is still caught by the Hub's own measurement
+    (`studio_hub._room_left_after_prompt`), which is the authority.
+    """
+    from .catalog import (MIN_ANSWER_TOKENS, REQUEST_ROOM_MARGIN_TOKENS,
+                         published_request_limit, published_window)
+    ceiling = published_request_limit(definition, model.get("model_id"), model)
+    if ceiling is None:
+        return
+    window = published_window(definition, model.get("model_id"), model)
+    if not isinstance(window, int) or window <= 0:
+        return
+    limit = window - REQUEST_ROOM_MARGIN_TOKENS - MIN_ANSWER_TOKENS
+    estimated = _estimate_request_tokens(params)
+    if estimated is None or estimated <= limit:
+        return
+    raise GatewayError(
+        422,
+        f"This request is too large for {model.get('display_name') or model.get('model_id')}: "
+        f"about {estimated} tokens of input, and only {window} fit in the model's window, so "
+        f"there would be no room left to answer (the limit is {limit}). Shorten the request.",
+        "REQUEST_TOO_LARGE_FOR_MODEL",
     )
 
 

@@ -1442,6 +1442,33 @@ def _published_context_limit(
     return value, source, hub_context_detail
 
 
+#: A Hub's own token for "this number is my worker's fallback, not the model's"
+#: (`llm_engine.FALLBACK_MAX_OUTPUT_TOKENS`). The owner's curated file may answer over
+#: *that*, and only that: a figure the model itself states is a live fact and beats a file
+#: that goes stale (`limits.gap` says the same in the other direction).
+_WORKER_FALLBACK_KINDS = frozenset({"worker_default", "worker-fallback", "fallback"})
+
+
+def _curated_over_fallback(field: str, definition: ProviderDefinition, model_id: str,
+                           relayed_kind: str | None) -> int | None:
+    """The owner's curated value for `field`, when what it would replace is a worker's fallback.
+
+    Extended for `max_output_tokens` / `max_request_tokens` (2026-11-02): a Hub relays its
+    worker's own output budget as `max_output_tokens` with `source_kind: worker_default`, and
+    `_limit_with_source` lets any stated figure beat the curated file. That is right for a
+    number the *model* published and wrong for one a worker invented — measured live, gemma-4
+    published `max_output_tokens: 128000` from a fallback its own lane contract calls "not a
+    number the model states". The owner knows this model's real answer-length ceiling, so his
+    figure wins over the fallback and only over the fallback.
+    """
+    if relayed_kind is None or str(relayed_kind).strip().lower() not in _WORKER_FALLBACK_KINDS:
+        return None
+    curated = limits.gap(field, None, definition.id, model_id)
+    if isinstance(curated, bool) or not isinstance(curated, int) or curated <= 0:
+        return None
+    return curated
+
+
 def _published_output_limit(
     definition: ProviderDefinition, model_id: str, model: dict[str, Any]
 ) -> tuple[Any, str, str | None, int | None]:
@@ -1480,6 +1507,12 @@ def _published_output_limit(
         )
     hub_output, hub_output_detail, hub_output_kind = _hub_stated_limit(
         raw, "max_output_tokens")
+    # **The owner's own ceiling beats a worker's fallback** (`_curated_over_fallback`), and it
+    # is applied before the ordinary chooser so no later step can re-promote the fallback.
+    curated_output = _curated_over_fallback(
+        "max_output_tokens", definition, model_id, hub_output_kind)
+    if hub_output is not None and curated_output is not None:
+        hub_output, hub_output_detail, hub_output_kind = curated_output, None, "curated"
     if hub_output is not None:
         completion = hub_output
     value, source = _limit_with_source(
@@ -1501,6 +1534,53 @@ def _published_output_limit(
             and context > 0 and value > context):
         capped_from, value = value, context
     return value, source, hub_output_detail, capped_from
+
+
+#: How much of the context window is kept back for the answer, and the smallest answer that is
+#: still worth running, both in tokens. Named beside the curated limits because they only ever
+#: apply to a model that states a request ceiling — the owner's 2026-11-02 numbers for gemma-4
+#: (window 32768, ceiling 23000, margin 1000, so admission refuses above 30744).
+REQUEST_ROOM_MARGIN_TOKENS = 1000
+#: An estimate that leaves less than this for the answer cannot produce anything useful, so the
+#: request is refused at the door rather than accepted and then cut off.
+MIN_ANSWER_TOKENS = 1024
+
+
+def published_request_limit(
+    definition: ProviderDefinition | None, model_id: str, model: dict[str, Any] | None
+) -> int | None:
+    """The largest request (in tokens) this gateway will accept for a chat model.
+
+    Curated only, deliberately: no provider or Hub here publishes a *request* ceiling in a form
+    this gateway can read — the Hub's chat contract states a context window and an output
+    allowance and nothing about how much of the window a caller may fill. The owner knows it, so
+    it lives in the same curated file as the rest (`limits.gap`, `max_request_tokens`).
+
+    `None` means no ceiling is published, and nothing is estimated or refused for that model.
+    """
+    if definition is None:
+        return None
+    value = limits.gap("max_request_tokens", None, definition.id, model_id)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def published_window(
+    definition: ProviderDefinition | None, model_id: str, model: dict[str, Any] | None
+) -> int | None:
+    """The context window this gateway publishes for a chat model — the same chooser the row reads.
+
+    One reader, because the admission line in `api._submit` is computed from this figure: a
+    refusal sized from a different window than the one Story Studio was told would be two
+    published numbers disagreeing about one model.
+    """
+    if definition is None or not model:
+        return None
+    value, _source, _detail = _published_context_limit(definition, model_id, model)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def published_output_cap(
@@ -1687,6 +1767,19 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         definition, model_id, model)
     max_output, output_source, hub_output_detail, max_output_capped_from = \
         _published_output_limit(definition, model_id, model)
+    max_request_tokens = published_request_limit(definition, model_id, model)
+    curated_prompt, curated_prompt_source = _limit_with_source(
+        "max_prompt_characters", None, None, definition.id, model_id)
+    existing_prompt = _first_stated(raw, ("max_prompt_characters",))
+    existing_prompt = _stated(existing_prompt)
+    # Empty, or larger than the curated figure, takes the curated one; a smaller existing
+    # ceiling is a real limit and is left exactly as the producer stated it.
+    if (curated_prompt is not None
+            and (existing_prompt is None or existing_prompt > curated_prompt)):
+        max_prompt_characters, max_prompt_source = curated_prompt, curated_prompt_source
+    else:
+        max_prompt_characters, max_prompt_source = existing_prompt, (
+            "provider" if existing_prompt is not None else None)
 
     # The Hub states vision support per model, read from its published flag, never the name.
     hub_vision = raw.get("supports_vision")
@@ -1720,6 +1813,20 @@ def _chat_row(model_id: str, definition: ProviderDefinition, model: dict[str, An
         # null) on every row that needed no cap, so an ordinary row is byte-identical to before.
         **({"max_output_tokens_capped_from": max_output_capped_from}
            if max_output_capped_from is not None else {}),
+        # **How much of the window a caller may fill** — the admission line this gateway will
+        # refuse above (`api._submit`), published so Story Studio can size a request instead of
+        # discovering the line by failing. Curated knowledge (`limits.gap`): no producer states
+        # it. Absent, not null, on every row that publishes no ceiling, so an ordinary row is
+        # byte-identical to before.
+        **({"max_request_tokens": max_request_tokens,
+            "max_request_tokens_source": "curated"}
+           if max_request_tokens is not None else {}),
+        # **The prompt ceiling in characters, filled from the curated file only when the row has
+        # none or a larger one** — the owner's figure is a tightening, never a loosening, so a
+        # model that already publishes a smaller budget keeps it.
+        **({"max_prompt_characters": max_prompt_characters,
+            "max_prompt_characters_source": max_prompt_source}
+           if max_prompt_characters is not None else {}),
         # **Where the token counts came from, said plainly.** Every chat lane here
         # forwards the usage its provider stated; none of them re-measures it, so
         # `false` is the honest answer on every row rather than a claim that the

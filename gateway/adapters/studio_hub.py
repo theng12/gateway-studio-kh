@@ -366,6 +366,69 @@ def _refusal_error(code: str | None, response: httpx.Response) -> BackendError:
     )
 
 
+#: The Hub's own sentence when a *named* `max_tokens` does not fit beside the prompt it
+#: measured (`llm_engine._budget`, `asked=True`). Captured verbatim from the live refusal of
+#: 2026-11-02 on gemma-4: "messages: the prompt is 13604 tokens and max_tokens asks for 32768
+#: more, 46372 together, above the 32768 tokens this model states (...)". The three counts it
+#: states are the Hub's own measurement, so they may be used — a characters-per-token ratio
+#: may not (`base.bounded_max_output_tokens`).
+_HUB_ROOM_LEFT = re.compile(
+    r"the prompt is (?P<prompt>\d+) tokens and max_tokens asks for (?P<asked>\d+) more"
+    r", \d+ together, above the (?P<window>\d+) tokens this model states"
+)
+#: How much of the window is held back for the answer, and the smallest answer still worth
+#: running. The owner's 2026-11-02 figures for gemma-4 (window 32768, ceiling 23000).
+_ROOM_LEFT_MARGIN_TOKENS = 1000
+_MIN_ANSWER_TOKENS = 1024
+
+
+#: Recognition, deliberately narrow: the Hub's own words for "a figure the *request* named does
+#: not fit beside the prompt I measured". The prompt-only refusal says "the prompt is N tokens,
+#: above the" and never this, so it is never re-sent. Matched on the phrase rather than the
+#: whole sentence because the counts around it vary, and because a Hub that rewords the tail
+#: must not turn a resize into a silent second guess.
+_HUB_NAMED_FIGURE_REFUSAL = "max_tokens asks for"
+
+
+def _hub_detail(response: httpx.Response) -> str:
+    """The Hub's own `detail` sentence, or `""`. Read whole, never through a truncating helper."""
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError, TypeError):
+        return ""
+    return " ".join(detail.split()) if isinstance(detail, str) else ""
+
+
+def _room_left_after_prompt(response: httpx.Response) -> dict[str, int] | None:
+    """The Hub's own counts from its room-left refusal, or `None` when it named no window.
+
+    Read from the whole body, not `_hub_refusal_reason`: that helper truncates to 240
+    characters and this sentence runs past it, so the tail — and with it a window stated late —
+    would be lost. `None` here means "no figure to resize to", not "not this refusal": the
+    caller decides that from `_hub_detail`.
+    """
+    match = _HUB_ROOM_LEFT.search(_hub_detail(response))
+    return ({name: int(value) for name, value in match.groupdict().items()}
+            if match is not None else None)
+
+
+def _room_left_resend(body: dict[str, Any], counts: dict[str, int]) -> dict[str, Any] | None:
+    """The body to re-send once, or `None` when the answer room is too small to be worth it.
+
+    The Hub refused at the door — `check_prompt_fits` runs before any token is produced — so
+    nothing has run and a second request costs only a second door check. The new figure is
+    `min(asked, window - prompt - margin)`, taken from the Hub's own measurement; a prompt that
+    already leaves no room for a real answer is a refusal, not a smaller ask.
+    """
+    room = counts["window"] - counts["prompt"] - _ROOM_LEFT_MARGIN_TOKENS
+    if room < _MIN_ANSWER_TOKENS:
+        return None
+    resent = dict(body)
+    asked = body.get("max_tokens")
+    resent["max_tokens"] = min(int(asked), room) if isinstance(asked, int) else room
+    return resent
+
+
 def _stranded(request: BackendRequest) -> Callable[[], bool]:
     """Whether the fleet read shows no unpaused Mac at this job's location able to run its model."""
     from ..fleet import location_has_no_free_mac
@@ -2452,10 +2515,20 @@ def chat_queue_wait_seconds(provider_id: str, model_id: str = "") -> float:
 
 
 def _queued_chat_post(request: BackendRequest, base: str, headers: dict, body: dict,
-                      queue_wait: float, timeout: httpx.Timeout) -> httpx.Response:
-    """Keep the completion intact while publishing only the request's queue phase."""
-    request_id = hashlib.sha256(str(request.params.get("_client_request_id")
-                                   or request.params.get("_job_id") or time.time_ns()).encode()).hexdigest()[:32]
+                      queue_wait: float, timeout: httpx.Timeout, *,
+                      id_salt: str = "") -> httpx.Response:
+    """Keep the completion intact while publishing only the request's queue phase.
+
+    `id_salt` re-keys the request id for a **re-send**. The Hub's queue registers an id the
+    moment it accepts a queued completion (`chat_priority.register`) and marks it `done` when
+    the door refuses it, so a second POST under the same id is answered `409
+    CHAT_REQUEST_DUPLICATE` — the re-send would be turned away as a replay of work that never
+    started. One salt per attempt, so each send is its own id.
+    """
+    request_id = hashlib.sha256(
+        ((id_salt or "") + str(request.params.get("_client_request_id")
+                               or request.params.get("_job_id") or time.time_ns())
+         ).encode()).hexdigest()[:32]
     headers = {**headers, "X-StudioHub-Request-ID": request_id,
                "X-StudioHub-Queue-Wait-Seconds": str(queue_wait)}
     def report_wait(value):
@@ -2531,10 +2604,16 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
     # describe two different allowances (`base.bounded_max_output_tokens`).
     lowered: dict[str, Any] = {}
     body = _chat_body(request, lowered)
+    def post(payload: dict[str, Any], attempt: int = 0) -> httpx.Response:
+        # One salt per attempt: the Hub queues an id at the door and marks it used even when it
+        # then refuses, so a re-send under the old id would be turned away as a duplicate.
+        return (_queued_chat_post(request, base, headers, payload, queue_wait, timeout,
+                                  id_salt=f":{attempt}")
+                if queue_wait else httpx.post(f"{base}/studio/chat/v1/chat/completions",
+                                             headers=headers, json=payload, timeout=timeout))
+
     try:
-        response = (_queued_chat_post(request, base, headers, body, queue_wait, timeout)
-                    if queue_wait else httpx.post(f"{base}/studio/chat/v1/chat/completions",
-                                                 headers=headers, json=body, timeout=timeout))
+        response = post(body)
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         # Nothing accepted the connection: an unreachable location, not a job
         # failure, so the worker may try the next site that offers the model.
@@ -2575,19 +2654,79 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
             raise BackendError(_refusal_sentence(code, response), code=NO_AVAILABLE_MACHINE,
                                status=response.status_code, retryable=True, upstream_accepted=False,
                                upstream_settled=bool(queue_wait))
-        raise BackendError(
-            # A 422 here is the Hub's own validation — a prompt past the model's
-            # stated context, or a non-boolean `thinking` — and its sentence names
-            # the field and the measured count, so it is quoted, not replaced.
-            f"hub chat HTTP {response.status_code}: {response.text[:200]}",
-            code="PROVIDER_FAILED",
-            status=response.status_code,
-            retryable=response.status_code >= 500,
+        named_a_figure = _HUB_NAMED_FIGURE_REFUSAL in _hub_detail(response)
+        if response.status_code == 422 and named_a_figure:
+            # **The answer does not fit beside the prompt — but the prompt itself does.** The Hub
+            # measures the prompt and refuses a *named* figure that does not fit beside it, having
+            # produced nothing (`check_prompt_fits` runs before the first token). So the ask can be
+            # resized from the Hub's own counts and sent once more; the prompt-only refusal is a
+            # different sentence and is never re-sent, and if the room left is too thin to answer
+            # in this is a refusal rather than a smaller ask.
+            counts = _room_left_after_prompt(response)
+            if counts is None:
+                # The Hub named no window to resize against, so no figure may be invented: the
+                # field is dropped and the Hub picks the room left for itself.
+                resent: dict[str, Any] | None = {k: v for k, v in body.items()
+                                                 if k != "max_tokens"}
+                counts = {}
+            else:
+                resent = _room_left_resend(body, counts)
+            if resent is None:
+                raise BackendError(
+                    f"the prompt leaves too little room for an answer: the Hub measured "
+                    f"{counts['prompt']} prompt tokens in a {counts['window']}-token window, "
+                    f"which is under {_MIN_ANSWER_TOKENS} answer tokens after its "
+                    f"{_ROOM_LEFT_MARGIN_TOKENS}-token margin. Shorten the request.",
+                    code="PROVIDER_FAILED", status=422, retryable=False,
+                    upstream_accepted=False, upstream_settled=bool(queue_wait))
+            try:
+                response = post(resent, attempt=1)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                raise BackendError(
+                    f"could not reach the Hub at {base} ({type(exc).__name__})",
+                    code="LOCATION_UNREACHABLE", retryable=True,
+                    upstream_accepted=False,
+                    upstream_settled=bool(queue_wait)) from exc
+            except httpx.HTTPError as exc:
+                raise BackendError(
+                    f"hub chat failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE", retryable=True,
+                    recovery=None if isinstance(exc, httpx.TimeoutException)
+                    else {"location": base, "reason": str(exc), "lost_contact": True}) from exc
+            # **What was sent instead, said on the job** (`payload.update(lowered)` below).
+            # `max_tokens_asked` stays the caller's own figure when the lane already lowered it;
+            # only the room-left resize overwrites the reason, because it is a second and later
+            # decision about the same field.
+            asked = lowered.get("max_tokens_asked")
+            if asked is None:
+                asked = body.get("max_tokens", resent.get("max_tokens"))
+            lowered["max_tokens_asked"] = asked
+            if "max_tokens" in resent:
+                lowered["max_tokens_lowered_to"] = resent["max_tokens"]
+                lowered["max_tokens_lowered_reason"] = (
+                    "above the room left after the prompt")
+            else:
+                lowered.pop("max_tokens_lowered_to", None)
+                lowered["max_tokens_lowered_reason"] = (
+                    "the Hub's sentence named no figure, so max_tokens was omitted and the "
+                    "Hub used the room left")
+            if counts:
+                lowered["prompt_tokens_measured"] = counts["prompt"]
+        # A successful re-send leaves `response` at 200: fall out of the refusal block and take
+        # the answer below, rather than quoting a refusal that no longer happened.
+        if response.status_code >= 400:
+            raise BackendError(
+                # A 422 here is the Hub's own validation — a prompt past the model's
+                # stated context, or a non-boolean `thinking` — and its sentence names
+                # the field and the measured count, so it is quoted, not replaced.
+                f"hub chat HTTP {response.status_code}: {response.text[:200]}",
+                code="PROVIDER_FAILED",
+                status=response.status_code,
+                retryable=response.status_code >= 500,
             # A refusal *by name* (STUDIO_NOT_RUNNING, OUTPUT_STORAGE_BLOCKED ...) happened at
             # the door, before any work, whatever its status; only a bare 5xx is ambiguous.
-            upstream_accepted=None if response.status_code >= 500 and not code else False,
-            upstream_settled=bool(queue_wait) and (response.status_code < 500 or bool(code)),
-        )
+                upstream_accepted=None if response.status_code >= 500 and not code else False,
+                upstream_settled=bool(queue_wait) and (response.status_code < 500 or bool(code)),
+            )
 
     payload = answer_json(response, request.provider_id)
     # **What was actually sent, when it is not what the caller asked for.** Additive, and only on
@@ -2610,7 +2749,33 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
         # Hub answered, so it is a *settled* failure: `upstream_settled` keeps it
         # out of the unknown-outcome holds, which have no attempt to aim at.
         raise unusable_answer(request.provider_id, "it is empty")
-    require_json_answer(request, text, choice.get("finish_reason"))
+    # **A cut-off answer is a failure on this lane, exactly as it is on the cloud lanes**
+    # (`openai_compat`, `anthropic`). Measured live 2026-11-02: job 04a617c2 asked for 64 output
+    # tokens on gemma-4 and settled `succeeded` with `finish_reason: length` — a truncated answer
+    # recorded as a clean success, and only the finish reason said so. Story already refuses one
+    # at its own edge (`genstudio-client.ts:3018`), so settling it here as success let the
+    # truncation reach the caller as finished work.
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
+        error = BackendError(
+            f"{request.provider_id}: answer stopped early (length)",
+            code="INCOMPLETE_OUTPUT", retryable=True,
+            upstream_accepted=True, upstream_settled=True,
+        )
+        error.evidence = {
+            "finish_reason": finish_reason,
+            # The partial text travels with the verdict: a caller that can salvage a cut answer
+            # should not have to re-run a job whose text was already produced and paid for.
+            "partial_response": {
+                "text": text,
+                "finish_reason": finish_reason,
+                "usage": payload.get("usage"),
+                "model": payload.get("model") or request.model_id,
+                **lowered,
+            },
+        }
+        raise error
+    require_json_answer(request, text, finish_reason)
     hub = payload.get("studio_hub") if isinstance(payload.get("studio_hub"), dict) else {}
     return BackendResult(
         text=text,

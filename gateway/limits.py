@@ -39,6 +39,12 @@ LEGACY_LIMITS_PATH = Path(__file__).resolve().parent.parent / "data" / "model-li
 _KNOWN_FIELDS = (
     "context_window_tokens",
     "max_output_tokens",
+    # **The owner's own request ceiling** (2026-11-02): how large a request this
+    # gateway will accept for a model, measured in tokens. Nothing publishes it —
+    # no provider or Hub states a *request* limit in a form a caller can size
+    # against — so it is curated knowledge like the rest of this file, and the
+    # admission check in `api._submit` reads it.
+    "max_request_tokens",
     "max_prompt_characters",
     "maximum_input_characters",
 )
