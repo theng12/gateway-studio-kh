@@ -10,6 +10,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.222 — 2026-11-02
+
+- A model with no Mac able to run it right now is refused straight away, with the reason, instead of being accepted and left waiting. This covers a site that answers but has lost the only Mac for that model. One missed reading doesn't switch a model off.
+- A job sent to a site whose Macs have all gone offline moves to another site after about 10 minutes, instead of waiting until someone restarts the site.
+- A Gemma 4 request is sized to fit. The answer is capped at 8,192 tokens, and if the request leaves less room the answer is shrunk to fit and the job says so. A request too big to leave room for any answer is refused straight away and asks you to shorten it.
+- A writing job whose answer was cut off now fails and says so, keeping the partial text, instead of reading as finished.
+- Fleet names what each "Needs attention" means: a studio down, a stalled job, a recent failure, or a flag only its Hub can see. A request too long for a model no longer marks the Mac as needing attention.
+
 ## 0.2.221 — 2026-11-01
 
 - A model installed later on a Mac already in the fleet now switches on at the next inventory read. A model you switched off stays off, and removing a model no longer forgets that choice. A failed or partial read changes nothing, and a paused Mac stays paused.
