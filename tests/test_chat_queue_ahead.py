@@ -62,7 +62,10 @@ class ChatQueueAheadTests(unittest.TestCase):
 
     def test_status_failure_preserves_the_one_completion_and_send_evidence(self):
         released=threading.Event()
-        answer=httpx.Response(200,json={'choices':[{'message':{'content':'answer'},'finish_reason':'length'}],
+        # `stop`, not `length`: this test is about the queue phase surviving a status read that
+        # fails, and a `length` finish is now a loud INCOMPLETE_OUTPUT on this lane
+        # (`test_chat_output_cap.py`), which would stop the answer before any of that ran.
+        answer=httpx.Response(200,json={'choices':[{'message':{'content':'answer'},'finish_reason':'stop'}],
                                         'usage':{'prompt_tokens':2,'completion_tokens':3,'total_tokens':5}})
         posts=[]
         def post(url,**kwargs):
@@ -86,7 +89,7 @@ class ChatQueueAheadTests(unittest.TestCase):
              patch.object(studio_hub.httpx,'get',side_effect=get):
             result=studio_hub._generate_chat(request)
         self.assertEqual(result.text,'answer')
-        self.assertEqual(result.payload['finish_reason'],'length')
+        self.assertEqual(result.payload['finish_reason'],'stop')
         self.assertEqual(len(posts),1)
         self.assertEqual(posts[0][1]['timeout'].read,15)
         self.assertEqual(len(handles),1)
