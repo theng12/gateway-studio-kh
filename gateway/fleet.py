@@ -2998,7 +2998,8 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
     Mac whose newest job failed, however long ago. Both made a healthy idle fleet read amber: the
     "down" studio was a Video worker that no longer exists, and the failure was last night's. So
     the verdict stands only with a cause someone can act on — a studio that should run and is not,
-    a failure in the last 15 minutes (not a TTS_SECTION_* quality rejection, which the Hub re-makes),
+    a failure in the last 15 minutes (not a TTS_SECTION_* quality rejection, which the Hub re-makes,
+    nor a request too long for the model),
     a stalled job, a health word — and says which. When the only
     cause is one of those two artefacts, the state is worked out again the way the Hub would.
 
@@ -3029,7 +3030,9 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
     reason = str(latest.get("error_code") or "").strip()
     # A quality rejection (TTS_SECTION_*) means the Hub's check caught one bad piece and re-made it.
     failed_now = (latest.get("state") == "error" and age is not None and age < ATTENTION_ERROR_S
-                  and not reason.startswith("TTS_SECTION_"))
+                  and not reason.startswith("TTS_SECTION_")
+                  # A request too long for the model is the caller's, and says nothing about this Mac.
+                  and reason != "context_exceeded")
     if failed_now:
         return ("needs_attention", "Last job failed" + (f": {reason[:80]}" if reason else ""),
                 "recent_job_failed")

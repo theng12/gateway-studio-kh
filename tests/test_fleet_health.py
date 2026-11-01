@@ -272,6 +272,14 @@ class EveryAttentionReasonCarriesItsCode(unittest.TestCase):
         self.assertEqual(got["attention_code"], "recent_job_failed")
         self.assertTrue(got["attention"].startswith("Last job failed"))
 
+    def test_a_request_too_long_for_the_model_does_not_blame_the_mac(self) -> None:
+        row = group(1)
+        row["activity"]["machines"][1] = idle_entry("node-1", latest_state="error", ago=120)
+        row["activity"]["machines"][1]["latest"]["error_code"] = "context_exceeded"
+        got = self.row(row)
+        self.assertIsNone(got["attention_code"])
+        self.assertIsNone(got["attention"])
+
     def test_a_verdict_only_the_hub_can_give(self) -> None:
         row = group(1)
         row["workers"] = [w for w in row["workers"] if w["studio"] != "video"]
