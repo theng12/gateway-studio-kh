@@ -8,7 +8,7 @@ import AppKit
 /// the window, which is exactly what `tests/test_whats_new_page.py` has to do to prove the markdown
 /// becomes headings and bullets rather than literal `##` and `**`.
 ///
-/// The text ships **inside the bundle** (`Contents/Resources/whats-new.md`), so the screen
+/// The text ships **inside the bundle** (`Contents/Resources/CHANGELOG.md`), so the screen
 /// describes the build that is actually running rather than whatever the checkout says today.
 enum WhatsNewPage {
 /// The version this build is, from the bundle rather than a constant that can drift — the same
@@ -20,14 +20,14 @@ static var appVersion: String {
 
 /// The bundled notes, or a plain explanation when the bundle is missing them.
 static func notes() -> String {
-    guard let url = Bundle.main.url(forResource: "whats-new", withExtension: "md"),
+    guard let url = Bundle.main.url(forResource: "CHANGELOG", withExtension: "md"),
           let text = try? String(contentsOf: url, encoding: .utf8),
           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         return """
         # What's new in gateway-kh
 
         These notes were not found inside the app, so this window cannot describe the build you
-        are running. The full history is in the `CHANGELOG` section of the handoff.
+        are running. The release history is in CHANGELOG.md.
         """
     }
     return text
@@ -236,7 +236,7 @@ enum NotesMarkdown {
     /// on 11.0 (`MACOS_MIN` in `build.sh`, `LSMinimumSystemVersion` in the bundle), so the same call
     /// is not available here. Raising the floor for one window would trade a supported Mac for a
     /// renderer, so this parses the three span kinds the notes actually contain — audited against
-    /// `whats-new.md`: no tables, no block quotes, no numbered or nested lists, no links, no code
+    /// `CHANGELOG.md`: no tables, no block quotes, no numbered or nested lists, no links, no code
     /// fences, no strikethrough, and no double-backtick spans.
     ///
     /// Recursive, so `**bold with `code` inside**` keeps both. An unclosed marker is plain text, not

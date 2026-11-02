@@ -179,7 +179,7 @@ class TheNotesSayWhichReleaseTheyCameFromTest(unittest.TestCase):
     is what he asked for — *"make sure in the future. it's also added."*
     """
 
-    NOTES = ROOT / "menubar" / "whats-new.md"
+    NOTES = ROOT / "CHANGELOG.md"
     VERSION_FILE = ROOT / "VERSION"
     RELEASE = re.compile(r"^## (\d+\.\d+\.\d+) — (\d{4}-\d{2}-\d{2})$")
 
@@ -190,11 +190,11 @@ class TheNotesSayWhichReleaseTheyCameFromTest(unittest.TestCase):
 
     def test_the_newest_section_is_the_release_you_are_building(self) -> None:
         sections = self._sections()
-        self.assertTrue(sections, "whats-new.md has no `<version> — <date>` release heading at all")
+        self.assertTrue(sections, "CHANGELOG.md has no `<version> — <date>` release heading at all")
         newest, _ = sections[0]
         self.assertEqual(
             newest, self.VERSION_FILE.read_text(encoding="utf-8").strip(),
-            "the top of whats-new.md is not this release: add a `## <VERSION> — <date>` heading for "
+            "the top of CHANGELOG.md is not this release: add a `## <VERSION> — <date>` heading for "
             "the notes you are shipping, so the page says when the change arrived",
         )
 
@@ -249,11 +249,11 @@ class TheNotesSayWhichReleaseTheyCameFromTest(unittest.TestCase):
                 continue
             for marker, name in unsupported:
                 if stripped.startswith(marker):
-                    self.fail(f"whats-new.md:{number} is a {name} (`{marker}`), which the renderer "
+                    self.fail(f"CHANGELOG.md:{number} is a {name} (`{marker}`), which the renderer "
                               f"does not implement: {stripped[:60]!r}")
             # An ordered list: `1. `, `2. ` — only bullets are implemented.
             if re.match(r"^\d+\.\s", stripped):
-                self.fail(f"whats-new.md:{number} is an ordered list, which the renderer does not "
+                self.fail(f"CHANGELOG.md:{number} is an ordered list, which the renderer does not "
                           f"implement: {stripped[:60]!r}")
 
 

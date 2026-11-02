@@ -1,6 +1,6 @@
 # What's new in gateway-kh
 
-Newest first. This is the same list the **What's New** page in the app shows.
+Newest first. This is the source for **What's New** in the app and web admin.
 
 Each release carries its version and date, the way Studio Hub's notes do, so an entry says *when* it
 arrived instead of only what it does. `tests/test_whats_new_page.py` fails if the newest section is
@@ -12,6 +12,7 @@ every feature title, and they are left as they were written.
 
 ## 0.2.222 — 2026-11-02
 
+- The web admin now shows its version and What's New from the same changelog as the app.
 - A model with no Mac able to run it right now is refused straight away, with the reason, instead of being accepted and left waiting. This covers a site that answers but has lost the only Mac for that model. One missed reading doesn't switch a model off.
 - A job sent to a site whose Macs have all gone offline moves to another site after about 10 minutes, instead of waiting until someone restarts the site.
 - Gemma 4 uses its qualified 49,152-token window once the Hub update is installed, with a published request budget of 39,960 tokens. A request is sized to fit. The answer is capped at 8,192 tokens, and if the request leaves less room the answer is shrunk to fit and the job says so. A request too big to leave room for any answer is refused straight away and asks you to shorten it.

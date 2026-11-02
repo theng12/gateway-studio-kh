@@ -10,7 +10,7 @@ import AppKit
 /// by side, so this is the same page furniture (`PageKit`) and the same block rules Studio Hub's
 /// `MarkdownText` uses, rather than a second design.
 ///
-/// The text still ships **inside the bundle** (`Contents/Resources/whats-new.md`), so the screen
+/// The text still ships **inside the bundle** (`Contents/Resources/CHANGELOG.md`), so the screen
 /// describes the build that is actually running rather than whatever the checkout says today.
 final class WhatsNewWindow: NSObject {
     static let shared = WhatsNewWindow()

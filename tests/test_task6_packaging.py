@@ -101,7 +101,7 @@ class _BuildFixture:
         shutil.copy2(BUILD_SCRIPT, self.menubar / "build.sh")
         shutil.copy2(ROOT / "menubar" / "make_icon.py", self.menubar / "make_icon.py")
         (self.menubar / "main.swift").write_text("import Cocoa\n", encoding="utf-8")
-        (self.menubar / "whats-new.md").write_text("fixture\n", encoding="utf-8")
+        (self.root / "CHANGELOG.md").write_text("fixture\n", encoding="utf-8")
         shutil.copy2(ROOT / "requirements.txt", self.root / "requirements.txt")
         lock = ROOT / "requirements.lock"
         if lock.exists():

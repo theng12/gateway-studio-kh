@@ -553,6 +553,13 @@
     </div>
   </div>
   <!-- A page the Mac app still owns. One shared note, so a sidebar row is never a dead link. -->
+  <section id="view-whatsnew" style="display:none">
+    <div class="heading">
+      <h1>What's New</h1>
+      <p id="whatsnew-version">Reading this version…</p>
+    </div>
+    <div id="whatsnew-notes" style="max-width:72ch;line-height:1.65" role="status"></div>
+  </section>
   <section id="view-missing" style="display:none">
     <div class="heading">
       <h1 id="missing-title">Page</h1>
@@ -1384,7 +1391,7 @@ const NAV = [
     { view: 'fleet', label: 'Fleet', icon: 'fleet' },
   ] },
   { group: 'App', items: [
-    { view: 'whatsnew', label: "What's New", icon: 'sparkle', app: true },
+    { view: 'whatsnew', label: "What's New", icon: 'sparkle' },
     { view: 'guests', label: 'Guests', icon: 'person' },
     { view: 'settings', label: 'Settings', icon: 'settings', app: true },
   ] },
@@ -1421,7 +1428,6 @@ function navIcon(name) {
 const APP_ONLY = {
   overview: 'Overview is in the Gateway app.',
   analytics: 'Analytics is in the Gateway app.',
-  whatsnew: "What's New is in the Gateway app.",
   settings: 'Settings is in the Gateway app.',
 };
 
@@ -1514,11 +1520,12 @@ function setView(view) {
       else row.removeAttribute('aria-current');
     });
   }
-  for (const id of ['fleet', 'jobs', 'voices', 'models', 'providers', 'create', 'packs', 'guests', 'missing']) {
+  for (const id of ['fleet', 'jobs', 'voices', 'models', 'providers', 'create', 'packs', 'guests', 'whatsnew', 'missing']) {
     const section = document.getElementById('view-' + id);
     if (section) section.style.display = view === id ? '' : 'none';
   }
-  if (view === 'guests') loadGuests();
+  if (view === 'whatsnew') loadWhatsNew();
+  else if (view === 'guests') loadGuests();
   else if (view === 'voices') loadVoiceTags();
   else if (view === 'models') { loadModels(); loadFreshness(); }
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
@@ -1547,6 +1554,19 @@ function setView(view) {
   // nothing showed the pane `providerTab` names until a tab was clicked. A tab the owner picked in
   // this session is kept (`providerTab`); otherwise it is the providers list, every activation.
   else if (view === 'providers') selectProviderTab(providerTab);
+}
+
+async function loadWhatsNew() {
+  const version = document.getElementById('whatsnew-version');
+  const notes = document.getElementById('whatsnew-notes');
+  try {
+    const data = await api('/whats-new');
+    version.textContent = 'Version ' + data.release;
+    notes.innerHTML = '<ul>' + data.changes.map(text => `<li>${esc(text)}</li>`).join('') + '</ul>';
+  } catch (error) {
+    version.textContent = 'Release notes unavailable';
+    notes.textContent = error.message;
+  }
 }
 
 const SHELF_KIND_LABELS = {

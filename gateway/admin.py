@@ -280,6 +280,25 @@ def _error(status: int, detail: str, code: str | None = None) -> JSONResponse:
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
+@router.get("/api/whats-new", dependencies=[Depends(require_admin)])
+def whats_new() -> dict[str, Any]:
+    from . import __version__
+
+    path = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AdminError(503, "This build's CHANGELOG.md is missing.") from exc
+    sections = re.split(r"^## ", text, flags=re.MULTILINE)
+    section = next((part for part in sections[1:]
+                    if part.splitlines()[0].startswith(__version__ + " — ")), None)
+    if section is None:
+        raise AdminError(503, f"CHANGELOG.md has no notes for version {__version__}.")
+    return {"version": __version__, "release": section.splitlines()[0],
+            "changes": [line[2:].strip() for line in section.splitlines()[1:]
+                        if line.startswith("- ")]}
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 def admin_ui(request: Request) -> HTMLResponse:

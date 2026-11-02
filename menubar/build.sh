@@ -417,7 +417,8 @@ MARKETING_VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)"
 echo "    version $MARKETING_VERSION"
 
 echo "==> bundling what's new"
-cp "$HERE/whats-new.md" "$APP/Contents/Resources/whats-new.md"
+cp "$ROOT/CHANGELOG.md" "$APP/Contents/Resources/CHANGELOG.md"
+cp "$ROOT/CHANGELOG.md" "$APP/Contents/Resources/gateway/CHANGELOG.md"
 
 echo "==> writing Info.plist"
 cat > "$APP/Contents/Info.plist" <<PLIST

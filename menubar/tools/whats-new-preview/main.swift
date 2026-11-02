@@ -18,8 +18,8 @@ import AppKit
 ///
 /// (The file is named `main.swift` because a multi-file `swiftc` build allows top-level code only
 /// in the file with that name.)
-/// /tmp/whats-new-preview menubar/whats-new.md /tmp/whats-new-720.png 720 640
-/// /tmp/whats-new-preview menubar/whats-new.md /tmp/whats-new-narrow.png 470 640
+/// /tmp/whats-new-preview CHANGELOG.md /tmp/whats-new-720.png 720 640
+/// /tmp/whats-new-preview CHANGELOG.md /tmp/whats-new-narrow.png 470 640
 /// ```
 ///
 /// The narrow size is the one worth looking at: it is where a notes page either wraps or pushes a
@@ -33,7 +33,7 @@ final class GatewayController {
 }
 
 let arguments = CommandLine.arguments
-let notesPath = arguments.count > 1 ? arguments[1] : "menubar/whats-new.md"
+let notesPath = arguments.count > 1 ? arguments[1] : "CHANGELOG.md"
 let outputPath = arguments.count > 2 ? arguments[2] : "/tmp/whats-new-preview.png"
 let width = arguments.count > 3 ? CGFloat(Double(arguments[3]) ?? 720) : 720
 let height = arguments.count > 4 ? CGFloat(Double(arguments[4]) ?? 640) : 640

@@ -12,7 +12,7 @@ import AppKit
 /// notes with Studio Hub's own block rules, and this section shows exactly that view. One renderer,
 /// two doors, so a change to the notes' typography cannot reach one and miss the other.
 ///
-/// **Nothing here polls.** The notes ship inside the bundle (`Contents/Resources/whats-new.md`), so
+/// **Nothing here polls.** The notes ship inside the bundle (`Contents/Resources/CHANGELOG.md`), so
 /// they describe the build that is running and cannot change while this process is alive — a
 /// rebuilt app is a new process with a new bundle. `refreshesAutomatically` is off for the same
 /// reason the type has no `refresh()`: a timer here would re-read a file that is, by construction,
