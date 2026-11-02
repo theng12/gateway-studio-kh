@@ -129,6 +129,61 @@ class ExecutedByFieldTests(unittest.TestCase):
         self.assertIsNotNone(target, "job should be in the list")
         self.assertEqual(target["executed_by"], "terranash-1310")
 
+    def test_dispatch_and_settlement_clocks_survive_later_bookkeeping(self) -> None:
+        row, _ = store.submit(modality="image", model_id="test-model", params={},
+                              idempotency_key=f"timing-{time.time_ns()}", provider_id="test-provider")
+        store.mark_running(row["id"])
+        self.assertTrue(store.begin_dispatch(row["id"]))
+        store.succeed(row["id"], result={"payload": {"reference_count": 1}})
+        settled = store.get(row["id"])["finished_at"]
+        store.record_waiting(row["id"], None)
+        jobs = TestClient(api.app, client=("127.0.0.1", 54321)).get(
+            "/admin/api/jobs?limit=10").json()["jobs"]
+        target = next(j for j in jobs if j["id"] == row["id"])
+        self.assertLessEqual(target["started_at"], target["finished_at"])
+        self.assertEqual(target["finished_at"], settled)
+        self.assertEqual(target["started_at_source"], "gateway_dispatch")
+        self.assertEqual(target["finished_at_source"], "gateway_settlement")
+        self.assertEqual(target["reference_count"], 1)
+
+    def test_reference_count_zero_is_distinct_from_unknown_or_invalid(self) -> None:
+        for value, expected in ((0, 0), (None, None), (True, None), (-1, None), ("1", None)):
+            with self.subTest(value=value):
+                jid = _submit_and_succeed("image", {"payload": {"reference_count": value}})
+                jobs = TestClient(api.app, client=("127.0.0.1", 54321)).get(
+                    "/admin/api/jobs?limit=10").json()["jobs"]
+                self.assertEqual(next(j for j in jobs if j["id"] == jid)["reference_count"], expected)
+
+    def test_old_finished_clock_is_unknown_and_queued_cancel_never_dispatched(self) -> None:
+        jid = _submit_and_succeed("image", {"payload": {}})
+        store._conn.execute("UPDATE jobs SET finished_at=NULL WHERE id=?", (jid,))
+        store._conn.commit()
+        row, _ = store.submit(modality="image", model_id="test-model", params={},
+                              idempotency_key=f"cancel-clock-{time.time_ns()}", provider_id="test-provider")
+        store.cancel(row["id"])
+        jobs = TestClient(api.app, client=("127.0.0.1", 54321)).get(
+            "/admin/api/jobs?limit=10").json()["jobs"]
+        self.assertIsNone(next(j for j in jobs if j["id"] == jid)["finished_at"])
+        cancelled = next(j for j in jobs if j["id"] == row["id"])
+        self.assertIsNone(cancelled["started_at"])
+        self.assertIsNotNone(cancelled["finished_at"])
+
+    def test_remote_controller_execution_is_qualified_without_rewriting_ids(self) -> None:
+        row, _ = store.submit(
+            modality="image", model_id="test-model", params={},
+            idempotency_key=f"exec-local-{time.time_ns()}", provider_id="studio-hub-remote-a",
+        )
+        store.mark_running(row["id"])
+        store.succeed(row["id"], result={"payload": {"hub_machine": "local"}})
+        jobs = TestClient(api.app, client=("127.0.0.1", 54321)).get(
+            "/admin/api/jobs?limit=10").json()["jobs"]
+        target = next(j for j in jobs if j["id"] == row["id"])
+        self.assertEqual(target["executed_by"], "studio-hub-remote-a (controller)")
+        self.assertEqual(target["hub_machine"], "local")
+        self.assertEqual(target["execution"], {"location_id": "remote-a",
+                         "location_label": "studio-hub-remote-a", "machine_id": "local"})
+        self.assertEqual(target["provider_id"], "studio-hub-remote-a")
+
     def test_executed_by_handles_malformed_result_json(self) -> None:
         """A job with malformed result_json does not break the list endpoint."""
         # Manually insert a row with invalid JSON

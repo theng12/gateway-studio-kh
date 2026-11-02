@@ -3744,6 +3744,7 @@ def list_jobs(
         # lane has nothing to say. Never infer from `provider_id` or `provider_name` — those
         # name the site controller, not the node that did the work.
         executed_by: str | None = None
+        reference_count: int | None = None
         result_raw = job.get("result_json")
         if isinstance(result_raw, str):
             try:
@@ -3751,11 +3752,25 @@ def list_jobs(
                 if isinstance(result_obj, dict):
                     payload = result_obj.get("payload")
                     if isinstance(payload, dict):
+                        count = payload.get("reference_count")
+                        if type(count) is int and count >= 0:
+                            reference_count = count
                         candidate = payload.get("hub_machine")
                         if isinstance(candidate, str) and candidate:
                             executed_by = candidate
             except (json.JSONDecodeError, TypeError):
                 pass
+        execution = None
+        hub_machine = executed_by
+        if hub_machine is not None:
+            from . import fleet
+            location_id = fleet.controller_id_from(provider_id)
+            if location_id is not None:
+                location_label = definition.display_name if definition else provider_id
+                execution = {"location_id": location_id, "location_label": location_label,
+                             "machine_id": hub_machine}
+                if hub_machine == "local":
+                    executed_by = f"{location_label} (controller)"
         rows.append(
             {
                 "id": job["id"],
@@ -3769,10 +3784,17 @@ def list_jobs(
                 "created_at": created,
                 "updated_at": updated,
                 "duration_s": duration,
+                "started_at": job.get("dispatch_started_at"),
+                "started_at_source": "gateway_dispatch" if job.get("dispatch_started_at") is not None else None,
+                "finished_at": job.get("finished_at"),
+                "finished_at_source": "gateway_settlement" if job.get("finished_at") is not None else None,
+                "reference_count": reference_count,
                 # **Which Mac ran this job.** The site controller (`provider_name`) routes the
                 # work; the Hub picks a node and reports it as `machine`. `None` means the Hub
                 # did not say (older Hub, not dispatched yet, or a non-Hub lane).
                 "executed_by": executed_by,
+                "hub_machine": hub_machine,
+                "execution": execution,
                 # **Who asked.** Stored on every job and, until this line, published
                 # by nothing — the store had it and the surface the Jobs window
                 # reads did not, which is the same defect as a control wired to

@@ -1832,6 +1832,7 @@ def locations() -> list[dict]:
         local.update(reachable=False, error_kind="local_hub_down",
                      error=local_error or "Studio Hub is not running on this Mac.")
         _stamp_pause(local, LOCAL_ID)
+    _qualify_location_labels(local)
     rows.append(local)
 
     configured = _read()
@@ -1888,6 +1889,7 @@ def locations() -> list[dict]:
             "provider_id": provider_id_for(str(row.get("id") or "")),
         })
         _stamp_pause(result, controller_id)
+        _qualify_location_labels(result)
         rows.append(result)
     _attach_admission(rows)
     return rows
@@ -2845,7 +2847,7 @@ def machine_label(row: dict, machine: dict, node: dict | None = None) -> str:
     may be "This Mac", under whatever the owner renamed it to.
     """
     mid = str(machine.get("machine") or "").strip()
-    hub = str(machine.get("label") or "").strip()
+    hub = str(machine.get("hub_label", machine.get("label")) or "").strip()
     roster = str((node or {}).get("name") or "").strip()
     if row.get("local") and not node:
         return hub if not _is_generic_label(hub) else (str(row.get("label") or "").strip() or local_label())
@@ -2853,6 +2855,20 @@ def machine_label(row: dict, machine: dict, node: dict | None = None) -> str:
         if not _is_generic_label(candidate):
             return candidate
     return str(row.get("label") or "").strip() or mid or "Mac"
+
+
+def _qualify_location_labels(row: dict) -> None:
+    """Give raw location rows the same display names as the flat machine list."""
+    if row.get("site_id") == _DEFAULT_SITE_ID:
+        row["hub_site_id"] = row["site_id"]
+        row["site_id"] = None  # The Hub's shared placeholder is not an assigned site identity.
+    nodes = {str(node.get("id")): node for node in row.get("nodes") or []
+             if isinstance(node, dict) and node.get("id")}
+    row["machines"] = [
+        {**machine, "hub_label": machine.get("hub_label", machine.get("label")),
+         "label": machine_label(row, machine, nodes.get(str(machine.get("machine") or "")))}
+        for machine in row.get("machines") or []
+    ]
 
 
 #: How long a Mac may stay behind after its controller received the newest release before it reads

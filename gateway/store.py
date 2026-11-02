@@ -284,6 +284,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("cancel_requested_at", "REAL"),
     ("cancel_state", "TEXT"),
     ("dispatch_started_at", "REAL"),
+    ("finished_at", "REAL"),  # Gateway settlement clock; old rows remain unknown, never backfilled.
     ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
     ("upstream_job_id", "TEXT"),
     ("late_result_state", "TEXT"),
@@ -2496,7 +2497,7 @@ class JobStore:
                     UPDATE jobs
                        SET state = 'accepted', recovery_state = NULL, recovery_detail = NULL,
                            recovery_context = NULL, error_code = NULL, error_detail = ?,
-                           retryable = 0, next_action_at = ?, updated_at = ?
+                           retryable = 0, next_action_at = ?, updated_at = ?, finished_at = NULL
                      WHERE id = ? AND recovery_state IS NOT NULL
                     """,
                     (detail[:500], now, now, job_id),
@@ -2509,10 +2510,10 @@ class JobStore:
                            -- settled now, so no longer "unknown": the Hub's own record decided it
                        error_code = CASE WHEN COALESCE(error_code, ?) = ? THEN 'PROVIDER_FAILED'
                                          ELSE error_code END,
-                           error_detail = ?, retryable = 0, next_action_at = NULL, updated_at = ?
+                           error_detail = ?, retryable = 0, next_action_at = NULL, updated_at = ?, finished_at = ?
                      WHERE id = ? AND recovery_state IS NOT NULL
                     """,
-                    (UNKNOWN_OUTCOME_CODE, UNKNOWN_OUTCOME_CODE, detail[:500], now, job_id),
+                    (UNKNOWN_OUTCOME_CODE, UNKNOWN_OUTCOME_CODE, detail[:500], now, now, job_id),
                 )
             self._conn.commit()
             return result.rowcount == 1
@@ -2969,16 +2970,17 @@ class JobStore:
     def confirm_cancel(self, job_id: str) -> bool:
         """Confirm a running cancellation only if upstream dispatch never began."""
         with self._lock:
+            now = time.time()
             result = self._conn.execute(
                 """
                 UPDATE jobs
                    SET state = 'cancelled', cancel_state = ?, next_action_at = NULL,
-                       updated_at = ?
+                       updated_at = ?, finished_at = ?
                  WHERE id = ? AND state = 'running'
                    AND cancel_requested_at IS NOT NULL
                    AND dispatch_started_at IS NULL
                 """,
-                (CANCEL_CONFIRMED, time.time(), job_id),
+                (CANCEL_CONFIRMED, now, now, job_id),
             )
             self._conn.commit()
             return result.rowcount == 1
@@ -2990,14 +2992,15 @@ class JobStore:
     def settle_cancelled(self, job_id: str) -> bool:
         """Settle a cancelled-while-running job whose upstream attempt has ended in failure."""
         with self._lock:
+            now = time.time()
             result = self._conn.execute(
                 """
                 UPDATE jobs
                    SET state = 'cancelled', cancel_state = ?, next_action_at = NULL,
-                       updated_at = ?
+                       updated_at = ?, finished_at = ?
                  WHERE id = ? AND state = 'running' AND cancel_requested_at IS NOT NULL
                 """,
-                (CANCEL_CONFIRMED, time.time(), job_id),
+                (CANCEL_CONFIRMED, now, now, job_id),
             )
             self._conn.commit()
             return result.rowcount == 1
@@ -3164,6 +3167,10 @@ class JobStore:
         if not fields:
             return
         fields = {**fields, "updated_at": time.time()}
+        if fields.get("state") in TERMINAL_STATES:
+            fields["finished_at"] = fields["updated_at"]
+        elif fields.get("state") in {"accepted", "running"}:
+            fields["finished_at"] = None
         cols = ", ".join(f"{k} = ?" for k in fields)
         self._conn.execute(
             f"UPDATE jobs SET {cols} WHERE id = ?",  # noqa: S608 - fixed keys

@@ -8738,16 +8738,16 @@ async function loadJobs() {
   catch (e) { box.innerHTML = `<div class="empty">Could not read jobs: ${esc(e.message)}</div>`; return; }
   if (state.view !== 'jobs') return;
   const rows = d.jobs || [];
-  box.innerHTML = rows.length ? `<div class="tablewrap"><table><thead><tr>
+  box.innerHTML = rows.length ? `<div class="tablewrap"><table style="min-width:1000px"><thead><tr>
       <th>Job</th><th>State</th><th>Model</th><th>Where</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
     </tr></thead><tbody>${rows.map(j => `<tr>
       <td class="mid">${esc(j.short_id || String(j.id).slice(0, 8))}</td>
       <td><span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span></td>
-      <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}</td>
-      <td>${esc(j.provider_name || '')}</td>
+      <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}${j.reference_count == null ? '' : `<div class="hint">${esc(j.reference_count)} reference image${j.reference_count === 1 ? '' : 's'} used</div>`}</td>
+      <td>${esc(j.provider_name || '')}${j.executed_by ? `<div class="hint">${esc(j.executed_by)}</div>` : ''}</td>
       <td>${esc(requesterLabel(j))}</td>
       <td>${esc(j.caller || '')}</td>
-      <td class="num">${ago(j.created_at)}</td>
+      <td class="num">${ago(j.created_at)}<div class="hint">Gateway dispatched: ${j.started_at == null ? 'not recorded' : ago(j.started_at)}</div><div class="hint">Gateway settled: ${j.finished_at == null ? 'not recorded' : ago(j.finished_at)}</div></td>
     </tr>`).join('')}</tbody></table></div>` : '<div class="empty">No jobs yet.</div>';
 }
 

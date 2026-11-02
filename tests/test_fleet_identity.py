@@ -42,6 +42,32 @@ class StableIdentityTests(unittest.TestCase):
         self.assertEqual(fleet._stable_identity({}), "")
 
 
+class LocationDisplayIdentityTests(unittest.TestCase):
+    def test_remote_controller_label_and_placeholder_never_claim_this_mac(self) -> None:
+        row = {"id": "site-a", "label": "Remote studio", "local": False,
+               "controller_id": "remote-hub", "site_id": "local-site",
+               "machines": [{"machine": "local", "label": "This Mac"},
+                            {"machine": "node-a", "label": "This Mac"}],
+               "nodes": [{"id": "node-a", "name": "Owner's node"}]}
+        fleet._qualify_location_labels(row)
+        self.assertEqual(row["machines"], [{"machine": "local", "hub_label": "This Mac", "label": "Remote studio"},
+                                           {"machine": "node-a", "hub_label": "This Mac", "label": "Owner's node"}])
+        row["label"] = "Renamed studio"
+        fleet._qualify_location_labels(row)
+        self.assertEqual(row["machines"][0]["label"], "Renamed studio")
+        self.assertIsNone(row["site_id"])
+        self.assertEqual(row["hub_site_id"], "local-site")
+        self.assertEqual((row["id"], row["controller_id"]), ("site-a", "remote-hub"))
+
+    def test_real_site_id_and_gateway_local_label_stay_intact(self) -> None:
+        row = {"id": "local", "label": "My Mac", "local": True, "site_id": "assigned-site",
+               "machines": [{"machine": "local", "label": "This Mac"}]}
+        fleet._qualify_location_labels(row)
+        self.assertEqual(row["machines"][0]["label"], "My Mac")
+        self.assertEqual(row["site_id"], "assigned-site")
+        self.assertNotIn("hub_site_id", row)
+
+
 class AddControllerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.rows: list[dict] = []
