@@ -376,10 +376,10 @@ class TheNotesReachTheJobTest(unittest.TestCase):
         self.assertEqual(body["prompt_tokens_measured"], 13604)
 
 
-#: The owner's curated figures for gemma-4, measured 2026-11-02: window 32768, publish a maximum
-#: answer of 8192 and a maximum request of 23000. They live in the curated file, not in code —
+#: The owner's curated figures for gemma-4, measured 2026-11-02: window 49152, publish a maximum
+#: answer of 8192 and a maximum request of 39960. They live in the curated file, not in code —
 #: `limits.py` reads `max_output_tokens` / `max_request_tokens` per model.
-CURATED = {"max_output_tokens": 8192, "max_request_tokens": 23000}
+CURATED = {"max_output_tokens": 8192, "max_request_tokens": 39960}
 
 
 class TheOwnerSCeilingBeatsTheWorkersFallbackTest(unittest.TestCase):
@@ -413,8 +413,43 @@ class TheOwnerSCeilingBeatsTheWorkersFallbackTest(unittest.TestCase):
 
     def test_the_row_publishes_a_request_ceiling_with_its_source(self) -> None:
         row = _row(LIVE_LIMITS)
-        self.assertEqual(row["max_request_tokens"], 23000)
+        self.assertEqual(row["max_request_tokens"], 39960)
         self.assertEqual(row["max_request_tokens_source"], "curated")
+
+    def test_the_qualified_48k_window_and_request_are_published_together(self) -> None:
+        qualified = {**LIVE_LIMITS, "context_window_tokens": {
+            **LIVE_LIMITS["context_window_tokens"], "value": 49152}}
+        row = _row(qualified)
+        self.assertEqual(row["context_window_tokens"], 49152)
+        self.assertEqual(row["max_output_tokens"], 8192)
+        self.assertEqual(row["max_request_tokens"], 39960)
+        self.assertEqual(49152 - 8192 - 1000, row["max_request_tokens"])
+        model = {"model_id": LIVE_MODEL, "raw": {"model_limits": qualified}}
+        from gateway.api import _refuse_a_request_that_cannot_fit
+        # The old 32K admission would refuse this request; 48K leaves an answer.
+        _refuse_a_request_that_cannot_fit(
+            _definition(), model, {"content": "a" * 147852})
+        with self.assertRaises(Exception) as caught:
+            _refuse_a_request_that_cannot_fit(
+                _definition(), model, {"content": "a" * 174400})
+        self.assertEqual(caught.exception.code, "REQUEST_TOO_LARGE_FOR_MODEL")
+        self.assertIn("47128", str(caught.exception))
+
+    def test_48k_room_left_still_lowers_the_answer_and_reports_it(self) -> None:
+        refusal = json.dumps({"detail":
+            "messages: the prompt is 41000 tokens and max_tokens asks for 8192 more, "
+            "49192 together, above the 49152 tokens this model states (the model manifest's "
+            "qualification.context_window_tokens). Send a shorter prompt or a smaller max_tokens; "
+            "this model cannot fit both."})
+        sent = []
+        replies = [_refusal(refusal), _answer()]
+        with patch.object(studio_hub.httpx, "post",
+                          lambda url, **kw: (sent.append(kw["json"]), replies.pop(0))[1]), \
+                patch.object(studio_hub, "chat_queue_wait_seconds", lambda *_a, **_k: 0.0):
+            result = studio_hub._generate_chat(_request(8192, max_tokens=8192))
+        self.assertEqual([body["max_tokens"] for body in sent], [8192, 7152])
+        self.assertEqual(result.payload["max_tokens_lowered_to"], 7152)
+        self.assertEqual(result.payload["prompt_tokens_measured"], 41000)
 
     def test_a_row_with_no_ceiling_publishes_none_of_it(self) -> None:
         self.path.write_text(json.dumps({"models": {}}), encoding="utf-8")

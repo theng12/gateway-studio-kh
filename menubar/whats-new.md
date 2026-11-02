@@ -14,7 +14,7 @@ every feature title, and they are left as they were written.
 
 - A model with no Mac able to run it right now is refused straight away, with the reason, instead of being accepted and left waiting. This covers a site that answers but has lost the only Mac for that model. One missed reading doesn't switch a model off.
 - A job sent to a site whose Macs have all gone offline moves to another site after about 10 minutes, instead of waiting until someone restarts the site.
-- A Gemma 4 request is sized to fit. The answer is capped at 8,192 tokens, and if the request leaves less room the answer is shrunk to fit and the job says so. A request too big to leave room for any answer is refused straight away and asks you to shorten it.
+- Gemma 4 uses its qualified 49,152-token window once the Hub update is installed, with a published request budget of 39,960 tokens. A request is sized to fit. The answer is capped at 8,192 tokens, and if the request leaves less room the answer is shrunk to fit and the job says so. A request too big to leave room for any answer is refused straight away and asks you to shorten it.
 - A writing job whose answer was cut off now fails and says so, keeping the partial text, instead of reading as finished.
 - Fleet names what each "Needs attention" means: a studio down, a stalled job, a recent failure, or a flag only its Hub can see. A request too long for a model no longer marks the Mac as needing attention.
 
