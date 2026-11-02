@@ -1157,10 +1157,10 @@ enum MainMenuBuilder {
         // ---- Application -------------------------------------------------
         let appItem = NSMenuItem()
         main.addItem(appItem)
-        let appMenu = NSMenu(title: "gateway-kh")
+        let appMenu = NSMenu(title: "Gateway Studio KH")
         appItem.submenu = appMenu
         appMenu.addItem(
-            withTitle: "About gateway-kh",
+            withTitle: "About Gateway Studio KH",
             action: #selector(AppDelegate.showAbout),
             keyEquivalent: ""
         ).target = target
@@ -1172,13 +1172,13 @@ enum MainMenuBuilder {
         ).target = target
         appMenu.addItem(.separator())
         appMenu.addItem(
-            withTitle: "Hide gateway-kh",
+            withTitle: "Hide Gateway Studio KH",
             action: #selector(NSApplication.hide(_:)),
             keyEquivalent: "h"
         )
         appMenu.addItem(.separator())
         appMenu.addItem(
-            withTitle: "Quit gateway-kh",
+            withTitle: "Quit Gateway Studio KH",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
@@ -1367,10 +1367,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             let image = NSImage(systemSymbolName: "bolt.horizontal.circle",
-                                accessibilityDescription: "gateway-kh")
+                                accessibilityDescription: "Gateway Studio KH")
             image?.isTemplate = true
             button.image = image
-            button.toolTip = "gateway-kh"
+            button.toolTip = "Gateway Studio KH"
         }
 
         // Record that the UI is genuinely up. The state file is how a headless
@@ -1516,7 +1516,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .stopped: symbol = "bolt.horizontal.circle"
         case .failed: symbol = "exclamationmark.triangle"
         }
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "gateway-kh")
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Gateway Studio KH")
         image?.isTemplate = true
         button.image = image
     }
@@ -1614,7 +1614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "gateway-kh",
+            .applicationName: "Gateway Studio KH",
             .applicationVersion: GatewayController.shared.appVersion,
             .credits: NSAttributedString(
                 string: "A personal model gateway.\n\nConsole: http://127.0.0.1:\(GatewayController.shared.port)/admin",

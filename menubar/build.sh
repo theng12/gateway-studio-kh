@@ -427,7 +427,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key><string>gateway-kh</string>
-    <key>CFBundleDisplayName</key><string>gateway-kh</string>
+    <key>CFBundleDisplayName</key><string>Gateway Studio KH</string>
     <key>CFBundleIdentifier</key><string>kh.gateway.menubar</string>
     <key>CFBundleExecutable</key><string>GatewayKH</string>
     <key>CFBundlePackageType</key><string>APPL</string>
@@ -462,14 +462,14 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 
 # A DMG belongs beside the app on every build: a stable build is not ready until it can
 # be handed to another Mac, so it lands in dist/ named by **version alone**
-# (`gateway-kh-0.2.3.dmg`). The exact build stamp still lives inside the app
+# (`Gateway Studio KH-0.2.3.dmg`). The exact build stamp still lives inside the app
 # (`CFBundleVersion` / `GatewayBuild`, which Check Gateway reads); only the file name
 # is shortened, so the latest is obvious at a glance. `hdiutil` ships with macOS, so
 # this needs nothing installed. The app is ad-hoc signed and the image is not
 # notarised, so a Mac that did not build it still needs the right-click Open — the
 # same step the other projects' DMGs need.
 DIST="$ROOT/dist"
-DMG="$DIST/gateway-kh-${MARKETING_VERSION}.dmg"
+DMG="$DIST/Gateway Studio KH-${MARKETING_VERSION}.dmg"
 mkdir -p "$DIST"
 # **The owner's rule, 2026-09-26: an old DMG moves to `_trash/dist/`; it is never `rm`d.**
 # This line was `rm -f "$DMG"`, which destroyed the previous artefact of the same version on a
@@ -478,14 +478,14 @@ mkdir -p "$DIST"
 # `dist/` accumulating one file per release: it held four (0.2.47 through 0.2.50) before this.
 TRASH_DIST="$ROOT/_trash/dist"
 mkdir -p "$TRASH_DIST"
-for OLD_DMG in "$DIST"/gateway-kh-*.dmg; do
+for OLD_DMG in "$DIST"/gateway-kh-*.dmg "$DIST"/"Gateway Studio KH-"*.dmg; do
   [ -e "$OLD_DMG" ] || continue
   preserve_path "$OLD_DMG" "$TRASH_DIST"
 done
 DMG_STAGE="$(mktemp -d)"
 cp -R "$APP" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create -volname "gateway-kh" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "Gateway Studio KH" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG" >/dev/null
 preserve_path "$DMG_STAGE"
 echo "DMG: $DMG"
 echo "     (the previous DMG(s) moved to _trash/dist/)"

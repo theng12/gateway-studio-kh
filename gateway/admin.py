@@ -311,7 +311,7 @@ def admin_ui(request: Request) -> HTMLResponse:
     if not (request_is_loopback(request) or signed_in):
         return _login_page()
     if not _UI_PATH.exists():
-        return HTMLResponse("<h1>gateway-kh</h1><p>Admin UI file is missing.</p>", status_code=500)
+        return HTMLResponse("<h1>Gateway Studio KH</h1><p>Admin UI file is missing.</p>", status_code=500)
     # **`no-store`, because the page is read from disk on every request and a cached
     # copy is a UI that cannot be seen to have changed.** The app hosts this in a
     # WKWebView, so without it a reload after an edit can serve the previous page and
@@ -343,7 +343,7 @@ def admin_ui(request: Request) -> HTMLResponse:
 _LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>gateway-kh — sign in</title>
+<title>Gateway Studio KH — sign in</title>
 <style>
   :root { color-scheme: light dark; }
   body { margin: 0; background: Canvas; color: CanvasText;
@@ -359,7 +359,7 @@ _LOGIN_HTML = """<!DOCTYPE html>
   @media (prefers-color-scheme: dark) { .bad { color: #ff6961; } }
 </style></head>
 <body><main>
-  <h1>Gateway</h1>
+  <h1>Gateway Studio KH</h1>
   <p>__NOTE__</p>
   __ERROR__
   <form method="post" action="/admin/login">

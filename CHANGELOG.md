@@ -1,4 +1,4 @@
-# What's new in gateway-kh
+# What's new in Gateway Studio KH
 
 Newest first. This is the source for **What's New** in the app and web admin.
 
@@ -12,6 +12,7 @@ every feature title, and they are left as they were written.
 
 ## 0.2.223 — 2026-11-02
 
+- The app is now called Gateway Studio KH, including its menus, admin page and installer. Its app location and existing connections stay the same.
 - Backups on attached install SSDs now go into 2 Backups. The app shows that folder name and no longer creates KH Backups on those drives.
 
 ## 0.2.222 — 2026-11-02

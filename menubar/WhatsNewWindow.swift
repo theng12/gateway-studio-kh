@@ -54,7 +54,7 @@ final class WhatsNewWindow: NSObject {
             backing: .buffered,
             defer: false
         )
-        panel.title = "What's New in gateway-kh"
+        panel.title = "What's New in Gateway Studio KH"
         panel.contentView = content
         // A notes window must not be able to resize itself either; it has a scroller for exactly
         // that reason. `minSize` is small enough to read on a laptop screen without full screen.

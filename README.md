@@ -1,4 +1,4 @@
-# gateway-kh
+# Gateway Studio KH
 
 **Moving to another computer or starting implementation?** Read the current [new-computer handoff](_handoffs/2026-09-20-new-computer-handoff.md) and [open-issue ledger](_handoffs/2026-09-20-open-issues.md). They distinguish verified defects, proposed features, committed code and live state.
 

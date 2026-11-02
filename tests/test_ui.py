@@ -66,21 +66,21 @@ SIDEBAR = [
 #: Rows are 1-based, because that is what the accessibility layer counts, and the
 #: grouping is Create / Library / Connection / App.
 SECTIONS = [
-    (1, "Overview", "gateway-kh — Overview"),
-    (3, "Audio", "gateway-kh — Audio"),
-    (4, "Subtitle", "gateway-kh — Subtitle"),
-    (5, "Image", "gateway-kh — Image"),
-    (6, "Music", "gateway-kh — Music"),
-    (7, "Video", "gateway-kh — Video"),
-    (8, "Chat", "gateway-kh — Chat"),
-    (10, "Jobs", "gateway-kh — Jobs"),
-    (11, "Voices", "gateway-kh — Voices"),
-    (12, "Models", "gateway-kh — Models"),
-    (13, "Analytics", "gateway-kh — Analytics"),
-    (14, "Content Packs", "gateway-kh — Content Packs"),
-    (16, "Providers", "gateway-kh — Providers"),
-    (17, "Fleet", "gateway-kh — Fleet"),
-    (19, "What's New", "gateway-kh — What's New"),
+    (1, "Overview", "Gateway Studio KH — Overview"),
+    (3, "Audio", "Gateway Studio KH — Audio"),
+    (4, "Subtitle", "Gateway Studio KH — Subtitle"),
+    (5, "Image", "Gateway Studio KH — Image"),
+    (6, "Music", "Gateway Studio KH — Music"),
+    (7, "Video", "Gateway Studio KH — Video"),
+    (8, "Chat", "Gateway Studio KH — Chat"),
+    (10, "Jobs", "Gateway Studio KH — Jobs"),
+    (11, "Voices", "Gateway Studio KH — Voices"),
+    (12, "Models", "Gateway Studio KH — Models"),
+    (13, "Analytics", "Gateway Studio KH — Analytics"),
+    (14, "Content Packs", "Gateway Studio KH — Content Packs"),
+    (16, "Providers", "Gateway Studio KH — Providers"),
+    (17, "Fleet", "Gateway Studio KH — Fleet"),
+    (19, "What's New", "Gateway Studio KH — What's New"),
 ]
 
 failures: list[str] = []
@@ -1018,18 +1018,18 @@ def main() -> int:
     sidebar_select(3)
     time.sleep(2.0)
     check("clicking a sidebar row selects the same section",
-          window_title() == "gateway-kh — Audio", window_title())
+          window_title() == "Gateway Studio KH — Audio", window_title())
     sidebar_select(10)
     time.sleep(2.0)
     check("and a management row still selects its section",
-          window_title() == "gateway-kh — Jobs", window_title())
+          window_title() == "Gateway Studio KH — Jobs", window_title())
 
     # The row that the owner could not find before it existed. Settings is now the
     # last row, under its own "App" heading.
     sidebar_select(20)
     time.sleep(2.0)
     check("Settings is reachable by clicking its sidebar row",
-          window_title() == "gateway-kh — Settings", window_title())
+          window_title() == "Gateway Studio KH — Settings", window_title())
 
     # ------------------------------------------------------------------
     print("\n\033[1m2. Overview renders live data\033[0m")
@@ -1329,10 +1329,10 @@ def main() -> int:
     # listed one entry for two different jobs. Each now has its own page and the
     # console opens on the matching view.
     title = open_section("Models")
-    check("Models selects into the same window", title == "gateway-kh — Models", title)
+    check("Models selects into the same window", title == "Gateway Studio KH — Models", title)
     models_page = window_title()
     title = open_section("Providers")
-    check("Providers selects into the same window", title == "gateway-kh — Providers", title)
+    check("Providers selects into the same window", title == "Gateway Studio KH — Providers", title)
     check("Models and Providers are different pages", models_page != window_title(),
           f"{models_page} vs {window_title()}")
     check("the app survived loading the web console",
@@ -1346,7 +1346,7 @@ def main() -> int:
     osa(wrap('click menu item "Settings…" of menu 1 of menu bar item "gateway-kh" of menu bar 1'))
     time.sleep(2.5)
     check("Settings stays in the one window", window_count() == 1, f"{window_count()} windows")
-    check("Settings is titled in the window", window_title() == "gateway-kh — Settings",
+    check("Settings is titled in the window", window_title() == "Gateway Studio KH — Settings",
           window_title())
 
     settings = detail_texts()

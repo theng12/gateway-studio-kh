@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>gateway-kh — provider control</title>
+<title>Gateway Studio KH — provider control</title>
 <style>
   /* The same design language as the rest of the app (design spec 2026-10-02, 2.1-2.7b).
      Everything here comes from system colours, so this page follows the Mac's
@@ -528,7 +528,7 @@
     <select id="web-page" aria-label="Page" onchange="openNav(this.value)"></select>
     <button class="sm" onclick="signOut()">Sign Out</button>
   </div>
-  <div class="nav-title">Gateway</div>
+  <div class="nav-title">Gateway Studio KH</div>
   <div class="nav-list" id="nav-list"></div>
   <div class="nav-foot">
     <div class="nav-status" id="nav-status">Reading the gateway…</div>
@@ -1512,7 +1512,7 @@ function setView(view) {
   const active = view === 'create' && pending ? `create:${pending}` : view;
   const entry = typeof navEntryFor === 'function' ? navEntryFor(active.split(':')[0], pending) : null;
   if (typeof IN_APP === 'undefined' || !IN_APP) {
-    document.title = 'gateway-kh — ' + (entry ? entry.label : view);
+    document.title = 'Gateway Studio KH — ' + (entry ? entry.label : view);
   }
   if (typeof document.querySelectorAll === 'function') {
     document.querySelectorAll('.nav-row').forEach(row => {

@@ -617,7 +617,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "gateway-kh"
+        window.title = "Gateway Studio KH"
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("GatewayMainWindow")
         window.center()
@@ -806,7 +806,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             if let row = rowForSection[index] {
                 sidebar.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             }
-            window.title = "gateway-kh — \(section.title)"
+            window.title = "Gateway Studio KH — \(section.title)"
         }
 
         section.activated()

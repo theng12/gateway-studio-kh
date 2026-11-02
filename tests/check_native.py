@@ -71,7 +71,7 @@ def check_sidebar() -> tuple[bool, str]:
 
 def check_jobs_provider() -> tuple[bool, str]:
     title = open_section("Jobs")
-    if title != "gateway-kh — Jobs":
+    if title != "Gateway Studio KH — Jobs":
         return False, f"Jobs did not open (window is {title!r})"
     table = "table 1 of scroll area 2 of splitter group 1"
     columns = osa(f"tell {MAIN_WINDOW} to tell {table} to return (count of columns)")
@@ -88,7 +88,7 @@ def check_jobs_provider() -> tuple[bool, str]:
 
 def check_content_packs_page() -> tuple[bool, str]:
     title = open_section("Content Packs")
-    return title == "gateway-kh — Content Packs", f"window is {title!r}"
+    return title == "Gateway Studio KH — Content Packs", f"window is {title!r}"
 
 
 def check_fleet_unreachable_address() -> tuple[bool, str]:
@@ -105,7 +105,7 @@ def check_fleet_unreachable_address() -> tuple[bool, str]:
     detail says so rather than reporting a silent pass.
     """
     title = open_section("Fleet")
-    if title != "gateway-kh — Fleet":
+    if title != "Gateway Studio KH — Fleet":
         return False, f"Fleet did not open (window is {title!r})"
     # Locations is radio button 2 of the page's tab group — the order of `FleetTab`.
     # The page remembers the last tab, so a check that assumes it is already there
@@ -154,7 +154,7 @@ def check_jobs_recovery() -> tuple[bool, str]:
     action, and only on a hold", never a particular title.
     """
     title = open_section("Jobs")
-    if title != "gateway-kh — Jobs":
+    if title != "Gateway Studio KH — Jobs":
         return False, f"Jobs did not open (window is {title!r})"
     table = "table 1 of scroll area 2 of splitter group 1"
     rows = int(osa(f"tell {MAIN_WINDOW} to tell {table} to return (count of rows)") or 0)
@@ -194,7 +194,7 @@ def check_analytics_page() -> tuple[bool, str]:
     figures separately rather than failing for having nothing to count.
     """
     title = open_section("Analytics")
-    if title != "gateway-kh — Analytics":
+    if title != "Gateway Studio KH — Analytics":
         return False, f"Analytics did not open (window is {title!r})"
     # **The page, not the sidebar.** `splitter group 1` reads back the sidebar's own static
     # texts (the "Running on…" footer), which is what the first cut of this check did — it
@@ -251,7 +251,7 @@ def main() -> int:
     # Put the owner's page back when we are done: the Jobs check has to open Jobs,
     # and leaving his app on a different section is still a small interruption.
     try:
-        original = osa(f"tell {MAIN_WINDOW} to return name").removeprefix("gateway-kh — ")
+        original = osa(f"tell {MAIN_WINDOW} to return name").removeprefix("Gateway Studio KH — ")
     except RuntimeError:
         original = ""
     failed = 0
@@ -270,7 +270,7 @@ def main() -> int:
             failed += 0 if ok else 1
     finally:
         try:
-            if original and osa(f"tell {MAIN_WINDOW} to return name") != f"gateway-kh — {original}":
+            if original and osa(f"tell {MAIN_WINDOW} to return name") != f"Gateway Studio KH — {original}":
                 open_section(original)
         except RuntimeError:
             pass

@@ -20,6 +20,9 @@ class AdminWhatsNewTest(unittest.TestCase):
         self.assertTrue(data['release'].startswith(__version__ + ' — '))
         self.assertTrue(data['changes'])
         self.assertTrue(all(isinstance(change, str) and change.strip() for change in data['changes']))
+        page = TestClient(app, client=('127.0.0.1', 50000)).get('/admin').text
+        self.assertIn('<title>Gateway Studio KH', page)
+        self.assertIn('<div class="nav-title">Gateway Studio KH</div>', page)
 
     def test_missing_notes_fail_loudly(self):
         with patch('gateway.admin.Path.read_text', side_effect=OSError('missing')):

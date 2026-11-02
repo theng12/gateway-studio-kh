@@ -24,7 +24,7 @@ static func notes() -> String {
           let text = try? String(contentsOf: url, encoding: .utf8),
           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         return """
-        # What's new in gateway-kh
+        # What's new in Gateway Studio KH
 
         These notes were not found inside the app, so this window cannot describe the build you
         are running. The release history is in CHANGELOG.md.

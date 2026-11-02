@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -414,6 +415,11 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             result = fixture.run()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             app = fixture.root / "menubar" / "build" / "gateway-kh.app"
+            info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+            self.assertEqual(info["CFBundleDisplayName"], "Gateway Studio KH")
+            self.assertEqual(info["CFBundleIdentifier"], "kh.gateway.menubar")
+            self.assertEqual(info["CFBundleExecutable"], "GatewayKH")
+            self.assertTrue((fixture.root / "dist" / f"Gateway Studio KH-{info['CFBundleShortVersionString']}.dmg").is_file())
             shipped = json.loads(
                 (app / "Contents" / "Resources" / "gateway" / "data" / "voices.json")
                 .read_text(encoding="utf-8")
