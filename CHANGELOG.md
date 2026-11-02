@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.225 — 2026-11-03
+
+- The console shows its version beside a What's New button. About also links to the notes for the current version.
+- Kie image models that need an input image stay out of the picker until the Gateway can send that image. Text-to-image models remain available.
+
 ## 0.2.224 — 2026-11-02
 
 - Music Create shows lyrics for models that support singing. A model that requires lyrics refuses a blank lyric sheet before queueing. Vocal-language choices follow the model's published options; no list is offered until the Hub publishes one, and instrumental models show none.

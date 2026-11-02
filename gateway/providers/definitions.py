@@ -149,8 +149,12 @@ def music_can_serve(model_id: str) -> bool:
 
 
 #: The kinds whose **image** lane can actually put the caller's reference image
-#: on the wire. `studio_hub` stages references; `kie` sends whatever it is given
-#: down one `createTask` route, and `image_url` is one of the fields it forwards.
+#: on the wire. `studio_hub` stages references and forwards them over the Hub's
+#: contract. `kie` is deliberately excluded from this gate: although Kie's image
+#: body carries fields like `image_url`, its image adapter does not read or
+#: forward the Gateway's staged references (`_reference_paths`), so publishing
+#: its reference-only/edit rows falsely claims the references would reach the
+#: worker. Kie's text-to-image models continue to publish normally.
 #: Every other image body here (`fal`, the OpenAI-compatible shim behind
 #: `google`, `xai`, `minimax`, `bfl`) sends a prompt and nothing else — so an
 #: endpoint those providers classify as `image-to-image` would be dispatched
@@ -169,7 +173,7 @@ def music_can_serve(model_id: str) -> bool:
 #: schemas already come from) for the reference field's real name and arity
 #: (`image_url` on some endpoints, `image_urls` on others), send it, and drop the
 #: kind from this gate.
-IMAGE_REFERENCE_CAPABLE_KINDS: frozenset[str] = frozenset({KIND_STUDIO_HUB, KIND_KIE})
+IMAGE_REFERENCE_CAPABLE_KINDS: frozenset[str] = frozenset({KIND_STUDIO_HUB})
 
 #: The pixel geometry each aspect ratio is **sent as**, shared by the two things
 #: that have to agree about it: the catalogue, which publishes it as the model's

@@ -24,6 +24,15 @@ class AdminWhatsNewTest(unittest.TestCase):
         self.assertIn('<title>Gateway Studio KH', page)
         self.assertIn('<div class="nav-title">Gateway Studio KH</div>', page)
 
+    def test_status_version_matches_current_notes(self):
+        client = TestClient(app, client=('127.0.0.1', 50000))
+        response = client.get('/admin/api/status')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['version'], client.get('/admin/api/whats-new').json()['version'])
+        page = client.get('/admin').text
+        self.assertIn('id="app-version"', page)
+        self.assertIn('onclick="openNav(\'whatsnew\')"', page)
+
     def test_missing_notes_fail_loudly(self):
         with patch('gateway.admin.Path.read_text', side_effect=OSError('missing')):
             with self.assertRaises(AdminError) as caught:

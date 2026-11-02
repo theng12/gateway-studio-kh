@@ -1613,16 +1613,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
+        let credits = NSMutableAttributedString(
+            string: "A personal model gateway.\n\nConsole: http://127.0.0.1:\(GatewayController.shared.port)/admin\n\n",
+            attributes: [.font: TextRole.caption.font, .foregroundColor: NSColor.secondaryLabelColor]
+        )
+        if let notesURL = URL(string: "http://127.0.0.1:\(GatewayController.shared.port)/admin#whatsnew") {
+            credits.append(NSAttributedString(
+                string: "What's New",
+                attributes: [.font: TextRole.caption.font, .link: notesURL]
+            ))
+        }
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Gateway Studio KH",
             .applicationVersion: GatewayController.shared.appVersion,
-            .credits: NSAttributedString(
-                string: "A personal model gateway.\n\nConsole: http://127.0.0.1:\(GatewayController.shared.port)/admin",
-                attributes: [
-                    .font: TextRole.caption.font,
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                ]
-            ),
+            .credits: credits,
         ])
     }
 

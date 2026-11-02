@@ -536,6 +536,10 @@
   </div>
 </nav>
 <main>
+  <div class="row" style="margin-bottom:var(--s16)">
+    <span class="hint" id="app-version">Version not read yet</span>
+    <button class="sm" onclick="openNav('whatsnew')">What's New</button>
+  </div>
   <!-- Shown only when the gateway refuses a request for want of a key. It appears
        when the gateway is bound beyond loopback — for Tailscale or the LAN — where
        `/admin/*` demands the key even from this Mac. -->
@@ -2064,6 +2068,8 @@ async function downloadPreservedArchive(button, digest) {
 async function loadStatus() {
   try {
     const s = await api('/status');
+    const version = document.getElementById('app-version');
+    if (version) version.textContent = s.version ? `Version ${s.version}` : 'Version not read yet';
     const m = s.models.by_modality || {};
     const parts = Object.entries(m).map(([k,v]) => `${v} ${k === 'tts' ? 'TTS' : k}`).join(' · ') || 'no models enabled';
     const stats = document.getElementById('stats');

@@ -501,7 +501,9 @@ def maintenance_resume() -> dict[str, Any]:
 
 @router.get("/api/status", dependencies=[Depends(require_admin)])
 def status() -> dict[str, Any]:
+    from . import __version__
     return {
+        "version": __version__,
         "hub": hub_status(),
         # Proof of life for the integration question: did Story Studio call this
         # gateway, when, and did it authenticate?
