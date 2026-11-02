@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.223 — 2026-11-02
+
+- Backups on attached install SSDs now go into 2 Backups. The app shows that folder name and no longer creates KH Backups on those drives.
+
 ## 0.2.222 — 2026-11-02
 
 - The web admin now shows its version and What's New from the same changelog as the app.

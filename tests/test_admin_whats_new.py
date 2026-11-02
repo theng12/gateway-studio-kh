@@ -19,7 +19,7 @@ class AdminWhatsNewTest(unittest.TestCase):
         self.assertEqual(data['version'], __version__)
         self.assertTrue(data['release'].startswith(__version__ + ' — '))
         self.assertTrue(data['changes'])
-        self.assertIn('web admin', data['changes'][0])
+        self.assertTrue(all(isinstance(change, str) and change.strip() for change in data['changes']))
 
     def test_missing_notes_fail_loudly(self):
         with patch('gateway.admin.Path.read_text', side_effect=OSError('missing')):

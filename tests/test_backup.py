@@ -110,9 +110,10 @@ class BackupTests(unittest.TestCase):
         places = {p.parent for p in self._archives()}
         self.assertEqual(places, {
             self.root / "CloudDocs/KH Backups", self.root / "_backups",
-            self.root / "Volumes/KH-STUDIO-NOVA/KH Backups", self.root / "Volumes/KH-STUDIO-ATLAS/KH Backups",
+            self.root / "Volumes/KH-STUDIO-NOVA/2 Backups", self.root / "Volumes/KH-STUDIO-ATLAS/2 Backups",
         })
-        self.assertFalse((self.root / "Volumes/Other-Drive/KH Backups").exists())
+        self.assertFalse((self.root / "Volumes/Other-Drive/2 Backups").exists())
+        self.assertFalse(list((self.root / "Volumes").glob("*/KH Backups")))
         for archive in self._archives():
             self.assertEqual(archive.stat().st_mode & 0o777, 0o600, archive)
         with tarfile.open(self._archives()[0]) as tar:

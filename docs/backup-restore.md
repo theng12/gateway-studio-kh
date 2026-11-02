@@ -29,7 +29,7 @@ keys it holds: do not share it or post it anywhere.
 One file `kh-backup-YYYYMMDD-HHMMSS.tar.gz`, copied to each place that is ticked and present:
 
 - iCloud Drive → `KH Backups/`
-- every attached `KH-STUDIO-*` drive → `KH Backups/` (nothing else on the drive is touched)
+- every attached `KH-STUDIO-*` drive → `2 Backups/` (nothing else on the drive is touched)
 - this Mac → `~/Developer/_backups/`
 
 Each place keeps the newest 5 (setting; each is ~180 MB with the Content Packs, so mind the free space). Older backups are moved to `~/Developer/_trash/kh-backups/`

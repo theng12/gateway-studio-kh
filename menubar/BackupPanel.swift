@@ -17,7 +17,7 @@ final class BackupPanel: NSObject {
 
     private static let places: [(kind: String, title: String)] = [
         ("icloud", "iCloud Drive  (KH Backups)"),
-        ("ssd", "Attached KH-STUDIO drives  (KH Backups)"),
+        ("ssd", "Attached KH-STUDIO drives  (2 Backups)"),
         ("local", "This Mac  (~/Developer/_backups)"),
     ]
 

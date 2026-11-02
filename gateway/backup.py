@@ -26,7 +26,7 @@ originals.
 versions) and `SHA256SUMS` (`shasum -a 256 -c` reads it). Opening one needs nothing but Finder
 or `tar`; see docs/backup-restore.md.
 
-**Where** - iCloud Drive `KH Backups/`, `KH Backups/` on every attached `KH-STUDIO-*` drive, and
+**Where** - iCloud Drive `KH Backups/`, `2 Backups/` on every attached `KH-STUDIO-*` drive, and
 `~/Developer/_backups/`. Each keeps the newest `keep` archives; an older one *this module named*
 is moved to that volume's `_trash`, or deleted when the volume has none. Nothing else in those
 folders is ever touched.
@@ -80,7 +80,7 @@ TRASH_DIR = Path(os.environ.get("GATEWAY_BACKUP_TRASH") or HOME / "Developer/_tr
 HUB_DIR = Path(os.environ.get("GATEWAY_BACKUP_HUB_DIR")
                or HOME / "Library/Application Support/StudioHub Standalone")
 DRIVE_PREFIX = "KH-STUDIO-"
-FOLDER = "KH Backups"
+FOLDER = "2 Backups"
 NAME_RE = re.compile(r"^kh-backup-\d{8}-\d{6}\.tar\.gz$")
 FORMAT = 1
 META = ("manifest.json", "SHA256SUMS")
