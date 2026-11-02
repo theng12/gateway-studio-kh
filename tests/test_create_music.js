@@ -25,12 +25,12 @@ function workspace(row) {
   return { nodes, calls, context };
 }
 
-test('vocal model offers lyrics and language; changing to instrumental clears both', () => {
+test('vocal model offers lyrics without a language control; instrumental clears lyrics', () => {
   const { context, nodes } = workspace({ id: 'studio-hub::song', supports_vocals: true, requires_lyrics: true });
   vm.runInContext('renderCreateForm()', context);
   const html = nodes.get('create-form').innerHTML;
   assert.match(html, /id="cf-lyrics"/);
-  assert.match(html, /id="cf-vocal_language"/);
+  assert.doesNotMatch(html, /id="cf-vocal_language"/);
   assert.equal(nodes.get('cf-lyrics-box').style.display, '');
   assert.equal(nodes.get('cf-lyrics').required, true);
   nodes.get('cf-lyrics').value = 'A song';
@@ -38,10 +38,10 @@ test('vocal model offers lyrics and language; changing to instrumental clears bo
   vm.runInContext("createCatalogue.by_modality.music[0] = { id: 'studio-hub::song', supports_vocals: false }; applyCreateModelControls();", context);
   assert.equal(nodes.get('cf-lyrics-box').style.display, 'none');
   assert.equal(nodes.get('cf-lyrics').value, '');
-  assert.equal(nodes.get('cf-vocal_language').value, '');
+  assert.equal(vm.runInContext("CREATE_FIELDS.music.some(field => field.k === 'vocal_language')", context), false);
 });
 
-test('required lyrics fail locally; supplied lyrics and vocal language reach Create unchanged', async () => {
+test('required lyrics fail locally; supplied lyrics reach Create without a language field', async () => {
   const { context, nodes, calls } = workspace({ id: 'studio-hub::song', requires_lyrics: true });
   const button = { disabled: false, textContent: 'Generate' };
   await context.submitCreate(button);
@@ -52,5 +52,6 @@ test('required lyrics fail locally; supplied lyrics and vocal language reach Cre
   await context.submitCreate(button);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].body.params.lyrics, nodes.get('cf-lyrics').value);
-  assert.equal(calls[0].body.params.vocal_language, 'km');
+  assert.equal(Object.hasOwn(calls[0].body.params, 'vocal_language'), false);
+  assert.equal(Object.hasOwn(calls[0].body.params, 'language'), false);
 });

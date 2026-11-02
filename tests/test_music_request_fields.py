@@ -36,26 +36,28 @@ from gateway.api import GatewayError  # noqa: E402
 class MusicHubWireAndAliasTests(_HubCase):
     """Verify alias normalization and canonical field precedence on the Hub wire."""
 
-    def test_music_language_alias_maps_to_vocal_language_on_hub_wire(self) -> None:
+    def test_yue2_language_fields_never_reach_the_hub_wire(self) -> None:
         hub = _Hub()
         req = self.request(
-            modality="music",
-            params={"prompt": "chill beat", "language": "km"},
+            modality="music", model_id=YUE2_MODEL_ID,
+            params={"prompt": "chill beat", "lyrics": "[Verse]\nHello", "vocal_language": "en", "language": "km"},
         )
         self.generate(hub, req)
         wire_params = hub.payloads[0]["items"][0]["params"]
-        self.assertEqual(wire_params.get("vocal_language"), "km")
+        self.assertEqual(wire_params["lyrics"], "[Verse]\nHello")
+        self.assertNotIn("vocal_language", wire_params)
         self.assertNotIn("language", wire_params)
 
-    def test_music_canonical_vocal_language_wins_over_language_alias(self) -> None:
+    def test_yue2_nested_language_fields_never_reach_the_hub_wire(self) -> None:
         hub = _Hub()
         req = self.request(
-            modality="music",
-            params={"prompt": "chill beat", "vocal_language": "en", "language": "km"},
+            modality="music", model_id=YUE2_MODEL_ID,
+            params={"prompt": "chill beat", "params": {"vocal_language": "en", "language": "km", "lyrics": "[Verse]\nHello"}},
         )
         self.generate(hub, req)
         wire_params = hub.payloads[0]["items"][0]["params"]
-        self.assertEqual(wire_params.get("vocal_language"), "en")
+        self.assertEqual(wire_params["lyrics"], "[Verse]\nHello")
+        self.assertNotIn("vocal_language", wire_params)
         self.assertNotIn("language", wire_params)
 
     def test_music_duration_alias_maps_to_duration_seconds_on_hub_wire(self) -> None:
@@ -84,12 +86,13 @@ class MusicHubWireAndAliasTests(_HubCase):
         hub = _Hub()
         req = self.request(
             modality="music",
-            params={"prompt": "jazz song", "params": {"duration": 120, "language": "km"}},
+            model_id=YUE2_MODEL_ID,
+            params={"prompt": "jazz song", "params": {"duration": 120, "language": "km", "vocal_language": "en"}},
         )
         self.generate(hub, req)
         wire_params = hub.payloads[0]["items"][0]["params"]
         self.assertEqual(wire_params.get("duration_seconds"), 120)
-        self.assertEqual(wire_params.get("vocal_language"), "km")
+        self.assertNotIn("vocal_language", wire_params)
         self.assertNotIn("duration", wire_params)
         self.assertNotIn("language", wire_params)
 
