@@ -4422,6 +4422,7 @@ const CREATE_FIELDS = {
     { k: 'style', label: 'Style', type: 'text', placeholder: 'Classical' },
     { k: 'title', label: 'Title', type: 'text', placeholder: 'Peaceful' },
     { k: 'lyrics', label: 'Lyrics', type: 'textarea', rows: 7, placeholder: 'Write the lyrics…', vocal: true },
+    { k: 'vocal_language', label: 'Vocal language', type: 'select', vocal: true },
   ],
   video: [
     { k: 'prompt', label: 'Prompt', type: 'textarea', rows: 5, placeholder: 'Describe the shot…' },
@@ -4497,6 +4498,10 @@ function renderCreateForm() {
   const rows = (createCatalogue && createCatalogue.by_modality[t.modality]) || [];
   const fields = CREATE_FIELDS[t.key] || [];
   const body = fields.map(f => {
+    if (f.type === 'select') {
+      return `<div id="cf-${f.k}-box" style="display:none;margin-bottom:12px"><label for="cf-${f.k}">${esc(f.label)}</label>
+        <select id="cf-${f.k}"></select></div>`;
+    }
     if (f.type === 'textarea') {
       return `<div id="cf-${f.k}-box" style="${f.vocal ? 'display:none;' : ''}margin-bottom:12px"><label for="cf-${f.k}">${esc(f.label)}</label>
         <textarea id="cf-${f.k}" rows="${f.rows || 5}" placeholder="${esc(f.placeholder || '')}"></textarea></div>`;
@@ -4656,6 +4661,20 @@ function applyCreateModelControls() {
     input.required = vocals && f.k === 'lyrics' && row.requires_lyrics === true;
     if (!vocals) input.value = '';
   });
+  const language = document.getElementById('cf-vocal_language');
+  if (language) {
+    const control = createControl(selected ? selected.value : '', 'vocal_language');
+    const options = row && (row.supports_vocals === true || row.requires_lyrics === true) && Array.isArray(control?.enum)
+      ? control.enum.filter(value => typeof value === 'string' && value.trim()) : [];
+    const value = options.includes(language.value) ? language.value
+      : options.includes('en') ? 'en' : options.includes(control?.default) ? control.default : '';
+    const names = new Intl.DisplayNames(['en'], { type: 'language' });
+    language.innerHTML = '<option value="">Choose language</option>' + options.map(code =>
+      `<option value="${esc(code)}">${esc(names.of(code) || code)}</option>`).join('');
+    language.value = value;
+    language.disabled = options.length === 0;
+    document.getElementById('cf-vocal_language-box').style.display = options.length ? '' : 'none';
+  }
   const box = document.getElementById('cf-delivery_instruction-box');
   if (!box) return;
   const modelEl = document.getElementById('cf-model');

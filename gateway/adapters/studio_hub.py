@@ -613,8 +613,8 @@ def _reference_count(item: dict[str, Any], terminal: dict[str, Any]) -> int | No
     return None
 
 #: What the Hub's Music item accepts. Which engine takes which field differs (the
-#: ACE-Step takes `lyrics`, `vocal_language`, `instrumental`; YuE2 has no language
-#: parameter (removed below before dispatch). Stable Audio 3 is
+#: vocal engines take `lyrics`, `vocal_language`, `instrumental`; the Hub maps
+#: YuE2's vocal language into its style prompt. Stable Audio 3 is
 #: instrumental only and takes the rest). The gateway forwards whichever of these
 #: the caller set and invents none of them — which engine accepts what is the
 #: engine's own answer, and a Hub refusal names the field far better than a
@@ -641,10 +641,11 @@ def _music_params(params: dict[str, Any]) -> dict[str, Any]:
     supplied = params.get("params")
     result = dict(supplied) if isinstance(supplied, dict) else {}
     result.update({key: params[key] for key in _HUB_MUSIC_PARAMS if params.get(key) is not None})
-    duration = params.get("duration", result.get("duration"))
-    if result.get("duration_seconds") is None and duration is not None:
-        result["duration_seconds"] = duration
-    result.pop("duration", None)
+    for alias, canonical in (("language", "vocal_language"), ("duration", "duration_seconds")):
+        value = params.get(alias, result.get(alias))
+        if result.get(canonical) is None and value is not None:
+            result[canonical] = value
+        result.pop(alias, None)
     return result
 
 
@@ -2032,10 +2033,6 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 item["params"][key] = request.params[key]
         if request.modality == "music":
             item["params"] = _music_params(request.params)
-            if request.model_id == YUE2_MODEL_ID:
-                # YuE2's pinned SongRequest has no language parameter.
-                item["params"].pop("vocal_language", None)
-                item["params"].pop("language", None)
         if request.modality == "video":
             # `duration_seconds` is the lane's published name and the name Story sends; the
             # broker forwards `duration`, so both travel and the worker's validator resolves

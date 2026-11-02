@@ -25,33 +25,50 @@ function workspace(row) {
   return { nodes, calls, context };
 }
 
-test('vocal model offers lyrics without a language control; instrumental clears lyrics', () => {
+test('lyrics remain required while undeclared language options stay hidden', () => {
   const { context, nodes } = workspace({ id: 'studio-hub::song', supports_vocals: true, requires_lyrics: true });
   vm.runInContext('renderCreateForm()', context);
   const html = nodes.get('create-form').innerHTML;
   assert.match(html, /id="cf-lyrics"/);
-  assert.doesNotMatch(html, /id="cf-vocal_language"/);
   assert.equal(nodes.get('cf-lyrics-box').style.display, '');
   assert.equal(nodes.get('cf-lyrics').required, true);
+  assert.equal(nodes.get('cf-vocal_language-box').style.display, 'none');
+  assert.equal(nodes.get('cf-vocal_language').disabled, true);
   nodes.get('cf-lyrics').value = 'A song';
-  nodes.get('cf-vocal_language').value = 'km';
   vm.runInContext("createCatalogue.by_modality.music[0] = { id: 'studio-hub::song', supports_vocals: false }; applyCreateModelControls();", context);
   assert.equal(nodes.get('cf-lyrics-box').style.display, 'none');
   assert.equal(nodes.get('cf-lyrics').value, '');
-  assert.equal(vm.runInContext("CREATE_FIELDS.music.some(field => field.k === 'vocal_language')", context), false);
+  assert.equal(nodes.get('cf-vocal_language').value, '');
 });
 
-test('required lyrics fail locally; supplied lyrics reach Create without a language field', async () => {
+test('required lyrics fail locally; lyrics submit without an undeclared language', async () => {
   const { context, nodes, calls } = workspace({ id: 'studio-hub::song', requires_lyrics: true });
   const button = { disabled: false, textContent: 'Generate' };
   await context.submitCreate(button);
   assert.match(nodes.get('cf-msg').textContent, /needs lyrics/);
   assert.equal(calls.length, 0);
   nodes.get('cf-lyrics').value = '[Verse]\nពន្លឺថ្ងៃ\n[Chorus]\nពន្លឺ';
-  nodes.get('cf-vocal_language').value = 'km';
   await context.submitCreate(button);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].body.params.lyrics, nodes.get('cf-lyrics').value);
   assert.equal(Object.hasOwn(calls[0].body.params, 'vocal_language'), false);
-  assert.equal(Object.hasOwn(calls[0].body.params, 'language'), false);
+});
+
+test('published language options control the list, default and outgoing value', async () => {
+  const { context, nodes, calls } = workspace({ id: 'studio-hub::song', requires_lyrics: true,
+    controls: [{ name: 'vocal_language', enum: ['fr', 'en', 'de'], default: 'en' }] });
+  vm.runInContext('renderCreateForm()', context);
+  const field = nodes.get('cf-vocal_language');
+  assert.equal(nodes.get('cf-vocal_language-box').style.display, '');
+  assert.equal(field.value, 'en');
+  assert.match(field.innerHTML, /value="fr"/);
+  assert.doesNotMatch(field.innerHTML, /value="zh"/);
+  nodes.get('cf-lyrics').value = '[Verse]\nHello';
+  field.value = 'de';
+  await context.submitCreate({ disabled: false, textContent: 'Generate' });
+  assert.equal(calls[0].body.params.vocal_language, 'de');
+  vm.runInContext("createCatalogue.by_modality.music[0] = { id: 'studio-hub::song', supports_vocals: false, controls: [{ name: 'vocal_language', enum: ['en'] }] }; applyCreateModelControls();", context);
+  assert.equal(nodes.get('cf-vocal_language-box').style.display, 'none');
+  assert.equal(field.value, '');
+  assert.equal(field.disabled, true);
 });

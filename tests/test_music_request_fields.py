@@ -24,7 +24,7 @@ from test_seam_20261001 import (  # noqa: E402
     YUE2,
 )
 
-from gateway import api  # noqa: E402
+from gateway import api, catalog  # noqa: E402
 from gateway.adapters.studio_hub import (  # noqa: E402
     YUE2_MODEL_ID,
     _yue2_length_deadline,
@@ -36,7 +36,7 @@ from gateway.api import GatewayError  # noqa: E402
 class MusicHubWireAndAliasTests(_HubCase):
     """Verify alias normalization and canonical field precedence on the Hub wire."""
 
-    def test_yue2_language_fields_never_reach_the_hub_wire(self) -> None:
+    def test_yue2_language_is_forwarded_canonically_for_hub_style_prompt(self) -> None:
         hub = _Hub()
         req = self.request(
             modality="music", model_id=YUE2_MODEL_ID,
@@ -45,10 +45,10 @@ class MusicHubWireAndAliasTests(_HubCase):
         self.generate(hub, req)
         wire_params = hub.payloads[0]["items"][0]["params"]
         self.assertEqual(wire_params["lyrics"], "[Verse]\nHello")
-        self.assertNotIn("vocal_language", wire_params)
+        self.assertEqual(wire_params.get("vocal_language"), "en")
         self.assertNotIn("language", wire_params)
 
-    def test_yue2_nested_language_fields_never_reach_the_hub_wire(self) -> None:
+    def test_yue2_nested_language_is_forwarded_canonically(self) -> None:
         hub = _Hub()
         req = self.request(
             modality="music", model_id=YUE2_MODEL_ID,
@@ -57,7 +57,7 @@ class MusicHubWireAndAliasTests(_HubCase):
         self.generate(hub, req)
         wire_params = hub.payloads[0]["items"][0]["params"]
         self.assertEqual(wire_params["lyrics"], "[Verse]\nHello")
-        self.assertNotIn("vocal_language", wire_params)
+        self.assertEqual(wire_params.get("vocal_language"), "en")
         self.assertNotIn("language", wire_params)
 
     def test_music_duration_alias_maps_to_duration_seconds_on_hub_wire(self) -> None:
@@ -92,9 +92,24 @@ class MusicHubWireAndAliasTests(_HubCase):
         self.generate(hub, req)
         wire_params = hub.payloads[0]["items"][0]["params"]
         self.assertEqual(wire_params.get("duration_seconds"), 120)
-        self.assertNotIn("vocal_language", wire_params)
+        self.assertEqual(wire_params.get("vocal_language"), "en")
         self.assertNotIn("duration", wire_params)
         self.assertNotIn("language", wire_params)
+
+
+class MusicLanguageCapabilitiesTests(unittest.TestCase):
+    def test_language_options_follow_the_hub_parameter_enum(self) -> None:
+        contract = {"parameters": [{"name": "vocal_language", "type": "string",
+                                     "enum": ["fr", "en", "de", 7], "default": "en"}]}
+        row = catalog._music_row("m", HUB_DEF, {"raw": {"lane_contract": contract}})
+        self.assertEqual(row["controls"], [{"name": "vocal_language", "type": "string",
+                                            "enum": ["fr", "en", "de"], "default": "en"}])
+
+    def test_unstated_or_empty_options_publish_no_language_control(self) -> None:
+        for contract in (YUE2, STABLE_AUDIO, {"parameters": [{"name": "vocal_language", "enum": []}]}):
+            with self.subTest(contract=contract):
+                row = catalog._music_row("m", HUB_DEF, {"raw": {"lane_contract": contract}})
+                self.assertNotIn("controls", row)
 
 
 class MusicDeadlineAllowanceTests(unittest.TestCase):

@@ -1971,6 +1971,12 @@ def _music_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         if lyrics.get("required") is True:
             vocal["requires_lyrics"] = True
             vocal["supports_instrumental"] = False
+    language = _hub_declared_parameter(contract, "vocal_language") if isinstance(contract, dict) else None
+    if language is not None and isinstance(language.get("enum"), list):
+        options = [value for value in language["enum"] if isinstance(value, str) and value.strip()]
+        if options:
+            vocal["controls"] = [{"name": "vocal_language", "type": "string", "enum": options,
+                                  "default": language.get("default") if language.get("default") in options else None}]
     row = {
         "coming_soon": False,
         # ponytail: flat caps for every music model, deliberately at the

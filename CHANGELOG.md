@@ -12,8 +12,8 @@ every feature title, and they are left as they were written.
 
 ## 0.2.224 — 2026-11-02
 
-- Music Create shows lyrics for models that support singing. A model that requires lyrics refuses a blank lyric sheet before queueing. The unsupported vocal-language control is removed; YuE2 accepts no language parameter.
-- Local music requests preserve duration aliases, including nested parameters, and use the same requested duration for the YuE2 time allowance. YuE2 requests never forward unsupported language fields.
+- Music Create shows lyrics for models that support singing. A model that requires lyrics refuses a blank lyric sheet before queueing. Vocal-language choices follow the model's published options; no list is offered until the Hub publishes one, and instrumental models show none.
+- Local music requests preserve language and duration aliases, including nested parameters, and use the same requested duration for the YuE2 time allowance. Vocal language is sent to the Hub as vocal_language for its style-prompt mapping.
 - The fleet image pool appears in Create alongside its available member models. Image-pool retries obey the configured attempt limit.
 - Writing pools count only enabled providers when admitting concurrent work, keeping excess jobs in the Gateway queue.
 
