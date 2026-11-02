@@ -14,7 +14,7 @@ every feature title, and they are left as they were written.
 
 - The console shows its version beside a What's New button. About also links to the notes for the current version.
 - Jobs show which Mac ran the work, how many reference images the Hub used, and recorded Gateway dispatch and finish times. Older finish times say not recorded.
-- Remote controllers use their location names instead of “This Mac”. Unassigned Hub site IDs are shown as unknown, with the original placeholder retained separately.
+- Remote controllers use their location names instead of “This Mac”. Their machine and site IDs stay unchanged.
 - Kie image models that need an input image stay out of the picker until the Gateway can send that image. Text-to-image models remain available.
 
 ## 0.2.224 — 2026-11-02

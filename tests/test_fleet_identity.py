@@ -55,8 +55,8 @@ class LocationDisplayIdentityTests(unittest.TestCase):
         row["label"] = "Renamed studio"
         fleet._qualify_location_labels(row)
         self.assertEqual(row["machines"][0]["label"], "Renamed studio")
-        self.assertIsNone(row["site_id"])
-        self.assertEqual(row["hub_site_id"], "local-site")
+        self.assertEqual(row["site_id"], "local-site")
+        self.assertNotIn("hub_site_id", row)
         self.assertEqual((row["id"], row["controller_id"]), ("site-a", "remote-hub"))
 
     def test_real_site_id_and_gateway_local_label_stay_intact(self) -> None:

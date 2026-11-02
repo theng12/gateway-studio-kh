@@ -2859,9 +2859,6 @@ def machine_label(row: dict, machine: dict, node: dict | None = None) -> str:
 
 def _qualify_location_labels(row: dict) -> None:
     """Give raw location rows the same display names as the flat machine list."""
-    if row.get("site_id") == _DEFAULT_SITE_ID:
-        row["hub_site_id"] = row["site_id"]
-        row["site_id"] = None  # The Hub's shared placeholder is not an assigned site identity.
     nodes = {str(node.get("id")): node for node in row.get("nodes") or []
              if isinstance(node, dict) and node.get("id")}
     row["machines"] = [
