@@ -818,9 +818,9 @@ uvicorn.run("gateway.api:app", host="127.0.0.1", port=int(sys.argv[2]), log_leve
             check("an image-to-image row on a lane that cannot send an image is not offered",
                   not _can_publish("fal-ai", "fal-ai/flux/dev/image-to-image"),
                   "the fal image body sends no reference image")
-            check("but the same classification on a lane that can is not withheld",
-                  _can_publish("kie-ai-images", "anything/edit"),
-                  "Kie forwards image_url, so its edit rows can still publish")
+            check("Kie edit rows are withheld until staged reference images can be sent",
+                  not _can_publish("kie-ai-images", "anything/edit"),
+                  "Kie's image body does not read the Gateway's staged references")
 
             print("\n\033[1m4. Chat generation end to end\033[0m")
             model_id = row["id"]
