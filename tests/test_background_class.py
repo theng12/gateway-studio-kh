@@ -261,7 +261,7 @@ class RequestFieldTest(_Base):
         self.sites = [_site("g", macs=2, idle={MUSIC: 2})]
         with patch.object(api, "store", self.store), \
                 patch.object(api.catalog, "resolve", lambda *a, **k: (
-                    types.SimpleNamespace(id=_pid("g")), {"model_id": MUSIC})):
+                    types.SimpleNamespace(id=_pid("g"), kind="studio_hub"), {"model_id": MUSIC})):
             return api._submit("music", f"{fleet.FLEET_PROVIDER_ID}::{MUSIC}", payload, key)[0]
 
     def test_an_old_client_with_no_field_is_normal(self) -> None:

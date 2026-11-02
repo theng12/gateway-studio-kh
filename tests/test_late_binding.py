@@ -84,7 +84,7 @@ class _Fleet:
         self.locations = locations
 
     def __enter__(self):
-        rows = [(types.SimpleNamespace(id=row["provider_id"]),
+        rows = [(types.SimpleNamespace(id=row["provider_id"], kind="studio_hub"),
                  {"model_id": MODEL, "modality": MODALITY, "enabled": True, "raw": {}})
                 for row in self.locations]
         self._patches = [

@@ -2121,6 +2121,7 @@ def create_models(request: Request) -> dict[str, Any]:
     convenience and the refusal is the rule.
     """
     paid = _guest_paid_allowed(request)
+    from . import image_assignment, pools
     from .api import upload_limit_bytes
 
     wanted = set(CREATE_MODALITIES) | {"transcription"}
@@ -2142,6 +2143,13 @@ def create_models(request: Request) -> dict[str, Any]:
                 # a Hub takes 100 MiB and a cloud API 25 MiB, which a constant on either side
                 # got wrong in one direction or the other (review 2026-10-29d, finding 4).
                 metadata[compound]["upload_limit_bytes"] = upload_limit_bytes(compound)
+        if modality == "image":
+            for pool in pools.image_pools():
+                for member in image_assignment.pool_models(pool):
+                    member_metadata = metadata.get(f"studio-hub::{member}")
+                    if member_metadata is not None:
+                        metadata[f"studio-hub::{pool['name']}"] = {**member_metadata, "model_id": pool["name"]}
+                        break
         for row in catalog.rows(modality):
             if row["id"] in metadata:
                 if not paid and row.get("chargeable") is True:

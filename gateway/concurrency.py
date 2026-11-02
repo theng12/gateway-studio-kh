@@ -743,7 +743,9 @@ def pool_budget(member_ids: list[str]) -> Budget:
     ))
     if not providers:
         return cloud_budget("pool")
-    budgets = {p: cloud_budget(p) for p in providers}
+    from .providers import registry
+
+    budgets = {p: cloud_budget(p) for p in providers if registry.credentials.is_enabled(p)}
     stated = all(b.source == SOURCE_CURATED for b in budgets.values())
     return Budget(
         limit=sum(b.limit for b in budgets.values()),

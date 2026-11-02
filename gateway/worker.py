@@ -1002,6 +1002,10 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     tried.add(_location(provider_id))
     tried.discard("")
 
+    if sum(entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES for entry in attempts) >= int(policy["max_attempts"]):
+        # The same ceiling applies before either a direct-model or an image-pool re-route.
+        return None
+
     # An image-pool job may move to any location with a free Mac assigned one of its members, but only
     # while nothing was accepted upstream (held, batch and unknown-outcome jobs stay where they are).
     job = store.get(job_id) if hasattr(store, "get") else None
@@ -1023,9 +1027,6 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
             return QUEUED_IN_GATEWAY
         return chosen.id
 
-    if sum(entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES for entry in attempts) >= int(policy["max_attempts"]):
-        # The ceiling the owner named. The failure path builds the sentence from this log.
-        return None
     if room is None:
         chosen, _note = fleet.route(model_id, modality, exclude_locations=tried,
                                     require_capability=require_capability)

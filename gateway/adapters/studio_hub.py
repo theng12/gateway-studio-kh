@@ -635,6 +635,19 @@ _HUB_MUSIC_PARAMS = (
 )
 
 
+def _music_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Use the same canonical music fields for dispatch and its time allowance."""
+    supplied = params.get("params")
+    result = dict(supplied) if isinstance(supplied, dict) else {}
+    result.update({key: params[key] for key in _HUB_MUSIC_PARAMS if params.get(key) is not None})
+    for alias, canonical in (("language", "vocal_language"), ("duration", "duration_seconds")):
+        value = params.get(alias, result.get(alias))
+        if result.get(canonical) is None and value is not None:
+            result[canonical] = value
+        result.pop(alias, None)
+    return result
+
+
 def _resolve_base(request: BackendRequest) -> str:
     from ..hub import hub_base_url
 
@@ -747,7 +760,7 @@ def _yue2_length_deadline(request: BackendRequest) -> float:
     if request.modality != "music" or str(request.model_id or "") != YUE2_MODEL_ID:
         return 0.0
     try:
-        song = max(0.0, float((request.params or {}).get("duration_seconds") or 0))
+        song = max(0.0, float(_music_params(request.params or {}).get("duration_seconds") or 0))
     except (TypeError, ValueError):
         song = 0.0
     return YUE2_DEADLINE_MARGIN * (YUE2_SLOWEST_S_PER_SONG_S * song + YUE2_SLOWEST_LOAD_S)
@@ -2017,6 +2030,8 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         for key in keys:
             if request.params.get(key) is not None:
                 item["params"][key] = request.params[key]
+        if request.modality == "music":
+            item["params"] = _music_params(request.params)
         if request.modality == "video":
             # `duration_seconds` is the lane's published name and the name Story sends; the
             # broker forwards `duration`, so both travel and the worker's validator resolves

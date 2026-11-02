@@ -54,6 +54,7 @@ from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
 from .catalog import (
     MODALITIES,
     TTS_PAUSE_PARAMETERS,
+    _music_row,
     catalog,
     encode_model_id,
     published_output_cap,
@@ -2187,6 +2188,11 @@ def _submit(
             f'Model "{compound_id}" is not available on this gateway.',
             "MODEL_NOT_FOUND",
         )
+    if modality == "music" and _music_row(model["model_id"], definition, model).get("requires_lyrics"):
+        supplied = params.get("params")
+        lyrics = params.get("lyrics", supplied.get("lyrics") if isinstance(supplied, dict) else None)
+        if not isinstance(lyrics, str) or not lyrics.strip():
+            raise GatewayError(422, "This model needs lyrics. Send a non-empty lyric sheet.", "LYRICS_REQUIRED")
     if modality == "tts":
         _refuse_an_unspoken_language(compound_id, model, params)
         _refuse_a_delivery_instruction(compound_id, model, params)

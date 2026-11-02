@@ -4421,6 +4421,8 @@ const CREATE_FIELDS = {
     { k: 'prompt', label: 'Describe the music', type: 'textarea', rows: 5, placeholder: 'calm piano, late night…' },
     { k: 'style', label: 'Style', type: 'text', placeholder: 'Classical' },
     { k: 'title', label: 'Title', type: 'text', placeholder: 'Peaceful' },
+    { k: 'lyrics', label: 'Lyrics', type: 'textarea', rows: 7, placeholder: 'Write the lyrics…', vocal: true },
+    { k: 'vocal_language', label: 'Vocal language', type: 'text', placeholder: 'Language code, e.g. km or en', vocal: true },
   ],
   video: [
     { k: 'prompt', label: 'Prompt', type: 'textarea', rows: 5, placeholder: 'Describe the shot…' },
@@ -4497,7 +4499,7 @@ function renderCreateForm() {
   const fields = CREATE_FIELDS[t.key] || [];
   const body = fields.map(f => {
     if (f.type === 'textarea') {
-      return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
+      return `<div id="cf-${f.k}-box" style="${f.vocal ? 'display:none;' : ''}margin-bottom:12px"><label for="cf-${f.k}">${esc(f.label)}</label>
         <textarea id="cf-${f.k}" rows="${f.rows || 5}" placeholder="${esc(f.placeholder || '')}"></textarea></div>`;
     }
     if (f.type === 'voice') {
@@ -4538,7 +4540,7 @@ function renderCreateForm() {
         <input type="text" id="cf-${f.k}" placeholder="${esc(f.placeholder || '')}">
         <div class="hint" id="cf-${f.k}-help"></div></div>`;
     }
-    return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
+    return `<div id="cf-${f.k}-box" style="${f.vocal ? 'display:none;' : ''}margin-bottom:12px"><label for="cf-${f.k}">${esc(f.label)}</label>
       <input type="text" id="cf-${f.k}" placeholder="${esc(f.placeholder || '')}"></div>`;
   }).join('');
 
@@ -4644,6 +4646,17 @@ function deliveryGuidanceHtml(guidance) {
 }
 
 function applyCreateModelControls() {
+  const selected = document.getElementById('cf-model');
+  const row = createModelRow(selected ? selected.value : '');
+  (CREATE_FIELDS.music || []).filter(f => f.vocal).forEach(f => {
+    const container = document.getElementById(`cf-${f.k}-box`);
+    const input = document.getElementById(`cf-${f.k}`);
+    if (!container || !input) return;
+    const vocals = !!(row && (row.supports_vocals === true || row.requires_lyrics === true));
+    container.style.display = vocals ? '' : 'none';
+    input.required = vocals && f.k === 'lyrics' && row.requires_lyrics === true;
+    if (!vocals) input.value = '';
+  });
   const box = document.getElementById('cf-delivery_instruction-box');
   if (!box) return;
   const modelEl = document.getElementById('cf-model');
@@ -4875,6 +4888,9 @@ async function submitCreate(btn) {
         if (f.type === 'number') params[f.k] = parseInt(v, 10);
         else params[f.k] = v;
       });
+      if (t.modality === 'music' && createModelRow(modelEl.value)?.requires_lyrics === true && !params.lyrics) {
+        throw new Error('This model needs lyrics. Write the lyrics before generating.');
+      }
       // The gateway refuses to invent a voice, so a missing one is refused here with the
       // sentence that says what to do rather than as a provider error after a round trip.
       if ((CREATE_FIELDS[t.key] || []).some(f => f.type === 'voice') && !params.voice_id) {

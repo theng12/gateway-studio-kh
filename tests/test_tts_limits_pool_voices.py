@@ -25,6 +25,7 @@ _TMP = _isolation.sandbox_env("gateway-tts-limits-")
 
 from gateway import catalog, concurrency, pools  # noqa: E402
 from gateway.adapters.base import BackendRequest, BackendResult  # noqa: E402
+from gateway.providers import registry  # noqa: E402
 from gateway.providers.definitions import KIND_STUDIO_HUB, ProviderDefinition  # noqa: E402
 
 
@@ -106,19 +107,21 @@ class LongNarrationDeadlineTests(unittest.TestCase):
 
 class PoolConcurrencyTests(unittest.TestCase):
     def test_the_budget_is_the_sum_of_the_members_providers(self) -> None:
-        with patch.object(concurrency, "_settings_providers",
-                          return_value={"a": {"limit": 5}, "b": {"limit": 10}}):
-            budget = concurrency.pool_budget(["a::x", "a::y", "b::z"])
-            self.assertEqual((budget.limit, budget.source), (15, concurrency.SOURCE_CURATED))
-        with patch.object(concurrency, "_settings_providers", return_value={"a": {"limit": 5}}):
-            self.assertEqual(concurrency.pool_budget(["a::x", "c::y"]).limit, 6)  # c: default 1
-        with patch.object(concurrency, "_settings_providers", return_value={"pool": {"limit": 2}}):
-            self.assertEqual(concurrency.pool_budget(["a::x"]).limit, 2)  # the owner's own entry wins
+        with patch.object(registry.credentials, "is_enabled", return_value=True):
+            with patch.object(concurrency, "_settings_providers",
+                              return_value={"a": {"limit": 5}, "b": {"limit": 10}}):
+                budget = concurrency.pool_budget(["a::x", "a::y", "b::z"])
+                self.assertEqual((budget.limit, budget.source), (15, concurrency.SOURCE_CURATED))
+            with patch.object(concurrency, "_settings_providers", return_value={"a": {"limit": 5}}):
+                self.assertEqual(concurrency.pool_budget(["a::x", "c::y"]).limit, 6)  # c: default 1
+            with patch.object(concurrency, "_settings_providers", return_value={"pool": {"limit": 2}}):
+                self.assertEqual(concurrency.pool_budget(["a::x"]).limit, 2)  # the owner's own entry wins
 
     def test_the_worker_asks_the_pool_not_the_default_of_one(self) -> None:
         from gateway.worker import Worker
 
-        with patch.object(pools, "members", return_value=["a::x", "b::y"]), \
+        with patch.object(registry.credentials, "is_enabled", return_value=True), \
+                patch.object(pools, "members", return_value=["a::x", "b::y"]), \
                 patch.object(concurrency, "_settings_providers",
                              return_value={"a": {"limit": 3}, "b": {"limit": 4}}):
             budget = Worker(None, interval_s=10.0)._provider_budget("pool", "chat", "free")
