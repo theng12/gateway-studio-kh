@@ -14,7 +14,9 @@ every feature title, and they are left as they were written.
 
 - Image jobs record Text to image or Reference to image and the submitted reference count. Jobs and Analytics show those alongside the Hub's confirmed used count, with a filter for either mode. Older records keep unknown values.
 - Analytics is now the same page in the app and browser, with generation summaries by type, model, machine and Mac class.
+- Image models relay the Hub's Text to image and Reference to image modes, including each worker's availability and reference limits. Routing refuses an unavailable mode and keeps compatibility with older Hubs.
 - A reference request with no staged image is refused clearly instead of becoming a text-only image.
+- A paused location's old model limits no longer lower the limits published by active locations.
 
 ## 0.2.225 — 2026-11-03
 

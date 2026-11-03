@@ -49,6 +49,7 @@ from .providers.definitions import (
     KIND_XAI,
     ProviderDefinition,
     default_temperature_only,
+    hub_image_modes,
     image_reference_limits,
     image_reference_state,
 )
@@ -408,6 +409,11 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     # in the same lane contract the ratios and resolutions come from, so that is what is published —
     # and a lane that states none publishes `None` (unstated), never a gateway number.
     references = image_reference_limits(raw)
+    modes = hub_image_modes(raw) if definition.kind == KIND_STUDIO_HUB else None
+    if modes is not None:
+        for mode in modes:
+            for worker in mode.get("workers") or []:
+                worker["provider_id"] = definition.id
     if reference_state is True:
         operations = ["text-to-image", "image-to-image"]
         minimum_references = references["min"]
@@ -420,6 +426,9 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         minimum_references, maximum_references = (
             (0, 0) if reference_state is False else (None, None)
         )
+    if modes is not None and (modes or "image_modes" in raw or raw.get("image_workers")):
+        operations = ["text-to-image" if mode["id"] == "txt2img" else "image-to-image"
+                      for mode in modes if mode["available"]]
     return {
         "execution_label": "Local" if definition.kind == "studio_hub" else "Remote",
         # The lane's own ratios and presets for a Studio Hub location (`local` above), the
@@ -474,6 +483,7 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         "operations": operations,
         "requires_admission_permit": False,
         "availability_note": None,
+        **({"image_modes": modes} if modes is not None else {}),
         **_output_formats(definition, raw),
     }
 
@@ -2093,7 +2103,10 @@ def _publish_lock(row: dict[str, Any], locked: bool, reason: str | None) -> None
     row["activation_blockers"] = blockers
 
 
-def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality: str) -> None:
+def _merge_capabilities(
+    existing: dict[str, Any], row: dict[str, Any], modality: str, *,
+    site_paused: bool = False, active_answered: bool = True,
+) -> bool:
     """Fold a second location's capability facts into the row already published.
 
     A location is a provider internally, but its models are published once per
@@ -2124,7 +2137,30 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
     choose the site, so the number that is safe everywhere is the only honest one. Each
     value's `*_source` and `*_source_detail` travel with the number they describe, because a
     value and its provenance must come from one place or they disagree.
+
+    **A paused location contributes no published limits.** The owner's pause means the site
+    takes no new work, so its snapshot must not narrow what an active site honours — Gemma
+    published `context_window_tokens: 32768` from a paused Mac Studio's old row while the
+    active site states 49152/8192. `site_paused=True` once any active site has answered
+    folds nothing in; the first *active* row onto a paused-only base (`active_answered=False`)
+    adopts that site's facts wholesale, because a min-merge would keep the stale numbers.
+    When every site so far is paused the conservative merge still runs, so an all-paused row
+    still states a safe number rather than whichever site came first. Returns whether the
+    row's published facts now come from at least one active site.
     """
+    if site_paused and active_answered:
+        return True
+    if not site_paused and not active_answered:
+        # First active site: its answer replaces the paused base's. `legacy_ids` was
+        # already unioned by the caller and must survive; every limit and the lock are
+        # the active site's own truth.
+        legacy = existing.get("legacy_ids")
+        existing.clear()
+        existing.update(row)
+        if legacy:
+            existing["legacy_ids"] = list(dict.fromkeys([*legacy, *(row.get("legacy_ids") or [])]))
+        return True
+    answered = active_answered or not site_paused
     # **Ceilings: the smallest wins, whatever the modality.** `(value, source, detail)` — the
     # three keys that describe one stated limit, kept together so a merge can never publish a
     # number beside another site's explanation of it.
@@ -2150,7 +2186,7 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
     if modality == "image":
         _merge_reference_capability(existing, row)
     if modality != "tts":
-        return
+        return answered
     if row.get("supports_voice_cloning"):
         existing["supports_voice_cloning"] = True
     if not row.get("supports_speed"):
@@ -2160,6 +2196,7 @@ def _merge_capabilities(existing: dict[str, Any], row: dict[str, Any], modality:
         incoming = row.get(key)
         if isinstance(current, (int, float)) and isinstance(incoming, (int, float)):
             existing[key] = pick(current, incoming)
+    return answered
 
 
 def _merge_reference_capability(existing: dict[str, Any], row: dict[str, Any]) -> None:
@@ -2184,6 +2221,11 @@ def _merge_reference_capability(existing: dict[str, Any], row: dict[str, Any]) -
     value from *every* location, which is the right rule for a caller who may land anywhere and the
     wrong one for a capability that routes.
     """
+    if "image_modes" in existing or "image_modes" in row:
+        existing["image_modes"] = hub_image_modes({"image_workers": [
+            {"image_modes": existing.get("image_modes", [])},
+            {"image_modes": row.get("image_modes", [])},
+        ]})
     current = existing.get("supports_reference_images")
     incoming = row.get("supports_reference_images")
     # Taken before either is overwritten: a location that does not advertise must contribute
@@ -2206,6 +2248,11 @@ def _merge_reference_capability(existing: dict[str, Any], row: dict[str, Any]) -
         existing["operations"] = ["text-to-image", "image-to-image"]
     elif state is False:
         existing["operations"] = ["text-to-image"]
+    if "image_modes" in existing:
+        existing["operations"] = [
+            "text-to-image" if mode["id"] == "txt2img" else "image-to-image"
+            for mode in existing["image_modes"] if mode["available"]
+        ]
     if state is not True:
         existing["min_reference_images"] = 0 if state is False else None
         existing["max_reference_images"] = 0 if state is False else None
@@ -2372,6 +2419,11 @@ class Catalog:
             # six showed one display_name six times and broke a saved preset
             # whenever its site went offline.
             merged: dict[str, dict[str, Any]] = {}
+            # Whether any *active* (not owner-paused) site's facts are in this row yet —
+            # a paused site must not narrow what an active one honours (see
+            # `_merge_capabilities`); it is per merged row, so one active site protects
+            # the whole row and a later pause cannot reopen the stale numbers.
+            active_answered: dict[str, bool] = {}
             for definition, model in registry.models.enabled_models(modality):
                 # Recorded while assembling, not recomputed when asked: the
                 # freshness of the *inventory* is a property of the rows that were
@@ -2396,9 +2448,11 @@ class Catalog:
                 row["measured"] = measured.get(
                     (fleet.publish_id(definition.id), model["model_id"])
                 )
+                site_paused = fleet.is_paused_provider(definition.id)
                 existing = merged.get(row["id"])
                 if existing is None:
                     merged[row["id"]] = row
+                    active_answered[row["id"]] = not site_paused
                     continue
                 # Locking means "no location offering this can take it", so one
                 # answering location is enough to offer it — and `availability` is
@@ -2417,8 +2471,13 @@ class Catalog:
                 # so a model two Hubs describe differently was published as whichever
                 # site happened to be iterated first — a `supports_voice_cloning`
                 # beside an empty picker, or a character budget only one site
-                # honours. Merged in one place, with a stated direction per field.
-                _merge_capabilities(existing, row, modality)
+                # honours. Merged in one place, with a stated direction per field —
+                # and a paused site contributes nothing once an active one answers.
+                active_answered[row["id"]] = _merge_capabilities(
+                    existing, row, modality,
+                    site_paused=site_paused,
+                    active_answered=active_answered[row["id"]],
+                )
             rows[modality] = list(merged.values())
 
         # Image pools: synthesize one combined row per image pool (alias layer).
@@ -2884,10 +2943,12 @@ class Catalog:
             elif not fleet._takes_customer_jobs(row):  # noqa: SLF001 - one rule, one place
                 cannot += 1
         if incapable == len(offered) and not (offline or cannot or full or paused):
+            label = {"txt2img": "Text to image", "edit": "Reference to image"}.get(
+                require_capability, require_capability)
             return (
-                f"No location offering this model can run this request right now — none of the "
-                f"{len(offered)} location{'' if len(offered) == 1 else 's'} offering it reports the "
-                f"{require_capability!r} capability it needs."
+                f"No location offering this model can run {label} right now — none of the "
+                f"{len(offered)} location{'' if len(offered) == 1 else 's'} offering it reports "
+                "this mode as available."
             )
         if not (offline or cannot or full or paused or incapable):
             return "No location offering this model has a free slot right now."

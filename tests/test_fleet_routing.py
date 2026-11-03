@@ -1369,8 +1369,9 @@ class ReferenceJobRoutingTests(unittest.TestCase):
             sentence = catalog.catalog.why_no_route(
                 "image", f"{fleet.FLEET_PROVIDER_ID}::{MODEL}", require_capability="edit")
         self.assertIsNotNone(sentence)
-        self.assertIn("'edit' capability", sentence,
-                      "a caller told to retry a permanent condition retries for ever")
+        self.assertIn("Reference to image", sentence,
+                      "the refusal names the owner's mode rather than the internal edit token")
+        self.assertIn("reports this mode as available", sentence)
 
     def test_a_capable_location_still_takes_a_prompt_only_job(self) -> None:
         found = self._route_with({"a": ["txt2img"], "b": ["txt2img", "edit"]})

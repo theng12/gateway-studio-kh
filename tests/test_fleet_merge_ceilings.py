@@ -308,5 +308,73 @@ class APoolAliasPublishesWhatEveryMemberSupportsTest(unittest.TestCase):
                           "no member may be offered a reference ceiling the alias cannot honour")
 
 
+class APausedLocationPublishesNoLimitsTest(unittest.TestCase):
+    """A paused Studio Hub location contributes no published limits; active sites still merge.
+
+    Measured: Gemma published `context_window_tokens: 32768` because a paused Mac Studio's
+    old snapshot merged into the row, while the active site states 49152 context / 8192
+    output. The pause is read from the fleet (`fleet.is_paused_provider`) by the caller —
+    never a model- or limit-specific exception.
+    """
+
+    PAUSED = {
+        "context_window_tokens": 32768, "context_window_tokens_source": "curated",
+        "max_output_tokens": 4096, "max_output_tokens_source": "curated",
+        "legacy_ids": ["studio-hub-paused::gemma"],
+    }
+    ACTIVE = {
+        "context_window_tokens": 49152, "context_window_tokens_source": "provider",
+        "max_output_tokens": 8192, "max_output_tokens_source": "provider",
+        "legacy_ids": ["studio-hub-active::gemma"],
+    }
+
+    def test_a_paused_site_never_lowers_an_active_row(self) -> None:
+        row = dict(self.ACTIVE)
+        answered = catalog._merge_capabilities(
+            row, dict(self.PAUSED), "chat", site_paused=True, active_answered=True)
+        self.assertEqual(row["context_window_tokens"], 49152)
+        self.assertEqual(row["max_output_tokens"], 8192)
+        self.assertEqual(row["context_window_tokens_source"], "provider",
+                         "the active site's provenance travels with its number")
+        self.assertTrue(answered)
+
+    def test_the_first_active_site_adopts_its_facts_over_a_paused_base(self) -> None:
+        row = dict(self.PAUSED)
+        answered = catalog._merge_capabilities(
+            row, dict(self.ACTIVE), "chat", site_paused=False, active_answered=False)
+        self.assertEqual(row["context_window_tokens"], 49152)
+        self.assertEqual(row["max_output_tokens"], 8192)
+        self.assertEqual(row["context_window_tokens_source"], "provider")
+        self.assertTrue(answered)
+        self.assertEqual(row["legacy_ids"],
+                         ["studio-hub-paused::gemma", "studio-hub-active::gemma"],
+                         "a paused site's id stays an alias; only its limits are dropped")
+
+    def test_active_sites_still_take_the_safe_minimum(self) -> None:
+        row = dict(self.ACTIVE)
+        catalog._merge_capabilities(
+            row, {"context_window_tokens": 65536, "context_window_tokens_source": "provider",
+                  "max_output_tokens": 16384, "max_output_tokens_source": "provider"},
+            "chat", site_paused=False, active_answered=True)
+        self.assertEqual(row["context_window_tokens"], 49152)
+        self.assertEqual(row["max_output_tokens"], 8192)
+
+    def test_when_every_site_is_paused_the_merge_is_still_conservative(self) -> None:
+        row = dict(self.PAUSED)
+        answered = catalog._merge_capabilities(
+            row, {"context_window_tokens": 16384, "context_window_tokens_source": "provider"},
+            "chat", site_paused=True, active_answered=False)
+        self.assertEqual(row["context_window_tokens"], 16384,
+                         "no active site answers yet: the safe number, not the first site's")
+        self.assertFalse(answered, "the caller must know no active site has answered")
+
+    def test_the_three_argument_call_shape_is_unchanged(self) -> None:
+        row = dict(self.ACTIVE)
+        self.assertTrue(catalog._merge_capabilities(
+            row, {"context_window_tokens": 8192, "context_window_tokens_source": "provider"},
+            "chat"))
+        self.assertEqual(row["context_window_tokens"], 8192)
+
+
 if __name__ == "__main__":
     unittest.main()

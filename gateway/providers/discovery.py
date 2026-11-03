@@ -620,13 +620,24 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
     # The same holds for files and readiness: a site serves a model when **any** of its Macs has it
     # installed, ready and fitting, so that Mac's row is the one kept (see `mac_ready`).
     indexed: dict[str, dict[str, Any]] = {}
+    image_workers: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
         key = str(row.get("repo") or row.get("model_id") or "").strip()
         if key and (key not in indexed or _site_rank(row) > _site_rank(indexed[key])):
             indexed[key] = row
-    return indexed or None
+        capabilities = row.get("capabilities")
+        if key and ("image_modes" in row or "reference_lane" in row or (
+            isinstance(capabilities, list) and any(token in capabilities for token in ("txt2img", "edit"))
+        )):
+            # A ready text worker must not hide another Mac's qualified reference lane.
+            image_workers.setdefault(key, []).append({field: row[field] for field in (
+                "hub_machine", "hub_cached", "memory_eligible", "runtime_ready", "available",
+                "image_modes", "capabilities", "reference_lane", "lane_contract",
+            ) if field in row})
+    return {key: {**row, **({"image_workers": image_workers[key]} if key in image_workers else {})}
+            for key, row in indexed.items()} or None
 
 
 #: A **separate, short** timeout for the capability snapshot. It is guidance, not the catalogue:
@@ -937,6 +948,9 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             # guidance from here, and publishes the guidance unchanged.
             raw["hub_controls"] = hub_controls
         if facts:
+            for field in ("image_modes", "reference_lane", "image_workers"):
+                if field in facts:
+                    raw[field] = facts[field]
             raw["capabilities"] = facts.get("capabilities") or []
             raw["reference_audio"] = facts.get("reference_audio") or {}
             raw["family"] = facts.get("family")

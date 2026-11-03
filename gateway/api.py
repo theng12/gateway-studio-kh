@@ -2150,10 +2150,8 @@ def _submit(
         params = dict(params or {})
         params["_pool_id"] = pool_name
 
-    # **A job's own parameters decide what the location must be able to do.** Reference-guided
-    # images may only run where the worker advertises `edit`; every other modality and every
-    # prompt-only image job states no requirement, so an old or non-reference location still
-    # takes it. Read once, so the route and the refusal sentence can never disagree.
+    # Image intent selects the Hub's declared text or reference mode at both routing moments.
+    # Read once so the route and its refusal sentence cannot disagree.
     capability = fleet.required_capability(modality, params)
     definition, model = catalog.resolve(
         modality, compound_id, only_location=_pinned_location(params),
@@ -2196,8 +2194,10 @@ def _submit(
     if modality == "tts":
         _refuse_an_unspoken_language(compound_id, model, params)
         _refuse_a_delivery_instruction(compound_id, model, params)
-    if capability is not None:
+    if capability == fleet.EDIT_CAPABILITY:
         _refuse_references_this_lane_cannot_take(definition, model, params)
+    elif modality == "image" and getattr(definition, "kind", None) == "studio_hub" and not fleet.advertises(model, "txt2img"):
+        raise GatewayError(400, "Text to image is not available for this model at this location.", "INVALID_PARAMS")
     if modality == "chat":
         _refuse_a_request_that_cannot_fit(definition, model, params)
     # An idempotency key identifies one request, and a request has a modality.
@@ -3777,6 +3777,13 @@ def _stage_image_references(payload: dict[str, Any]) -> dict[str, Any]:
     from . import image_assets
 
     asset_ids = _image_reference_ids(payload)
+    declared_mode = payload.get("mode")
+    if declared_mode is not None:
+        if declared_mode not in ("txt2img", "edit"):
+            raise GatewayError(400, "Unknown image mode. Use a mode id from the model's published image_modes.", "INVALID_PARAMS")
+        expected_mode = "edit" if asset_ids is not None else "txt2img"
+        if declared_mode != expected_mode:
+            raise GatewayError(400, "The image mode and reference images disagree. Reference to image needs reference_asset_ids; Text to image sends none.", "INVALID_PARAMS")
     if asset_ids is None:
         return payload
     directory = ARTIFACT_DIR / "uploads"
@@ -3858,13 +3865,17 @@ def _refuse_references_this_lane_cannot_take(
     gateway number would be one Story was never told about.
     """
     from .providers.definitions import (
-        KIND_STUDIO_HUB, image_reference_limits, image_reference_state,
+        KIND_STUDIO_HUB, hub_image_mode, image_reference_limits, image_reference_state,
     )
 
     raw = (model or {}).get("raw") or {}
     states = image_reference_state(str(getattr(definition, "kind", "")),
                                    str((model or {}).get("model_id") or ""), raw)
     if states is not True:
+        mode = hub_image_mode(raw, "edit") if getattr(definition, "kind", None) == KIND_STUDIO_HUB else None
+        if mode is not None:
+            reason = re.sub(r"\bedit\b", "reference", str(mode.get("reason") or "No ready Mac offers this mode."), flags=re.IGNORECASE)
+            raise GatewayError(400, f"Reference to image is unavailable at this location. {reason}", "INVALID_PARAMS")
         raise GatewayError(
             400,
             "This model does not take reference images. Pick a model whose catalogue row "

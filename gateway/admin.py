@@ -3694,7 +3694,7 @@ def list_jobs(
     limit: int = Query(50, ge=1, le=500),
     state: str | None = None,
     modality: str | None = None,
-    image_mode: str | None = Query(None, pattern="^(text-to-image|reference-to-image)$"),
+    image_mode: Annotated[str | None, Query(pattern="^(text-to-image|reference-to-image)$")] = None,
     since: float | None = Query(None, ge=0),
     before: float | None = Query(None, ge=0),
     include_removed: bool = False,

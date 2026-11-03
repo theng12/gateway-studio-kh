@@ -5398,20 +5398,31 @@ def advertises(model: dict, capability: str) -> bool:
     states no capabilities states nothing, which is not the same as stating that it cannot — but for
     routing the two answers coincide: work may only go where the token is actually advertised.
     """
-    capabilities = (model.get("raw") or {}).get("capabilities")
-    if not isinstance(capabilities, list):
-        return False
+    raw = model.get("raw") or {}
     wanted = str(capability or "").strip().lower()
-    return bool(wanted) and any(str(item).strip().lower() == wanted for item in capabilities)
+    if wanted in {"txt2img", EDIT_CAPABILITY}:
+        from .providers.definitions import hub_image_mode
+        mode = hub_image_mode(raw, wanted)
+        if mode is not None:
+            return mode["available"]
+        workers = raw.get("image_workers") or [raw]
+        # An older, undescribed text lane keeps its existing route; explicit modes fail closed.
+        return wanted == "txt2img" and all(
+            not worker.get("capabilities") and "image_modes" not in worker for worker in workers
+            if isinstance(worker, dict)
+        )
+    capabilities = raw.get("capabilities")
+    return isinstance(capabilities, list) and bool(wanted) and any(
+        str(item).strip().lower() == wanted for item in capabilities
+    )
 
 
 def required_capability(modality: str, params: Any) -> str | None:
     """The capability a job's **own parameters** demand of the location that runs it.
 
-    `None` — "any location offering the model" — for every job that asks for nothing special. A
-    reference-guided image is the one exception today: `create_image` stages its uploads under
-    `_reference_digests`, so a job carrying that key (even empty, which asks for a reference render
-    with nothing in it) can only be served by a Mac whose worker advertises `edit`.
+    Image jobs demand `txt2img` or `edit` from the Hub's published modes. `create_image` stages
+    references under `_reference_digests`, so that key (even empty) retains reference intent.
+    Other modalities use any location offering the model.
 
     Derived from the request rather than passed by each caller, because there are two routing
     moments (the submit and the worker's re-route after a refusal) and a rule that only one of them
@@ -5419,7 +5430,7 @@ def required_capability(modality: str, params: Any) -> str | None:
     """
     if modality != "image" or not isinstance(params, dict):
         return None
-    return EDIT_CAPABILITY if "_reference_digests" in params else None
+    return EDIT_CAPABILITY if "_reference_digests" in params else "txt2img"
 
 
 def routing_candidates(

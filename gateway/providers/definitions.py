@@ -321,6 +321,73 @@ _IMAGE_REFERENCE_WORDS = ("img2img", "image-to-image", "reference-to-image", "ed
 _IMAGE_TEXT_WORDS = ("txt2img", "text-to-image")
 
 
+def hub_image_modes(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """The Hub's modes, reduced across its actual worker rows, with 0.6.215 compatibility."""
+    workers = raw.get("image_workers")
+    workers = workers if isinstance(workers, list) and workers else [raw]
+    modes: dict[str, dict[str, Any]] = {}
+    labels = {"txt2img": "Text to image", "edit": "Reference to image"}
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        ready = all(worker.get(key) is not False for key in (
+            "hub_cached", "memory_eligible", "runtime_ready", "available",
+        ))
+        if "image_modes" in worker:
+            entries = worker["image_modes"]
+            entries = entries if isinstance(entries, list) else []
+        else:
+            capabilities = worker.get("capabilities")
+            capabilities = capabilities if isinstance(capabilities, list) else []
+            contract = worker.get("lane_contract")
+            references = contract.get("references") if isinstance(contract, dict) else None
+            lane = worker.get("reference_lane")
+            lane = lane if isinstance(lane, dict) else {}
+            entries = []
+            if "txt2img" in capabilities or "text-to-image" in capabilities:
+                entries.append({"id": "txt2img", "available": ready, "reason": None})
+            # Bounds describe a supported lane even when this Mac cannot run it now.
+            reference_capability = any(token in capabilities for token in _IMAGE_REFERENCE_WORDS)
+            if reference_capability or isinstance(references, dict) and references:
+                entries.append({"id": "edit", "available": ready and (
+                    lane.get("available") is True if "available" in lane else reference_capability
+                ), "reason": lane.get("reason"), "references": references})
+        for item in entries:
+            if not isinstance(item, dict) or item.get("id") not in labels:
+                continue
+            mode = dict(item)
+            mode["label"] = labels[mode["id"]]
+            mode["available"] = ready and item.get("available") is True
+            if mode["available"]:
+                mode["reason"] = None
+            elif not mode.get("reason"):
+                mode["reason"] = "No ready Mac currently offers this mode."
+            existing = modes.get(mode["id"])
+            workers_evidence = list(existing.get("workers") or []) if existing else []
+            workers_evidence.extend(mode.get("workers") or [])
+            machine = worker.get("hub_machine")
+            if isinstance(machine, str) and machine:
+                workers_evidence.append({"machine_id": machine, "available": mode["available"],
+                                         "reason": mode.get("reason"),
+                                         **({"references": mode["references"]} if "references" in mode else {})})
+            if existing is None or mode["available"] and not existing["available"]:
+                modes[mode["id"]] = mode
+            elif mode["available"] and existing["available"] and mode["id"] == "edit":
+                first, second = existing.get("references"), mode.get("references")
+                references = dict(first) if isinstance(first, dict) else {}
+                for key in ("min", "max", "max_dimension"):
+                    values = [source.get(key) if isinstance(source, dict) else None for source in (first, second)]
+                    references[key] = (max(values) if key == "min" else min(values)) if all(type(value) is int for value in values) else None
+                existing["references"] = references
+            if workers_evidence:
+                modes[mode["id"]]["workers"] = workers_evidence
+    return [modes[key] for key in labels if key in modes]
+
+
+def hub_image_mode(raw: dict[str, Any], mode_id: str) -> dict[str, Any] | None:
+    return next((mode for mode in hub_image_modes(raw) if mode["id"] == mode_id), None)
+
+
 def image_reference_state(kind: str, model_id: str, raw: dict[str, Any]) -> bool | None:
     """Does this image model take a reference image? `True`, `False`, or `None`.
 
@@ -335,6 +402,12 @@ def image_reference_state(kind: str, model_id: str, raw: dict[str, Any]) -> bool
     `None` means **unstated**. It is not a claim that the answer is no.
     """
     raw = raw or {}
+    if kind == KIND_STUDIO_HUB:
+        modes = hub_image_modes(raw)
+        reference = next((mode for mode in modes if mode["id"] == "edit"), None)
+        if reference is not None:
+            return reference["available"]
+        return False if modes or "image_modes" in raw else None
     capabilities = raw.get("capabilities")
     haystack = ""
     if isinstance(capabilities, list) and capabilities:
@@ -370,7 +443,10 @@ def image_reference_limits(raw: dict[str, Any]) -> dict[str, int | None]:
     the multipart), so only the three figures the catalogue has to publish are returned.
     """
     contract = raw.get("lane_contract") if isinstance(raw, dict) else None
-    references = contract.get("references") if isinstance(contract, dict) else None
+    mode = hub_image_mode(raw, "edit") if isinstance(raw, dict) else None
+    references = mode.get("references") if mode is not None else (
+        contract.get("references") if isinstance(contract, dict) else None
+    )
     references = references if isinstance(references, dict) else {}
 
     def stated(key: str) -> int | None:
