@@ -232,7 +232,9 @@ def _chat(request: BackendRequest) -> BackendResult:
     # **Every spelling the caller might use** (`base.caller_max_output_tokens`): this lane
     # used to read two of the three, so a caller that used OpenAI's current
     # `max_completion_tokens` had its allowance dropped here while the Hub lane honoured it.
-    max_tokens = caller_max_output_tokens(request.params)
+    # Absent a caller value, send the allowance this gateway publishes rather than leaving the
+    # provider to choose a different number from the one Story was told.
+    max_tokens = caller_max_output_tokens(request.params) or request.max_output_tokens
     if max_tokens:
         body["max_tokens"] = max_tokens
 

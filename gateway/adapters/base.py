@@ -327,9 +327,9 @@ class BackendRequest:
     resumed_after_restart: bool = False
     on_deadline: Callable[[str], None] | None = None
     #: The output allowance this gateway **publishes** for the model
-    #: (`catalog.published_output_cap`), so an adapter that must state a `max_tokens` can send
-    #: the number the caller was told instead of its own private default. A value in `params`
-    #: always wins: this is only the answer to "the caller asked for nothing".
+    #: (`catalog.published_output_cap`), so an adapter can send the number the caller was told
+    #: instead of its own private default or the provider's unstated fallback. A value in
+    #: `params` always wins: this is only the answer to "the caller asked for nothing".
     max_output_tokens: int | None = None
     #: **The longest this one call may take**, when the caller knows a tighter bound than the
     #: lane's own ceiling. Only the pool sets it: a silent cloud member must not hold the whole

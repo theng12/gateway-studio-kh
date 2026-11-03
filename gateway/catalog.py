@@ -1513,7 +1513,7 @@ def _published_output_limit(
     completion = _first_stated(top, ("max_completion_tokens",))
     if completion is None:
         completion = _first_stated(
-            raw, ("max_completion_tokens", "outputTokenLimit", "output_token_limit")
+            raw, ("max_output_tokens", "max_completion_tokens", "outputTokenLimit", "output_token_limit")
         )
     hub_output, hub_output_detail, hub_output_kind = _hub_stated_limit(
         raw, "max_output_tokens")
@@ -1600,7 +1600,9 @@ def published_output_cap(
 
     `None` means this gateway has no number to offer, and a lane that treats the
     field as optional keeps sending nothing rather than inventing a cap. Only a
-    lane that **must** state one (Anthropic) falls back to its own constant.
+    lane that **must** state one (Anthropic) falls back to its own constant. A
+    lane that does state a published cap sends that number, so the request and
+    catalogue cannot disagree.
     """
     if definition is None or not model:
         return None

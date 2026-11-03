@@ -124,13 +124,13 @@ class EveryChatLaneHonoursTheCallersAnswerLengthTests(unittest.TestCase):
                     )
 
     def test_a_caller_that_asks_for_nothing_is_never_given_a_number_it_did_not_choose(self) -> None:
-        """The optional lanes send no `max_tokens` at all when the caller states none.
+        """The optional lanes send no `max_tokens` when there is no published cap either.
 
         This is the half of the rule that keeps the fix honest: the answer to "the caller
         asked for nothing" is *the published cap, or nothing* — never a number this
-        adapter invented. `published_output_cap` fills `request.max_output_tokens` for the
-        lanes that must state one; these two need not, so they leave the field off the
-        wire and the provider's own allowance applies.
+        adapter invented. `published_output_cap` fills `request.max_output_tokens`; these
+        requests carry no cap, so the field stays off the wire and the provider's own
+        allowance applies.
         """
         self.assertNotIn("max_tokens", _openai_body())
         self.assertNotIn("max_tokens", _hub_body())

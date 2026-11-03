@@ -25,7 +25,7 @@ _SANDBOX = sandbox_env()  # never bind to the owner's real Application Support
 import httpx  # noqa: E402
 
 from gateway import catalog  # noqa: E402
-from gateway.adapters import anthropic  # noqa: E402
+from gateway.adapters import anthropic, openai_compat  # noqa: E402
 from gateway.adapters.base import BackendError, BackendRequest  # noqa: E402
 from gateway.adapters.pool import _outcome_known  # noqa: E402
 from gateway.providers import discovery  # noqa: E402
@@ -310,6 +310,62 @@ class PublishedOutputLimitTests(unittest.TestCase):
         with patch.object(anthropic.httpx, "post", fake_post):
             backend.generate(request)
         self.assertEqual(9000, bodies[1]["max_tokens"])
+
+    def test_magpies_stated_output_cap_reaches_the_member_request(self) -> None:
+        """Top-level `max_output_tokens` is a stated cap, not the Hub's nested contract."""
+        from gateway.adapters.pool import PoolBackend
+        from gateway import pools
+        from gateway.providers.definitions import KIND_OPENAI_COMPATIBLE, ProviderDefinition
+
+        definition = ProviderDefinition(
+            id="magpie", display_name="Magpie", category="language",
+            kind=KIND_OPENAI_COMPATIBLE, base_url="http://mock", modalities=("chat",),
+            discovery="openai_models",
+        )
+        model = {"model_id": "group/story-llm-free",
+                 "raw": {"context_window": 1056784, "max_output_tokens": 512000}}
+        self.assertEqual(512000, catalog.published_output_cap(definition, model["model_id"], model))
+        row = catalog._chat_row(model["model_id"], definition, model)
+        self.assertEqual(512000, row["max_output_tokens"])
+        self.assertEqual("provider", row["max_output_tokens_source"])
+
+        pools.create("magpie-cap", ["magpie::group/story-llm-free"])
+        backend = PoolBackend()
+        member_requests: list[BackendRequest] = []
+
+        def adapter_for(_definition):
+            member = openai_compat.OpenAICompatibleBackend()
+            generate = member.generate
+
+            def observed(member_request):
+                member_requests.append(member_request)
+                return generate(member_request)
+
+            member.generate = observed
+            return member
+
+        backend.attach(lambda *_: (definition, model), adapter_for)
+        bodies = []
+
+        def fake_post(url, *, headers, json, timeout):
+            bodies.append(dict(json))
+            return httpx.Response(200, json={
+                "model": "group/story-llm-free",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": 1},
+            })
+
+        request = BackendRequest(provider_id="pool", model_id="magpie-cap", modality="chat",
+                                 params={"messages": [{"role": "user", "content": "write"}]},
+                                 values={"base_url": "http://mock", "api_key": "key"}, base_url="http://mock")
+        with patch.object(openai_compat.httpx, "post", fake_post):
+            backend.generate(request)
+        self.assertEqual(512000, member_requests[0].max_output_tokens)
+        self.assertEqual(512000, bodies[0]["max_tokens"])
+        request.params["max_output_tokens"] = 128000
+        with patch.object(openai_compat.httpx, "post", fake_post):
+            backend.generate(request)
+        self.assertEqual(128000, bodies[1]["max_tokens"])
 
     def test_the_last_resort_allowance_is_the_owners_128k(self) -> None:
         """The owner's decision, 2026-10-19: *"4096 is too small. all models write more than

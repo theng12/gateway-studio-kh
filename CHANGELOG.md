@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.229 — 2026-11-04
+
+- An OpenAI-compatible model that states its own answer-length limit now publishes and sends that limit when the caller does not choose one. Magpie's stated 512,000-token output cap is no longer ignored. An explicit caller limit still wins, and an unstated request ceiling remains absent.
+
 ## 0.2.228 — 2026-11-03
 
 - The menu now says Quit Gateway Studio KH.
