@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.228 — 2026-11-03
+
+- The menu now says Quit Gateway Studio KH.
+
 ## 0.2.227 — 2026-11-03
 
 - Chat pools publish the smallest context, output and request token limits across their enabled members. A limit stays absent if any enabled member's value is unknown, and membership or enablement changes update the next catalogue answer.

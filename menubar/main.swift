@@ -1481,7 +1481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Open data folder", #selector(openData)))
         menu.addItem(item("Open log", #selector(openLog)))
         menu.addItem(.separator())
-        menu.addItem(item("Quit gateway-kh", #selector(quit), key: "q"))
+        menu.addItem(item("Quit Gateway Studio KH", #selector(quit), key: "q"))
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
