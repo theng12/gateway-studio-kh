@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.227 — 2026-11-03
+
+- Chat pools publish the smallest context, output and request token limits across their enabled members. A limit stays absent if any enabled member's value is unknown, and membership or enablement changes update the next catalogue answer.
+
 ## 0.2.226 — 2026-11-03
 
 - Image jobs record Text to image or Reference to image and the submitted reference count. Jobs and Analytics show those alongside the Hub's confirmed used count, with a filter for either mode. Older records keep unknown values.

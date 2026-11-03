@@ -2371,7 +2371,9 @@ class Catalog:
                 parts.append((definition.id, model["model_id"], model["modality"]))
         from . import fleet
 
-        return tuple(sorted(parts)), tuple(sorted(fleet.usable_location_ids()))
+        membership = tuple((pool["name"], tuple(pool["members"]))
+                           for pool in pools.pools() if pools.modality_of(pool) == "chat")
+        return tuple(sorted(parts)), tuple(sorted(fleet.usable_location_ids())), membership
 
     def rebuild(self, *, force: bool = False) -> None:
         signature = self._current_signature()
@@ -2588,13 +2590,21 @@ class Catalog:
         except Exception:
             pass
 
-        # A pool can cost money only if a member that can answer can.
-        chat_by_id = {r["id"]: r for r in rows["chat"]}
+        # Every enabled member may answer, so a pool's limits must hold for all of them.
+        chat_by_id = {alias: row for row in rows["chat"]
+                      for alias in (row["id"], *row.get("legacy_ids", []))}
         for row in rows["chat"]:
             provider_id, name = decode_model_id(row["id"])
             if provider_id == pools.POOL_PROVIDER_ID:
-                members = [chat_by_id.get(m) for m in pools.members(name)]
-                row["chargeable"] = any(m["chargeable"] for m in members if m is not None)
+                members = [chat_by_id[m] for m in pools.members(name) if m in chat_by_id]
+                row["chargeable"] = any(m["chargeable"] for m in members)
+                for field in ("context_window_tokens", "max_output_tokens", "max_request_tokens"):
+                    values = [member.get(field) for member in members]
+                    for key in (field, f"{field}_source", f"{field}_source_detail"):
+                        row.pop(key, None)
+                    if values and all(type(value) is int and value >= 0 for value in values):
+                        row[field] = min(values)
+                        row[f"{field}_source"] = "gateway"
 
         self._rows = rows
         self._signature = signature
