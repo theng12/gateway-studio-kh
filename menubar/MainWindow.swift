@@ -78,6 +78,11 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         title: "Fleet", symbol: "network", viewName: "fleet"
     )
 
+    /// The native AnalyticsSection stays in the repository, unused and restorable.
+    static let analytics = ConsoleSection(
+        title: "Analytics", symbol: "chart.bar", viewName: "analytics"
+    )
+
     let title: String
     let symbol: String
     private let viewName: String
@@ -100,6 +105,7 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         providers.refreshCredentialIfLoaded()
         packs.refreshCredentialIfLoaded()
         fleet.refreshCredentialIfLoaded()
+        analytics.refreshCredentialIfLoaded()
     }
 
     /// Lazy so the web view can be built by a closure on self.
@@ -608,7 +614,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             // **index**, so inserting Analytics beside Jobs would renumber every section after it
             // and a single missed entry would silently point a sidebar row at the wrong page. A new
             // section goes on the end and `layout` places it where it belongs on screen.
-            AnalyticsSection.shared,
+            ConsoleSection.analytics,
         ]
 
         let window = NSWindow(

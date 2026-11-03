@@ -762,7 +762,26 @@
       <h1>Jobs</h1>
       <p>The latest 100 jobs, newest first.</p>
     </div>
+    <div class="filters"><label>Image mode <select id="jobs-image-mode" onchange="loadJobs()">
+      <option value="">All modes</option><option value="text-to-image">Text to image</option>
+      <option value="reference-to-image">Reference to image</option>
+    </select></label></div>
     <div id="jobs-body"><div class="empty">Reading jobs…</div></div>
+  </section>
+  <section id="view-analytics" style="display:none">
+    <div class="heading"><h1>Analytics</h1><p>Recorded generation usage and image jobs.</p></div>
+    <div class="filters"><label>Group by <select id="analytics-group" onchange="renderAnalytics()">
+      <option value="by_modality">Type</option><option value="by_model">Model</option>
+      <option value="by_machine">Machine</option><option value="by_model_class">Model × Mac class</option>
+    </select></label><button onclick="loadAnalytics()">Refresh</button></div>
+    <p id="analytics-summary" class="hint" role="status"></p>
+    <div id="analytics-body"><div class="empty">Reading usage…</div></div>
+    <h2 style="margin-top:28px">Image jobs</h2><p class="hint">Latest 100 matching jobs. Submitted references record the request; used references are confirmed by the Hub.</p>
+    <div class="filters"><label>Image mode <select id="analytics-image-mode" onchange="loadImageUsage()">
+      <option value="">All modes</option><option value="text-to-image">Text to image</option>
+      <option value="reference-to-image">Reference to image</option>
+    </select></label></div>
+    <div id="analytics-image-jobs"><div class="empty">Reading image jobs…</div></div>
   </section>
   <section id="view-voices" style="display:none">
     <div class="heading"><h1>Voices</h1><p>Organize voices with tags. Tags are shared with Story and accompany a voice when you share it.</p></div>
@@ -1387,7 +1406,7 @@ const NAV = [
     { view: 'jobs', label: 'Jobs', icon: 'jobs' },
     { view: 'voices', label: 'Voices', icon: 'voices' },
     { view: 'models', label: 'Models', icon: 'models' },
-    { view: 'analytics', label: 'Analytics', icon: 'analytics', app: true },
+    { view: 'analytics', label: 'Analytics', icon: 'analytics' },
     { view: 'packs', label: 'Content Packs', icon: 'packs' },
   ] },
   { group: 'Connection', items: [
@@ -1431,7 +1450,6 @@ function navIcon(name) {
 //: Pages this console does not carry yet: a real note, never an empty page.
 const APP_ONLY = {
   overview: 'Overview is in the Gateway app.',
-  analytics: 'Analytics is in the Gateway app.',
   settings: 'Settings is in the Gateway app.',
 };
 
@@ -1524,7 +1542,7 @@ function setView(view) {
       else row.removeAttribute('aria-current');
     });
   }
-  for (const id of ['fleet', 'jobs', 'voices', 'models', 'providers', 'create', 'packs', 'guests', 'whatsnew', 'missing']) {
+  for (const id of ['fleet', 'jobs', 'analytics', 'voices', 'models', 'providers', 'create', 'packs', 'guests', 'whatsnew', 'missing']) {
     const section = document.getElementById('view-' + id);
     if (section) section.style.display = view === id ? '' : 'none';
   }
@@ -1536,6 +1554,7 @@ function setView(view) {
   else if (view === 'packs') { loadContentShelf(); loadPreservedArchives(); }
   else if (view === 'fleet') loadFleet();
   else if (view === 'jobs') loadJobs();
+  else if (view === 'analytics') loadAnalytics();
   else if (view === 'create') {
     // The lane a link asked for is applied before the form is drawn, so a `#create:audio`
     // bookmark lands on Audio rather than on the default page.
@@ -8731,24 +8750,87 @@ async function loadFleet(force) {
   if (fleetTab === 'story') loadFleetStory();
 }
 
-async function loadJobs() {
-  const box = document.getElementById('jobs-body');
-  let d;
-  try { d = await api('/jobs?limit=100'); }
-  catch (e) { box.innerHTML = `<div class="empty">Could not read jobs: ${esc(e.message)}</div>`; return; }
-  if (state.view !== 'jobs') return;
-  const rows = d.jobs || [];
-  box.innerHTML = rows.length ? `<div class="tablewrap"><table style="min-width:1000px"><thead><tr>
-      <th>Job</th><th>State</th><th>Model</th><th>Where</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
+function imageModeLabel(mode) {
+  return mode === 'text-to-image' ? 'Text to image'
+    : mode === 'reference-to-image' ? 'Reference to image' : 'Mode not recorded';
+}
+
+function imageJobEvidence(job) {
+  if (job.modality !== 'image') return '';
+  const submitted = job.submitted_reference_count;
+  const applied = job.reference_count;
+  return `<div>${esc(imageModeLabel(job.image_mode))}</div><div class="hint">${
+    Number.isInteger(submitted) && submitted >= 0 ? `${submitted} submitted` : 'Submitted count not recorded'
+  }</div><div class="hint">${Number.isInteger(applied) && applied >= 0
+    ? `${applied} reference image${applied === 1 ? '' : 's'} used` : 'Used count not recorded'}</div>`;
+}
+
+function jobsTable(rows) {
+  return rows.length ? `<div class="tablewrap"><table style="min-width:1100px"><thead><tr>
+      <th>Job</th><th>Image mode / references</th><th>State</th><th>Model</th><th>Where</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
     </tr></thead><tbody>${rows.map(j => `<tr>
       <td class="mid">${esc(j.short_id || String(j.id).slice(0, 8))}</td>
+      <td>${imageJobEvidence(j)}</td>
       <td><span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span></td>
-      <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}${j.reference_count == null ? '' : `<div class="hint">${esc(j.reference_count)} reference image${j.reference_count === 1 ? '' : 's'} used</div>`}</td>
+      <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}</td>
       <td>${esc(j.provider_name || '')}${j.executed_by ? `<div class="hint">${esc(j.executed_by)}</div>` : ''}</td>
       <td>${esc(requesterLabel(j))}</td>
       <td>${esc(j.caller || '')}</td>
       <td class="num">${ago(j.created_at)}<div class="hint">Gateway dispatched: ${j.started_at == null ? 'not recorded' : ago(j.started_at)}</div><div class="hint">Gateway settled: ${j.finished_at == null ? 'not recorded' : ago(j.finished_at)}</div></td>
-    </tr>`).join('')}</tbody></table></div>` : '<div class="empty">No jobs yet.</div>';
+    </tr>`).join('')}</tbody></table></div>` : '<div class="empty">No matching jobs.</div>';
+}
+
+function imageModeQuery(controlId) {
+  const mode = document.getElementById(controlId)?.value || '';
+  return mode ? '&image_mode=' + encodeURIComponent(mode) : '';
+}
+
+async function loadJobs() {
+  const box = document.getElementById('jobs-body');
+  const filter = imageModeQuery('jobs-image-mode');
+  try {
+    const d = await api('/jobs?limit=100' + filter);
+    if (state.view === 'jobs' && filter === imageModeQuery('jobs-image-mode')) box.innerHTML = jobsTable(d.jobs || []);
+  } catch (e) { box.innerHTML = `<div class="empty">Could not read jobs: ${esc(e.message)}</div>`; }
+}
+
+let analyticsData = null;
+function renderAnalytics() {
+  if (!analyticsData) return;
+  const d = analyticsData;
+  const total = d.totals || {};
+  document.getElementById('analytics-summary').textContent = `${total.jobs ?? 'Unknown'} settled jobs · ${total.succeeded ?? 'Unknown'} succeeded · ${total.failed ?? 'Unknown'} failed · ${total.cancelled ?? 'Unknown'} cancelled. Latest ${d.limit ?? 20000} records; missing measurements stay unknown.`;
+  const grouping = document.getElementById('analytics-group').value;
+  const rows = d[grouping] || [];
+  const seconds = value => typeof value === 'number' ? `${value.toLocaleString()} s` : 'Not recorded';
+  document.getElementById('analytics-body').innerHTML = rows.length
+    ? `<div class="tablewrap"><table style="min-width:760px"><thead><tr><th>Group</th><th class="num">Jobs</th><th class="num">Succeeded</th><th class="num">Failed</th><th class="num">Median</th><th class="num">Mean</th><th class="num">Output</th></tr></thead><tbody>${rows.map(row => `<tr>
+      <td>${esc(row.label || row.key)}${row.rtf_median == null ? '' : `<div class="hint">RTF ${esc(row.rtf_median)}</div>`}</td>
+      <td class="num">${esc(row.jobs)}</td><td class="num">${esc(row.succeeded)}</td><td class="num">${esc(row.failed)}</td>
+      <td class="num">${seconds(row.seconds_median)}</td><td class="num">${seconds(row.seconds_mean)}</td>
+      <td class="num">${row.bytes_jobs > 0 ? esc(fleetBytes(row.bytes)) : 'Not recorded'}</td>
+    </tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing recorded in this group yet.</div>';
+}
+
+async function loadImageUsage() {
+  const box = document.getElementById('analytics-image-jobs');
+  const filter = imageModeQuery('analytics-image-mode');
+  try {
+    const d = await api('/jobs?limit=100&modality=image' + filter);
+    if (state.view === 'analytics' && filter === imageModeQuery('analytics-image-mode')) box.innerHTML = jobsTable(d.jobs || []);
+  } catch (e) { box.innerHTML = `<div class="empty">Could not read image usage: ${esc(e.message)}</div>`; }
+}
+
+async function loadAnalytics() {
+  await Promise.all([
+    (async () => {
+      try {
+        analyticsData = await api('/analytics');
+        if (state.view === 'analytics') renderAnalytics();
+      } catch (e) { document.getElementById('analytics-body').innerHTML = `<div class="empty">Could not read usage: ${esc(e.message)}</div>`; }
+    })(),
+    loadImageUsage(),
+  ]);
 }
 
 // ---------------------------------------------------------------------------

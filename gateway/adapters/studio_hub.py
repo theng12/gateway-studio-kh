@@ -574,6 +574,12 @@ def _image_reference(request: BackendRequest) -> list[dict[str, Any]] | None:
     """
     paths = request.params.get("_reference_paths")
     if not isinstance(paths, list) or not paths:
+        if "_reference_digests" in request.params or "reference_asset_ids" in request.params:
+            raise BackendError(
+                "Reference to image has no staged reference images; upload at least 1 image and retry",
+                code="INVALID_PARAMS",
+                upstream_accepted=False,
+            )
         return None
     types = request.params.get("_reference_types")
     types = types if isinstance(types, list) else []

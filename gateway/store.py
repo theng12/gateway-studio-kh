@@ -285,6 +285,8 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("cancel_state", "TEXT"),
     ("dispatch_started_at", "REAL"),
     ("finished_at", "REAL"),  # Gateway settlement clock; old rows remain unknown, never backfilled.
+    ("image_mode", "TEXT"),
+    ("submitted_reference_count", "INTEGER"),
     ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
     ("upstream_job_id", "TEXT"),
     ("late_result_state", "TEXT"),
@@ -2107,12 +2109,24 @@ class JobStore:
                     return self._row_dict(existing), False
 
             job_id = str(uuid.uuid4())
+            image_mode = None
+            submitted_reference_count = None
+            if modality == "image":
+                references = params.get("_reference_digests")
+                # Staged inputs record intent; only the Hub's result proves applied references.
+                if isinstance(references, list):
+                    image_mode = "reference-to-image"
+                    submitted_reference_count = len(references)
+                elif "reference_asset_ids" not in params:
+                    image_mode = "text-to-image"
+                    submitted_reference_count = 0
             self._conn.execute(
                 """
                 INSERT INTO jobs (id, idempotency_key, modality, model_id, provider_id,
                                   state, params, created_at, updated_at, next_action_at, caller,
-                                  job_group, priority, requested_by)
-                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?, ?)
+                                  job_group, priority, requested_by, image_mode,
+                                  submitted_reference_count)
+                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -2128,6 +2142,8 @@ class JobStore:
                     job_group or None,
                     priority if priority == BACKGROUND else None,
                     _requested_by_json(requested_by),
+                    image_mode,
+                    submitted_reference_count,
                 ),
             )
             self._conn.commit()
@@ -3264,6 +3280,7 @@ class JobStore:
         limit: int = 50,
         state: str | None = None,
         modality: str | None = None,
+        image_mode: str | None = None,
         since: float | None = None,
         before: float | None = None,
         hide_dismissed: bool = False,
@@ -3293,6 +3310,9 @@ class JobStore:
         if modality:
             clauses.append("modality = ?")
             params.append(modality)
+        if image_mode:
+            clauses.append("image_mode = ?")
+            params.append(image_mode)
         if requested_by_guest:
             clauses.append("requested_by LIKE ?")
             params.append(f"%{requested_by_guest}%")
@@ -3653,6 +3673,7 @@ class JobStore:
             "by_machine": ranked("by_machine"),
             **({"by_model_class": ranked("by_model_class")} if mac_class is not None else {}),
             "sampled": len(rows),
+            "limit": limit,
         }
 
     def speed_samples(self, model_id: str, *, limit: int = 500) -> list[tuple[str, str, float]]:

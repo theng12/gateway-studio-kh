@@ -3887,6 +3887,11 @@ def _refuse_references_this_lane_cannot_take(
     limits = image_reference_limits(raw)
     count = len(params.get("_reference_digests") or [])
     maximum, minimum = limits["max"], limits["min"]
+    if count == 0:
+        raise GatewayError(
+            400, "Reference to image needs at least 1 reference image; this request names 0.",
+            "INVALID_PARAMS",
+        )
     if isinstance(maximum, int) and count > maximum:
         raise GatewayError(
             400,

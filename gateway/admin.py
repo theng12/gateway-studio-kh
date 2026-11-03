@@ -3694,6 +3694,7 @@ def list_jobs(
     limit: int = Query(50, ge=1, le=500),
     state: str | None = None,
     modality: str | None = None,
+    image_mode: str | None = Query(None, pattern="^(text-to-image|reference-to-image)$"),
     since: float | None = Query(None, ge=0),
     before: float | None = Query(None, ge=0),
     include_removed: bool = False,
@@ -3722,7 +3723,8 @@ def list_jobs(
     rows: list[dict[str, Any]] = []
     as_of = time.time()
     guest = guest_identity(request)
-    for job in store.list_jobs(limit=limit, state=state, modality=modality, since=since, before=before,
+    for job in store.list_jobs(limit=limit, state=state, modality=modality, image_mode=image_mode,
+                               since=since, before=before,
                                hide_dismissed=not include_removed,
                                # A guest's list is their own, narrowed before the limit is cut.
                                requested_by_guest=(guest or {}).get("guest_id")):
@@ -3789,6 +3791,8 @@ def list_jobs(
                 "finished_at": job.get("finished_at"),
                 "finished_at_source": "gateway_settlement" if job.get("finished_at") is not None else None,
                 "reference_count": reference_count,
+                "image_mode": job.get("image_mode"),
+                "submitted_reference_count": job.get("submitted_reference_count"),
                 # **Which Mac ran this job.** The site controller (`provider_name`) routes the
                 # work; the Hub picks a node and reports it as `machine`. `None` means the Hub
                 # did not say (older Hub, not dispatched yet, or a non-Hub lane).

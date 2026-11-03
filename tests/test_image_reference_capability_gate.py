@@ -22,7 +22,7 @@ _SANDBOX = sandbox_env("gateway-image-ref-cap-gate-")
 
 from gateway.providers.credentials import CredentialStore  # noqa: E402
 from gateway.providers.definitions import (  # noqa: E402
-    PROVIDERS_BY_ID,
+    PROVIDERS_BY_ID, image_reference_state,
 )
 from gateway.providers.models import ModelInventory  # noqa: E402
 
@@ -48,6 +48,11 @@ class ImageReferenceCapabilityGateTests(unittest.TestCase):
         model = {"model_id": "kie/text-model", "modality": "image",
                  "raw": {"category": "text-to-image", "capabilities": ["txt2img"]}}
         self.assertTrue(self.inventory.can_publish(definition, model))
+
+    def test_hub_reference_support_never_comes_from_a_model_name(self) -> None:
+        self.assertIsNone(image_reference_state("studio_hub", "maker/klein-edit-img2img", {}))
+        self.assertFalse(image_reference_state("studio_hub", "maker/edit", {"capabilities": ["txt2img"]}))
+        self.assertTrue(image_reference_state("studio_hub", "maker/plain", {"capabilities": ["reference-to-image"]}))
 
     def test_studio_hub_reference_row_remains_published(self) -> None:
         definition = PROVIDERS_BY_ID["studio-hub-local"]

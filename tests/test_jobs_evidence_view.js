@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const html = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
-const start = html.indexOf('async function loadJobs()');
+const start = html.indexOf('function imageModeLabel(');
 const end = html.indexOf('// ---------------------------------------------------------------------------', start);
 const source = html.slice(start, end);
 
@@ -39,6 +39,17 @@ test('old jobs show unrecorded clocks without inventing reference counts', async
   assert.match(result, /Gateway dispatched: not recorded/);
   assert.match(result, /Gateway settled: not recorded/);
   assert.doesNotMatch(result, /reference images used/);
+});
+
+test('new image intent distinguishes submitted references from applied evidence', async () => {
+  const result = await render({ ...job, image_mode: 'reference-to-image', submitted_reference_count: 2 });
+  assert.match(result, /Reference to image/);
+  assert.match(result, /2 submitted/);
+  assert.match(result, /Used count not recorded/);
+  assert.doesNotMatch(result, /2 reference images used/);
+  const text = await render({ ...job, image_mode: 'text-to-image', submitted_reference_count: 0 });
+  assert.match(text, /Text to image/);
+  assert.match(text, /0 submitted/);
 });
 
 test('execution labels are escaped', async () => {

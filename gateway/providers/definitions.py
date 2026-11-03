@@ -344,7 +344,8 @@ def image_reference_state(kind: str, model_id: str, raw: dict[str, Any]) -> bool
             str(raw.get(key) or "")
             for key in ("category", "output_type", "mode")
         )
-        haystack = haystack + " " + str(model_id or "")
+        if kind != KIND_STUDIO_HUB:
+            haystack = haystack + " " + str(model_id or "")
     haystack = haystack.lower()
     if not haystack.strip():
         return None

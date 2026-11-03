@@ -151,6 +151,12 @@ class PublishedWindowTests(_Case):
         self.assertEqual(response.status_code, 400, response.text)
         self.assertIn("at least 1", response.json()["detail"])
 
+    def test_empty_references_are_refused_even_when_the_lane_states_no_limits(self) -> None:
+        self._resolved = resolved(None)
+        response = self.submit(f"refs-empty-unstated-{time.time()}", [])
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("at least 1 reference image", response.json()["detail"])
+
     def test_a_lane_that_states_no_ceiling_is_not_refused_by_a_gateway_number(self) -> None:
         self._resolved = resolved(None)       # an older Hub: advertises `edit`, states no limits
         refs = [self.upload(width) for width in (400, 500, 600, 700)]
