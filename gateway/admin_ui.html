@@ -3388,6 +3388,7 @@ function rateLimitsHtml(id) {
 
 function providerCard(p) {
   const open = state.open[p.id];
+  const enabled = p.enabled;
   const badges = [`<span class="badge">${esc(p.category)}</span>`];
   if (!p.generation_supported) badges.push(`<span class="badge warn" title="${esc(p.unsupported_reason)}">list-only</span>`);
   // **A lane the provider declares but its adapter cannot serve.** The catalogue
@@ -3433,7 +3434,7 @@ function providerCard(p) {
     : providerModelList(p, models);
 
   return `
-  <div class="card ${p.enabled ? '' : 'off'}">
+  <div class="card ${enabled ? '' : 'off'}">
     <div class="card-head">
       <div class="card-main">
         <div class="name">${esc(p.display_name)}</div>
@@ -3446,9 +3447,9 @@ function providerCard(p) {
              control you must expand a card to find is one the page appears not to have. The
              message span travels with it, because toast() writes there and a button whose
              only feedback is inside a collapsed body reports nothing. -->
+        <label class="check"><input type="checkbox" role="switch" aria-label="${esc(p.display_name)} On/Off" ${enabled ? 'checked' : ''} onchange="toggleEnabled('${esc(p.id)}', this.checked, this)"> ${enabled ? 'On' : 'Off'}</label>
         <button class="sm" onclick="refreshProvider('${esc(p.id)}', this)">Re-discover</button>
         <button class="sm" onclick="toggleOpen('${esc(p.id)}')">${open ? 'Hide' : 'Configure'}</button>
-        <button class="sm" onclick="toggleEnabled('${esc(p.id)}', ${!p.enabled})">${p.enabled ? 'Disable' : 'Enable'}</button>
         <span class="msg" id="msg-${esc(p.id)}"></span>
       </div>
     </div>
@@ -3529,13 +3530,19 @@ async function toggleOpen(id) {
   }
 }
 
-async function toggleEnabled(id, enabled) {
+async function toggleEnabled(id, enabled, input) {
+  input.disabled = true;
   try {
     await api(`/providers/${encodeURIComponent(id)}/enabled`, {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ enabled })
     });
     await loadProviders(); await loadStatus();
-  } catch (e) { alert(e.message); }
+    toast(id, enabled ? 'On. New jobs may use this provider.' : 'Off. New jobs will not use this provider.');
+  } catch (e) {
+    input.checked = !enabled;
+    await loadProviders();
+    toast(id, e.message, false);
+  } finally { input.disabled = false; }
 }
 
 async function saveCreds(id, btn) {

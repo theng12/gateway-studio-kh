@@ -160,6 +160,9 @@ function providerContext(responses) {
     section('async function loadProviders()', 'async function openInBrowserFilter'),
     section('function renderProviders', 'function providerModelList'),
     section('function providerCard(p)', 'async function openInBrowserFilter'),
+    section('function toast(id, text', 'async function toggleOpen'),
+    section('async function toggleEnabled(', 'async function saveCreds'),
+    'function loadStatus() {}',
     'function privacyBadge() { return ""; }',
   ].join('\n'), context);
   return { context, nodes, inputs, get promptCount() { return promptCount; } };
@@ -304,7 +307,50 @@ test('provider support is labelled separately from configured availability', () 
   assert.match(html, /4\/4 supported/);
   assert.doesNotMatch(html, /4\/4 offered/);
   assert.match(html, /no key/);
-  assert.match(html, />Enable<\/button>/);
+  assert.match(html, /role="switch" aria-label="BFL On\/Off"/);
+  assert.match(html, /onchange="toggleEnabled\('bfl', this.checked, this\)"> Off/);
+  assert.doesNotMatch(html, /type="checkbox"[^>]*checked /);
+});
+
+test('provider switch sends Off and restores the confirmed state on refusal', async () => {
+  const provider = {
+    id: 'alpha', display_name: 'Alpha', category: 'language', kind: 'openai_compatible',
+    enabled: true, configured: true, configured_fields: [], modalities: ['chat'],
+    generation_supported: true, model_count: 1, publishable_model_count: 1,
+  };
+  const calls = [];
+  const harness = providerContext([
+    opts => { calls.push(JSON.parse(opts.body)); return response({detail: 'Could not save'}, 500); },
+    response({providers: [provider], scopes: {}}),
+  ]);
+  harness.context.loadEvidence = () => {};
+  const message = element();
+  harness.nodes.set('msg-alpha', message);
+  const input = element();
+  input.checked = false;
+  await harness.context.toggleEnabled('alpha', false, input);
+  assert.deepEqual(calls, [{enabled: false}]);
+  assert.equal(input.checked, true);
+  assert.equal(input.disabled, false);
+  assert.match(harness.nodes.get('providers').innerHTML, /role="switch"[^>]*checked/);
+  assert.match(message.textContent, /Could not save/);
+});
+
+test('provider switch shows the saved Off state and success message', async () => {
+  const provider = {
+    id: 'alpha', display_name: 'Alpha', category: 'language', kind: 'openai_compatible',
+    enabled: false, configured: true, configured_fields: [], modalities: ['chat'],
+    generation_supported: true, model_count: 1, publishable_model_count: 1,
+  };
+  const harness = providerContext([
+    response({provider}), response({providers: [provider], scopes: {}}),
+  ]);
+  harness.context.loadEvidence = () => {};
+  const message = element();
+  harness.nodes.set('msg-alpha', message);
+  await harness.context.toggleEnabled('alpha', false, element());
+  assert.match(harness.nodes.get('providers').innerHTML, /\"> Off<\/label>/);
+  assert.match(message.textContent, /Off\. New jobs will not use this provider/);
 });
 
 test('provider key filter separates keyed from keyless providers', () => {

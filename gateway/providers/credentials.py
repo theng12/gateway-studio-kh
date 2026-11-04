@@ -125,9 +125,8 @@ class CredentialStore:
         if "enabled" in entry:
             return bool(entry["enabled"])
         definition = self._definition(provider_id)
-        # A provider with no credential cannot be meaningfully enabled even if
-        # its default says so.
-        return bool(definition and definition.default_enabled and self.is_configured(provider_id))
+        # The switch is independent of key readiness; serving still requires both.
+        return bool(definition and definition.default_enabled)
 
     def source_for(self, provider_id: str, field_key: str) -> str:
         """Where a value came from: 'stored' | 'env' | 'none'. For the UI."""

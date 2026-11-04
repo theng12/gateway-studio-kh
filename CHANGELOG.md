@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.230 — 2026-11-04
+
+- Each provider has a visible On/Off switch. New switches start On; saved choices and model selections stay as they are. Off stops new jobs from using that provider, including through a pool, without clearing its key.
+
 ## 0.2.229 — 2026-11-04
 
 - An OpenAI-compatible model that states its own answer-length limit now publishes and sends that limit when the caller does not choose one. Magpie's stated 512,000-token output cap is no longer ignored. An explicit caller limit still wins, and an unstated request ceiling remains absent.
