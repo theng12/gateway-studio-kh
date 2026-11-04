@@ -2405,9 +2405,17 @@ async def _bounded_render_json(request: Request) -> bytes:
 
 @app.get("/v1/final-renders/capabilities")
 def final_render_capabilities(
+    request: Request,
     principal: AuthenticatedPrivateRender = Depends(require_private_render),
 ) -> dict[str, Any]:
-    return render_service.capabilities(principal)
+    from .render_encode import requested_encode_query
+    try:
+        requested = requested_encode_query(request.query_params.getlist("requested_encode"))
+    except (ValueError, TypeError, UnicodeError):
+        raise RenderServiceError("RENDER_REQUEST_INVALID", 422) from None
+    if requested is None:
+        return render_service.capabilities(principal)
+    return render_service.capabilities(principal, requested_encode=requested)
 
 
 @app.get("/v1/final-renders/blobs/{sha256}/status")

@@ -236,6 +236,25 @@ def _operation(value, duration, refs, index):
     return stage
 
 
+def validate_render_encode(value):
+    """The same exact tuple and bounds for discovery and the accepted packet."""
+    encode = _exact(value, ("container", "requested_codec", "requested_effort",
+                            "crf", "quality_cpu_preset", "bitrate_kbps"), "recipe.encode")
+    _one_of(encode["container"], ("mp4", "mov", "webm"), "recipe.encode.container")
+    _one_of(encode["requested_codec"], ("h264", "h265"), "recipe.encode.requested_codec")
+    _one_of(encode["requested_effort"], ("ultrafast", "medium", "slow", "hardware"),
+            "recipe.encode.requested_effort")
+    crf = _integer(encode["crf"], "recipe.encode.crf")
+    preset = _one_of(encode["quality_cpu_preset"], ("ultrafast", "medium", "slow"),
+                     "recipe.encode.quality_cpu_preset")
+    if (crf, preset) not in ((32, "ultrafast"), (28, "ultrafast"), (23, "medium"),
+                             (18, "slow"), (23, "ultrafast")):
+        _invalid("recipe.encode quality pair is unsupported")
+    if encode["bitrate_kbps"] is not None:
+        _integer_range(encode["bitrate_kbps"], 500, 100000, "recipe.encode.bitrate_kbps")
+    return encode
+
+
 def _validate(value):
     packet = _exact(value, ("recipe", "manifest", "recipe_digest",
                             "manifest_digest", "packet_digest"), "packet")
@@ -277,20 +296,7 @@ def _validate(value):
         seen.add(kind)
         last_stage = stage
 
-    encode = _exact(recipe["encode"], ("container", "requested_codec", "requested_effort",
-                                       "crf", "quality_cpu_preset", "bitrate_kbps"), "recipe.encode")
-    _one_of(encode["container"], ("mp4", "mov", "webm"), "recipe.encode.container")
-    _one_of(encode["requested_codec"], ("h264", "h265"), "recipe.encode.requested_codec")
-    _one_of(encode["requested_effort"], ("ultrafast", "medium", "slow", "hardware"),
-            "recipe.encode.requested_effort")
-    crf = _integer(encode["crf"], "recipe.encode.crf")
-    preset = _one_of(encode["quality_cpu_preset"], ("ultrafast", "medium", "slow"),
-                     "recipe.encode.quality_cpu_preset")
-    if (crf, preset) not in ((32, "ultrafast"), (28, "ultrafast"), (23, "medium"),
-                             (18, "slow"), (23, "ultrafast")):
-        _invalid("recipe.encode quality pair is unsupported")
-    if encode["bitrate_kbps"] is not None:
-        _integer_range(encode["bitrate_kbps"], 500, 100000, "recipe.encode.bitrate_kbps")
+    validate_render_encode(recipe["encode"])
 
     manifest = packet["manifest"]
     if type(manifest) is not list:

@@ -293,7 +293,7 @@ def _num(value: object) -> float | None:
 def workers(view: dict[str, Any], *, networks: list | None = None) -> list[dict[str, Any]]:
     """Every Mac in the fleet snapshot that publishes `video.final_render`, same network first.
 
-    A controller's own Mac is left out: the Gateway never sends a render to it (`fleet.render_candidates`).
+    Controller-local Macs use the same owner switch as their joined nodes.
     `hub_accepting` is the Hub's own word; `opted_in` is the owner's switch here; a Mac is only used
     when both are true. `suggested` marks the awake same-network Macs not yet switched on.
     """
@@ -302,13 +302,15 @@ def workers(view: dict[str, Any], *, networks: list | None = None) -> list[dict[
     # The owner's own network names (Fleet → Networks: A, B, C …) are the truth about where a Mac is.
     # The address guess below cannot tell sites apart when every Mac is reached over Tailscale
     # (owner, 2026-10-24: 11xx–14xx were switched on because all showed "same network").
-    from . import model_share
+    from . import fleet, model_share
     owner_networks = model_share.networks()
     rows: list[dict[str, Any]] = []
     for location in (view.get("locations") if isinstance(view, dict) else None) or []:
-        if not isinstance(location, dict) or location.get("local") is not False:
+        if not isinstance(location, dict):
             continue
         controller = str(location.get("id") or "")
+        if location.get("local") is not False and controller != fleet.LOCAL_ID:
+            continue
         machines = {str(item.get("physical_machine_id") or item.get("machine") or item.get("id") or ""): item
                     for item in location.get("machines") or [] if isinstance(item, dict)}
         nodes = {str(item.get("id") or ""): item for item in location.get("nodes") or []
@@ -318,7 +320,7 @@ def workers(view: dict[str, Any], *, networks: list | None = None) -> list[dict[
                     or "video.final_render" not in (worker.get("supported_operations") or [])):
                 continue
             machine_id = str(worker.get("physical_machine_id") or worker.get("machine") or "")
-            if not controller or not machine_id or machine_id == str(location.get("controller_id") or ""):
+            if not controller or not machine_id:
                 continue
             machine, node = machines.get(machine_id, {}), nodes.get(machine_id, {})
             address = node.get("address") if isinstance(node.get("address"), str) else None

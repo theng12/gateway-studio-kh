@@ -23,13 +23,13 @@ import time
 
 from .catalog import catalog
 from . import fleet as fleet_module
-from . import render_optin
 from .config import BUNDLED_DATA_DIR, DATA_DIR, DB_PATH, gateway_api_key
 from .os_metadata import is_os_metadata
 from .providers import registry
 from .render_assets import RenderAssetStore
 from .render_hash_v1 import decode_render_json
-from .render_service import FinalRenderService, RegisteredHubRenderClient, RenderDestination
+from .render_service import (FinalRenderService, RegisteredHubRenderClient, RenderDestination,
+                             RenderServiceError, destination_for_candidate, probed_render_candidates)
 from .store import JobStore
 from .worker import Worker
 
@@ -207,24 +207,19 @@ def _render_destination(packet: dict) -> RenderDestination:
     """Production capacity first, then Macs the owner accepted unqualified (same network first - the
     candidate order already says so); only without either does a qualification candidate take it."""
     digest = packet["recipe"]["profile_digest"]
-    candidates = (fleet_module.render_candidates(digest)
-                  or fleet_module.render_candidates(digest, qualification=True))
-    if not candidates:
-        from .render_service import RenderServiceError
-        raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
-    row = candidates[0]
-    return RenderDestination(
-        site_id=row["site_id"], roster_controller_id=row["roster_controller_id"],
-        hub_controller_id=row["hub_controller_id"], node_id=row["node_id"],
-        target_hub_controller_id=row["target_hub_controller_id"],
-        capability_snapshot_sha256=hashlib.sha256(
-            json.dumps(row["capability"], sort_keys=True, separators=(",", ":"),
-                       ensure_ascii=True, allow_nan=False).encode("ascii")
-        ).hexdigest(), qualification_vector_id=row.get("qualification_vector_id"),
-        capability_snapshot=row["capability"],
-        selected_machine=row["selected_machine"],
-        accepted_unqualified=row.get("authority") == render_optin.ACCEPTED,
-    )
+    def compatible(rows: list[dict]) -> list[dict]:
+        return probed_render_candidates(rows, packet["recipe"]["encode"],
+                                        render_service.hub, available=True)
+
+    candidates = (compatible(fleet_module.render_candidates(digest, resolve_encode_authority=True))
+                  or compatible(fleet_module.render_candidates(
+                      digest, qualification=True, resolve_encode_authority=True)))
+    for row in candidates:
+        try:
+            return destination_for_candidate(row)
+        except RenderServiceError:
+            continue
+    raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
 
 
 render_service = FinalRenderService(

@@ -371,6 +371,8 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
 _RENDER_STAGING_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("terminal_fence_receipt", "TEXT"),
     ("terminal_first_cancel_at", "REAL"),
+    ("destination_credential_kind", "TEXT NOT NULL DEFAULT 'fleet'"),
+    ("destination_encode_probe", "BLOB"),
 )
 _RENDER_DELIVERY_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("stopped_evidence_digest", "TEXT"),
@@ -1207,7 +1209,15 @@ class JobStore:
         capability_snapshot: bytes,
         capability_snapshot_sha256: str,
         assets: list[dict[str, Any]],
+        destination_credential_kind: str = "fleet",
+        destination_encode_probe: bytes | None = None,
     ) -> dict[str, Any]:
+        if destination_encode_probe is not None and (
+                type(destination_encode_probe) is not bytes
+                or not 0 < len(destination_encode_probe) <= 1024 * 1024):
+            raise ValueError("invalid destination encode probe")
+        if destination_credential_kind not in {"hub", "fleet"}:
+            raise ValueError("invalid destination credential kind")
         render_id = _render_uuid(render_id)
         attempt_no = _render_attempt(attempt_no)
         text = {
@@ -1292,9 +1302,9 @@ class JobStore:
                     packet_sha256, destination_site, destination_controller,
                     destination_hub_controller, destination_node, selected_machine,
                     capability_snapshot,
-                    capability_snapshot_sha256,
+                    capability_snapshot_sha256, destination_credential_kind, destination_encode_probe,
                     state, created_at, updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'staging',?,?)""",
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'staging',?,?)""",
                 (
                     render_id, text["gateway_instance_id"], text["story_instance_id"], text["owner_scope"],
                     text["story_uuid"], text["intent_id"], attempt_no,
@@ -1303,7 +1313,8 @@ class JobStore:
                     text["destination_site"], text["destination_controller"],
                     text["destination_hub_controller"], text["destination_node"],
                     selected_machine, capability_snapshot,
-                    digests["capability_snapshot_sha256"], now, now,
+                    digests["capability_snapshot_sha256"], destination_credential_kind,
+                    destination_encode_probe, now, now,
                 ),
             )
             self._conn.executemany(

@@ -4669,6 +4669,13 @@ def render_encode_intersection(candidates: object) -> dict | None:
     return {"format": RENDER_ENCODE_FORMAT, "entries": list((shared or {}).values())}
 
 
+def render_encode_supports(document: object, requested: object) -> bool:
+    """Only an explicitly advertised exact encode can select this destination."""
+    return (document is not None and render_encode_document(document)
+            and render_encode_document({"format": RENDER_ENCODE_FORMAT, "entries": [requested]})
+            and requested in document["entries"])
+
+
 def _render_candidate_shape(value: object, *, qualification: bool) -> dict | None:
     if not isinstance(value, dict):
         return None
@@ -4781,11 +4788,15 @@ def _render_candidates_order(candidates: list[dict]) -> list[dict]:
 
 
 def render_candidates(required_profile_digest: str | None, *,
-                      qualification: bool = False) -> list[dict]:
+                      qualification: bool = False, available: bool = True,
+                      resolve_encode_authority: bool = False) -> list[dict]:
     """Qualified physical final-render candidates, independent of model catalogue rows.
 
-    Production workers always count; with `qualification`, a worker that is not yet production
-    may also offer its first published qualification candidate (the Hub's operator intent)."""
+    With `qualification`, a worker may offer its first qualification candidate. `available=False`
+    describes enabled compatible workers without treating occupied slots or current memory as
+    missing support. `resolve_encode_authority` yields provisional rows: the caller must resolve
+    current tuple permission and memory bounds before advertising or dispatching them. That keeps
+    a measured tuple independent of a different legacy tier's unqualified owner grant."""
     if (not isinstance(required_profile_digest, str)
             or len(required_profile_digest) != 64
             or any(char not in "0123456789abcdef" for char in required_profile_digest)):
@@ -4803,8 +4814,8 @@ def render_candidates(required_profile_digest: str | None, *,
     networks: list | None = None
     candidates: list[dict] = []
     for location in rows:
-        if (not isinstance(location, dict) or location.get("local") is not False
-                or str(location.get("id") or "") not in configured
+        if (not isinstance(location, dict)
+                or str(location.get("id") or "") not in configured | {LOCAL_ID}
                 or location.get("reachable") is not True or location.get("ready") is not True
                 or location.get("drained") is not False
                 or not location.get("site_id") or not location.get("controller_id")
@@ -4826,8 +4837,10 @@ def render_candidates(required_profile_digest: str | None, *,
         for worker in location.get("workers") or []:
             if (not isinstance(worker, dict)
                     or "video.final_render" not in (worker.get("supported_operations") or [])
-                    or worker.get("online") is not True or worker.get("ready") is not True
-                    or worker.get("busy") is not False or worker.get("drained") is not False
+                    or (available and (worker.get("online") is not True
+                                       or worker.get("ready") is not True
+                                       or worker.get("busy") is not False))
+                    or worker.get("drained") is not False
                     or worker.get("maintenance") is not False
                     or worker.get("quarantined") is not False):
                 continue
@@ -4844,7 +4857,8 @@ def render_candidates(required_profile_digest: str | None, *,
             # That row is only ever used on the owner's say-so here; a claim that is not the Hub's
             # evidence cannot be told from a qualified row, so it is not used at all.
             unqualified = claim == "accepted" and production_shaped
-            if claim == "invalid" or (unqualified and f"{location['id']}/{machine_id}" not in opted_in):
+            if claim == "invalid" or (unqualified and not resolve_encode_authority
+                    and f"{location['id']}/{machine_id}" not in opted_in):
                 continue
             if not production_shaped:
                 match = next((item for item in (worker.get("qualification_candidates") or [])
@@ -4855,43 +4869,48 @@ def render_candidates(required_profile_digest: str | None, *,
             capability = _render_candidate_shape(raw, qualification=qualifying)
             if capability is None or capability["profile_digest"] != required_profile_digest:
                 continue
-            if not any(chip in capability["hardware_class"].upper()
-                       for chip in ("M4", "M2", "M1")):
-                continue
             machine = machines.get(machine_id, {})
             node = nodes.get(machine_id, {})
+            controller_local = machine_id == LOCAL_ID
             available_gb = machine.get("available_gb")
             disk_free_gb = machine.get("disk_free_gb")
             if (not machine_id or machine_id == str(location.get("controller_id") or "")
-                    or machine.get("reachable") is not True
-                    or type(available_gb) not in (int, float)
-                    or isinstance(available_gb, bool) or not math.isfinite(available_gb)
-                    or available_gb <= 0
-                    or ("memory_pressure" in machine
-                        and machine.get("memory_pressure") != "normal")
-                    or type(disk_free_gb) not in (int, float)
-                    or isinstance(disk_free_gb, bool) or not math.isfinite(disk_free_gb)
-                    or disk_free_gb <= 0 or machine.get("current_job") is not None
-                    or "current_job" not in machine
-                    or not isinstance(node, dict) or node.get("state") != "reachable"
+                    or (available and (machine.get("reachable") is not True
+                        or type(available_gb) not in (int, float)
+                        or isinstance(available_gb, bool) or not math.isfinite(available_gb)
+                        or available_gb <= 0
+                        or ("memory_pressure" in machine
+                            and machine.get("memory_pressure") != "normal")
+                        or type(disk_free_gb) not in (int, float)
+                        or isinstance(disk_free_gb, bool) or not math.isfinite(disk_free_gb)
+                        or disk_free_gb <= 0 or machine.get("current_job") is not None
+                        or "current_job" not in machine
+                        or (not controller_local and node.get("state") != "reachable")))
+                    or not isinstance(node, dict)
                     # **The work order's own on/off switch** (owner, 2026-10-28): a Mac that
                     # switched final render off takes no render at all, pause-exemption or not.
                     or not _machine_function_enabled(machine, node, "render")
                     # `paused` is the controller's own machine pause; the exemption is that same
                     # pause, for render only, so it is the one flag it may overrule.
-                    or (node.get("paused") is not False and not exempt)
-                    or "current_job" not in node
-                    or node.get("current_job") is not None
-                    or node.get("on_previous_token") is not False):
+                    or (not controller_local and (
+                        (node.get("paused") is not False and not exempt)
+                        or (available and ("current_job" not in node
+                                           or node.get("current_job") is not None))
+                        or node.get("on_previous_token") is not False))):
                 continue
-            available_memory = max(0, int((available_gb - 0.005) * 1_000_000_000))
-            if available_memory < capability["bounds"]["min_available_memory_bytes"]:
+            available_memory = (max(0, int((available_gb - 0.005) * 1_000_000_000))
+                                if type(available_gb) in (int, float)
+                                and math.isfinite(available_gb) else None)
+            # Exact-encode callers apply that tuple's measured bounds after the read-only probe.
+            if (available and not resolve_encode_authority
+                    and available_memory < capability["bounds"]["min_available_memory_bytes"]):
                 continue
             slots = capability["available_capacity"]["slots"]
             label = machine.get("label")
             chip = machine.get("chip")
             memory_gb = machine.get("memory_gb")
-            if (slots <= 0 or type(label) is not str or not label
+            if ((available and slots <= 0) or capability["available_capacity"]["slots_total"] <= 0
+                    or type(label) is not str or not label
                     or type(chip) is not str or not chip
                     or type(memory_gb) not in (int, float)
                     or not math.isfinite(memory_gb) or memory_gb <= 0):
@@ -4902,7 +4921,8 @@ def render_candidates(required_profile_digest: str | None, *,
                 "site_id": str(location["site_id"]),
                 "roster_controller_id": str(location["id"]),
                 "hub_controller_id": str(location["controller_id"]),
-                "target_hub_controller_id": machine_id,
+                "target_hub_controller_id": (str(location["controller_id"])
+                                             if controller_local else machine_id),
                 "node_id": machine_id,
                 "hardware_class": capability["hardware_class"],
                 "profile_digest": capability["profile_digest"],

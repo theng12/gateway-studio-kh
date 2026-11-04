@@ -1,0 +1,119 @@
+{
+  "synthetic": true,
+  "admissible_runtime_evidence": false,
+  "source_commit": "dabf830af78163e6be0c1f3b7cf0cf800a7bc9d6",
+  "generation": "Actual EncodeProbeControl with fake runner; actual loader migration and execution_for_encode",
+  "probe_response": {
+    "format": "studio.render.encode-probe-state.v1",
+    "requested_encode": {
+      "container": "mp4",
+      "requested_codec": "h264",
+      "requested_effort": "hardware",
+      "crf": 23,
+      "quality_cpu_preset": "medium",
+      "bitrate_kbps": 8000
+    },
+    "state": "supported",
+    "probe_key": "217a538c020d3a9dafcf0eebcdb94a4999b9c776dccce5c00b7d680887bfbbb8",
+    "reason": null,
+    "evidence": {
+      "compiler_digest": "ca271a703c926a3930bafd98586ed7b170427e536a0eaf0d1c7bc300b9491da9",
+      "exact_encoder": "h264_videotoolbox",
+      "format": "studio.render.encode-probe-evidence.v1",
+      "hardware_identity": {
+        "backend": "h264_videotoolbox",
+        "chip": "Synthetic fixture",
+        "hardware_class": "m4-16gb",
+        "memory_bytes": 34359738368
+      },
+      "node_identity": {
+        "physical_node_id": "node-01"
+      },
+      "probe_result_digest": "cadf5e1b1f09d3d3c80ca84a60ff7ccfd30741c71eac107520884b4b66c24770",
+      "probe_vector_digest": "ffe0bdc4ff1f5a13caebb6a377af642f35d0bc4248e7817aee18b6871dbaafee",
+      "profile_digest": "b8ba6867471944414a8db8f15ca0d0db377e4bee2107f56b6d87a3e6303cb7f3",
+      "purpose": "encode_support_only",
+      "requested_encode": {
+        "bitrate_kbps": 8000,
+        "container": "mp4",
+        "crf": 23,
+        "quality_cpu_preset": "medium",
+        "requested_codec": "h264",
+        "requested_effort": "hardware"
+      },
+      "selected_tier": "H.264 · hardware (videotoolbox, 8000 kbit/s)",
+      "tools_digest": "533c4bfd8b3e9c440bb07cbf8f415286273d072b456f1945838323f9341bbed8"
+    },
+    "authority_digest": "37aac1b6aada249b96703fe94318b08017d38b202832aad27915b035a5495bd7",
+    "execution_authority": {
+      "format": "studio.render.encode-execution-authority.v1",
+      "requested_encode": {
+        "container": "mp4",
+        "requested_codec": "h264",
+        "requested_effort": "hardware",
+        "crf": 23,
+        "quality_cpu_preset": "medium",
+        "bitrate_kbps": 8000
+      },
+      "encode_authority": {
+        "authority_digest": "37aac1b6aada249b96703fe94318b08017d38b202832aad27915b035a5495bd7",
+        "exact_encoder": "h264_videotoolbox",
+        "format": "studio.render.encode-binding.v1",
+        "selected_tier": "H.264 · hardware (videotoolbox, 8000 kbit/s)"
+      },
+      "authority_kind": "accepted_unqualified",
+      "qualification_digest": "dac6e8acd35a685d9e8fcc31366f2386ce0df434d714ba64e30f0c755c56e2a1",
+      "profile_digest": "b8ba6867471944414a8db8f15ca0d0db377e4bee2107f56b6d87a3e6303cb7f3",
+      "tools_digest": "533c4bfd8b3e9c440bb07cbf8f415286273d072b456f1945838323f9341bbed8",
+      "compiler_digest": "ca271a703c926a3930bafd98586ed7b170427e536a0eaf0d1c7bc300b9491da9",
+      "hardware_class": "m4-16gb",
+      "selected_tier": "H.264 · hardware (videotoolbox, 8000 kbit/s)",
+      "exact_encoder": "h264_videotoolbox",
+      "font_support": false,
+      "bounds": {
+        "max_rss_bytes": 100000000,
+        "max_wall_seconds": 30,
+        "min_available_memory_bytes": 100000000,
+        "output_limit_bytes": 1000000
+      },
+      "profile_execution_bounds": {
+        "canvas_pairs": [
+          {
+            "height": 96,
+            "width": 128
+          }
+        ],
+        "cumulative_wall_seconds": 30,
+        "max_asset_bytes": 1000000,
+        "max_assets": 6,
+        "max_duration_sec": 2.5,
+        "max_operations": 9,
+        "max_pixel_frames": 1000000,
+        "max_total_input_bytes": 2000000,
+        "output_limit_bytes": 1000000,
+        "process_tree_rss_limit_bytes": 100000000,
+        "scratch_reserve_bytes": 250000,
+        "working_fps": [
+          5
+        ]
+      },
+      "grant": {
+        "format": "studio.render.accept-unqualified-probed-v2.v1",
+        "digest": "7b09667e21796b27cbe200c011b779414c15d5fad71bf42d63f9c3852cde897a",
+        "v1": {
+          "accepted_at": 1793790000,
+          "accepted_by": "synthetic-owner",
+          "provenance": "owner-opt-in-unqualified",
+          "sha256": "2ea817e7f6a3a21907175736735dc75aedf8f3cc96e44dbc1326351c36a02421"
+        },
+        "migration": {
+          "authorization_id": "owner-direction-via-developer-2026-11-04",
+          "authorized_at": 1793790000
+        },
+        "node": {
+          "physical_node_id": "node-01"
+        }
+      }
+    }
+  }
+}

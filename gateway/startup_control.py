@@ -700,7 +700,11 @@ def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, 
     owned = client is None
     client = client or httpx.Client(timeout=timeout)
     try:
-        response = client.request(method, f"{base}/api/hub/fleet/nodes/{machine_id}/{route}",
+        path = (f"/api/hub/{route}"
+                if machine_id == fleet.LOCAL_ID and route in {
+                    "render-authority", "render-while-paused"}
+                else f"/api/hub/fleet/nodes/{machine_id}/{route}")
+        response = client.request(method, base + path,
                                   headers={"X-Hub-Token": token} if token else {},
                                   **(send if send is not None else {"json": body}))
     except httpx.HTTPError as exc:

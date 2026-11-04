@@ -1,0 +1,73 @@
+{
+  "format": "studio.render.encode-evidence-hash-fixtures.v1",
+  "synthetic": true,
+  "note": "Canonicalization fixtures only. No live node, runtime support, grant or qualification evidence. Null-cap case changes one field only and intentionally is not a semantically valid tier fixture.",
+  "cases": [
+    {
+      "name": "hardware-cap-8000",
+      "evidence": {
+        "format": "studio.render.encode-probe-evidence.v1",
+        "requested_encode": {
+          "container": "mp4",
+          "requested_codec": "h264",
+          "requested_effort": "hardware",
+          "crf": 23,
+          "quality_cpu_preset": "medium",
+          "bitrate_kbps": 8000
+        },
+        "node_identity": {
+          "physical_node_id": "fixture-node-01"
+        },
+        "hardware_identity": {
+          "hardware_class": "fixture-class",
+          "chip": "fixture-chip",
+          "memory_bytes": 17179869184,
+          "backend": "h264_videotoolbox"
+        },
+        "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tools_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "compiler_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "selected_tier": "H.264 · hardware (videotoolbox, 8000 kbit/s)",
+        "exact_encoder": "h264_videotoolbox",
+        "probe_vector_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "probe_result_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "purpose": "encode_support_only"
+      },
+      "canonical_utf8": "{\"compiler_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"exact_encoder\":\"h264_videotoolbox\",\"format\":\"studio.render.encode-probe-evidence.v1\",\"hardware_identity\":{\"backend\":\"h264_videotoolbox\",\"chip\":\"fixture-chip\",\"hardware_class\":\"fixture-class\",\"memory_bytes\":17179869184},\"node_identity\":{\"physical_node_id\":\"fixture-node-01\"},\"probe_result_digest\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"probe_vector_digest\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"profile_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"purpose\":\"encode_support_only\",\"requested_encode\":{\"bitrate_kbps\":8000,\"container\":\"mp4\",\"crf\":23,\"quality_cpu_preset\":\"medium\",\"requested_codec\":\"h264\",\"requested_effort\":\"hardware\"},\"selected_tier\":\"H.264 · hardware (videotoolbox, 8000 kbit/s)\",\"tools_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "authority_digest": "06582b8d89b97bdc9e51116c2e95d157c41a9334705bd0eeb5159a38c58c142e"
+    },
+    {
+      "name": "null-cap-hash-negative-control-only",
+      "evidence": {
+        "compiler_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "exact_encoder": "h264_videotoolbox",
+        "format": "studio.render.encode-probe-evidence.v1",
+        "hardware_identity": {
+          "backend": "h264_videotoolbox",
+          "chip": "fixture-chip",
+          "hardware_class": "fixture-class",
+          "memory_bytes": 17179869184
+        },
+        "node_identity": {
+          "physical_node_id": "fixture-node-01"
+        },
+        "probe_result_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "probe_vector_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "profile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "encode_support_only",
+        "requested_encode": {
+          "bitrate_kbps": null,
+          "container": "mp4",
+          "crf": 23,
+          "quality_cpu_preset": "medium",
+          "requested_codec": "h264",
+          "requested_effort": "hardware"
+        },
+        "selected_tier": "H.264 · hardware (videotoolbox, 8000 kbit/s)",
+        "tools_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "canonical_utf8": "{\"compiler_digest\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"exact_encoder\":\"h264_videotoolbox\",\"format\":\"studio.render.encode-probe-evidence.v1\",\"hardware_identity\":{\"backend\":\"h264_videotoolbox\",\"chip\":\"fixture-chip\",\"hardware_class\":\"fixture-class\",\"memory_bytes\":17179869184},\"node_identity\":{\"physical_node_id\":\"fixture-node-01\"},\"probe_result_digest\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"probe_vector_digest\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"profile_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"purpose\":\"encode_support_only\",\"requested_encode\":{\"bitrate_kbps\":null,\"container\":\"mp4\",\"crf\":23,\"quality_cpu_preset\":\"medium\",\"requested_codec\":\"h264\",\"requested_effort\":\"hardware\"},\"selected_tier\":\"H.264 · hardware (videotoolbox, 8000 kbit/s)\",\"tools_digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "authority_digest": "8c2a08ecf5e56e4a2e89959baca818d107736fa0043caeda1d3d6e11986b8314"
+    }
+  ]
+}

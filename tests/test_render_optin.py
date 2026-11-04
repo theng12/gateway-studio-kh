@@ -345,7 +345,6 @@ class EligibilityTests(Case):
             lambda row: row["workers"][0].update(busy=True),
             lambda row: row["workers"][0].update(online=False),
             lambda row: row["workers"][0].update(profile_digest="b" * 64),
-            lambda row: row["workers"][0].update(hardware_class="Apple M3"),
             lambda row: row["workers"][0].update(available_capacity={"slots": 0, "slots_total": 1}),
             lambda row: row["machines"][0].update(available_gb=7.0),
             lambda row: row["machines"][0].update(current_job={"job_id": "x"}),
@@ -427,6 +426,17 @@ class ListingTests(Case):
         self.assertEqual(by["mid-near"]["authority"], render_optin.ACCEPTED)
         self.assertEqual(by["zeta-far"]["authority"], "none")
 
+    def test_controller_local_render_switch_is_listed_without_enabling_it(self) -> None:
+        local = location({"local": {"worker": worker("local", accepted=ACCEPTING)}},
+                         location_id=fleet.LOCAL_ID)
+        local["local"] = True
+        remote = location({"hub-a": {"worker": worker("hub-a", production=True)}})
+        with Fleet(local, remote):
+            rows = render_optin.workers(fleet.snapshot())
+        self.assertEqual({(row["controller_id"], row["machine_id"]) for row in rows},
+                         {(fleet.LOCAL_ID, "local"), ("roster-a", "hub-a")})
+        self.assertTrue(all(row["opted_in"] is False for row in rows))
+
 
 class RelayTests(Case):
     def setUp(self) -> None:
@@ -444,6 +454,20 @@ class RelayTests(Case):
                 raise answer
             return answer
         return httpx.Client(transport=httpx.MockTransport(handler))
+
+    def test_controller_local_render_controls_use_fixed_own_hub_routes(self) -> None:
+        with self.client(httpx.Response(200, json={"ok": True})) as client:
+            for controller in (fleet.LOCAL_ID, "roster-a"):
+                startup_control.set_node_render_authority(
+                    controller, fleet.LOCAL_ID, True, client=client)
+                startup_control.set_node_render_while_paused(
+                    controller, fleet.LOCAL_ID, False, client=client)
+        self.assertEqual([request.url.path for request in self.seen], [
+            "/api/hub/render-authority", "/api/hub/render-while-paused",
+            "/api/hub/render-authority", "/api/hub/render-while-paused",
+        ])
+        self.assertTrue(all(request.headers["x-hub-token"] == "fleet-token"
+                            for request in self.seen))
 
     def test_switching_on_uses_the_existing_controller_relay_then_persists(self) -> None:
         taken = httpx.Response(200, json={"ok": True, "node": "mac",

@@ -114,6 +114,9 @@ CAPABILITY_SNAPSHOT = {
     "production_enabled": True,
     "bounds": {"output_limit_bytes": 32 * 1024 * 1024},
     "profile_execution_bounds": json.loads(PROFILE_RAW)["execution_bounds"],
+    "encode": {"format": fleet.RENDER_ENCODE_FORMAT, "entries": [{
+        "container": "mp4", "requested_codec": "h264", "requested_effort": "medium",
+        "crf": 23, "quality_cpu_preset": "medium", "bitrate_kbps": None}]},
 }
 
 
@@ -356,7 +359,8 @@ class BundledAuthorityTests(unittest.TestCase):
         (bundled / "tools.json").write_bytes(canonical(tools))
         self.assertEqual(self.load(), (None, {}))
 
-    def test_destination_prefers_production_then_any_qualification_candidate(self) -> None:
+    @patch.object(runtime, "probed_render_candidates", side_effect=lambda rows, *_args, **_kwargs: rows)
+    def test_destination_prefers_production_then_any_qualification_candidate(self, _resolver) -> None:
         authority = candidate_authority()
         projection = authority["projection"]
         digest = projection["profile_digest"]
@@ -374,21 +378,25 @@ class BundledAuthorityTests(unittest.TestCase):
                 },
             }
 
-        production = row(CAPABILITY_SNAPSHOT, None)
+        encode = {"format": fleet.RENDER_ENCODE_FORMAT,
+                  "entries": [render_packet["recipe"]["encode"]]}
+        production = row({**CAPABILITY_SNAPSHOT, "encode": encode}, None)
         qualification = row(
-            {**projection, "available_capacity": {"slots": 1, "slots_total": 1}}, INTENT_ID
+            {**projection, "encode": encode,
+             "available_capacity": {"slots": 1, "slots_total": 1}}, INTENT_ID
         )
         with patch.object(runtime.fleet_module, "render_candidates",
                           side_effect=[[production]]) as selected:
             destination = runtime._render_destination(render_packet)
-        self.assertEqual(selected.call_args_list, [call(digest)])
+        self.assertEqual(selected.call_args_list, [call(digest, resolve_encode_authority=True)])
         self.assertIsNone(destination.qualification_vector_id)
 
         with patch.object(runtime.fleet_module, "render_candidates",
                           side_effect=[[], [qualification]]) as selected:
             destination = runtime._render_destination(render_packet)
         self.assertEqual(selected.call_args_list, [
-            call(digest), call(digest, qualification=True),
+            call(digest, resolve_encode_authority=True),
+            call(digest, qualification=True, resolve_encode_authority=True),
         ])
         self.assertEqual(destination.qualification_vector_id, INTENT_ID)
 
@@ -397,14 +405,17 @@ class BundledAuthorityTests(unittest.TestCase):
                 runtime._render_destination(render_packet)
         self.assertEqual(caught.exception.code, "RENDER_DESTINATION_UNAVAILABLE")
 
-    def test_destination_marks_only_owner_accepted_unqualified_rows(self) -> None:
+    @patch.object(runtime, "probed_render_candidates", side_effect=lambda rows, *_args, **_kwargs: rows)
+    def test_destination_marks_only_owner_accepted_unqualified_rows(self, _resolver) -> None:
         digest = hashlib.sha256(PROFILE_RAW).hexdigest()
         render_packet = packet([], profile_digest=digest)
         base = {
             "site_id": "site-a", "roster_controller_id": "roster-a",
             "hub_controller_id": "hub-a", "node_id": "node-m4-a",
             "target_hub_controller_id": "node-m4-a", "qualification_vector_id": None,
-            "capability": CAPABILITY_SNAPSHOT,
+            "capability": {**CAPABILITY_SNAPSHOT, "encode": {
+                "format": fleet.RENDER_ENCODE_FORMAT,
+                "entries": [render_packet["recipe"]["encode"]]}},
             "selected_machine": {
                 "id": "node-m4-a", "label": "M4 fixture", "chip": "Apple M4",
                 "memory_gb": 16, "hardware_class": "apple-m4-16gb",
@@ -416,7 +427,7 @@ class BundledAuthorityTests(unittest.TestCase):
                           side_effect=[[{**base, "authority": render_optin.ACCEPTED}]]) as selected:
             destination = runtime._render_destination(render_packet)
         # Still one production-tier call: opted-in Macs ride in it, ordered after qualified ones.
-        self.assertEqual(selected.call_args_list, [call(digest)])
+        self.assertEqual(selected.call_args_list, [call(digest, resolve_encode_authority=True)])
         self.assertTrue(destination.accepted_unqualified)
 
 
@@ -446,6 +457,42 @@ class FakeHub:
 
 
 class RegisteredHubWireTests(unittest.TestCase):
+    def test_controller_local_paths_keep_registered_credentials_and_owner_scope(self) -> None:
+        from gateway.render_service import _hub_owner_scope
+        client = RegisteredHubRenderClient()
+        local = RenderDestination("site-a", fleet.LOCAL_ID, "controller-a", fleet.LOCAL_ID,
+                                  hub_credential_kind="hub")
+        remote = RenderDestination("site-b", "roster-b", "controller-b", fleet.LOCAL_ID)
+        with patch.object(fleet, "roster", return_value=[
+                {"id": "roster-b", "url": "https://registered.invalid"}]), \
+                patch.object(fleet, "hub_base_url", return_value="https://own.invalid"), \
+                patch.object(fleet, "hub_token", return_value="own-fixture-token"), \
+                patch.object(fleet, "_token_for", return_value="remote-fixture-token") as token, \
+                patch.object(fleet, "credential_scope", return_value={"scope": "fleet"}) as scope:
+            self.assertEqual(client._origin(local),
+                             ("https://own.invalid", {"X-Hub-Token": fleet.hub_token()}))
+            token.assert_not_called()
+            self.assertEqual(client._origin(remote),
+                             ("https://registered.invalid", {"X-Hub-Token": "remote-fixture-token"}))
+            token.assert_called_once_with("roster-b")
+            scope.return_value = {"scope": "operator"}
+            with self.assertRaises(RenderServiceError) as changed:
+                client._origin(remote)
+            self.assertEqual(changed.exception.code, "RENDER_DESTINATION_CREDENTIAL_SCOPE_CHANGED")
+            operator = RenderDestination("site-b", "roster-b", "controller-b", fleet.LOCAL_ID,
+                                         hub_credential_kind="hub")
+            self.assertEqual(client._origin(operator)[0], "https://registered.invalid")
+        self.assertEqual(client._path(local, "/output"), "/api/hub/final-renders/output")
+        self.assertEqual(client._path(remote, "/output"), "/api/hub/final-renders/output")
+        row = dict(destination_site="site-a", destination_hub_controller="controller-a",
+                   destination_controller=fleet.LOCAL_ID, destination_node=fleet.LOCAL_ID,
+                   destination_credential_kind="hub")
+        self.assertEqual(_hub_owner_scope(row), "site-a:controller-a:hub")
+        self.assertEqual(_hub_owner_scope({**row, "destination_controller": "roster-a"}),
+                         "site-a:controller-a:hub")
+        self.assertEqual(_hub_owner_scope({**row, "destination_credential_kind": "fleet"}),
+                         "site-a:controller-a:fleet")
+
     def test_every_hub_call_uses_the_fixed_relay_route_and_exact_wire_metadata(self) -> None:
         calls: list[tuple[str, str, bytes | None, dict[str, str]]] = []
 
@@ -828,11 +875,13 @@ class AcceptanceTests(RenderServiceCase):
 
     def test_capabilities_count_production_and_qualification_candidates(self) -> None:
         rows = [{"available_slots": 1}, {"available_slots": 0}, {"available_slots": 1}]
-        with patch.object(fleet, "render_candidates", return_value=rows) as candidates:
+        with patch.object(fleet, "render_candidates",
+                          side_effect=[rows, [rows[0], rows[2]]]) as candidates:
             public = self.service.capabilities(principal())
-        candidates.assert_called_once_with(
-            hashlib.sha256(PROFILE_RAW).hexdigest(), qualification=True
-        )
+        self.assertEqual(candidates.call_args_list, [
+            call(hashlib.sha256(PROFILE_RAW).hexdigest(), qualification=True, available=False),
+            call(hashlib.sha256(PROFILE_RAW).hexdigest(), qualification=True),
+        ])
         self.assertEqual((public["eligible"], public["idle"]), (3, 2))
         self.assertNotIn("qualification_provenance", public)
         self.assertEqual(
@@ -863,12 +912,13 @@ class AcceptanceTests(RenderServiceCase):
         with patch.object(fleet, "render_candidates",
                           return_value=[{"available_slots": 1}]) as candidates:
             public = service.capabilities(principal())
-        candidates.assert_called_once_with(
-            hashlib.sha256(profile).hexdigest(), qualification=True
-        )
+        self.assertEqual(candidates.call_args_list, [
+            call(hashlib.sha256(profile).hexdigest(), qualification=True, available=False),
+            call(hashlib.sha256(profile).hexdigest(), qualification=True),
+        ])
         self.assertEqual((public["eligible"], public["idle"]), (1, 1))
 
-    def test_capabilities_publish_only_the_encode_every_eligible_machine_advertises(self) -> None:
+    def test_unscoped_capabilities_preserve_legacy_encode_intersection(self) -> None:
         shared = {"container": "mp4", "requested_codec": "h264",
                   "requested_effort": "medium", "crf": 23,
                   "quality_cpu_preset": "medium", "bitrate_kbps": None}
@@ -885,8 +935,8 @@ class AcceptanceTests(RenderServiceCase):
         self.assertEqual(public["encode"], {
             "format": fleet.RENDER_ENCODE_FORMAT, "entries": [shared],
         })
+        self.assertNotIn("requested_encode", public)
 
-        # Every machine agreeing on nothing is still an answer; unknown is `null`.
         with patch.object(fleet, "render_candidates", return_value=[row(shared), row(extra)]):
             self.assertEqual(self.service.capabilities(principal())["encode"], {
                 "format": fleet.RENDER_ENCODE_FORMAT, "entries": [],
@@ -1064,6 +1114,17 @@ class AcceptanceTests(RenderServiceCase):
         persisted = self.store.get_render_staging(created["id"])
         self.assertEqual(persisted["inbound_story_body"], raw)
         self.assertEqual(tuple(row["logical_id"] for row in persisted["assets"]), ("audio", "base"))
+        self.assertEqual(self.hub.calls, [])
+
+    def test_destination_credential_kind_survives_journal_reconstruction(self) -> None:
+        from dataclasses import replace
+        from gateway.render_service import _hub_owner_scope
+        self.destination = replace(self.destination, hub_credential_kind="hub")
+        created = self.service.accept(principal(), "scope-binding", self.request())
+        persisted = self.store.get_render_staging(created["id"])
+        self.assertEqual(persisted["destination_credential_kind"], "hub")
+        self.assertEqual(self.service._destination(persisted).hub_credential_kind, "hub")
+        self.assertEqual(_hub_owner_scope(persisted), "site-a:node-m4-a:hub")
         self.assertEqual(self.hub.calls, [])
 
     def test_cancel_tombstone_before_acceptance_is_exact_replay_and_permanently_fences_launch(self) -> None:
@@ -2619,6 +2680,32 @@ class PhysicalRoutingTests(unittest.TestCase):
                             "format": "studio.render.encode-authority.v2", "entries": []}}}]):
             with self.subTest(candidates=unknown):
                 self.assertIsNone(fleet.render_encode_intersection(unknown))
+
+    def test_controller_local_hub_uses_its_published_identity_and_owner_gates(self) -> None:
+        now = 1_700_000_000.0
+        location = self.production_location()
+        location.update(id=fleet.LOCAL_ID, local=True, nodes=[])
+        location["machines"][0]["machine"] = fleet.LOCAL_ID
+        location["workers"][0].update(machine=fleet.LOCAL_ID,
+                                      physical_machine_id=fleet.LOCAL_ID)
+        digest = hashlib.sha256(PROFILE_RAW).hexdigest()
+        with patch.object(fleet.time, "time", return_value=now), \
+                patch.object(fleet, "snapshot", return_value={
+                    "generated_at": now, "locations": [location]}), \
+                patch.object(fleet, "roster", return_value=[]):
+            selected = fleet.render_candidates(digest)
+            self.assertEqual(len(selected), 1)
+            self.assertEqual(selected[0]["node_id"], fleet.LOCAL_ID)
+            self.assertEqual(selected[0]["target_hub_controller_id"],
+                             location["controller_id"])
+            location["machines"][0]["function_enabled"] = {"render": False}
+            self.assertEqual(fleet.render_candidates(digest), [])
+            self.assertEqual(fleet.render_candidates(digest, available=False), [])
+            location["machines"][0]["function_enabled"] = {"render": True}
+            location["paused_at"] = now
+            self.assertEqual(fleet.render_candidates(digest), [])
+            location["workers"][0][render_optin.PAUSED_RENDER_KEY] = True
+            self.assertEqual(len(fleet.render_candidates(digest)), 1)
 
     def test_literal_fresh_overview_node_worker_shapes_select_only_complete_joined_leaf(self) -> None:
         now = 1_700_000_000.0

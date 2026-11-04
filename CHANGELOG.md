@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.231 — 2026-11-04
+
+- Remote final rendering chooses a Mac that can use the requested video settings. Busy Macs still show what they support, with free capacity shown separately.
+- An enabled controller can render on its own Mac too. Compatibility follows the Hub's published support, with the existing rendering and pause controls respected.
+
 ## 0.2.230 — 2026-11-04
 
 - Each provider has a visible On/Off switch. New switches start On; saved choices and model selections stay as they are. Off stops new jobs from using that provider, including through a pool, without clearing its key.

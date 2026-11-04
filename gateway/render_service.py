@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -24,7 +24,8 @@ from .render_assets import (
     AssetValidationError,
     RenderAssetStore,
 )
-from .render_contract import validate_render_packet_syntax
+from .render_contract import validate_render_encode, validate_render_packet_syntax
+from .render_encode import execution_authority
 from .render_hash_v1 import decode_render_json
 from .store import JobStore, RenderJournalCancelled, RenderJournalConflict
 
@@ -103,6 +104,30 @@ _HUB_RECEIPT_KEYS = frozenset((
 ))
 
 
+def _hub_owner_scope(row: dict[str, Any]) -> str:
+    # Pin the authenticated namespace at acceptance; a rotated credential cannot change it.
+    kind = row["destination_credential_kind"]
+    return f"{row['destination_site']}:{row['destination_hub_controller']}:{kind}"
+
+
+def _stored_encode_binding(row: dict[str, Any]) -> dict[str, Any] | None:
+    raw = row.get("destination_encode_probe")
+    if raw is None:
+        return None
+    try:
+        probe = decode_render_json(bytes(raw))
+        authority = execution_authority(
+            probe, probe["requested_encode"], physical_node_id=row["destination_hub_controller"],
+            capability=decode_render_json(bytes(row["capability_snapshot"])),
+            chip=decode_render_json(bytes(row["selected_machine"]))["chip"],
+        )
+        if authority is None:
+            raise ValueError("stored render has no encode authority")
+        return authority["encode_authority"]
+    except (ValueError, TypeError, KeyError):
+        raise RenderServiceError("HUB_RESPONSE_UNKNOWN", 503) from None
+
+
 class RenderServiceError(ValueError):
     def __init__(self, code: str, status: int = 400):
         self.code = code
@@ -137,8 +162,12 @@ class RenderDestination:
     #: The owner accepted this Mac unqualified (`render_optin`): its snapshot is a production-shaped Hub
     #: row carrying the Hub's own `accepted_unqualified` evidence. Anything else must carry none.
     accepted_unqualified: bool = False
+    hub_credential_kind: str = "fleet"
+    encode_probe: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        if self.hub_credential_kind not in {"hub", "fleet"}:
+            raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
         for value in (self.site_id, self.roster_controller_id,
                       self.hub_controller_id, self.node_id):
             _text(value, "RENDER_DESTINATION_UNAVAILABLE", pattern=_KEY)
@@ -148,6 +177,76 @@ class RenderDestination:
             _text(self.qualification_vector_id, "RENDER_DESTINATION_UNAVAILABLE", pattern=_KEY)
         if self.target_hub_controller_id is not None:
             _text(self.target_hub_controller_id, "RENDER_DESTINATION_UNAVAILABLE", pattern=_KEY)
+
+
+def destination_for_candidate(row: dict[str, Any]) -> RenderDestination:
+    kind = "fleet"
+    if row["node_id"] == fleet.LOCAL_ID:
+        if row["roster_controller_id"] == fleet.LOCAL_ID:
+            kind = "hub"
+        else:
+            scope = fleet.credential_scope_for(row["roster_controller_id"]).get("scope")
+            kind = {"operator": "hub", "fleet": "fleet"}.get(scope)
+            if kind is None:
+                raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
+    capability = row["capability"]
+    return RenderDestination(
+        site_id=row["site_id"], roster_controller_id=row["roster_controller_id"],
+        hub_controller_id=row["hub_controller_id"], node_id=row["node_id"],
+        target_hub_controller_id=row["target_hub_controller_id"],
+        capability_snapshot_sha256=hashlib.sha256(_canonical(capability)).hexdigest(),
+        qualification_vector_id=row.get("qualification_vector_id"),
+        capability_snapshot=capability, selected_machine=row["selected_machine"],
+        accepted_unqualified=row.get("authority") == render_optin.ACCEPTED,
+        hub_credential_kind=kind, encode_probe=row.get("encode_probe"),
+    )
+
+
+def probed_render_candidates(rows: list[dict], requested: dict, hub_client: Any, *,
+                             available: bool = False) -> list[dict]:
+    """Resolve read-only exact permission on an already owner-gated registered route."""
+    validate_render_encode(requested)
+    result = []
+    for row in rows:
+        try:
+            answer = hub_client.encode_probe(destination_for_candidate(row), requested)
+            authority = execution_authority(
+                answer, requested, physical_node_id=row["target_hub_controller_id"],
+                capability=row["capability"], chip=row["selected_machine"]["chip"],
+            )
+            if authority is None:
+                continue
+            unqualified = authority["authority_kind"] == "accepted_unqualified"
+            if unqualified:
+                original = authority["grant"]["v1"]
+                marker = row["capability"].get(render_optin.OPT_IN_KEY) or {}
+                if (row.get("authority") != render_optin.ACCEPTED
+                        or f"{row['roster_controller_id']}/{row['node_id']}" not in render_optin.enabled_keys()
+                        or any(marker.get(key) != original[key] for key in (
+                            "provenance", "accepted_by", "accepted_at"))):
+                    continue
+            memory = row["available_memory_source"]["conservative_bytes"]
+            if available and (type(memory) is not int
+                    or memory < authority["bounds"]["min_available_memory_bytes"]):
+                continue
+            capability = {**row["capability"], **{key: authority[key] for key in (
+                "qualification_digest", "selected_tier", "exact_encoder", "font_support",
+                "bounds", "profile_execution_bounds")},
+                "encode": {"format": fleet.RENDER_ENCODE_FORMAT, "entries": [requested]}}
+            capability.pop("qualification_only", None)
+            capability.pop("vector_id", None)
+            capability.update(production_enabled=True, production_eligible=True)
+            if not unqualified:
+                capability.pop(render_optin.OPT_IN_KEY, None)
+            candidate = {**row, "capability": capability, "qualification_vector_id": None,
+                         "encode_probe": answer}
+            if not unqualified:
+                candidate.pop("authority", None)
+                candidate.pop("network", None)
+            result.append(candidate)
+        except (RenderServiceError, ValueError, TypeError, KeyError, httpx.HTTPError):
+            continue
+    return fleet._render_candidates_order(result)
 
 
 @dataclass
@@ -256,15 +355,25 @@ class RegisteredHubRenderClient:
              if str(item.get("id") or "") == destination.roster_controller_id),
             None,
         )
-        if row is None or destination.roster_controller_id == fleet.LOCAL_ID:
+        if destination.roster_controller_id == fleet.LOCAL_ID:
+            base, token = fleet.hub_base_url() or "", fleet.hub_token() or ""
+        elif row is not None:
+            token = fleet._token_for(destination.roster_controller_id)
+            base = str(row.get("url") or "").rstrip("/")
+        else:
             raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
-        token = fleet._token_for(destination.roster_controller_id)
-        base = str(row.get("url") or "").rstrip("/")
         if not base or not token:
             raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
+        if destination.node_id == fleet.LOCAL_ID:
+            scope = ("operator" if destination.roster_controller_id == fleet.LOCAL_ID
+                     else fleet.credential_scope(base, token).get("scope"))
+            if {"operator": "hub", "fleet": "fleet"}.get(scope) != destination.hub_credential_kind:
+                raise RenderServiceError("RENDER_DESTINATION_CREDENTIAL_SCOPE_CHANGED", 503)
         return base, {"X-Hub-Token": token}
 
     def _path(self, destination: RenderDestination, suffix: str) -> str:
+        if destination.node_id == fleet.LOCAL_ID:
+            return "/api/hub/final-renders" + suffix
         return "/api/hub/fleet/nodes/" + quote(destination.node_id, safe="") \
             + "/final-renders" + suffix
 
@@ -314,6 +423,20 @@ class RegisteredHubRenderClient:
         if type(decoded) is not dict:
             raise RenderServiceError("HUB_RESPONSE_UNKNOWN", 503)
         return decoded
+
+    def encode_probe(self, destination: RenderDestination, requested: dict[str, Any], *,
+                     start: bool = False) -> dict[str, Any]:
+        validate_render_encode(requested)
+        if type(start) is not bool:
+            raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
+        if start:
+            body = _canonical({"format": "studio.render.encode-probe-request.v1",
+                               "requested_encode": requested})
+            return self.json(destination, "POST", "/encode-probes", body=body,
+                             headers={"Content-Type": "application/json",
+                                      "Content-Length": str(len(body))})
+        query = urlencode({"requested_encode": _canonical(requested).decode("ascii")})
+        return self.json(destination, "GET", "/encode-probes?" + query)
 
     def blob_status(self, destination: RenderDestination, sha256: str,
                     size_bytes: int) -> dict[str, Any]:
@@ -432,6 +555,12 @@ class FinalRenderService:
         """New Hub I/O needs the API key still configured and this very installation."""
         try:
             installation = self.store.render_installation()
+            if row.get("destination_encode_probe") is not None:
+                probe = decode_render_json(bytes(row["destination_encode_probe"]))
+                if (probe["execution_authority"]["authority_kind"] == "accepted_unqualified"
+                        and f"{row['destination_controller']}/{row['destination_node']}"
+                        not in render_optin.enabled_keys()):
+                    return False
             return (
                 self.key_configured() is True
                 and installation["owner_scope"] == row["owner_scope"]
@@ -440,13 +569,36 @@ class FinalRenderService:
         except Exception:
             return False
 
-    def capabilities(self, principal: AuthenticatedPrivateRender) -> dict[str, Any]:
+    def capabilities(self, principal: AuthenticatedPrivateRender, *,
+                     requested_encode: dict[str, Any] | None = None) -> dict[str, Any]:
         self._require_profile()
+        if requested_encode is not None:
+            validate_render_encode(requested_encode)
         try:
-            candidates = fleet.render_candidates(self.profile_digest, qualification=True)
-            encode = fleet.render_encode_intersection(candidates)
+            candidates = (fleet.render_candidates(
+                self.profile_digest, qualification=True, available=False,
+                resolve_encode_authority=True) if requested_encode is not None else
+                fleet.render_candidates(self.profile_digest, qualification=True, available=False))
+            idle = (fleet.render_candidates(self.profile_digest, qualification=True,
+                                             resolve_encode_authority=True)
+                    if requested_encode is not None else
+                    fleet.render_candidates(self.profile_digest, qualification=True))
+            if requested_encode is not None:
+                candidates = probed_render_candidates(candidates, requested_encode, self.hub)
+                supported = {(row["site_id"], row["roster_controller_id"], row["node_id"]): row
+                             for row in candidates}
+                idle = [row for row in idle
+                        if (row["site_id"], row["roster_controller_id"], row["node_id"]) in supported
+                        and type(row["available_memory_source"]["conservative_bytes"]) is int
+                        and row["available_memory_source"]["conservative_bytes"] >= supported[
+                            (row["site_id"], row["roster_controller_id"], row["node_id"])
+                        ]["capability"]["bounds"]["min_available_memory_bytes"]]
+                encode = {"format": fleet.RENDER_ENCODE_FORMAT,
+                          "entries": [requested_encode] if candidates else []}
+            else:
+                encode = fleet.render_encode_intersection(candidates)
         except Exception:
-            candidates, encode = [], None
+            candidates, idle, encode = [], [], None
         answer: dict[str, Any] = {
             "format": "studio.render.gateway-capabilities.v1",
             "private": True, "chargeable": False,
@@ -454,12 +606,13 @@ class FinalRenderService:
             "gateway_instance_id": principal.gateway_instance_id,
             "story_instance_id": principal.story_instance_id,
             "eligible": len(candidates),
-            "idle": sum(1 for item in candidates if item.get("available_slots", 0) > 0),
-            # Compiler-derived by each Hub machine, intersected here: `null` is unknown
-            # (an older Hub, or a machine that advertises nothing), never a guess.
+            "idle": len(idle),
+            # Keep the legacy unscoped intersection; support does not depend on free slots.
             "encode": encode,
             "server_time": int(time.time()),
         }
+        if requested_encode is not None:
+            answer["requested_encode"] = requested_encode
         answer.update({
             "profile_descriptor_utf8": self.profile_descriptor.decode("utf-8"),
             "profile_digest": self.profile_digest,
@@ -673,6 +826,35 @@ class FinalRenderService:
                 or not math.isfinite(destination.selected_machine["memory_gb"])
                 or destination.selected_machine["memory_gb"] <= 0):
             raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
+        known_encode = destination.capability_snapshot.get("encode")
+        if (known_encode is not None or not qualification_only) and not fleet.render_encode_supports(
+                known_encode, packet["recipe"]["encode"]):
+            raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
+        if destination.encode_probe is not None:
+            try:
+                authority = execution_authority(
+                    destination.encode_probe, packet["recipe"]["encode"],
+                    physical_node_id=destination.target_hub_controller_id or destination.node_id,
+                    capability=destination.capability_snapshot,
+                    chip=destination.selected_machine["chip"],
+                )
+                if (authority is None or known_encode is None
+                        or any(destination.capability_snapshot.get(key) != authority[key] for key in (
+                            "qualification_digest", "selected_tier", "exact_encoder", "bounds",
+                            "font_support", "profile_execution_bounds"))
+                        or destination.accepted_unqualified != (
+                            authority["authority_kind"] == "accepted_unqualified")
+                        or destination.accepted_unqualified and
+                            f"{destination.roster_controller_id}/{destination.node_id}"
+                            not in render_optin.enabled_keys()):
+                    raise ValueError("encode permission differs from selected destination")
+                if destination.accepted_unqualified:
+                    marker = destination.capability_snapshot[render_optin.OPT_IN_KEY]
+                    if any(marker[key] != authority["grant"]["v1"][key] for key in (
+                            "provenance", "accepted_by", "accepted_at")):
+                        raise ValueError("encode grant differs from original owner authority")
+            except (ValueError, TypeError, KeyError):
+                raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503) from None
         try:
             capability_snapshot = _canonical(destination.capability_snapshot)
             selected_machine = _canonical(destination.selected_machine)
@@ -694,6 +876,9 @@ class FinalRenderService:
                     destination.target_hub_controller_id or destination.node_id
                 ),
                 destination_node=destination.node_id,
+                destination_credential_kind=destination.hub_credential_kind,
+                destination_encode_probe=(_canonical(destination.encode_probe)
+                                          if destination.encode_probe is not None else None),
                 selected_machine=selected_machine,
                 capability_snapshot=capability_snapshot,
                 capability_snapshot_sha256=destination.capability_snapshot_sha256,
@@ -807,6 +992,9 @@ class FinalRenderService:
             decode_render_json(bytes(row["selected_machine"])),
             row["destination_hub_controller"],
             render_optin.authority_of(capability) == render_optin.ACCEPTED,
+            row["destination_credential_kind"],
+            (decode_render_json(bytes(row["destination_encode_probe"]))
+             if row.get("destination_encode_probe") is not None else None),
         )
 
     def _hub_job(self, row: dict[str, Any], answer: Any) -> dict[str, Any]:
@@ -814,15 +1002,16 @@ class FinalRenderService:
             capability = decode_render_json(bytes(row["capability_snapshot"]))
         except ValueError:
             raise RenderServiceError("HUB_RESPONSE_UNKNOWN", 503) from None
-        expected_owner = (
-            f"{row['destination_site']}:{row['destination_hub_controller']}:fleet"
-        )
+        expected_owner = _hub_owner_scope(row)
         expected_purpose = (
             "qualification" if capability.get("qualification_only") is True else "production"
         )
         delivery = self.store.get_render_delivery(row["id"]) or {}
         leases = answer.get("leases") if type(answer) is dict else None
-        if (type(answer) is not dict or frozenset(answer) != _HUB_JOB_KEYS
+        binding = _stored_encode_binding(row)
+        expected_keys = _HUB_JOB_KEYS | ({"encode_authority"} if binding is not None else set())
+        if (type(answer) is not dict or frozenset(answer) != expected_keys
+                or binding is not None and answer.get("encode_authority") != binding
                 or type(answer.get("id")) is not str or _UUID.fullmatch(answer["id"]) is None
                 or row.get("hub_job_id") is not None
                     and answer.get("id") != row["hub_job_id"]
@@ -962,9 +1151,7 @@ class FinalRenderService:
             "outbound_hub_body_sha256": row["outbound_hub_body_sha256"],
             "hub_dispatch_key": row["dispatch_key"],
             "dispatch_fence": row["dispatch_fence"],
-            "hub_owner_scope": (
-                f"{row['destination_site']}:{row['destination_hub_controller']}:fleet"
-            ),
+            "hub_owner_scope": _hub_owner_scope(row),
             "hub_job_id": row["hub_job_id"],
             "hub_attempt_id": delivery["remote_attempt_id"],
             "hub_receipt_digest": delivery["receipt_digest"],
@@ -979,6 +1166,8 @@ class FinalRenderService:
             "output_sha256": remote.get("output_sha256"),
             "output_size_bytes": remote.get("output_size_bytes"),
         }
+        binding = _stored_encode_binding(row)
+        hub_receipt_keys = _HUB_RECEIPT_KEYS | ({"encode_authority"} if binding is not None else set())
         digest_fields = (
             "inbound_story_body_sha256", "packet_digest", "outbound_hub_body_sha256",
             "hub_receipt_digest", "profile_digest", "tools_digest", "compiler_digest",
@@ -1005,7 +1194,9 @@ class FinalRenderService:
                 or isinstance(machine.get("memory_gb"), bool)
                 or not math.isfinite(machine["memory_gb"])
                 or machine["memory_gb"] <= 0
-                or type(remote) is not dict or frozenset(remote) != _HUB_RECEIPT_KEYS
+                or type(remote) is not dict or frozenset(remote) != hub_receipt_keys
+                or binding is not None and (remote.get("encode_authority") != binding
+                                            or remote.get("feature_losses") != [])
                 or remote.get("owner_scope") != receipt["hub_owner_scope"]
                 or remote.get("hub_job_id") != receipt["hub_job_id"]
                 or remote.get("attempt_id") != receipt["hub_attempt_id"]
@@ -1194,9 +1385,7 @@ class FinalRenderService:
                     "owner_scope", "dispatch_key", "expected_request_sha256",
                     "fence_id", "cancelled_at", "state",
                 }
-                and answer.get("owner_scope") == (
-                    f"{row['destination_site']}:{row['destination_hub_controller']}:fleet"
-                )
+                and answer.get("owner_scope") == _hub_owner_scope(row)
                 and answer.get("dispatch_key") == cancel_key
                 and answer.get("expected_request_sha256") == expected_request_sha256
                 and answer.get("state") == "cancelled_before_acceptance"
@@ -1355,8 +1544,11 @@ class FinalRenderService:
             handles = {asset["logical_id"]: asset["hub_asset_handle"] for asset in row["assets"]}
             dispatch_key = "gateway:" + row["gateway_attempt_key"]
             fence = str(uuid.uuid4())
+            binding = _stored_encode_binding(row)
             body = _canonical({
-                "format": "studio.render.hub-request.v1",
+                "format": ("studio.render.hub-request.v2" if binding is not None
+                           else "studio.render.hub-request.v1"),
+                **({"encode_authority": binding} if binding is not None else {}),
                 "dispatch": {
                     "story_uuid": row["story_uuid"], "intent_id": row["intent_id"],
                     "attempt_no": row["attempt_no"],
@@ -1489,10 +1681,13 @@ class FinalRenderService:
         }
         if type(capability) is not dict:
             raise RenderServiceError("HUB_OUTPUT_UNKNOWN", 503)
+        binding = _stored_encode_binding(row)
+        if binding is not None:
+            required.add("encode_authority")
         if (type(receipt) is not dict or set(receipt) != required
-                or receipt["owner_scope"] != (
-                    f"{row['destination_site']}:{row['destination_hub_controller']}:fleet"
-                )
+                or binding is not None and (receipt.get("encode_authority") != binding
+                                            or receipt.get("feature_losses") != [])
+                or receipt["owner_scope"] != _hub_owner_scope(row)
                 or receipt["hub_job_id"] != row["hub_job_id"]
                 or receipt["accepted_request_sha256"] != row["outbound_hub_body_sha256"]
                 or receipt["attempt_id"] != delivery.get("remote_attempt_id")
