@@ -617,6 +617,30 @@ test('every Story Mac can be updated now, and a release published, from the web 
   assert.match(node(ctx, 'fleet-story-note').textContent, /Published Story Studio 1\.4\.363/);
 });
 
+test('Story queue counts and pause state are labelled as a dated report, including unknown age', async () => {
+  const instances = [
+    { instance_id: 'paused', queue: { running: 0, queued: 33, held: true }, age_seconds: 720 },
+    { instance_id: 'running', queue: { running: 1, queued: 33, held: false }, age_seconds: 0 },
+    { instance_id: 'unknown', queue: {}, age_seconds: null },
+  ];
+  const ctx = context({}, { respond: () => ({ instances }) });
+  await ctx.loadFleetStory();
+  const html = node(ctx, 'fleet-story-wrap').innerHTML;
+  assert.match(html, /<th>Last reported queue<\/th>/);
+  const cells = [...html.matchAll(/<td data-label="Last reported queue">([\s\S]*?)<\/td>/g)]
+    .map(match => match[1]);
+  assert.equal(cells.length, 3);
+  assert.match(cells[0], /0 running · 33 queued · paused/);
+  assert.match(cells[0], /Reported 12 min ago/);
+  assert.match(cells[1], /1 running · 33 queued/);
+  assert.match(cells[1], /Reported just now/);
+  assert.doesNotMatch(cells[1], / · paused/);
+  assert.match(cells[2], /— running · — queued/);
+  assert.match(cells[2], /Report age unknown/);
+  assert.doesNotMatch(cells[2], /just now/);
+  assert.deepEqual(ctx.calls, [{ route: '/story/instances', opts: undefined }]);
+});
+
 test('a Studio Hub release is published with every override, and the rollout can be stopped and resumed', async () => {
   const ctx = context(payload([machine()]), {
     respond: route => {

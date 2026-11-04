@@ -156,6 +156,39 @@ class RequestTests(unittest.TestCase):
         self.client = TestClient(api.app, client=("127.0.0.1", 54321))
         self.addCleanup(self.client.close)
 
+    def test_output_settings_negotiation_is_closed_unavailable_without_selection_or_dispatch(self) -> None:
+        response = self.client.get("/v2/final-renders/capabilities")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(set(body), {
+            "format", "private", "chargeable", "owner_scope", "gateway_instance_id",
+            "story_instance_id", "server_time", "supported", "reason",
+            "profile_descriptor_utf8", "profile_digest",
+        })
+        self.assertEqual(body["format"], "studio.render.output-settings-capabilities.v1")
+        self.assertIs(body["private"], True)
+        self.assertIs(body["chargeable"], False)
+        self.assertIs(body["supported"], False)
+        self.assertTrue(body["reason"].strip())
+        self.assertIn("comparison", body["reason"])
+        self.assertIsNone(body["profile_descriptor_utf8"])
+        self.assertIsNone(body["profile_digest"])
+        self.assertIs(type(body["server_time"]), int)
+        self.assertGreater(body["server_time"], 0)
+        self.assertEqual((body["owner_scope"], body["gateway_instance_id"], body["story_instance_id"]),
+                         (PRINCIPAL.owner_scope, PRINCIPAL.gateway_instance_id, STORY))
+        self.assertEqual(self.service.calls, [])
+        route = next(route for route in api.app.routes
+                     if getattr(route, "path", "") == "/v2/final-renders/capabilities")
+        self.assertEqual([dependency.call for dependency in route.dependant.dependencies],
+                         [api.require_private_render])
+
+    def test_unavailable_best_never_falls_back_to_explicit_submit(self) -> None:
+        for path in ("/v2/final-renders", "/v2/final-renders/selections"):
+            response = self.client.post(path, json={"format": "studio.render.gateway-request.v2"})
+            self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.service.calls, [])
+
     def test_submit_forwards_exact_raw_bytes_and_header_key_to_the_service(self) -> None:
         raw = b'{"format":"studio.render.gateway-request.v1","story_uuid":"fake"}'
         response = self.client.post(
@@ -348,6 +381,26 @@ class AuthenticationBoundaryTests(unittest.TestCase):
                     self.assertEqual(response.status_code, 403)
                     self.assertEqual(response.json()["error"]["code"], "FORBIDDEN")
         self.assertEqual(compared.call_count, 4)
+        self.assertEqual(self.service.calls, [])
+
+    def test_output_settings_negotiation_uses_the_same_strict_owner_story_boundary(self) -> None:
+        path = "/v2/final-renders/capabilities"
+        valid = {"Authorization": "Bearer ordinary-fixture-key", "X-Story-Instance": STORY}
+        for headers, status in (({}, 401),
+                                ({"Authorization": valid["Authorization"]}, 401),
+                                ({**valid, "X-Story-Instance": "not-a-uuid"}, 401),
+                                ({**valid, "Authorization": "Bearer wrong"}, 403)):
+            with self.subTest(status=status, headers=list(headers)):
+                self.assertEqual(self.client.get(path, headers=headers).status_code, status)
+        with patch.object(api, "gateway_api_key", return_value=""):
+            self.assertEqual(self.client.get(path, headers=valid).status_code, 503)
+        response = self.client.get(path, headers=valid)
+        self.assertEqual(response.status_code, 200)
+        installation = api.store.render_installation()
+        body = response.json()
+        self.assertEqual((body["owner_scope"], body["gateway_instance_id"], body["story_instance_id"]),
+                         (installation["owner_scope"], installation["gateway_instance_id"], STORY))
+        self.assertIs(body["supported"], False)
         self.assertEqual(self.service.calls, [])
 
     def test_regular_key_and_story_header_bind_the_installation_identity(self) -> None:

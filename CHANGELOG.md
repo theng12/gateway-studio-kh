@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.232 — 2026-11-05
+
+- Fleet labels Story's queue as its last reported queue and shows the report age beside the counts. An unknown age is stated plainly.
+- Story can check whether Best for this hardware is ready. It currently reports unavailable because verified speed, size and quality comparison evidence is not ready; explicit output settings remain usable.
+
 ## 0.2.231 — 2026-11-04
 
 - Remote final rendering chooses a Mac that can use the requested video settings. Busy Macs still show what they support, with free capacity shown separately.

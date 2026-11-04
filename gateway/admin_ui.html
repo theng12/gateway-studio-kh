@@ -8200,7 +8200,7 @@ function renderFleetStory() {
   if (fleetStoryRows == null) { wrap.innerHTML = '<div class="fleet-empty">Reading Story Studio…</div>'; return; }
   wrap.innerHTML = fleetStoryRows.length
     ? `<table class="ftable"><thead><tr><th>Mac</th><th>Version</th><th>Status</th><th>Channels</th>
-       <th>Story queue</th><th>Checked in</th><th>Actions</th></tr></thead><tbody>${fleetStoryRows.map(instance => {
+       <th>Last reported queue</th><th>Checked in</th><th>Actions</th></tr></thead><tbody>${fleetStoryRows.map(instance => {
         const state = fleetStoryStatusText(instance);
         const queue = instance.queue || {};
         const count = value => (value == null ? '—' : value);
@@ -8217,8 +8217,10 @@ function renderFleetStory() {
           <td data-label="Status" title="${esc(caption || '')}">${
             fleetBadge(state.text, state.health)}${caption ? `<div class="ft-sub">${esc(caption)}</div>` : ''}</td>
           <td data-label="Channels">${count(instance.channels)}</td>
-          <td data-label="Story queue">${count(queue.running)} running · ${count(queue.queued)} queued${
-            queue.held ? ' · paused' : ''}</td>
+          <td data-label="Last reported queue">${count(queue.running)} running · ${count(queue.queued)} queued${
+            queue.held ? ' · paused' : ''}<div class="ft-sub">${instance.age_seconds != null
+              ? 'Reported ' + esc(fleetSeenText(Date.now() / 1000 - instance.age_seconds))
+              : 'Report age unknown'}</div></td>
           <td data-label="Checked in">${esc(fleetSeenText(instance.age_seconds != null
             ? Date.now() / 1000 - instance.age_seconds : null))}</td>
           <td data-label="Actions">${actionable ? `<button type="button" class="sm"`

@@ -2418,6 +2418,27 @@ def final_render_capabilities(
     return render_service.capabilities(principal, requested_encode=requested)
 
 
+@app.get("/v2/final-renders/capabilities")
+def final_render_output_settings_capabilities(
+    principal: AuthenticatedPrivateRender = Depends(require_private_render),
+) -> dict[str, Any]:
+    # ponytail: negotiation only until agreed evidence schemas and the complete Best lifecycle exist.
+    return {
+        "format": "studio.render.output-settings-capabilities.v1",
+        "private": True,
+        "chargeable": False,
+        "owner_scope": principal.owner_scope,
+        "gateway_instance_id": principal.gateway_instance_id,
+        "story_instance_id": principal.story_instance_id,
+        "server_time": int(time.time()),
+        "supported": False,
+        "reason": "Best for this hardware is unavailable: verified comparison, quality and selection-policy "
+                  "evidence contracts are not ready. Use explicit output settings.",
+        "profile_descriptor_utf8": None,
+        "profile_digest": None,
+    }
+
+
 @app.get("/v1/final-renders/blobs/{sha256}/status")
 def final_render_blob_status(
     sha256: str, size_bytes: int = Query(..., ge=1),
