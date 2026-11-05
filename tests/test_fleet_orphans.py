@@ -47,6 +47,16 @@ _SANDBOX = sandbox_env("gateway-fleet-orphans-")
 from gateway import admin, admin_session, orphans  # noqa: E402
 from gateway.runtime import store as runtime_store  # noqa: E402
 
+
+def _routes(routes):
+    """Every route, including a mounted router's own table (FastAPI 0.141 keeps it in one wrapper)."""
+    for route in routes:
+        if type(route).__name__ == "_IncludedRouter":
+            yield from _routes(route.original_router.routes)
+        else:
+            yield route
+
+
 NOW = 1_760_000_000.0
 
 
@@ -382,8 +392,8 @@ class OwnerOnly(unittest.TestCase):
             "/admin/api/settings/fleet-orphans",
             "/admin/api/fleet/controllers/{controller_id}/jobs/{batch_id}/cancel",
         }
-        served = {route.path for route in admin.router.routes}
-        wired = {route.path for route in admin.router.routes
+        served = {route.path for route in _routes(admin.router.routes)}
+        wired = {route.path for route in _routes(admin.router.routes)
                  if any(getattr(dep, "dependency", None) is admin.require_admin
                         for dep in (route.dependencies or []))}
         for path in paths:

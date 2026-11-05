@@ -47,6 +47,15 @@ from gateway import api  # noqa: E402
 from gateway.runtime import store, worker  # noqa: E402
 
 
+def _routes(routes):
+    """Every route, including a mounted router's own table (FastAPI 0.141 keeps it in one wrapper)."""
+    for route in routes:
+        if type(route).__name__ == "_IncludedRouter":
+            yield from _routes(route.original_router.routes)
+        else:
+            yield route
+
+
 class QueueView(unittest.TestCase):
     def setUp(self) -> None:
         # The worker is never started here, so a submitted job stays `accepted` and
@@ -214,7 +223,7 @@ class QueueView(unittest.TestCase):
 
 class TheRouteIsRegistered(unittest.TestCase):
     def test_the_admin_router_serves_the_queue(self) -> None:
-        paths = {route.path for route in admin.router.routes}
+        paths = {route.path for route in _routes(admin.router.routes)}
         self.assertIn("/admin/api/queue", paths)
 
 

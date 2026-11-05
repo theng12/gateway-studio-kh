@@ -79,7 +79,7 @@ class _Base(unittest.TestCase):
         rows = {modality: [] for modality in OPS}
 
         def enabled(modality):
-            return [(types.SimpleNamespace(id=row["provider_id"]),
+            return [(types.SimpleNamespace(id=row["provider_id"], kind="studio_hub"),
                      {"model_id": MUSIC if modality == "music" else IMAGE, "modality": modality, "raw": {}})
                     for row in self.sites] if modality in rows else []
 

@@ -2516,7 +2516,7 @@ class OutputFormatSubmitTests(unittest.TestCase):
 
         def fake_submit(modality: str, _model: str, params: dict[str, Any], *_a: Any, **_k: Any):
             seen.append((modality, dict(params)))
-            return {"id": "job_x", "modality": modality, "state": "accepted"}, False
+            return {"id": "job_x", "modality": modality, "state": "accepted", "params": dict(params)}, False
 
         with patch.object(self.api, "_submit", side_effect=fake_submit), patch.object(
             self.api, "_job_envelope", side_effect=lambda job: job
@@ -2546,7 +2546,7 @@ class OutputFormatSubmitTests(unittest.TestCase):
 
         def fake_submit(modality: str, _model: str, params: dict[str, Any], *_a: Any, **_k: Any):
             seen.append((modality, dict(params)))
-            return {"id": "job_x", "modality": modality, "state": "accepted"}, False
+            return {"id": "job_x", "modality": modality, "state": "accepted", "params": dict(params)}, False
 
         with patch.object(self.api.catalog, "resolve",
                           side_effect=lambda *_a, **_k: (lane, {"model_id": "m", "raw": raw})), \
@@ -2563,7 +2563,7 @@ class OutputFormatSubmitTests(unittest.TestCase):
 
         def fake_submit(_modality: str, _model: str, params: dict[str, Any], *_a: Any, **_k: Any):
             seen.append(dict(params))
-            return {"id": "job_x", "modality": "image", "state": "accepted"}, False
+            return {"id": "job_x", "modality": "image", "state": "accepted", "params": dict(params)}, False
 
         with patch.object(self.api, "_submit", side_effect=fake_submit), patch.object(
             self.api, "_job_envelope", side_effect=lambda job: job

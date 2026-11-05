@@ -82,7 +82,7 @@ class _Fleet:
 
     def __enter__(self) -> "_Fleet":
         ids = [row["provider_id"] for row in self.sites] + [_pid(x) for x in self.extra]
-        rows = [(types.SimpleNamespace(id=pid), {"model_id": self.model, "modality": IMAGE})
+        rows = [(types.SimpleNamespace(id=pid, kind="studio_hub"), {"model_id": self.model, "modality": IMAGE})
                 for pid in ids]
         self._patches = [
             patch.object(fleet, "snapshot", lambda allow_stale=False, **_: {"locations": self.sites}),
@@ -315,7 +315,8 @@ class QwenSpeedTests(_Base):
             sites = self.sites()
             with patch.object(fleet, "snapshot", lambda allow_stale=False, **_: {"locations": sites}), \
                     patch.object(registry.models, "enabled_models", lambda _m: [
-                        (types.SimpleNamespace(id=s["provider_id"]), {"model_id": QWEN}) for s in sites]):
+                        (types.SimpleNamespace(id=s["provider_id"], kind="studio_hub"),
+                         {"model_id": QWEN}) for s in sites]):
                 self.assertEqual(fleet.route(QWEN, IMAGE, routing_key="h")[0].id, _pid("m1"))
 
     def test_a_slow_mac_is_used_only_when_waiting_for_a_fast_one_would_finish_later(self) -> None:

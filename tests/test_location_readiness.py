@@ -53,7 +53,8 @@ MODEL = "mlx-community/heavy-model"
 
 
 def _definition(provider_id: str) -> SimpleNamespace:
-    return SimpleNamespace(id=provider_id, base_url=f"https://{provider_id}", display_name=provider_id)
+    return SimpleNamespace(id=provider_id, kind="studio_hub", base_url=f"https://{provider_id}",
+                           display_name=provider_id)
 
 
 class _TwoLocations:

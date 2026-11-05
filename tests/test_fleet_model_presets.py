@@ -38,6 +38,16 @@ import httpx  # noqa: E402
 
 from gateway import config, fleet, startup_control  # noqa: E402
 
+
+def _routes(routes):
+    """Every route, including a mounted router's own table (FastAPI 0.141 keeps it in one wrapper)."""
+    for route in routes:
+        if type(route).__name__ == "_IncludedRouter":
+            yield from _routes(route.original_router.routes)
+        else:
+            yield route
+
+
 MACHINE = "node-1-hub"
 PACKAGE = "qwen36-35b-4bit"
 
@@ -187,7 +197,7 @@ class AdminRouteTests(unittest.TestCase):
         # These routes carry their own `/admin` prefix, so the key is the full path. Selected by
         # suffix rather than rebuilt from a prefix, so a future mount change fails loudly here
         # instead of quietly matching nothing.
-        routes = {route.path: route for route in admin_module.router.routes}
+        routes = {route.path: route for route in _routes(admin_module.router.routes)}
         prefix = "/admin/api/fleet/controllers/{controller_id}/machines/{machine_id}"
         read = routes[f"{prefix}/model-presets"]
         set_preset = routes[f"{prefix}/model-preset"]

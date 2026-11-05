@@ -220,8 +220,14 @@ class ReferenceLimitsComeFromTheLaneTests(unittest.TestCase):
         self.assertIsNone(row["reference_image_max_dimension"],
                           "unstated is not 2048; a number Story was never told is not a ceiling")
 
-    def test_a_non_positive_or_malformed_statement_is_unstated(self) -> None:
+    def test_zero_is_stated_but_malformed_figures_are_unstated(self) -> None:
         row = self._row(min=0, max="2", max_dimension=True)
+        self.assertEqual(row["min_reference_images"], 0)
+        self.assertIsNone(row["max_reference_images"])
+        self.assertIsNone(row["reference_image_max_dimension"])
+
+    def test_negative_figures_are_unstated(self) -> None:
+        row = self._row(min=-1, max=-1, max_dimension=-1)
         self.assertIsNone(row["min_reference_images"])
         self.assertIsNone(row["max_reference_images"])
         self.assertIsNone(row["reference_image_max_dimension"])

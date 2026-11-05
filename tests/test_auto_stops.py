@@ -46,6 +46,16 @@ _SANDBOX = sandbox_env("gateway-auto-stops-")
 
 from gateway import admin, admin_session, orphans, startup_control, worker  # noqa: E402
 
+
+def _routes(routes):
+    """Every route, including a mounted router's own table (FastAPI 0.141 keeps it in one wrapper)."""
+    for route in routes:
+        if type(route).__name__ == "_IncludedRouter":
+            yield from _routes(route.original_router.routes)
+        else:
+            yield route
+
+
 NOW = time.time()
 HUB_DEFINITION = types.SimpleNamespace(id="studio-hub-L1", kind="studio_hub",
                                        display_name="Blue Room", base_url="")
@@ -256,7 +266,7 @@ class OwnerOnly(unittest.TestCase):
 
     def test_the_route_declares_require_admin(self) -> None:
         path = "/admin/api/fleet/startup/auto-stops"
-        served = {route.path: route for route in admin.router.routes}
+        served = {route.path: route for route in _routes(admin.router.routes)}
         self.assertIn(path, served, "the Fleet page's stops read is not a route this Gateway serves")
         wired = any(getattr(dep, "dependency", None) is admin.require_admin
                     for dep in (served[path].dependencies or []))
