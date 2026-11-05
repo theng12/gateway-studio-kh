@@ -10,6 +10,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.234 — 2026-11-06
+
+- Developer Mode has a separate owner page for supported Hub tests, collected logs, receipt review and explicit approval or rollback. It respects existing pause and availability controls; synthetic test results do not qualify a Mac.
+- Model Limits shows the Hub's live image limits and where each value came from. Saved changes are clearly marked as awaiting Hub support until a verified override contract is available; Reset follows the current Hub default.
+- Image measurements can name an exact registered Mac. Unknown pause or readiness evidence refuses the request, and recovery keeps the original target instead of silently choosing another Mac.
+- Story subtitle inputs receive strict subtitle and font validation. Remote subtitle rendering remains unavailable until matching Hub support and permission are verified.
+- Queue and recovery checks preserve dispatch capacity after launch failures, recognize explicit provider failures, retain stated zero limits and keep malformed measurement targets from disrupting other jobs.
+
 ## 0.2.233 — 2026-11-05
 
 - Gateway checks matching Hub support and permission before accepting Story's late-label renders. Unavailable or unverified support is refused clearly; this update does not turn on remote rendering or certify label appearance.
