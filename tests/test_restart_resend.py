@@ -90,13 +90,16 @@ class _Hub:
 
 class _Case(unittest.TestCase):
     def interrupted(self, name: str, *, provider_id: str = SITE, modality: str = "image",
-                    cancel: bool = False) -> tuple[JobStore, str]:
+                    cancel: bool = False, params: dict | None = None,
+                    upstream: str | None = None) -> tuple[JobStore, str]:
         """A job whose send was unanswered when the Gateway stopped: dispatched, no batch id."""
         store = JobStore(_ROOT / f"{name}.sqlite3")
-        row, _ = store.submit(modality=modality, model_id="model/test", params={"prompt": "x"},
+        row, _ = store.submit(modality=modality, model_id="model/test", params=params or {"prompt": "x"},
                               idempotency_key=name, provider_id=provider_id)
         self.assertTrue(store.mark_running(row["id"]))
         self.assertTrue(store.begin_dispatch(row["id"]))
+        if upstream:
+            store.record_upstream_acceptance(row["id"], upstream)
         if cancel:
             store.cancel(row["id"])
         store.close()
@@ -192,6 +195,36 @@ class EverythingElseKeepsTheHold(_Case):
                 store, job_id = self.interrupted(f"held-{name}", **kwargs)
                 self.assertEqual(store.interrupted, [])
                 self.assertEqual(store.get(job_id)["error_code"], "UNKNOWN_OUTCOME")
+
+
+class MeasurementRestartTests(_Case):
+    def params(self):
+        return {"prompt": "fixture", "measurement_target": {"location_id": "a", "machine": "mac-1"}}
+
+    def test_unanswered_measurement_replays_original_pin_and_key_after_restart(self):
+        store, job_id = self.interrupted("measurement-attach", params=self.params())
+        hub = _Hub(known={job_id: "batch-first"})
+        moves = self.start(store, hub)
+        job = store.get(job_id)
+        self.assertEqual(job["state"], "succeeded", job.get("error_detail"))
+        self.assertEqual(job["upstream_job_id"], "batch-first")
+        self.assertEqual(hub.runs, 0)
+        self.assertEqual(len(hub.posts), 1)
+        self.assertEqual(hub.posts[0][1]["routing"], "machine:mac-1")
+        self.assertEqual(hub.posts[0][1]["clientRequestId"], job_id)
+        self.assertEqual(json.loads(job["params"])["measurement_target"], self.params()["measurement_target"])
+        self.assertEqual(moves, [])
+
+    def test_known_measurement_batch_is_only_polled_after_restart(self):
+        store, job_id = self.interrupted("measurement-known", params=self.params(), upstream="batch-first")
+        hub = _Hub(known={job_id: "batch-first"})
+        moves = self.start(store, hub)
+        job = store.get(job_id)
+        self.assertEqual(job["state"], "succeeded", job.get("error_detail"))
+        self.assertEqual(job["provider_id"], SITE)
+        self.assertEqual(job["upstream_job_id"], "batch-first")
+        self.assertEqual(hub.posts, [])
+        self.assertEqual(moves, [])
 
 
 if __name__ == "__main__":

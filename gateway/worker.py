@@ -973,6 +973,9 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     restart — began with an empty exclusion and could be sent to the machine that had just
     failed it. That is the difference this fixes, and it is why the list is a column.
     """
+    original = store.get(job_id) if hasattr(store, "get") else None
+    if "measurement_target" in _job_params(original):
+        return None  # An exact-node measurement cannot move, even after a known failure.
     policy = concurrency.retry_policy()
     # **The two id spellings, normalised in one place.** An attempt log stores the *provider* id
     # that routed the work (`studio-hub-9701220bf30f`) because that is what names a machine to an
@@ -2401,6 +2404,13 @@ class Worker:
         # is not failing — the job stays due and `_rebind` moves it to a location that is back.
         if _takes_no_new_work(provider_id):
             return False
+        if ("measurement_target" in _job_params(job) and not job.get("upstream_job_id")
+                and not job.get("dispatch_started_at")):
+            from . import image_target
+            target = image_target.read(_job_params(job))
+            if (not image_target.matches_provider(target, provider_id)
+                    or image_target.unavailable(target)):
+                return False
         # Every fleet and store read this admission needs, taken **before** `_budget_lock`:
         # `_job_room` reaches `fleet.snapshot()` (and, for a background job, the store), and
         # the lock order note on `_budget_lock` makes that a deadlock, not a slow read.
@@ -2667,6 +2677,8 @@ class Worker:
         """
         provider_id = str(job.get("provider_id") or "")
         modality = str(job.get("modality") or "")
+        if "measurement_target" in _job_params(job):
+            return False
         rebind = getattr(self.store, "rebind_unsent", None)
         if rebind is None or not provider_id.startswith(fleet.PROVIDER_PREFIX):
             return False

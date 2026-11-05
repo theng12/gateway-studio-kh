@@ -1873,6 +1873,21 @@ def catalog_encode(job: dict[str, Any]) -> str:
     return encode_model_id(fleet.publish_id(str(provider_id)), model_id)
 
 
+def _image_measurement_target(params: dict[str, Any]) -> dict | None:
+    from . import image_target
+    try:
+        return image_target.read(params)
+    except ValueError as exc:
+        raise GatewayError(422, str(exc), "INVALID_MEASUREMENT_TARGET") from None
+
+
+def _refuse_changed_image_target(job: dict, params: dict) -> None:
+    from . import image_target
+    if not image_target.same_request(job, params):
+        raise GatewayError(409, "That Idempotency-Key names a different measurement target. "
+                           "Use a new key for another target.", "IDEMPOTENCY_KEY_REUSED")
+
+
 def _pinned_location(params: dict[str, Any]) -> str | None:
     """The location a request already names, if it names one.
 
@@ -2104,9 +2119,15 @@ def _submit(
     that is not a short id (`[A-Za-z0-9._:/-]`, at most 120) is ignored — it is advisory, and a
     tag is never a reason to refuse work.
     """
+    target = _image_measurement_target(params)
+    if target is not None and modality != "image":
+        raise GatewayError(422, "measurement_target is only supported for image jobs.",
+                           "INVALID_MEASUREMENT_TARGET")
     job_group = params.pop("job_group", None) if isinstance(params, dict) else None
     job_group = job_group if isinstance(job_group, str) and _JOB_GROUP.fullmatch(job_group) else None
     priority = _pop_priority(params)
+    if target is not None:
+        priority = BACKGROUND  # Measurement work never takes a normal job's idle slot.
     requester = requested_by or {
         # Every `/v1` job is the gateway key's: there is one key and Story Studio holds it.
         # A client that names itself (`X-Caller`) is quoted; otherwise it is Story Studio.
@@ -2117,6 +2138,9 @@ def _submit(
     # the caller's own job. Both are needed: the scope keeps a guest out of everyone else's
     # keyspace, and the check keeps a row that somehow carries a foreign name from being
     # handed over anyway.
+    if target is not None and requester.get("role") != "key":
+        raise GatewayError(403, "Only the owner's API key can target a measurement Mac.",
+                           "MEASUREMENT_OWNER_REQUIRED")
     scope = idempotency_scope(requester)
     if idempotency_key:
         idempotency_key = scoped_idempotency_key(scope, idempotency_key)
@@ -2140,12 +2164,22 @@ def _submit(
                     f"A key identifies one request; use a new one for this {modality} request.",
                     "IDEMPOTENCY_KEY_REUSED",
                 )
+            if modality == "image":
+                _refuse_changed_image_target(already, params)
             return already, False
     _refuse_when_the_queue_is_full(priority == BACKGROUND)
     _refuse_when_the_disk_is_low()
     from . import pools as _pools
 
     pool_name = _pools.image_pool_name(compound_id) if modality == "image" else None
+    if target is not None:
+        from . import image_target
+        if pool_name is not None:
+            raise GatewayError(422, "A measurement must name an exact model, not an image pool.",
+                               "INVALID_MEASUREMENT_TARGET")
+        reason = image_target.unavailable(target)
+        if reason:
+            raise GatewayError(409, reason, "MEASUREMENT_TARGET_UNAVAILABLE")
     if pool_name is not None:
         params = dict(params or {})
         params["_pool_id"] = pool_name
@@ -2153,8 +2187,9 @@ def _submit(
     # Image intent selects the Hub's declared text or reference mode at both routing moments.
     # Read once so the route and its refusal sentence cannot disagree.
     capability = fleet.required_capability(modality, params)
+    only_location = target["location_id"] if target is not None else _pinned_location(params)
     definition, model = catalog.resolve(
-        modality, compound_id, only_location=_pinned_location(params),
+        modality, compound_id, only_location=only_location,
         job_key=uuid.uuid4().hex, require_capability=capability,
     )
     if definition is None or model is None:
@@ -2164,7 +2199,7 @@ def _submit(
         # 503 says so. The 404 below is kept for the ids that really are not in the
         # catalogue, so the two can never read the same.
         why = catalog.why_no_route(
-            modality, compound_id, only_location=_pinned_location(params),
+            modality, compound_id, only_location=only_location,
             require_capability=capability,
         )
         if why is not None:
@@ -2186,6 +2221,10 @@ def _submit(
             f'Model "{compound_id}" is not available on this gateway.',
             "MODEL_NOT_FOUND",
         )
+    if target is not None and (definition.kind != "studio_hub"
+                               or not image_target.matches_provider(target, definition.id)):
+        raise GatewayError(409, "The model did not resolve to the exact measurement location.",
+                           "MEASUREMENT_TARGET_UNAVAILABLE")
     if modality == "music" and _music_row(model["model_id"], definition, model).get("requires_lyrics"):
         supplied = params.get("params")
         lyrics = params.get("lyrics", supplied.get("lyrics") if isinstance(supplied, dict) else None)
@@ -3613,20 +3652,23 @@ def create_image(
     key = _require_idempotency_key(idempotency_key)
     _validate_output_format("image", payload)
     model_id = str(payload.get("model_id") or payload.get("model") or "")
+    _image_measurement_target(payload)
     reference_ids = _image_reference_ids(payload)
     # **A replay is answered before the uploads are looked at.** The job already exists and has its
     # own staged copies, so a caller whose 202 was lost gets its job back even after the 15-minute
     # upload window closed — and if the references it now names are a different set, that is a
     # different render and a 409 rather than the earlier job's image.
-    already = store.find_by_idempotency_key(key) if reference_ids is not None else None
+    already = store.find_by_idempotency_key(key)
     if already is not None and already["modality"] == "image":
-        _refuse_changed_references(already, reference_ids)
+        _refuse_changed_image_target(already, payload)
+        _refuse_changed_references(already, reference_ids or [])
         return _replay_marked(_job_envelope(already), False)
     params = _stage_image_references(payload)
     job, created = _submit("image", model_id, params, key, caller=caller)
     if not created:
         # Two concurrent submissions can both pass the check above; the store settles which one
         # made the job, and its reference set is still the one this key now means.
+        _refuse_changed_image_target(job, payload)
         _refuse_changed_references(job, reference_ids or [])
     if created:
         response.status_code = 202

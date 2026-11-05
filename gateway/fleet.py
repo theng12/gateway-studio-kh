@@ -164,6 +164,11 @@ def pinned_location(params: dict) -> str | None:
     """
     if not isinstance(params, dict):
         return None
+    from . import image_target
+    target = image_target.read(params)
+    if target is not None:
+        # A measurement pin never disappears when a site becomes unavailable.
+        return target["location_id"]
     for key in _VOICE_PIN_KEYS:
         value = str(params.get(key) or "")
         location_id = location_for_voice(value)

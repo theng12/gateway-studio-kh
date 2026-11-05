@@ -2006,7 +2006,24 @@ def _stage_voice_reference(
     return asset_id, payload.get("expires_at")
 
 
+def _measurement_target(request: BackendRequest) -> dict | None:
+    from .. import image_target
+    try:
+        target = image_target.read(request.params)
+        if target is not None and (request.modality != "image"
+                                   or not image_target.matches_provider(target, request.provider_id)):
+            raise ValueError("The measurement must keep its original location and machine.")
+        return target
+    except ValueError as exc:
+        raise BackendError(str(exc), code="INVALID_MEASUREMENT_TARGET",
+                           upstream_accepted=False) from None
+
+
 def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
+    target = _measurement_target(request)
+    if target is not None and not request.params.get("_job_id"):
+        raise BackendError("A measurement submission needs its original Gateway job id.",
+                           code="INVALID_MEASUREMENT_TARGET", upstream_accepted=False)
     base = _resolve_base(request)
     headers = _headers(request)
     modality = _HUB_MODALITY[request.modality]
@@ -2094,7 +2111,10 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
         "clientRequestId": str(request.params.get("_client_request_id") or request.params.get("_job_id") or ""),
         "label": "gateway-kh",
     }
-    if request.modality == "image" and request.params.get("_pool_id"):
+    if target is not None:
+        body["routing"] = "machine:" + target["machine"]
+        body["clientRequestId"] = str(request.params["_job_id"])
+    elif request.modality == "image" and request.params.get("_pool_id"):
         # Image-pool work runs only on a Mac assigned this model (`image_assignment`); the Hub
         # enforces it. A job that names its model keeps the Hub's ordinary placement.
         body["routing"] = "assigned"
@@ -2210,6 +2230,11 @@ def _collect_batch(
     """
     terminal = (outcome.get("item") or {}).get("terminal_result") or {}
     item = outcome.get("item") or {}
+    target = _measurement_target(request)
+    if target is not None and terminal.get("machine_id") != target["machine"]:
+        raise BackendError("The measurement result does not prove execution on the exact requested Mac.",
+                           code="MEASUREMENT_RESULT_IDENTITY_UNVERIFIED", upstream_accepted=True,
+                           upstream_settled=True)
     # **The anti-silent-drop proof, asked before the wrong picture is downloaded.** A reference-guided
     # image must come back as one: the Hub states how many references the worker actually attached,
     # and a job that sent three and applied two finished on a picture of the wrong people with an
@@ -2965,6 +2990,7 @@ class StudioHubBackend:
                 f"a Studio Hub {request.modality} job cannot be resumed by id",
                 code="UNKNOWN_OUTCOME", upstream_accepted=True,
             )
+        _measurement_target(request)
         base = _resolve_base(request)
         headers = _headers(request)
         jobs_path = _jobs_path(request.modality)

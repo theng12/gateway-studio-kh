@@ -423,5 +423,39 @@ class RestartIsNotADeathTests(_Case):
         self.assertEqual(self.routed, [])
 
 
+class MeasurementTargetTests(_Case):
+    def job(self, key, params=None):
+        return super().job(key, {"prompt": "fixture", "measurement_target":
+                                {"location_id": "a", "machine": "a"}, **(params or {})})
+
+    def test_silent_target_stays_on_its_original_batch_without_cancel_or_spill(self):
+        fleet = _Fleet(a_dies=True)
+        job = self.run_job(fleet, self.job("measurement-silent"))
+        self.assertTrue(job["recovery_required"])
+        self.assertEqual(job["provider_id"], A)
+        self.assertEqual(job["upstream_job_id"], "batch-a")
+        self.assertEqual(fleet.submits("b"), [])
+        self.assertEqual(fleet.saw("a", "DELETE"), [])
+        self.assertEqual(self.routed, [])
+
+    def test_lost_submit_answer_replays_same_target_and_original_job_id(self):
+        fleet = _Fleet(a_dies=False, a_submit=["lost", "ok"])
+        row = self.job("measurement-submit-replay")
+        first = self.run_job(fleet, row)
+        self.assertNotEqual(first["state"], "succeeded")
+        final = self.run_job(fleet, self.store.get(row["id"]))
+        self.assertEqual(final["state"], "succeeded", final.get("error_detail"))
+        self.assertEqual(fleet.created, {"a": 1, "b": 0})
+        self.assertEqual(set(fleet.batches), {"a:" + row["id"]})
+        self.assertEqual(self.routed, [])
+
+    def test_target_refusal_never_chooses_a_different_site(self):
+        fleet = _Fleet(a_dies=False, a_submit=["503"])
+        job = self.run_job(fleet, self.job("measurement-refused"))
+        self.assertEqual(job["provider_id"], A)
+        self.assertEqual(fleet.submits("b"), [])
+        self.assertEqual(self.routed, [])
+
+
 if __name__ == "__main__":
     unittest.main()
