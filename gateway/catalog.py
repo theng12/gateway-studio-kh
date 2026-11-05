@@ -454,7 +454,8 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
             for mode in modes or []:
                 mode["available"] = confirmed[mode["id"]]
                 if mode["id"] == "edit" and isinstance(mode.get("references"), dict):
-                    mode["references"] = {**mode["references"], "max": maximum_references}
+                    mode["references"] = {**mode["references"], "min": minimum_references,
+                                          "max": maximum_references}
     return {
         "execution_label": "Local" if definition.kind == "studio_hub" else "Remote",
         # The lane's own ratios and presets for a Studio Hub location (`local` above), the

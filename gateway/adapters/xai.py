@@ -25,7 +25,7 @@ from typing import Any
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult, staged_data_uri
+from .base import BackendError, BackendRequest, BackendResult, settled_failure, staged_data_uri
 from .openai_compat import OpenAICompatibleBackend
 
 SUBMIT_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
@@ -216,7 +216,7 @@ def _generate_video(request: BackendRequest) -> BackendResult:
             if state in {"failed", "expired"}:
                 error = payload.get("error") or {}
                 detail = error.get("message") or error.get("code") or state
-                raise BackendError(f"xAI video {state}: {detail}", code="PROVIDER_FAILED")
+                raise settled_failure(f"xAI video {state}: {detail}")
             time.sleep(POLL_INTERVAL_S)
         else:
             raise BackendError(

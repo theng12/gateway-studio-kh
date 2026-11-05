@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult
+from .base import BackendError, BackendRequest, BackendResult, settled_failure
 
 POLL_INTERVAL_S = 1.5
 JOB_DEADLINE_S = 600.0
@@ -155,12 +155,14 @@ def generate(request: BackendRequest) -> BackendResult:
                 break
 
             if status in _MODERATED_STATES:
-                raise BackendError(
+                raise settled_failure(
                     f"bfl refused this request: {status}",
                     code="IMAGE_CONTENT_REFUSED",
                 )
             if status in _FAILED_STATES:
-                raise BackendError(f"bfl task {status}", code="IMAGE_FAILED")
+                # A missing record does not establish that an accepted task stopped.
+                failure = BackendError if status == "Task not found" else settled_failure
+                raise failure(f"bfl task {status}", code="IMAGE_FAILED")
             if status not in _RUNNING_STATES:
                 raise BackendError(
                     f"bfl returned an unrecognised status '{status}'", code="PROVIDER_FAILED"

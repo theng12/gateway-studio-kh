@@ -176,6 +176,19 @@ class _Case(unittest.TestCase):
 
 
 class SilentFreeLocationIsMovedTests(_Case):
+    def test_table_change_before_dispatch_uses_an_alternate_without_sending_to_refused_site(self):
+        from gateway import image_limits
+        transport = _Fleet(a_dies=False)
+        row = self.job('table-flip')
+        def decision(provider_id, *_):
+            return {'allowed': provider_id != A, 'reason': 'No node allows this exact reference count.'}
+        with patch.object(image_limits, 'for_provider', side_effect=decision):
+            job = self.run_job(transport, row)
+        self.assertEqual(job['state'], 'succeeded', job.get('error_detail'))
+        self.assertEqual(job['provider_id'], B)
+        self.assertEqual(transport.submits('a'), [], 'table refusal must precede any upstream send')
+        self.assertEqual(len(transport.submits('b')), 1)
+
     def test_a_location_that_goes_silent_mid_poll_is_rerouted_and_the_original_cancelled(self) -> None:
         fleet = _Fleet()
         row = self.job("silent-1")

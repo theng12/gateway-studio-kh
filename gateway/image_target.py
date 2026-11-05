@@ -23,10 +23,13 @@ def read(params: dict) -> dict | None:
 
 
 def same_request(job: dict, params: dict) -> bool:
-    stored = job["params"]
-    if isinstance(stored, str):
-        stored = json.loads(stored)
-    return read(stored) == read(params)
+    try:
+        stored = job["params"]
+        if isinstance(stored, str):
+            stored = json.loads(stored)
+        return isinstance(stored, dict) and read(stored) == read(params)
+    except (TypeError, ValueError):
+        return False
 
 
 def matches_provider(target: dict, provider_id: str) -> bool:

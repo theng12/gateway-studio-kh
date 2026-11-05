@@ -222,6 +222,13 @@ class FreshInventoryTests(unittest.TestCase):
              patch.object(instance, "_admission_reads", side_effect=AssertionError("no booking")):
             self.assertFalse(instance._admit(row))
 
+    def test_malformed_stored_target_never_becomes_an_ordinary_replay(self):
+        for stored in ('{"measurement_target":"broken"}', '{broken', '[]',
+                       '{"measurement_target":{"location_id":"fixture-site"}}'):
+            with self.subTest(stored=stored):
+                self.assertFalse(image_target.same_request({'params': stored}, {}))
+                self.assertFalse(image_target.same_request({'params': stored}, {'measurement_target': TARGET}))
+
     def test_location_pin_survives_a_paused_or_missing_location(self):
         from gateway import fleet
         with patch.object(fleet, "_location_takes_customer_jobs", return_value=False):

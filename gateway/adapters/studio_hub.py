@@ -2632,6 +2632,12 @@ def _queued_chat_post(request: BackendRequest, base: str, headers: dict, body: d
         report_wait(None)
 
 
+def _sync_recovery(base: str, error: httpx.HTTPError) -> dict[str, Any] | None:
+    # A timeout may be a slow model; a dropped free connection follows the location-loss policy.
+    return (None if isinstance(error, httpx.TimeoutException)
+            else {"location": base, "reason": str(error), "lost_contact": True})
+
+
 def _generate_chat(request: BackendRequest) -> BackendResult:
     """Run one chat completion on a Hub location.
 
@@ -2689,10 +2695,7 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
         # run and been recorded as a job on that node with nobody to collect it.
         raise BackendError(
             f"hub chat failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE", retryable=True,
-            # A dropped connection mid-chat is the location going silent, and a chat re-run is
-            # free. A read timeout is not: the model may just be slow, and the hold stays.
-            recovery=None if isinstance(exc, httpx.TimeoutException)
-            else {"location": base, "reason": str(exc), "lost_contact": True},
+            recovery=_sync_recovery(base, exc),
         ) from exc
 
     if response.status_code >= 400:
@@ -2882,7 +2885,7 @@ def _generate_embeddings(request: BackendRequest) -> BackendResult:
                            upstream_accepted=False) from exc
     except httpx.HTTPError as exc:
         raise BackendError(f"hub embeddings failed: {exc}", code="SITE_CAPACITY_UNAVAILABLE",
-                           retryable=True) from exc
+                           retryable=True, recovery=_sync_recovery(base, exc)) from exc
     if response.status_code >= 400:
         code = _hub_refusal_code(response)
         if response.status_code == 422:
@@ -2932,8 +2935,9 @@ def _generate_vision(request: BackendRequest) -> BackendResult:
         raise BackendError(f"could not be reached ({type(exc).__name__})", code="LOCATION_UNREACHABLE",
                            retryable=True, upstream_accepted=False) from exc
     except httpx.HTTPError as exc:
-        raise BackendError(f"did not answer in time ({type(exc).__name__})",
-                           code="SITE_CAPACITY_UNAVAILABLE", retryable=True) from exc
+        raise BackendError(f"Hub request failed ({type(exc).__name__})",
+                           code="SITE_CAPACITY_UNAVAILABLE", retryable=True,
+                           recovery=_sync_recovery(base, exc)) from exc
     if response.status_code == 422:
         raise BackendError("the Hub refused the request: "
                            + (_hub_refusal_reason(response) or response.text[:300]),

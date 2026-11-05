@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 
-from .base import Artifact, BackendError, BackendRequest, BackendResult, staged_bytes
+from .base import Artifact, BackendError, BackendRequest, BackendResult, settled_failure, staged_bytes
 
 POLL_INTERVAL_S = 2.0
 JOB_DEADLINE_S = 900.0
@@ -336,7 +336,7 @@ class KieBackend:
                     result_json = data.get("resultJson") or data.get("result")
                     break
                 if state in _FAILURE_STATES:
-                    raise BackendError(
+                    raise settled_failure(
                         f"kie task {state}: {data.get('failMsg') or data.get('failCode') or 'no detail'}",
                         code="PROVIDER_FAILED",
                     )

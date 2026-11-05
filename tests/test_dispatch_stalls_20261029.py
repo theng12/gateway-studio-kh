@@ -92,7 +92,7 @@ class _Base(unittest.TestCase):
         self.sites: list[dict] = []
 
         def enabled(modality):
-            return [(types.SimpleNamespace(id=row["provider_id"]),
+            return [(types.SimpleNamespace(id=row["provider_id"], kind="studio_hub"),
                      {"model_id": model, "modality": modality, "raw": {}})
                     for row in self.sites for model in row.get("_models") or []
                     if _LANE.get(model) == modality]

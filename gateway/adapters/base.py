@@ -184,6 +184,11 @@ class BackendError(Exception):
         self.review_candidate: dict[str, Any] | None = None
 
 
+def settled_failure(message: str, *, code: str = "PROVIDER_FAILED") -> BackendError:
+    """A poll of the accepted identity explicitly said its work has ended."""
+    return BackendError(message, code=code, upstream_accepted=True, upstream_settled=True)
+
+
 def unusable_answer(provider_id: str, problem: str, *, code: str = "PROVIDER_FAILED") -> BackendError:
     """The provider **answered**, and what it answered cannot be used: a settled failure.
 

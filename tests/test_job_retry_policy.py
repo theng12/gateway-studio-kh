@@ -379,7 +379,7 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
                     patch.object(worker_module.registry.credentials, "is_enabled",
                                  lambda provider_id: True), \
                     patch.object(worker_module.registry.models, "enabled_models",
-                                 lambda modality: [(type("D", (), {"id": "studio-hub-a"})(),
+                                 lambda modality: [(type("D", (), {"id": "studio-hub-a", "kind": "studio_hub"})(),
                                                     {"model_id": "z-image-turbo-6b-mlx-4bit",
                                                      "provider_id": "studio-hub-a"})]), \
                     patch.object(worker_module.registry.credentials, "resolved",
@@ -433,7 +433,7 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
                 patch.object(worker_module.registry, "definition", definition), \
                 patch.object(worker_module.registry.credentials, "is_enabled", lambda _p: True), \
                 patch.object(worker_module.registry.models, "enabled_models",
-                             lambda _m: [(type("D", (), {"id": "studio-hub-a"})(),
+                             lambda _m: [(type("D", (), {"id": "studio-hub-a", "kind": "studio_hub"})(),
                                           {"model_id": "m", "provider_id": "studio-hub-a"})]), \
                 patch.object(worker_module.registry.credentials, "resolved", lambda _p: {}):
             worker_module.execute_job(dict(store.job), store)

@@ -1621,12 +1621,6 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 detail=f"provider '{provider_id}' is disabled or unknown",
             )
             return
-        if modality == "image" and not resume_id and not resend:
-            from . import image_limits
-            decision = image_limits.for_provider(provider_id, model_id, params)
-            if decision is not None and not decision["allowed"]:
-                _fail(store, job_id, code="IMAGE_LIMITS_NO_NODE", detail=decision["reason"])
-                return
         params["_client_request_id"] = _client_request_id(store, job_id, provider_id)
         request = BackendRequest(
             provider_id=provider_id,
@@ -1650,6 +1644,13 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             on_wait(None)  # a fresh attempt is not waiting for anything yet
         sends_before = requests_started()
         try:
+            if modality == "image" and not resume_id and not resend:
+                from . import image_limits
+                decision = image_limits.for_provider(provider_id, model_id, params)
+                if decision is not None and not decision["allowed"]:
+                    # A changed cell refuses this site before any send, just like its Hub would.
+                    raise BackendError(decision["reason"], code="LOCATION_NOT_READY",
+                                       retryable=True, upstream_accepted=False)
             result = adapter.resume(request) if resume_id else adapter.generate(request)
             _check_artifacts(result)
             break
@@ -2202,10 +2203,7 @@ class Worker:
                     self.store.hold_interrupted(job_id)
                     continue
                 self._book(job)
-                threading.Thread(
-                    target=self._run, args=(job,), kwargs={"resume": True},
-                    name=f"gateway-job-{job_id[:8]}", daemon=True,
-                ).start()
+                self._start_job(job, resume=True)
             except Exception:  # noqa: BLE001 - one unreadable row must not strand the others
                 log.exception("could not resume %s; holding it", job_id)
                 try:
@@ -2824,6 +2822,25 @@ class Worker:
             self._book(job)
 
     # -- running -----------------------------------------------------------
+    def _start_job(self, job: dict[str, Any], *, resume: bool = False) -> None:
+        """Transfer a reserved slot to its thread, or unwind the unsent claim."""
+        try:
+            if not resume:
+                if not self.store.mark_running(job["id"]):
+                    self._release(job)
+                    return
+                job["state"] = "running"
+            threading.Thread(target=self._run, args=(job,), kwargs={"resume": resume},
+                             name=f"gateway-job-{job['id'][:8]}", daemon=True).start()
+        except Exception:
+            self._release(job)
+            if not resume:
+                try:
+                    self.store.unclaim(job["id"])
+                except Exception:
+                    log.exception("could not return unsent job %s to its queue", job["id"])
+            raise
+
     def _run(self, job: dict[str, Any], resume: bool = False) -> None:
         """One job on its own thread. Never raises."""
         self._running[job["id"]] = job
@@ -2894,6 +2911,12 @@ class Worker:
                 for job in due:
                     if self._stop.is_set():
                         return
+                    from . import image_target
+                    try:
+                        image_target.read(_job_params(job))
+                    except ValueError as exc:
+                        _fail(self.store, job["id"], code="INVALID_MEASUREMENT_TARGET", detail=str(exc))
+                        continue
                     if self._expired_in_queue(job) or self._stranded_on_paused(job) or self._image_limits_refused(job):
                         continue
                     # Reserve first, then claim: a claim that fails must not leave the
@@ -2904,14 +2927,7 @@ class Worker:
                         self._note_waiting(job)
                         continue
                     self._rebind_backoff.pop(job["id"], None)
-                    if not self.store.mark_running(job["id"]):
-                        self._release(job)
-                        continue
-                    job["state"] = "running"
-                    threading.Thread(
-                        target=self._run, args=(job,),
-                        name=f"gateway-job-{job['id'][:8]}", daemon=True,
-                    ).start()
+                    self._start_job(job)
                 self.pass_failures = 0
             except Exception:  # noqa: BLE001 - the next pass must still happen
                 self.pass_failures += 1
@@ -2928,8 +2944,12 @@ class Worker:
                     and not self._sweeping.is_set()):
                 self._last_hold_sweep = time.time()
                 self._sweeping.set()
-                threading.Thread(target=self._sweep_holds, name="gateway-hold-sweep",
-                                 daemon=True).start()
+                try:
+                    threading.Thread(target=self._sweep_holds, name="gateway-hold-sweep",
+                                     daemon=True).start()
+                except Exception:
+                    self._sweeping.clear()
+                    log.exception("could not start recovery-hold reconciliation; the next sweep will retry")
 
             # **The superseded-batch cleanup has its own clock and thread** (0.2.211). Both
             # sweeps are network-bound; sharing one thread queued one behind the other, and a

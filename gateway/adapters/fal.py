@@ -19,6 +19,7 @@ from .base import (
     BackendError,
     BackendRequest,
     BackendResult,
+    settled_failure,
     staged_data_uri,
     staged_data_uris,
 )
@@ -445,7 +446,7 @@ class FalBackend:
                 if state == "COMPLETED":
                     break
                 if state in {"FAILED", "ERROR", "CANCELLED"}:
-                    raise BackendError(f"fal job {state.lower()}", code="PROVIDER_FAILED")
+                    raise settled_failure(f"fal job {state.lower()}")
                 time.sleep(POLL_INTERVAL_S)
             else:
                 raise BackendError(

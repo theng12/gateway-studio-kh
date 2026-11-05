@@ -177,6 +177,8 @@ def refusal(compound: str, params: dict, only_location: str | None = None) -> st
             continue
         if only_location is not None and location != only_location:
             continue
+        if not fleet._location_takes_customer_jobs(location) or fleet.is_draining_provider(definition.id):
+            continue
         if pool_name is None and provider not in (fleet.FLEET_PROVIDER_ID, definition.id):
             continue
         decision = assess(model.get("raw") or {}, model["model_id"], params)

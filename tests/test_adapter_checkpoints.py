@@ -303,6 +303,7 @@ class AdapterCheckpointTests(unittest.TestCase):
         scenario.events.append("failure")
 
         self.assertEqual(raised.exception.code, "PROVIDER_FAILED")
+        self.assertFalse(raised.exception.upstream_settled, "a failed poll is not a terminal verdict")
         self.assertEqual(checkpointed, [expected_id])
         self.assertEqual(scenario.events, ["submit", "checkpoint", "poll", "failure"])
         self.assertEqual(len(scenario.submits), 1)
@@ -354,6 +355,83 @@ class AdapterCheckpointTests(unittest.TestCase):
         for factory in factories:
             with self.subTest(factory=factory):
                 self._assert_without_checkpoint_unchanged(factory)
+
+    def test_explicit_terminal_failures_are_settled_but_missing_tasks_are_unknown(self) -> None:
+        cases = [
+            (lambda: self._fal_scenario("image"), {"status": state}, True)
+            for state in ("FAILED", "ERROR", "CANCELLED")
+        ] + [
+            (self._bfl_scenario, {"status": state}, state != "Task not found")
+            for state in ("Request Moderated", "Content Moderated", "Error", "Failed", "Task not found")
+        ] + [
+            (lambda: self._kie_scenario("image"), {"data": {"state": state}}, True)
+            for state in ("fail", "failed", "error", "cancelled")
+        ] + [
+            (self._minimax_scenario, {"task": {"status": state}}, True)
+            for state in ("failed", "expired")
+        ] + [
+            (self._xai_scenario, {"status": state}, True)
+            for state in ("failed", "expired")
+        ]
+        transport = httpx.MockTransport
+        for factory, body, settled in cases:
+            with self.subTest(body=body):
+                scenario = factory()
+                checkpointed = []
+
+                def terminal_transport(handler):
+                    def answer(request):
+                        if request.method == "POST":
+                            return handler(request)
+                        return httpx.Response(200, json=body)
+                    return transport(answer)
+
+                with patch.object(httpx, "MockTransport", side_effect=terminal_transport), \
+                        self.assertRaises(BackendError) as raised:
+                    scenario.run(checkpointed.append)
+                self.assertEqual(len(checkpointed), 1, "terminal verdict must follow the accepted identity")
+                self.assertEqual(raised.exception.upstream_settled, settled,
+                                 "only an explicit terminal verdict may clear unknown-outcome classification")
+
+    def test_sync_hub_lanes_distinguish_dropped_connections_from_timeouts(self) -> None:
+        cases = [
+            (studio_hub_module._generate_embeddings, "embeddings", {"input": ["test"]}),
+            (studio_hub_module._generate_vision, "vision", {"body": {}}),
+        ]
+        for operation, modality, params in cases:
+            for exception in (httpx.RemoteProtocolError, httpx.ReadTimeout):
+                with self.subTest(modality=modality, exception=exception.__name__):
+                    request = self._request(provider_id="studio-hub-test", model_id="test",
+                                            modality=modality, params=params,
+                                            values={"hub_token": "test-token"})
+                    with patch.object(studio_hub_module.httpx, "post", side_effect=exception("connection lost")), \
+                            self.assertRaises(BackendError) as raised:
+                        operation(request)
+                    error = raised.exception
+                    self.assertEqual(error.code, "SITE_CAPACITY_UNAVAILABLE")
+                    if exception is httpx.ReadTimeout:
+                        self.assertIsNone(error.recovery, "a slow model remains an unknown outcome")
+                    else:
+                        self.assertTrue((error.recovery or {}).get("lost_contact"),
+                                        "a dropped free Hub connection must retain the recovery signal")
+
+    def test_poll_deadlines_remain_unknown_after_checkpoint(self) -> None:
+        cases = [
+            (fal_module, "JOB_DEADLINE_S", lambda: self._fal_scenario("image")),
+            (bfl_module, "JOB_DEADLINE_S", self._bfl_scenario),
+            (kie_module, "JOB_DEADLINE_S", lambda: self._kie_scenario("image")),
+            (minimax_module, "VIDEO_DEADLINE_S", self._minimax_scenario),
+            (xai_module, "JOB_DEADLINE_S", self._xai_scenario),
+        ]
+        for module, deadline, factory in cases:
+            with self.subTest(adapter=module.__name__):
+                scenario = factory()
+                checkpointed = []
+                with patch.object(module, deadline, -1), self.assertRaises(BackendError) as raised:
+                    scenario.run(checkpointed.append)
+                self.assertEqual(len(checkpointed), 1)
+                self.assertEqual(raised.exception.code, "PROVIDER_SUBMISSION_UNCERTAIN")
+                self.assertFalse(raised.exception.upstream_settled)
 
     def test_bfl_without_safe_id_never_checkpoints_polling_url(self) -> None:
         scenario = self._bfl_scenario(include_id=False)

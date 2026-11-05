@@ -451,7 +451,7 @@ def image_reference_limits(raw: dict[str, Any]) -> dict[str, int | None]:
 
     def stated(key: str) -> int | None:
         value = references.get(key)
-        return value if type(value) is int and value > 0 else None
+        return value if type(value) is int and value >= 0 else None
 
     return {key: stated(key) for key in ("min", "max", "max_dimension")}
 

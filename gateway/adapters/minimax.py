@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 
-from .base import BackendError, BackendRequest, BackendResult, staged_data_uri
+from .base import BackendError, BackendRequest, BackendResult, settled_failure, staged_data_uri
 
 SUBMIT_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 POLL_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
@@ -333,7 +333,7 @@ def _video(request: BackendRequest) -> BackendResult:
                 raise BackendError("minimax video succeeded without a url", code="PROVIDER_FAILED")
             break
         if status in {"failed", "expired"}:
-            raise BackendError(f"minimax video {status}", code="PROVIDER_FAILED")
+            raise settled_failure(f"minimax video {status}")
         if status not in {"queued", "running", ""}:
             raise BackendError(f"minimax video status '{status}'", code="PROVIDER_FAILED")
     else:

@@ -102,6 +102,29 @@ class ReaderTests(unittest.TestCase):
         self.assertTrue(image_limits.assess(raw, MODEL, request(row['max_reference_images']))['allowed'])
         self.assertFalse(image_limits.assess(raw, MODEL, request(3))['allowed'])
 
+    def test_table_minimum_is_identical_in_flat_and_nested_catalogue_fields(self):
+        raw = worker(maximum=2)
+        raw['image_modes'][1]['references']['min'] = 2
+        row = catalog._image_row(MODEL, DEFINITION, {'raw': raw})
+        edit = next(mode for mode in row['image_modes'] if mode['id'] == 'edit')
+        self.assertEqual(edit['references']['min'], row['min_reference_images'])
+        self.assertTrue(image_limits.assess(raw, MODEL, request(row['min_reference_images']))['allowed'])
+
+    def test_legacy_reference_reader_preserves_zero_and_rejects_boolean_or_negative(self):
+        from gateway.providers.definitions import image_reference_limits
+        for field in ['min', 'max', 'max_dimension']:
+            for value, expected in [(0, 0), (None, None), (False, None), (-1, None), (2, 2)]:
+                with self.subTest(field=field, value=value):
+                    raw = {'lane_contract': {'references': {field: value}}}
+                    self.assertEqual(image_reference_limits(raw)[field], expected)
+
+    def test_legacy_zero_maximum_is_enforced_at_the_submit_door(self):
+        from gateway import api
+        raw = {'image_modes': [{'id': 'edit', 'available': True, 'references': {'max': 0}}]}
+        with self.assertRaises(api.GatewayError) as error:
+            api._refuse_references_this_lane_cannot_take(DEFINITION, {'model_id': MODEL, 'raw': raw}, request(1))
+        self.assertIn('at most 0', str(error.exception))
+
 
 class IntentTests(unittest.TestCase):
     def setUp(self):
@@ -194,6 +217,20 @@ class RoutingTests(unittest.TestCase):
              patch.object(fleet, 'routing_candidates', return_value=[candidate]), \
              patch.object(fleet, 'assigned_macs', return_value={'different'}):
             self.assertEqual(fleet.pool_candidates([MODEL], 'image', image_params=request(2)), [])
+
+    def test_paused_or_draining_site_cannot_supply_permission_for_active_sites(self):
+        models = [(SimpleNamespace(id='studio-hub-' + site, kind='studio_hub'),
+                   {'model_id': MODEL, 'raw': worker(maximum=maximum)})
+                  for site, maximum in [('active', 1), ('unavailable', 2)]]
+        for unavailable in ({'paused_at': 1}, {'drained': True},
+                            {'capacity': {'accepting_customer_jobs': False}}):
+            with self.subTest(unavailable=unavailable), \
+                 patch.object(registry.models, 'enabled_models', return_value=models), \
+                 patch.object(fleet, 'snapshot', return_value={'locations': [
+                     {'id': 'active'}, {'id': 'unavailable', **unavailable}]}), \
+                 patch.object(fleet, 'is_draining_provider', return_value=False):
+                self.assertIn('edit, 2 reference',
+                              image_limits.refusal('studio-hub::' + MODEL, request(2)) or '')
 
     def test_all_declared_sites_refuse_with_exact_job_type(self):
         model = {'model_id': MODEL, 'raw': worker(maximum=1)}
