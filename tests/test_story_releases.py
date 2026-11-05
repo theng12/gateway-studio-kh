@@ -34,7 +34,7 @@ from gateway import api, config, release_publisher, retention, story_releases  #
 from gateway.store import JobStore  # noqa: E402
 
 KEY = "story-test-key"
-AUTH = {"Authorization": f"Bearer {KEY}"}
+AUTH = {"Authorization": f"Bearer {KEY}", "X-Gateway-Origin": "http://testserver"}
 
 _VERIFY = r"""
 const { createPublicKey, verify } = require('node:crypto')

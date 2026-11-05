@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import (
@@ -118,6 +119,36 @@ def require_admin(
         raise AdminError(503, "Set GATEWAY_API_KEY before using the gateway beyond loopback.")
     if not _key_matches(authorization[7:].strip()):
         raise AdminError(403, "Invalid API key.")
+
+
+def require_release_origin(request: Request) -> None:
+    """A publisher names its target; an authenticated local default is not intent."""
+    origins = request.headers.getlist("x-gateway-origin") or request.headers.getlist("origin")
+    if len(origins) != 1 or not origins[0].strip():
+        raise AdminError(422, "Bind KH_GATEWAY_URL explicitly and send X-Gateway-Origin, "
+                         "or publish from this Gateway's console.", "GATEWAY_ORIGIN_REQUIRED")
+    source = origins[0].strip()
+    try:
+        parsed = urlsplit(source)
+        if (parsed.scheme not in ("http", "https") or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path not in ("", "/") or "?" in source or "#" in source
+                or any(char.isspace() or ord(char) < 32 for char in source)):
+            raise ValueError
+        if parsed.port is not None and parsed.port < 1:
+            raise ValueError
+        declared = (parsed.scheme, parsed.hostname, parsed.port or
+                    (443 if parsed.scheme == "https" else 80))
+        target = request.url
+        actual = (target.scheme, target.hostname, target.port or
+                  (443 if target.scheme == "https" else 80))
+    except ValueError:
+        raise AdminError(422, "Gateway origin must be an HTTP(S) origin without credentials, "
+                         "a path, query or fragment.", "GATEWAY_ORIGIN_INVALID") from None
+    if declared != actual:
+        raise AdminError(409, "The bound Gateway origin does not match this Gateway. "
+                         "Reconcile the target before publishing or requesting an update.",
+                         "GATEWAY_ORIGIN_MISMATCH")
 
 
 def bearer_guest(request: Request) -> dict[str, Any] | None:
@@ -5547,7 +5578,7 @@ def release_identity() -> Any:
         return _error(exc.status, exc.message, exc.code)
 
 
-@router.post("/api/release/publish", dependencies=[Depends(require_admin)])
+@router.post("/api/release/publish", dependencies=[Depends(require_admin), Depends(require_release_origin)])
 def release_publish(payload: dict[str, Any]) -> Any:
     """Sign one artifact and offer it to every configured controller.
 
@@ -5635,7 +5666,7 @@ def _story_call(call: Any) -> Any:
         return _error(exc.status, exc.message, exc.code)
 
 
-@router.post("/api/story/release/publish", dependencies=[Depends(require_admin)])
+@router.post("/api/story/release/publish", dependencies=[Depends(require_admin), Depends(require_release_origin)])
 def story_release_publish(payload: dict[str, Any]) -> Any:
     """Sign a Story DMG or .zip (version and build read from the bundle) and offer it."""
     from . import story_releases
@@ -5657,7 +5688,7 @@ def story_instances() -> Any:
     return out
 
 
-@router.post("/api/story/instances/{instance}/update", dependencies=[Depends(require_admin)])
+@router.post("/api/story/instances/{instance}/update", dependencies=[Depends(require_admin), Depends(require_release_origin)])
 def story_instance_update(instance: str) -> Any:
     """"Update now": the Mac installs on its next check-in (at most 30 minutes away), after draining."""
     from . import story_releases
