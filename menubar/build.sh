@@ -237,9 +237,8 @@ if [ "$RENDER_AUTHORITY" != "tool-only" ]; then
 
   # Use only the pure strict JSON validator. Importing gateway.runtime here would
   # create stores/workers during a build and turn data validation into application startup.
-  PYTHONPATH="$ROOT" "$RUNTIME_PYTHON" - \
-    "$AUTHORITY_SOURCE" \
-    "$PROFILE_SHA256" "$TOOLS_SHA256" "$COMPILER_SHA256" <<'PY'
+  validate_render_authority() {
+  PYTHONPATH="$ROOT" "$RUNTIME_PYTHON" - "$@" <<'PY'
 import hashlib
 from pathlib import Path
 import sys
@@ -302,8 +301,10 @@ compiler = exact(decode_render_json(raw["compiler.json"]), (
     "format", "implementation", "python_runtime_sha256", "render_hash_sha256",
     "render_contract_sha256", "final_render_compiler_sha256",
 ), "compiler")
+late_label = sys.argv[5] == "studio.render.late-label.v3"
+fixed_compiler = "hub-final-render-late-label-v3" if late_label else "hub-final-render-v1"
 if (compiler["format"] != "studio.render.compiler.v1"
-        or compiler["implementation"] != "hub-final-render-v1"):
+        or compiler["implementation"] != fixed_compiler):
     invalid("compiler fixed fields")
 for key in (
     "python_runtime_sha256", "render_hash_sha256", "render_contract_sha256",
@@ -318,10 +319,11 @@ profile = exact(decode_render_json(raw["profile.json"]), (
     "fidelity_record_sha256", "production_eligible",
 ), "profile")
 fixed_profile = {
-    "format": "studio.render.profile.v1",
-    "implementation": "story-classic-no-font-v1",
+    "format": "studio.render.profile.v3" if late_label else "studio.render.profile.v1",
+    "implementation": "story-classic-late-label-v3" if late_label else "story-classic-no-font-v1",
     "recipe_namespace": "studio.render.final.v1",
-    "combination_set": "retained-classic-no-font-candidate-v1",
+    "combination_set": "retained-classic-late-label-candidate-v3" if late_label
+                       else "retained-classic-no-font-candidate-v1",
     "tier_policy": "story-final-chain-v1",
     "output_policy": "story-final-output-v1",
 }
@@ -373,6 +375,9 @@ if (type(bounds["max_duration_sec"]) not in (int, float)
     invalid("profile max_duration_sec")
 
 PY
+  }
+  validate_render_authority "$AUTHORITY_SOURCE" \
+    "$PROFILE_SHA256" "$TOOLS_SHA256" "$COMPILER_SHA256" "studio.render.profile.v1"
 
   AUTHORITY_DESTINATION="$APP/Contents/Resources/gateway/data/final-render"
   mkdir "$AUTHORITY_DESTINATION"
@@ -395,6 +400,45 @@ PY
   # runtime never reads one (capabilities come from the Hub-published candidate, profile
   # facts from the descriptors), and requiring a fabricated one would block the accepted
   # descriptor-only default. The exact 3-name directory is the runtime's tamper property.
+
+  LATE_LABEL_SOURCE="$ROOT/data/final-render-late-label"
+  if [ -e "$LATE_LABEL_SOURCE" ] || [ -L "$LATE_LABEL_SOURCE" ]; then
+    [ -d "$LATE_LABEL_SOURCE" ] && [ ! -L "$LATE_LABEL_SOURCE" ] || {
+      echo "ERROR: unsafe late-label render authority source" >&2
+      exit 1
+    }
+    LATE_LABEL_COUNT="$(find "$LATE_LABEL_SOURCE" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')"
+    [ "$LATE_LABEL_COUNT" = 3 ] || {
+      echo "ERROR: late-label render authority requires exactly three files" >&2
+      exit 1
+    }
+    for NAME in profile.json tools.json compiler.json; do
+      SOURCE_FILE="$LATE_LABEL_SOURCE/$NAME"
+      [ -f "$SOURCE_FILE" ] && [ ! -L "$SOURCE_FILE" ] \
+        && [ "$(wc -c < "$SOURCE_FILE" | tr -d '[:space:]')" -ge 2 ] \
+        && [ "$(wc -c < "$SOURCE_FILE" | tr -d '[:space:]')" -le 1048576 ] \
+        && [ "$(stat -f '%Lp' "$SOURCE_FILE")" = 644 ] || {
+          echo "ERROR: invalid late-label render authority file: $NAME" >&2
+          exit 1
+        }
+    done
+    LATE_PROFILE_SHA256="$(shasum -a 256 "$LATE_LABEL_SOURCE/profile.json" | cut -d ' ' -f1)"
+    LATE_TOOLS_SHA256="$(shasum -a 256 "$LATE_LABEL_SOURCE/tools.json" | cut -d ' ' -f1)"
+    LATE_COMPILER_SHA256="$(shasum -a 256 "$LATE_LABEL_SOURCE/compiler.json" | cut -d ' ' -f1)"
+    validate_render_authority "$LATE_LABEL_SOURCE" \
+      "$LATE_PROFILE_SHA256" "$LATE_TOOLS_SHA256" "$LATE_COMPILER_SHA256" \
+      "studio.render.late-label.v3"
+    LATE_LABEL_DESTINATION="$APP/Contents/Resources/gateway/data/final-render-late-label"
+    mkdir "$LATE_LABEL_DESTINATION"
+    for NAME in profile.json tools.json compiler.json; do
+      cp "$LATE_LABEL_SOURCE/$NAME" "$LATE_LABEL_DESTINATION/$NAME"
+      [ "$(shasum -a 256 "$LATE_LABEL_SOURCE/$NAME" | cut -d ' ' -f1)" \
+        = "$(shasum -a 256 "$LATE_LABEL_DESTINATION/$NAME" | cut -d ' ' -f1)" ] || {
+          echo "ERROR: late-label render authority changed while staging: $NAME" >&2
+          exit 1
+        }
+    done
+  fi
 fi
 
 echo "==> stamping the build"

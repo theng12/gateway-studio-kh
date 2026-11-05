@@ -2408,14 +2408,21 @@ def final_render_capabilities(
     request: Request,
     principal: AuthenticatedPrivateRender = Depends(require_private_render),
 ) -> dict[str, Any]:
+    from .render_contract import LATE_LABEL_CONTRACT
     from .render_encode import requested_encode_query
     try:
+        contracts = request.query_params.getlist("requested_contract")
+        if contracts and contracts != [LATE_LABEL_CONTRACT]:
+            raise ValueError("invalid requested_contract query")
         requested = requested_encode_query(request.query_params.getlist("requested_encode"))
     except (ValueError, TypeError, UnicodeError):
         raise RenderServiceError("RENDER_REQUEST_INVALID", 422) from None
-    if requested is None:
-        return render_service.capabilities(principal)
-    return render_service.capabilities(principal, requested_encode=requested)
+    options = {}
+    if requested is not None:
+        options["requested_encode"] = requested
+    if contracts:
+        options["requested_contract"] = contracts[0]
+    return render_service.capabilities(principal, **options)
 
 
 @app.get("/v2/final-renders/capabilities")

@@ -24,7 +24,10 @@ from .render_assets import (
     AssetValidationError,
     RenderAssetStore,
 )
-from .render_contract import validate_render_encode, validate_render_packet_syntax
+from .render_contract import (
+    LATE_LABEL_CONTRACT, LATE_LABEL_MOTIONS, validate_render_encode, validate_render_packet_syntax,
+)
+from .render_png import validate_cue_png
 from .render_encode import execution_authority
 from .render_hash_v1 import decode_render_json
 from .store import JobStore, RenderJournalCancelled, RenderJournalConflict
@@ -527,6 +530,8 @@ class FinalRenderService:
         key_configured: Callable[[], bool],
         profile_descriptor: bytes | None = None,
         profile_facts: dict[str, Any] | None = None,
+        late_label_profile_descriptor: bytes | None = None,
+        late_label_profile_facts: dict[str, Any] | None = None,
     ) -> None:
         self.store = store
         self.assets = assets
@@ -539,6 +544,12 @@ class FinalRenderService:
         self.profile_digest = (
             hashlib.sha256(profile_descriptor).hexdigest() if profile_descriptor is not None else None
         )
+        self.late_label_profile_descriptor = late_label_profile_descriptor
+        self.late_label_profile_facts = late_label_profile_facts or {}
+        self.late_label_profile = (decode_render_json(late_label_profile_descriptor)
+                                   if late_label_profile_descriptor is not None else None)
+        self.late_label_profile_digest = (hashlib.sha256(late_label_profile_descriptor).hexdigest()
+                                         if late_label_profile_descriptor is not None else None)
         self._lock = threading.Lock()
         self._active_ids: set[str] = set()
         self._threads: set[threading.Thread] = set()
@@ -570,19 +581,20 @@ class FinalRenderService:
             return False
 
     def capabilities(self, principal: AuthenticatedPrivateRender, *,
-                     requested_encode: dict[str, Any] | None = None) -> dict[str, Any]:
-        self._require_profile()
+                     requested_encode: dict[str, Any] | None = None,
+                     requested_contract: str | None = None) -> dict[str, Any]:
+        descriptor, profile_digest, _profile, facts = self._profile_for_contract(requested_contract)
         if requested_encode is not None:
             validate_render_encode(requested_encode)
         try:
             candidates = (fleet.render_candidates(
-                self.profile_digest, qualification=True, available=False,
+                profile_digest, qualification=True, available=False,
                 resolve_encode_authority=True) if requested_encode is not None else
-                fleet.render_candidates(self.profile_digest, qualification=True, available=False))
-            idle = (fleet.render_candidates(self.profile_digest, qualification=True,
+                fleet.render_candidates(profile_digest, qualification=True, available=False))
+            idle = (fleet.render_candidates(profile_digest, qualification=True,
                                              resolve_encode_authority=True)
                     if requested_encode is not None else
-                    fleet.render_candidates(self.profile_digest, qualification=True))
+                    fleet.render_candidates(profile_digest, qualification=True))
             if requested_encode is not None:
                 candidates = probed_render_candidates(candidates, requested_encode, self.hub)
                 supported = {(row["site_id"], row["roster_controller_id"], row["node_id"]): row
@@ -598,6 +610,8 @@ class FinalRenderService:
             else:
                 encode = fleet.render_encode_intersection(candidates)
         except Exception:
+            if requested_contract is not None:
+                raise PrivateRenderUnavailable() from None
             candidates, idle, encode = [], [], None
         answer: dict[str, Any] = {
             "format": "studio.render.gateway-capabilities.v1",
@@ -614,19 +628,44 @@ class FinalRenderService:
         if requested_encode is not None:
             answer["requested_encode"] = requested_encode
         answer.update({
-            "profile_descriptor_utf8": self.profile_descriptor.decode("utf-8"),
-            "profile_digest": self.profile_digest,
-            "tools": self.profile_facts.get("tools"),
-            "compiler": self.profile_facts.get("compiler"),
+            "profile_descriptor_utf8": descriptor.decode("utf-8"),
+            "profile_digest": profile_digest,
+            "tools": facts.get("tools"),
+            "compiler": facts.get("compiler"),
         })
+        if requested_contract is not None:
+            answer["late_labels"] = {"format": LATE_LABEL_CONTRACT,
+                                     "motions": list(LATE_LABEL_MOTIONS)}
         return answer
+
+    def _profile_for_contract(self, contract: str | None) -> tuple:
+        if contract is None:
+            self._require_profile()
+            return self.profile_descriptor, self.profile_digest, self.profile, self.profile_facts
+        if contract != LATE_LABEL_CONTRACT:
+            raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
+        if (self.late_label_profile_descriptor is None
+                or type(self.late_label_profile) is not dict):
+            raise PrivateRenderUnavailable()
+        return (self.late_label_profile_descriptor, self.late_label_profile_digest,
+                self.late_label_profile, self.late_label_profile_facts)
+
+    def _packet_profile(self, packet: dict[str, Any]) -> tuple:
+        if type(packet) is not dict or type(packet.get("recipe")) is not dict:
+            raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
+        digest = packet["recipe"].get("profile_digest")
+        if digest == self.late_label_profile_digest and digest is not None:
+            return LATE_LABEL_CONTRACT, self._profile_for_contract(LATE_LABEL_CONTRACT)
+        if digest == self.profile_digest and digest is not None:
+            return None, self._profile_for_contract(None)
+        raise RenderServiceError("RENDER_PROFILE_MISMATCH", 409)
 
     def _require_profile(self) -> None:
         if self.profile_descriptor is None or type(self.profile) is not dict:
             raise PrivateRenderUnavailable()
 
-    def _require_packet_bounds(self, packet: dict[str, Any]) -> None:
-        bounds = (self.profile or {}).get("execution_bounds")
+    def _require_packet_bounds(self, packet: dict[str, Any], profile: dict | None = None) -> None:
+        bounds = ((self.profile if profile is None else profile) or {}).get("execution_bounds")
         recipe = packet.get("recipe") or {}
         manifest = packet.get("manifest") or []
         canvas = recipe.get("canvas") or {}
@@ -660,6 +699,38 @@ class FinalRenderService:
                     * math.ceil(canvas.get("working_fps", 0) * duration)
                     > bounds.get("max_pixel_frames", 0)):
             raise RenderServiceError("RENDER_PROFILE_MISMATCH", 409)
+
+    def _require_cue_assets(self, principal: AuthenticatedPrivateRender,
+                            packet: dict, handles: dict) -> None:
+        canvas = packet["recipe"]["canvas"]
+        dimensions: dict[str, tuple[int, int]] = {}
+        for entry in packet["manifest"]:
+            if entry["role"] != "cue_label":
+                continue
+            handle = handles[entry["logical_id"]]
+            if handle not in dimensions:
+                try:
+                    with self.assets.open_reader(principal.owner_scope, handle) as reader:
+                        dimensions[handle] = validate_cue_png(
+                            reader, max_width=canvas["width"], max_height=canvas["height"])
+                except (ValueError, OSError, AssetRecoveryRequiredError):
+                    raise RenderServiceError("RENDER_CUE_ASSET_INVALID", 422) from None
+        for op in packet["recipe"]["operations"]:
+            if op["kind"] != "late_label_stage":
+                continue
+            label_refs = ([op["label"]["asset"]] if op["label"] is not None else
+                          [frame["asset"] for frame in op["reveal"]["frames"]])
+            sizes = [dimensions[handles[ref["logical_id"]]] for ref in label_refs]
+            if (any(size != sizes[0] for size in sizes)
+                    or op["placement"]["x_px"] + sizes[0][0] > canvas["width"]
+                    or op["placement"]["y_px"] + sizes[0][1] > canvas["height"]):
+                raise RenderServiceError("RENDER_CUE_ASSET_INVALID", 422)
+            line_refs = ([op["line"]["asset"]] if op["line"] is not None else
+                         [frame["asset"] for frame in op["line_reveal"]["frames"]]
+                         if op["line_reveal"] is not None else [])
+            if any(dimensions[handles[ref["logical_id"]]] != (canvas["width"], canvas["height"])
+                   for ref in line_refs):
+                raise RenderServiceError("RENDER_CUE_ASSET_INVALID", 422)
 
     def blob_status(self, principal: AuthenticatedPrivateRender, sha256: str,
                     size_bytes: int) -> dict[str, Any]:
@@ -736,10 +807,10 @@ class FinalRenderService:
             if type(request["attempt_no"]) is not int or not 1 <= request["attempt_no"] <= 2**31 - 1:
                 raise ValueError
             packet_raw = _canonical(request["packet"])
-            packet = validate_render_packet_syntax(packet_raw)
-            if packet["recipe"]["profile_digest"] != self.profile_digest:
-                raise RenderServiceError("RENDER_PROFILE_MISMATCH", 409)
-            self._require_packet_bounds(packet)
+            contract, (_, profile_digest, profile, profile_facts) = self._packet_profile(request["packet"])
+            packet = (validate_render_packet_syntax(packet_raw, contract=contract)
+                      if contract is not None else validate_render_packet_syntax(packet_raw))
+            self._require_packet_bounds(packet, profile)
             handles = request["assets"]
             if type(handles) is not dict or set(handles) != {
                     item["logical_id"] for item in packet["manifest"]}:
@@ -761,6 +832,8 @@ class FinalRenderService:
                                "sha256": asset["sha256"], "size_bytes": asset["size_bytes"]})
         except AssetNotFoundError as exc:
             raise RenderServiceError("RENDER_ASSET_NOT_FOUND", 404) from exc
+        if contract is not None:
+            self._require_cue_assets(principal, packet, handles)
         destination = self.destination_selector(packet)
         if not isinstance(destination, RenderDestination):
             raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
@@ -788,11 +861,11 @@ class FinalRenderService:
                     or qualification_capacity["slots_total"] != 1
                     or destination.capability_snapshot.get("production_eligible") is not False
                     or destination.capability_snapshot.get("profile_digest")
-                        != self.profile_digest
+                        != profile_digest
                     or destination.capability_snapshot.get("tools_digest")
-                        != (self.profile_facts.get("tools") or {}).get("digest")
+                        != (profile_facts.get("tools") or {}).get("digest")
                     or destination.capability_snapshot.get("compiler_digest")
-                        != (self.profile_facts.get("compiler") or {}).get("digest")
+                        != (profile_facts.get("compiler") or {}).get("digest")
                 )
                 or not qualification_only and (
                     destination.qualification_vector_id is not None
@@ -805,7 +878,12 @@ class FinalRenderService:
                     != ("accepted" if destination.accepted_unqualified else "none")
                 )
                 or destination.capability_snapshot.get("profile_execution_bounds")
-                    != (self.profile or {}).get("execution_bounds")
+                    != profile.get("execution_bounds")
+                or destination.capability_snapshot.get("profile_digest") != profile_digest
+                or destination.capability_snapshot.get("tools_digest")
+                    != (profile_facts.get("tools") or {}).get("digest")
+                or destination.capability_snapshot.get("compiler_digest")
+                    != (profile_facts.get("compiler") or {}).get("digest")
                 or type((destination.capability_snapshot.get("bounds") or {}).get(
                     "output_limit_bytes"
                 )) is not int

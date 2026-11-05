@@ -13,6 +13,8 @@ _SAFE_NAME = re.compile(r"([a-z][a-z0-9_-]{0,63})\.(mp4|mov|webm|wav|png|jpg|web
 _COLOR = re.compile(r"(?:#[0-9A-F]{6}|black)\Z")
 _HEX_COLOR = re.compile(r"#[0-9A-F]{6}\Z")
 _MAX_SAFE = 9007199254740991
+LATE_LABEL_CONTRACT = "studio.render.late-label.v3"
+LATE_LABEL_MOTIONS = ("none", "pop", "slide", "float", "pulse", "wipe", "line-draw")
 _FPS = frozenset((5, 24, 25, 30, 60))
 _DECODERS = frozenset(("png", "mjpeg", "webp", "gif", "bmp", "tiff"))
 _STAGES = (
@@ -23,9 +25,10 @@ _STAGES = (
     "aged_archive_film",
     "classic_letterbox",
     "presentation_frame",
+    "late_label_stage",
     "logo",
 )
-_ROLES = frozenset(("base_video", "premixed_audio", "overlay", "frame_background", "logo"))
+_ROLES = frozenset(("base_video", "premixed_audio", "overlay", "frame_background", "logo", "cue_label"))
 
 
 def _invalid(reason):
@@ -138,7 +141,35 @@ def _add_ref(refs, logical_id, role):
     refs[logical_id] = role
 
 
-def _operation(value, duration, refs, index):
+def _late_asset(value, path, refs, operation_index, purpose, frame_index=None):
+    if operation_index > 9999 or (frame_index is not None and frame_index > 9999):
+        _invalid(path + " exceeds indexed cue asset naming bounds")
+    suffix = purpose if frame_index is None else purpose + f"{frame_index:04d}"
+    expected_id = f"cue_{operation_index:04d}_{suffix}"
+    logical_id = _asset_ref(value, path)
+    if logical_id != expected_id:
+        _invalid(path + ".logical_id does not match indexed cue naming")
+    _add_ref(refs, logical_id, "cue_label")
+
+
+def _late_reveal(value, path, refs, operation_index, purpose, frame_count):
+    reveal = _exact(value, ("duration_sec", "frames"), path)
+    duration = _number(reveal["duration_sec"], path + ".duration_sec")
+    if duration != 0.3:
+        _invalid(path + ".duration_sec is unsupported")
+    frames = reveal["frames"]
+    if type(frames) is not list or len(frames) != frame_count:
+        _invalid(path + ".frames has the wrong reveal count")
+    for index, frame in enumerate(frames):
+        item = _exact(frame, ("asset", "progress"), path + ".frames[" + str(index) + "]")
+        _late_asset(item["asset"], path + ".frames[" + str(index) + "].asset",
+                    refs, operation_index, purpose, index)
+        progress = _number(item["progress"], path + ".frames[" + str(index) + "].progress")
+        if progress != index / (frame_count - 1):
+            _invalid(path + ".frames progress is invalid")
+
+
+def _operation(value, duration, refs, index, late_labels=False, working_fps=0):
     path = "recipe.operations[" + str(index) + "]"
     operation = _object(value, path)
     kind = _text(operation.get("kind"), path + ".kind")
@@ -146,6 +177,9 @@ def _operation(value, duration, refs, index):
         stage = _STAGES.index(kind)
     except ValueError:
         _invalid(path + ".kind is unsupported")
+
+    if kind == "late_label_stage" and not late_labels:
+        _invalid(path + ".kind requires the late-label contract")
 
     if kind == "overlay_layer":
         item = _exact(operation, ("kind", "asset", "input_mode", "opacity", "sizing",
@@ -222,6 +256,47 @@ def _operation(value, duration, refs, index):
             _input_mode(closed["input_mode"], path + ".background.input_mode")
         else:
             _invalid(path + ".background.kind is unsupported")
+    elif kind == "late_label_stage":
+        item = _exact(operation, ("kind", "contract", "cue_id", "enable", "placement",
+                                  "motion", "label", "reveal", "line", "line_reveal"), path)
+        if item["contract"] != LATE_LABEL_CONTRACT:
+            _invalid(path + ".contract is unsupported")
+        cue_id = _text(item["cue_id"], path + ".cue_id")
+        if _ID.fullmatch(cue_id) is None:
+            _invalid(path + ".cue_id is invalid")
+        enable = _exact(item["enable"], ("start_sec", "end_sec"), path + ".enable")
+        start = _number(enable["start_sec"], path + ".enable.start_sec")
+        end = _number(enable["end_sec"], path + ".enable.end_sec")
+        if start < 0 or start >= duration or end <= start or end > duration:
+            _invalid(path + ".enable is out of range")
+        placement = _exact(item["placement"], ("x_px", "y_px"), path + ".placement")
+        for key in ("x_px", "y_px"):
+            _integer_range(placement[key], 0, _MAX_SAFE, path + ".placement." + key)
+        motion = _exact(item["motion"], ("kind", "entrance_sec"), path + ".motion")
+        motion_kind = _one_of(motion["kind"], LATE_LABEL_MOTIONS, path + ".motion.kind")
+        if _number(motion["entrance_sec"], path + ".motion.entrance_sec") != 0.3:
+            _invalid(path + ".motion.entrance_sec is unsupported")
+        frame_count = max(2, math.ceil(working_fps * 0.3) + 1)
+        label, reveal = item["label"], item["reveal"]
+        line, line_reveal = item["line"], item["line_reveal"]
+        if motion_kind == "wipe":
+            if label is not None or reveal is None or line_reveal is not None:
+                _invalid(path + " wipe fields are inconsistent")
+            _late_reveal(reveal, path + ".reveal", refs, index, "r", frame_count)
+        elif motion_kind == "line-draw":
+            if label is None or reveal is not None or line is not None or line_reveal is None:
+                _invalid(path + " line-draw fields are inconsistent")
+            _late_asset(_exact(label, ("asset",), path + ".label")["asset"],
+                        path + ".label.asset", refs, index, "label")
+            _late_reveal(line_reveal, path + ".line_reveal", refs, index, "lr", frame_count)
+        else:
+            if label is None or reveal is not None or line_reveal is not None:
+                _invalid(path + " motion fields are inconsistent")
+            _late_asset(_exact(label, ("asset",), path + ".label")["asset"],
+                        path + ".label.asset", refs, index, "label")
+        if line is not None:
+            _late_asset(_exact(line, ("asset",), path + ".line")["asset"],
+                        path + ".line.asset", refs, index, "line")
     else:
         item = _exact(operation, ("kind", "asset", "opacity", "scale", "anchor",
                                   "margin_px", "gate"), path)
@@ -255,7 +330,10 @@ def validate_render_encode(value):
     return encode
 
 
-def _validate(value):
+def _validate(value, contract=None):
+    if contract not in (None, LATE_LABEL_CONTRACT):
+        _invalid("validator contract is unsupported")
+    late_labels = contract == LATE_LABEL_CONTRACT
     packet = _exact(value, ("recipe", "manifest", "recipe_digest",
                             "manifest_digest", "packet_digest"), "packet")
     recipe = _exact(packet["recipe"], ("namespace", "profile_digest", "base_video",
@@ -286,12 +364,18 @@ def _validate(value):
         _invalid("recipe.operations must be an array")
     last_stage = -1
     seen = set()
+    cue_ids = set()
     for index, item in enumerate(recipe["operations"]):
-        stage = _operation(item, duration, refs, index)
+        stage = _operation(item, duration, refs, index, late_labels=late_labels, working_fps=fps)
         if stage < last_stage:
             _invalid("recipe.operations stage order is invalid")
         kind = item["kind"]
-        if kind != "overlay_layer" and kind in seen:
+        if kind == "late_label_stage":
+            cue_id = item["cue_id"]
+            if cue_id in cue_ids:
+                _invalid("recipe.operations repeats cue_id " + cue_id)
+            cue_ids.add(cue_id)
+        elif kind != "overlay_layer" and kind in seen:
             _invalid("recipe.operations repeats singleton " + kind)
         seen.add(kind)
         last_stage = stage
@@ -318,6 +402,8 @@ def _validate(value):
             _invalid(path + ".safe_name is invalid")
         names.add(safe_name)
         role = _one_of(entry["role"], _ROLES, path + ".role")
+        if role == "cue_label" and (not late_labels or safe_name != logical_id + ".png"):
+            _invalid(path + " cue_label must be an explicit PNG under the late-label contract")
         if refs.get(logical_id) != role:
             _invalid(path + " does not match an exact recipe reference")
         if _SHA256.fullmatch(_text(entry["sha256"], path + ".sha256")) is None:
@@ -345,10 +431,10 @@ def _validate(value):
     return packet
 
 
-def validate_render_packet_syntax(raw):
-    """Decode strict raw JSON and validate syntax/identity only, never executability."""
+def validate_render_packet_syntax(raw, *, contract=None):
+    """Decode strict JSON and validate the selected packet contract, never executability."""
     try:
-        return _validate(decode_render_json(raw))
+        return _validate(decode_render_json(raw), contract=contract)
     except ValueError as exc:
         if str(exc).startswith("Invalid render packet:"):
             raise

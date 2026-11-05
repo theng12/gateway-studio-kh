@@ -156,6 +156,21 @@ class RequestTests(unittest.TestCase):
         self.client = TestClient(api.app, client=("127.0.0.1", 54321))
         self.addCleanup(self.client.close)
 
+    def test_late_label_contract_query_is_scoped_exact_and_not_silently_ignored(self) -> None:
+        contract = "studio.render.late-label.v3"
+        with patch.object(self.service, "capabilities", return_value={}) as capabilities:
+            response = self.client.get("/v1/final-renders/capabilities",
+                                       params={"requested_contract": contract})
+            self.assertEqual(response.status_code, 200)
+            capabilities.assert_called_once_with(PRINCIPAL, requested_contract=contract)
+        for query in ("requested_contract=", "requested_contract=unknown",
+                      f"requested_contract={contract}&requested_contract={contract}",
+                      f"requested_contract={contract}&requested_contract=unknown"):
+            with self.subTest(query=query), patch.object(self.service, "capabilities") as capabilities:
+                response = self.client.get("/v1/final-renders/capabilities?" + query)
+                self.assertEqual(response.status_code, 422)
+                capabilities.assert_not_called()
+
     def test_output_settings_negotiation_is_closed_unavailable_without_selection_or_dispatch(self) -> None:
         response = self.client.get("/v2/final-renders/capabilities")
         self.assertEqual(response.status_code, 200)

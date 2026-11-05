@@ -89,8 +89,17 @@ def _valid_bounds(value: object) -> bool:
 
 
 _AUTHORITY_DESCRIPTOR_NAMES = frozenset(("profile.json", "tools.json", "compiler.json"))
-def _bundled_render_descriptors() -> tuple[bytes | None, dict]:
-    root = BUNDLED_DATA_DIR / "final-render"
+def _bundled_render_descriptors(
+    requested_contract: str | None = None,
+) -> tuple[bytes | None, dict]:
+    if requested_contract is None:
+        requested_contract = "studio.render.profile.v1"
+    if requested_contract not in ("studio.render.profile.v1", "studio.render.late-label.v3"):
+        return None, {}
+    root = BUNDLED_DATA_DIR / (
+        "final-render-late-label" if requested_contract == "studio.render.late-label.v3"
+        else "final-render"
+    )
     values: dict[str, bytes] = {}
     def identity(info: os.stat_result) -> tuple[int, ...]:
         return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
@@ -130,18 +139,33 @@ def _bundled_render_descriptors() -> tuple[bytes | None, dict]:
         profile = decode_render_json(values["profile"])
         tools = decode_render_json(values["tools"])
         compiler = decode_render_json(values["compiler"])
+        late_label = requested_contract == "studio.render.late-label.v3"
+        profile_literals = (
+            {
+                "format": "studio.render.profile.v3",
+                "implementation": "story-classic-late-label-v3",
+                "recipe_namespace": "studio.render.final.v1",
+                "combination_set": "retained-classic-late-label-candidate-v3",
+                "tier_policy": "story-final-chain-v1",
+                "output_policy": "story-final-output-v1",
+            }
+            if late_label else {
+                "format": "studio.render.profile.v1",
+                "implementation": "story-classic-no-font-v1",
+                "recipe_namespace": "studio.render.final.v1",
+                "combination_set": "retained-classic-no-font-candidate-v1",
+                "tier_policy": "story-final-chain-v1",
+                "output_policy": "story-final-output-v1",
+            }
+        )
         if (set(profile) != {
                 "format", "implementation", "recipe_namespace", "compiler_artifact_sha256",
                 "tools_artifact_sha256", "combination_set", "tier_policy", "output_policy",
                 "execution_bounds", "hardware_qualification_record_sha256",
                 "fidelity_record_sha256", "production_eligible"}
-                or profile.get("format") != "studio.render.profile.v1"
+                or any(profile.get(key) != value for key, value in profile_literals.items())
                 or type(profile.get("production_eligible")) is not bool
-                or profile.get("implementation") != "story-classic-no-font-v1"
-                or profile.get("recipe_namespace") != "studio.render.final.v1"
-                or profile.get("combination_set") != "retained-classic-no-font-candidate-v1"
-                or profile.get("tier_policy") != "story-final-chain-v1"
-                or profile.get("output_policy") != "story-final-output-v1"
+                or late_label and profile["production_eligible"] is not False
                 or not _valid_bounds(profile.get("execution_bounds"))
                 or any(value is not None and not _digest(value) for value in (
                     profile.get("hardware_qualification_record_sha256"),
@@ -169,9 +193,13 @@ def _bundled_render_descriptors() -> tuple[bytes | None, dict]:
                     "final_render_compiler_sha256"}
                 or compiler.get("format") != "studio.render.compiler.v1"):
             return None, {}
-        if (type(compiler.get("implementation")) is not str
-                or not compiler["implementation"]
-                or any(not _digest(compiler.get(key)) for key in (
+        if (late_label and compiler.get("implementation") != "hub-final-render-late-label-v3"
+                or not late_label and (
+                    type(compiler.get("implementation")) is not str
+                    or not compiler["implementation"]
+                )):
+            return None, {}
+        if (any(not _digest(compiler.get(key)) for key in (
                     "python_runtime_sha256", "render_hash_sha256",
                     "render_contract_sha256", "final_render_compiler_sha256",
                 ))):
@@ -192,13 +220,20 @@ def _bundled_render_descriptors() -> tuple[bytes | None, dict]:
 
 
 _render_profile, _render_profile_facts = _bundled_render_descriptors()
+_late_label_profile, _late_label_profile_facts = _bundled_render_descriptors(
+    "studio.render.late-label.v3"
+)
 _render_profile_value = decode_render_json(_render_profile) if _render_profile else {}
-_render_bounds = _render_profile_value.get("execution_bounds") or {}
+_late_label_profile_value = decode_render_json(_late_label_profile) if _late_label_profile else {}
+_render_bounds = [
+    profile.get("execution_bounds") or {}
+    for profile in (_render_profile_value, _late_label_profile_value)
+]
 render_assets = RenderAssetStore(
     DATA_DIR / "render-assets",
     max_chunk_bytes=8 * 1024 * 1024,
-    max_asset_bytes=int(_render_bounds.get("max_asset_bytes") or 1),
-    reserve_bytes=int(_render_bounds.get("scratch_reserve_bytes") or 0),
+    max_asset_bytes=max((int(bounds.get("max_asset_bytes") or 1) for bounds in _render_bounds)),
+    reserve_bytes=max((int(bounds.get("scratch_reserve_bytes") or 0) for bounds in _render_bounds)),
     measure_free_bytes=lambda: os.statvfs(DATA_DIR).f_bavail * os.statvfs(DATA_DIR).f_frsize,
 )
 
@@ -226,6 +261,8 @@ render_service = FinalRenderService(
     store, render_assets, destination_selector=_render_destination,
     hub_client=RegisteredHubRenderClient(), key_configured=lambda: bool(gateway_api_key()),
     profile_descriptor=_render_profile, profile_facts=_render_profile_facts,
+    late_label_profile_descriptor=_late_label_profile,
+    late_label_profile_facts=_late_label_profile_facts,
 )
 worker.attach_render_service(render_service)
 
