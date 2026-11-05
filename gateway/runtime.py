@@ -27,7 +27,7 @@ from .config import BUNDLED_DATA_DIR, DATA_DIR, DB_PATH, gateway_api_key
 from .os_metadata import is_os_metadata
 from .providers import registry
 from .render_assets import RenderAssetStore
-from .render_contract import LATE_LABEL_CONTRACT
+from .render_contract import LATE_LABEL_CONTRACT, SUBTITLE_CONTRACT
 from .render_hash_v1 import decode_render_json
 from .render_service import (FinalRenderService, RegisteredHubRenderClient, RenderDestination,
                              RenderServiceError, destination_for_candidate, probed_render_candidates)
@@ -245,11 +245,18 @@ def _render_destination(packet: dict) -> RenderDestination:
     digest = packet["recipe"]["profile_digest"]
     # The packet's own selected profile picks the contract; legacy packets keep the exact
     # unscoped call shape they have always had.
-    contract = (LATE_LABEL_CONTRACT
-                if render_service.late_label_profile_digest is not None
+    contract = (SUBTITLE_CONTRACT
+                if render_service.subtitle_profile_digest is not None
+                and digest == render_service.subtitle_profile_digest else
+                LATE_LABEL_CONTRACT if render_service.late_label_profile_digest is not None
                 and digest == render_service.late_label_profile_digest else None)
     scoped = {} if contract is None else {"requested_contract": contract}
     def compatible(rows: list[dict]) -> list[dict]:
+        if contract == SUBTITLE_CONTRACT:
+            combined = any(op["kind"] == "late_label_stage"
+                           for op in packet["recipe"]["operations"])
+            rows = [row for row in rows if fleet_module.render_subtitle_support(
+                row["capability"], late_labels=combined)]
         return probed_render_candidates(rows, packet["recipe"]["encode"],
                                         render_service.hub, available=True, **scoped)
 

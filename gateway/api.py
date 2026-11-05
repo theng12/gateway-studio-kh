@@ -2408,11 +2408,12 @@ def final_render_capabilities(
     request: Request,
     principal: AuthenticatedPrivateRender = Depends(require_private_render),
 ) -> dict[str, Any]:
-    from .render_contract import LATE_LABEL_CONTRACT
+    from .render_contract import LATE_LABEL_CONTRACT, SUBTITLE_CONTRACT
     from .render_encode import requested_encode_query
     try:
         contracts = request.query_params.getlist("requested_contract")
-        if contracts and contracts != [LATE_LABEL_CONTRACT]:
+        if contracts and (len(contracts) != 1 or contracts[0] not in (
+                LATE_LABEL_CONTRACT, SUBTITLE_CONTRACT)):
             raise ValueError("invalid requested_contract query")
         requested = requested_encode_query(request.query_params.getlist("requested_encode"))
     except (ValueError, TypeError, UnicodeError):

@@ -171,6 +171,20 @@ class RequestTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 422)
                 capabilities.assert_not_called()
 
+    def test_subtitle_query_is_exact_and_cannot_be_combined_as_two_queries(self) -> None:
+        contract = "studio.render.subtitle.v1"
+        with patch.object(self.service, "capabilities", return_value={}) as capabilities:
+            response = self.client.get("/v1/final-renders/capabilities",
+                                       params={"requested_contract": contract})
+            self.assertEqual(response.status_code, 200)
+            capabilities.assert_called_once_with(PRINCIPAL, requested_contract=contract)
+        for other in (contract, "studio.render.late-label.v3"):
+            with patch.object(self.service, "capabilities") as capabilities:
+                response = self.client.get("/v1/final-renders/capabilities", params=[
+                    ("requested_contract", contract), ("requested_contract", other)])
+                self.assertEqual(response.status_code, 422)
+                capabilities.assert_not_called()
+
     def test_output_settings_negotiation_is_closed_unavailable_without_selection_or_dispatch(self) -> None:
         response = self.client.get("/v2/final-renders/capabilities")
         self.assertEqual(response.status_code, 200)

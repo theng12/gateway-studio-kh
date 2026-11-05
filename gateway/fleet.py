@@ -47,7 +47,7 @@ from . import fleet_history
 from . import render_optin
 from .config import DATA_DIR
 from .hub import hub_base_url, hub_token
-from .render_contract import LATE_LABEL_CONTRACT
+from .render_contract import LATE_LABEL_CONTRACT, LATE_LABEL_MOTIONS, SUBTITLE_CONTRACT
 from .render_hash_v1 import decode_render_json
 
 log = logging.getLogger("gateway.fleet")
@@ -4691,9 +4691,22 @@ class ScopedRenderCapabilitiesError(Exception):
     """A scoped capability read could not be trusted; never a measured zero."""
 
 
+def render_subtitle_support(value: object, *, late_labels: bool = False) -> bool:
+    """Both features must belong to this exact compiler/worker, never a fleet union."""
+    if (type(value) is not dict or value.get("font_support") is not True
+            or value.get("subtitles") != {"format": SUBTITLE_CONTRACT}):
+        return False
+    late = value.get("late_labels")
+    expected = {"format": LATE_LABEL_CONTRACT, "motions": list(LATE_LABEL_MOTIONS)}
+    return ("late_labels" not in value or late == expected) and (not late_labels or late == expected)
+
+
 def _decode_scoped_capabilities(payload: object, *, requested_contract: str,
                                 now: float) -> dict | None:
     """Validate the closed envelope. `None` is the Hub's measured absence for this node."""
+    # Subtitle envelope and new descriptor pins await Hub's post-0.6.222 freeze.
+    if requested_contract != LATE_LABEL_CONTRACT:
+        raise ScopedRenderCapabilitiesError("scoped capability authority is not frozen")
     if (not isinstance(payload, dict)
             or set(payload) != {"format", "requested_contract", "server_time", "worker", "reason"}
             or payload["format"] != _LATE_LABEL_CAPABILITIES_FORMAT
@@ -4882,7 +4895,7 @@ def render_candidates(required_profile_digest: str | None, *,
     every operational gate below still reads the fleet rows, and a transport, envelope or profile
     failure raises rather than reading as measured zero support.
     """
-    if requested_contract is not None and requested_contract != LATE_LABEL_CONTRACT:
+    if requested_contract not in (None, LATE_LABEL_CONTRACT, SUBTITLE_CONTRACT):
         return []
     if (not isinstance(required_profile_digest, str)
             or len(required_profile_digest) != 64

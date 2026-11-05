@@ -25,7 +25,8 @@ from .render_assets import (
     RenderAssetStore,
 )
 from .render_contract import (
-    LATE_LABEL_CONTRACT, LATE_LABEL_MOTIONS, validate_render_encode, validate_render_packet_syntax,
+    LATE_LABEL_CONTRACT, LATE_LABEL_MOTIONS, SUBTITLE_CONTRACT,
+    validate_render_encode, validate_render_packet_syntax,
 )
 from .render_png import validate_cue_png
 from .render_encode import execution_authority
@@ -210,12 +211,15 @@ def probed_render_candidates(rows: list[dict], requested: dict, hub_client: Any,
                              requested_contract: str | None = None) -> list[dict]:
     """Resolve read-only exact permission on an already owner-gated registered route."""
     validate_render_encode(requested)
-    if requested_contract is not None and requested_contract != LATE_LABEL_CONTRACT:
+    if requested_contract not in (None, LATE_LABEL_CONTRACT, SUBTITLE_CONTRACT):
         raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
     probe_kwargs = {} if requested_contract is None else {"requested_contract": requested_contract}
     result = []
     for row in rows:
         try:
+            if requested_contract == SUBTITLE_CONTRACT and not fleet.render_subtitle_support(
+                    row["capability"]):
+                continue
             answer = hub_client.encode_probe(destination_for_candidate(row), requested,
                                              **probe_kwargs)
             authority = execution_authority(
@@ -244,6 +248,8 @@ def probed_render_candidates(rows: list[dict], requested: dict, hub_client: Any,
             capability.pop("qualification_only", None)
             capability.pop("vector_id", None)
             capability.update(production_enabled=True, production_eligible=True)
+            if requested_contract == SUBTITLE_CONTRACT and not fleet.render_subtitle_support(capability):
+                continue
             if not unqualified:
                 capability.pop(render_optin.OPT_IN_KEY, None)
             candidate = {**row, "capability": capability, "qualification_vector_id": None,
@@ -441,7 +447,7 @@ class RegisteredHubRenderClient:
         validate_render_encode(requested)
         if type(start) is not bool:
             raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
-        if requested_contract is not None and requested_contract != LATE_LABEL_CONTRACT:
+        if requested_contract not in (None, LATE_LABEL_CONTRACT, SUBTITLE_CONTRACT):
             raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
         contract_query = ({} if requested_contract is None
                           else {"requested_contract": requested_contract})
@@ -549,6 +555,8 @@ class FinalRenderService:
         profile_facts: dict[str, Any] | None = None,
         late_label_profile_descriptor: bytes | None = None,
         late_label_profile_facts: dict[str, Any] | None = None,
+        subtitle_profile_descriptor: bytes | None = None,
+        subtitle_profile_facts: dict[str, Any] | None = None,
     ) -> None:
         self.store = store
         self.assets = assets
@@ -567,6 +575,12 @@ class FinalRenderService:
                                    if late_label_profile_descriptor is not None else None)
         self.late_label_profile_digest = (hashlib.sha256(late_label_profile_descriptor).hexdigest()
                                          if late_label_profile_descriptor is not None else None)
+        self.subtitle_profile_descriptor = subtitle_profile_descriptor
+        self.subtitle_profile_facts = subtitle_profile_facts or {}
+        self.subtitle_profile = (decode_render_json(subtitle_profile_descriptor)
+                                 if subtitle_profile_descriptor is not None else None)
+        self.subtitle_profile_digest = (hashlib.sha256(subtitle_profile_descriptor).hexdigest()
+                                       if subtitle_profile_descriptor is not None else None)
         self._lock = threading.Lock()
         self._active_ids: set[str] = set()
         self._threads: set[threading.Thread] = set()
@@ -618,10 +632,15 @@ class FinalRenderService:
             if requested_encode is not None:
                 candidates = probed_render_candidates(candidates, requested_encode, self.hub,
                                                       **scoped)
+                if requested_contract == SUBTITLE_CONTRACT:
+                    candidates = [row for row in candidates
+                                  if fleet.render_subtitle_support(row["capability"])]
                 supported = {(row["site_id"], row["roster_controller_id"], row["node_id"]): row
                              for row in candidates}
                 idle = [row for row in idle
                         if (row["site_id"], row["roster_controller_id"], row["node_id"]) in supported
+                        and (requested_contract != SUBTITLE_CONTRACT
+                             or fleet.render_subtitle_support(row["capability"]))
                         and type(row["available_memory_source"]["conservative_bytes"]) is int
                         and row["available_memory_source"]["conservative_bytes"] >= supported[
                             (row["site_id"], row["roster_controller_id"], row["node_id"])
@@ -629,6 +648,14 @@ class FinalRenderService:
                 encode = {"format": fleet.RENDER_ENCODE_FORMAT,
                           "entries": [requested_encode] if candidates else []}
             else:
+                if requested_contract == SUBTITLE_CONTRACT:
+                    candidates = [row for row in candidates
+                                  if fleet.render_subtitle_support(row["capability"])]
+                    supported = {(row["site_id"], row["roster_controller_id"], row["node_id"])
+                                 for row in candidates}
+                    idle = [row for row in idle
+                            if (row["site_id"], row["roster_controller_id"], row["node_id"]) in supported
+                            and fleet.render_subtitle_support(row["capability"])]
                 encode = fleet.render_encode_intersection(candidates)
         except Exception:
             if requested_contract is not None:
@@ -654,15 +681,27 @@ class FinalRenderService:
             "tools": facts.get("tools"),
             "compiler": facts.get("compiler"),
         })
-        if requested_contract is not None:
+        if requested_contract == LATE_LABEL_CONTRACT:
             answer["late_labels"] = {"format": LATE_LABEL_CONTRACT,
                                      "motions": list(LATE_LABEL_MOTIONS)}
+        elif requested_contract == SUBTITLE_CONTRACT and candidates:
+            answer["subtitles"] = {"format": SUBTITLE_CONTRACT}
+            if all(fleet.render_subtitle_support(row["capability"], late_labels=True)
+                   for row in candidates):
+                answer["late_labels"] = {"format": LATE_LABEL_CONTRACT,
+                                         "motions": list(LATE_LABEL_MOTIONS)}
         return answer
 
     def _profile_for_contract(self, contract: str | None) -> tuple:
         if contract is None:
             self._require_profile()
             return self.profile_descriptor, self.profile_digest, self.profile, self.profile_facts
+        if contract == SUBTITLE_CONTRACT:
+            if (self.subtitle_profile_descriptor is None
+                    or type(self.subtitle_profile) is not dict):
+                raise PrivateRenderUnavailable()
+            return (self.subtitle_profile_descriptor, self.subtitle_profile_digest,
+                    self.subtitle_profile, self.subtitle_profile_facts)
         if contract != LATE_LABEL_CONTRACT:
             raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
         if (self.late_label_profile_descriptor is None
@@ -675,6 +714,8 @@ class FinalRenderService:
         if type(packet) is not dict or type(packet.get("recipe")) is not dict:
             raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
         digest = packet["recipe"].get("profile_digest")
+        if digest == self.subtitle_profile_digest and digest is not None:
+            return SUBTITLE_CONTRACT, self._profile_for_contract(SUBTITLE_CONTRACT)
         if digest == self.late_label_profile_digest and digest is not None:
             return LATE_LABEL_CONTRACT, self._profile_for_contract(LATE_LABEL_CONTRACT)
         if digest == self.profile_digest and digest is not None:
@@ -752,6 +793,32 @@ class FinalRenderService:
             if any(dimensions[handles[ref["logical_id"]]] != (canvas["width"], canvas["height"])
                    for ref in line_refs):
                 raise RenderServiceError("RENDER_CUE_ASSET_INVALID", 422)
+
+    def _require_subtitle_assets(self, principal: AuthenticatedPrivateRender,
+                                 packet: dict, handles: dict) -> None:
+        from .render_subtitles import validate_subtitle_ass, validate_subtitle_font
+        entries = {item["logical_id"]: item for item in packet["manifest"]}
+        recipe = packet["recipe"]
+        try:
+            for operation in recipe["operations"]:
+                if operation["kind"] != "subtitle_stage":
+                    continue
+                families = []
+                for font in operation["fonts"]:
+                    logical_id = font["asset"]["logical_id"]
+                    entry = entries[logical_id]
+                    with self.assets.open_reader(principal.owner_scope, handles[logical_id]) as reader:
+                        validate_subtitle_font(reader, max_bytes=entry["size_bytes"],
+                                               expected_sha256=entry["sha256"], family=font["family"])
+                    families.append(font["family"])
+                logical_id = operation["ass"]["logical_id"]
+                entry = entries[logical_id]
+                with self.assets.open_reader(principal.owner_scope, handles[logical_id]) as reader:
+                    validate_subtitle_ass(reader, max_bytes=entry["size_bytes"],
+                                          expected_sha256=entry["sha256"], canvas=recipe["canvas"],
+                                          duration=recipe["target_duration_sec"], families=families)
+        except (ValueError, OSError, AssetRecoveryRequiredError):
+            raise RenderServiceError("RENDER_SUBTITLE_ASSET_INVALID", 422) from None
 
     def blob_status(self, principal: AuthenticatedPrivateRender, sha256: str,
                     size_bytes: int) -> dict[str, Any]:
@@ -855,10 +922,17 @@ class FinalRenderService:
             raise RenderServiceError("RENDER_ASSET_NOT_FOUND", 404) from exc
         if contract is not None:
             self._require_cue_assets(principal, packet, handles)
+        if contract == SUBTITLE_CONTRACT:
+            self._require_subtitle_assets(principal, packet, handles)
         destination = self.destination_selector(packet)
         if not isinstance(destination, RenderDestination):
             raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
         if type(destination.capability_snapshot) is not dict:
+            raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
+        if contract == SUBTITLE_CONTRACT and not fleet.render_subtitle_support(
+                destination.capability_snapshot,
+                late_labels=any(op["kind"] == "late_label_stage"
+                                for op in packet["recipe"]["operations"])):
             raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
         # The compiler-derived encode fact is optional (an older Hub omits it) and `None`
         # is its "nothing to describe"; anything else must be the exact closed document.
