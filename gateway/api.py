@@ -2191,7 +2191,17 @@ def _submit(
     definition, model = catalog.resolve(
         modality, compound_id, only_location=only_location,
         job_key=uuid.uuid4().hex, require_capability=capability,
+        **({"image_params": params} if modality == "image" else {}),
     )
+    from . import image_limits
+    if modality == "image":
+        denied = image_limits.refusal(compound_id, params, only_location)
+        if denied is not None:
+            raise GatewayError(422, denied, "IMAGE_LIMITS_NO_NODE")
+        if definition is not None and model is not None and definition.kind == "studio_hub":
+            decision = image_limits.assess(model.get("raw") or {}, model["model_id"], params)
+            if decision is not None and not decision["allowed"]:
+                raise GatewayError(422, decision["reason"], "IMAGE_LIMITS_NO_NODE")
     if definition is None or model is None:
         # **An offered model with no live site is not a missing model.** The fleet
         # id resolved to nothing because every location that offers it is offline
@@ -3948,6 +3958,13 @@ def _refuse_references_this_lane_cannot_take(
     )
 
     raw = (model or {}).get("raw") or {}
+    if getattr(definition, "kind", None) == KIND_STUDIO_HUB:
+        from . import image_limits
+        decision = image_limits.assess(raw, str((model or {}).get("model_id") or ""), params)
+        if decision is not None:
+            if not decision["allowed"]:
+                raise GatewayError(422, decision["reason"], "IMAGE_LIMITS_NO_NODE")
+            return
     states = image_reference_state(str(getattr(definition, "kind", "")),
                                    str((model or {}).get("model_id") or ""), raw)
     if states is not True:

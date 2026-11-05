@@ -443,6 +443,18 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
     if modes is not None and (modes or "image_modes" in raw or raw.get("image_workers")):
         operations = ["text-to-image" if mode["id"] == "txt2img" else "image-to-image"
                       for mode in modes if mode["available"]]
+    if definition.kind == KIND_STUDIO_HUB:
+        from . import image_limits
+        confirmed = image_limits.published(raw, model_id)
+        if confirmed is not None:
+            reference_state = confirmed["edit"]
+            maximum_references = confirmed["max"]
+            minimum_references = 1 if reference_state else 0
+            operations = (["text-to-image"] if confirmed["txt2img"] else []) + (["image-to-image"] if reference_state else [])
+            for mode in modes or []:
+                mode["available"] = confirmed[mode["id"]]
+                if mode["id"] == "edit" and isinstance(mode.get("references"), dict):
+                    mode["references"] = {**mode["references"], "max": maximum_references}
     return {
         "execution_label": "Local" if definition.kind == "studio_hub" else "Remote",
         # The lane's own ratios and presets for a Studio Hub location (`local` above), the
@@ -2844,7 +2856,7 @@ class Catalog:
         *,
         only_location: str | None = None,
         job_key: str | None = None,
-        require_capability: str | None = None,
+        require_capability: str | None = None, image_params: dict | None = None,
     ) -> tuple[ProviderDefinition | None, dict | None]:
         """Resolve a namespaced model id against currently enabled models.
 
@@ -2876,7 +2888,7 @@ class Catalog:
             chosen_def, chosen_member, _note = fleet.route_pool(
                 image_assignment.pool_models(pools.get(pool_name)), modality,
                 routing_key=job_key or compound, only_location=only_location,
-                require_capability=require_capability,
+                require_capability=require_capability, image_params=image_params,
             )
             if chosen_def is None:
                 return None, None
@@ -2891,7 +2903,7 @@ class Catalog:
         if provider_id == fleet.FLEET_PROVIDER_ID:
             chosen, _note = fleet.route(
                 model_id, modality, routing_key=job_key or compound, only_location=only_location,
-                require_capability=require_capability,
+                require_capability=require_capability, image_params=image_params,
             )
             if chosen is None:
                 return None, None

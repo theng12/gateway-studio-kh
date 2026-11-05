@@ -5585,7 +5585,7 @@ def required_capability(modality: str, params: Any) -> str | None:
 def routing_candidates(
     model_id: str, modality: str, *, only_location: str | None = None,
     exclude_locations: set[str] | None = None,
-    require_capability: str | None = None,
+    require_capability: str | None = None, image_params: dict | None = None,
     respect_model_supply: bool = True,
 ) -> list[dict]:
     """Every location that can run this model right now, with its pressure.
@@ -5676,6 +5676,11 @@ def routing_candidates(
         if respect_model_supply and states_no_mac(row, model_id):
             continue
 
+        from . import image_limits
+        limits = image_limits.assess(model.get("raw") or {}, model_id, image_params) if modality == "image" and image_params is not None else None
+        if limits is not None and not limits["allowed"]:
+            continue
+
         capacity = row.get("capacity") or {}
         # The exact model first: how many machines at this site can run **this**
         # model. The old site-wide total counted each 8 GB image Mac in the weight
@@ -5710,6 +5715,10 @@ def routing_candidates(
         reach = reachable_machines(row)
         if reach is not None:
             slots = min(slots, reach)  # offline Macs are not capacity (F3)
+        if limits is not None:
+            slots = min(slots, limits["eligible"]) if slots > 0 else limits["eligible"]
+            if available is not None:
+                available = min(available, slots)
         queue = _as_int(capacity.get("queue_depth"))
         if not capacity:
             queue = len(row.get("running_jobs") or [])
@@ -5721,6 +5730,7 @@ def routing_candidates(
             speed = _site_speed(row, model_id, modality, seconds, available)
 
         candidates.append({
+            **({"image_limit_machines": limits["machines"]} if limits is not None else {}),
             "provider_id": definition.id,
             "definition": definition,
             "location_id": location_id,
@@ -5942,7 +5952,7 @@ def route(
     only_location: str | None = None,
     exclude_locations: set[str] | None = None,
     load: Callable[[str], tuple[int, int, int]] | None = None,
-    require_capability: str | None = None,
+    require_capability: str | None = None, image_params: dict | None = None,
 ) -> tuple[ProviderDefinition | None, str]:
     """Choose the location that should run this model. Never raises.
 
@@ -5955,7 +5965,7 @@ def route(
     """
     candidates = routing_candidates(
         model_id, modality, only_location=only_location, exclude_locations=exclude_locations,
-        require_capability=require_capability,
+        require_capability=require_capability, image_params=image_params,
     )
     if load is not None and candidates:
         candidates = apply_load(candidates, load)
@@ -5994,7 +6004,7 @@ def assigned_macs(row: dict, member: str, modality: str = "image") -> set[str]:
 
 def pool_candidates(
     members: list[str], modality: str, *, only_location: str | None = None,
-    exclude_locations: set[str] | None = None, require_capability: str | None = None,
+    exclude_locations: set[str] | None = None, require_capability: str | None = None, image_params: dict | None = None,
 ) -> list[dict]:
     """Every (location, member) that can take an image-pool job now, each tagged `_member`.
 
@@ -6012,10 +6022,14 @@ def pool_candidates(
         # the pool, whose other members it may still run.
         for candidate in routing_candidates(member, modality, only_location=only_location,
                                             exclude_locations=exclude_locations,
-                                            require_capability=require_capability,
+                                            require_capability=require_capability, image_params=image_params,
                                             respect_model_supply=False):
-            if assigned_macs(rows.get(str(candidate.get("location_id"))) or {}, member, modality):
-                found.append({**candidate, "_member": member})
+            assigned = assigned_macs(rows.get(str(candidate.get("location_id"))) or {}, member, modality)
+            if "image_limit_machines" in candidate:
+                assigned &= set(candidate["image_limit_machines"])
+            if assigned:
+                slots = min(candidate["slots"], len(assigned)) if "image_limit_machines" in candidate else candidate["slots"]
+                found.append({**candidate, "slots": slots, "_member": member})
     return found
 
 
@@ -6027,7 +6041,7 @@ def route_pool(
     only_location: str | None = None,
     exclude_locations: set[str] | None = None,
     load: Callable[[str], tuple[int, int, int]] | None = None,
-    require_capability: str | None = None,
+    require_capability: str | None = None, image_params: dict | None = None,
 ) -> tuple[Any, str | None, str | None]:
     """Route an image-pool job to the best location with a free Mac assigned one of its members.
 
@@ -6037,7 +6051,7 @@ def route_pool(
 
     candidates = pool_candidates(members, modality, only_location=only_location,
                                  exclude_locations=exclude_locations,
-                                 require_capability=require_capability)
+                                 require_capability=require_capability, image_params=image_params)
     if load is not None and candidates:
         candidates = apply_load(candidates, load)
     if not candidates:

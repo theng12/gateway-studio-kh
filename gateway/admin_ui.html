@@ -519,6 +519,19 @@
     main { padding: var(--s16); }
     h1 { font-size: 22px; }
   }
+#view-developer-tests { min-width:0; }
+#view-developer-tests h2 { margin-top:28px; }
+#view-developer-tests label { display:flex; gap:8px; flex-direction:column; }
+#view-developer-tests input[type=checkbox] { width:auto; }
+.developer-target { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:12px 0; border-bottom:1px solid var(--line); }
+#view-developer-tests .developer-target label { display:block; flex:1; min-width:180px; overflow-wrap:anywhere; }
+.developer-fields, #view-developer-tests fieldset { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr)); gap:16px; margin:16px 0; }
+#view-developer-tests fieldset { padding:16px; border:1px solid var(--line); }
+#view-developer-tests small { color:var(--dim); }
+.developer-table { max-width:100%; overflow:auto; }
+.developer-table table { min-width:1100px; }
+.developer-table td { max-width:260px; overflow-wrap:anywhere; vertical-align:top; }
+#view-developer-tests pre { max-width:100%; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
 </style>
 </head>
 <body>
@@ -564,6 +577,17 @@
     </div>
     <div id="whatsnew-notes" style="max-width:72ch;line-height:1.65" role="status"></div>
   </section>
+  <section id="view-developer-tests" style="display:none">
+    <div class="heading"><h1>Run test</h1><p>Measure a model on selected Macs. Developer Mode starts Off; production always comes first.</p></div>
+    <div class="row"><button id="developer-refresh" type="button">Refresh ledger</button><span id="developer-selection" class="muted"></span></div>
+    <p id="developer-message" role="status" aria-live="polite"></p>
+    <div class="row"><label>Find a Mac <input id="developer-filter" type="search" placeholder="Name or node ID"></label><label>Chip <select id="developer-chip"><option value="">All chips</option></select></label><label>RAM <select id="developer-ram"><option value="">All RAM sizes</option></select></label><button id="developer-select-shown" type="button">Select shown</button><button id="developer-clear" type="button">Clear selection</button></div>
+    <div id="developer-targets" aria-label="Registered test targets"></div>
+    <h2>Test settings</h2><div id="developer-vector"></div>
+    <h2>Results</h2><p id="developer-empty" class="muted">No Developer Mode attempts recorded.</p>
+    <div class="developer-table" tabindex="0" role="region" aria-label="Developer Mode results"><table><thead><tr><th>Node</th><th>Chip</th><th>RAM (bytes)</th><th>Model</th><th>Settings</th><th>Inference (seconds)</th><th>Peak owned RSS (bytes)</th><th>System swap growth (bytes)</th><th>Outcome</th><th>Reason</th><th>Actions</th></tr></thead><tbody id="developer-results"></tbody></table></div>
+    <pre id="developer-detail" aria-live="polite"></pre><div id="developer-review"></div><div id="developer-approvals"></div>
+  </section>
   <section id="view-missing" style="display:none">
     <div class="heading">
       <h1 id="missing-title">Page</h1>
@@ -575,6 +599,7 @@
     <div class="heading">
       <h1>Fleet</h1>
       <p>Every group of Macs this gateway can send work to, and how each one is doing.</p>
+      <button type="button" onclick="openNav('developer-tests')">Run test</button>
     </div>
     <div class="tabs" id="fleet-tabs" role="group" aria-label="Fleet section"></div>
     <!-- One filter row over every tab, exactly where the native page puts it. Fixed markup, so
@@ -958,6 +983,10 @@
     <p class="hint" style="margin:0 0 8px">For models whose provider publishes no context window or output allowance. These fill the gap only: a number the provider states always wins. Leave a box blank for "not known".</p>
     <div id="model-limits-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="model-limits"></div>
+    <h3 style="margin:24px 0 6px">Model limits</h3>
+    <p class="hint">Image jobs follow each Hub's model, reference count and physical RAM tier. Defaults and their provenance come from the Hub.</p>
+    <div id="image-limits-msg" class="msg" role="alert" aria-live="polite"></div>
+    <div id="image-limits"></div>
     </div><!-- /provider-pane-capacity -->
 
     <div class="pane" id="provider-pane-queue" style="display:none">
@@ -1392,6 +1421,22 @@ function downloadBlob(url, filename) {
 // A page the Mac app still owns is a real row, not a dead link: it opens a plain note
 // saying where the page lives. A guest is offered one page, because the server refuses
 // every other route — drawing those doors would offer what it cannot open.
+let developerPageLoad;
+function loadDeveloperTests() {
+  // Fetch only on this owner's page, with the same injected key/cookie as its API.
+  developerPageLoad ||= (async () => {
+    const response = await fetch('/admin/developer-tests.js', {headers: adminHeaders()});
+    if (!response.ok) throw new Error('Could not load Run test. Sign in as the owner and try again.');
+    const script = document.createElement('script');
+    script.textContent = await response.text();
+    document.head.append(script);
+  })();
+  return developerPageLoad.then(() => window.loadDeveloperTests()).catch(error => {
+    document.getElementById('developer-message').textContent = error.message;
+    developerPageLoad = null;
+  });
+}
+
 const NAV = [
   { items: [{ view: 'overview', label: 'Overview', icon: 'info' }] },
   { group: 'Create', items: [
@@ -1412,6 +1457,7 @@ const NAV = [
   { group: 'Connection', items: [
     { view: 'providers', label: 'Providers', icon: 'providers' },
     { view: 'fleet', label: 'Fleet', icon: 'fleet' },
+    { view: 'developer-tests', label: 'Run test', icon: 'settings' },
   ] },
   { group: 'App', items: [
     { view: 'whatsnew', label: "What's New", icon: 'sparkle' },
@@ -1542,11 +1588,12 @@ function setView(view) {
       else row.removeAttribute('aria-current');
     });
   }
-  for (const id of ['fleet', 'jobs', 'analytics', 'voices', 'models', 'providers', 'create', 'packs', 'guests', 'whatsnew', 'missing']) {
+  for (const id of ['fleet', 'jobs', 'analytics', 'voices', 'models', 'providers', 'create', 'packs', 'guests', 'whatsnew', 'developer-tests', 'missing']) {
     const section = document.getElementById('view-' + id);
     if (section) section.style.display = view === id ? '' : 'none';
   }
-  if (view === 'whatsnew') loadWhatsNew();
+  if (view === 'developer-tests') loadDeveloperTests();
+  else if (view === 'whatsnew') loadWhatsNew();
   else if (view === 'guests') loadGuests();
   else if (view === 'voices') loadVoiceTags();
   else if (view === 'models') { loadModels(); loadFreshness(); }
@@ -2871,8 +2918,27 @@ async function saveModelLimit(key, remove) {
   } catch (e) { if (msg) msg.textContent = e.message || 'could not save'; }
 }
 
+let imageLimitsScript = null;
+async function loadImageLimits() {
+  try {
+    imageLimitsScript ||= (async () => {
+      const response = await fetch('/admin/image-limits.js', {headers: adminHeaders()});
+      if (!response.ok) throw new Error('Could not load Model limits. Sign in as the owner and try again.');
+      const script = document.createElement('script');
+      script.textContent = await response.text();
+      document.head.append(script);
+    })();
+    await imageLimitsScript;
+    await window.GatewayImageLimits.load();
+  } catch (error) {
+    imageLimitsScript = null;
+    const message = document.getElementById('image-limits-msg');
+    if (message) message.textContent = error.message || 'Could not load Model limits.';
+  }
+}
 async function loadConcurrency() {
   loadModelLimits();
+  void loadImageLimits();
   const target = document.getElementById('concurrency');
   if (!target) return;
   try {
@@ -4380,6 +4446,7 @@ function viewFromHash() {
   if (hash.startsWith('create') || lane) return 'create';
   if (hash.startsWith('packs')) return 'packs';
   if (hash.startsWith('guests')) return 'guests';
+  if (hash.startsWith('developer-tests')) return 'developer-tests';
   if (hash.startsWith('fleet')) return 'fleet';
   if (hash.startsWith('jobs')) return 'jobs';
   if (hash.startsWith('models')) return 'models';

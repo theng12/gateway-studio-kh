@@ -298,6 +298,13 @@ def _summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def developer_measurements(developer_store) -> dict[str, Any]:
+    """Read explicitly approved test scopes without changing intrinsic catalogue limits."""
+    evidence = developer_store.evidence()
+    return {"store_revision": evidence["store_revision"],
+            "rows": [row for row in evidence["measurements"] if row.get("approval_id") is not None]}
+
+
 def qualification_for(
     store: Any, provider_id: str, model_id: str, *, limit: int = DEFAULT_WINDOW,
 ) -> dict[str, Any] | None:

@@ -198,6 +198,7 @@ cp "$ROOT/requirements.txt" "$APP/Contents/Resources/gateway/"
 cp "$ROOT/requirements.lock" "$APP/Contents/Resources/gateway/"
 # Shipped read-only defaults. User data lives in Application Support.
 [ -f "$ROOT/data/voices.json" ] && cp "$ROOT/data/voices.json" "$APP/Contents/Resources/gateway/data/"
+[ -f "$ROOT/data/developer-test-v1.schema.json" ] && cp "$ROOT/data/developer-test-v1.schema.json" "$APP/Contents/Resources/gateway/data/"
 
 # Authority is an explicit build choice. The normal build ignores even a populated source tree;
 # selected states require an exact closed set and preserve the source bytes in the app bundle.

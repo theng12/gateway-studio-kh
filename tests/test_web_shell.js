@@ -40,7 +40,7 @@ function nav() {
 }
 
 const VIEWS_IN_HTML = new Set(
-  [...source.matchAll(/<section id="view-([a-z]+)"/g)].map(match => match[1]));
+  [...source.matchAll(/<section id="view-([a-z-]+)"/g)].map(match => match[1]));
 
 test('the sidebar carries the native groups, in the native order', () => {
   const { NAV } = nav();
@@ -53,7 +53,7 @@ test('the sidebar carries the native groups, in the native order', () => {
   const views = index => Array.from(NAV[index].items, item => item.view);
   assert.deepEqual(labels(1), ['Audio', 'Subtitle', 'Image', 'Music', 'Video', 'Chat']);
   assert.deepEqual(views(2), ['jobs', 'voices', 'models', 'analytics', 'packs']);
-  assert.deepEqual(views(3), ['providers', 'fleet']);
+  assert.deepEqual(views(3), ['providers', 'fleet', 'developer-tests']);
   assert.deepEqual(views(4), ['whatsnew', 'guests', 'settings']);
 });
 

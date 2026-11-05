@@ -5774,3 +5774,12 @@ def sound_source_clear_credentials(source_id: str) -> Any:
         return _error(404, f"unknown sound source '{source_id}'")
     registry.credentials.clear(declared.store_id)
     return {"source": describe(source_for(source_id, registry.credentials))}
+
+
+from .developer_admin import router as developer_router
+
+router.include_router(developer_router)
+
+from .image_limits_admin import router as image_limits_router
+
+router.include_router(image_limits_router)

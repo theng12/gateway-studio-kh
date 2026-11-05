@@ -1021,7 +1021,7 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     room = _ROOM_HOOKS.get(job_id)
     if pool_members is not None:
         chosen, member, _note = fleet.route_pool(pool_members, modality, exclude_locations=tried,
-                                                 load=room, require_capability=require_capability)
+                                                 load=room, require_capability=require_capability, image_params=_job_params(job) if modality == "image" else None)
         if chosen is None or not store.record_route(job_id, chosen.id, model_id=member):
             return None
         if room is not None and room(chosen.id, claim=True)[0] <= 0:
@@ -1032,10 +1032,10 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
 
     if room is None:
         chosen, _note = fleet.route(model_id, modality, exclude_locations=tried,
-                                    require_capability=require_capability)
+                                    require_capability=require_capability, image_params=_job_params(job) if modality == "image" else None)
     else:
         chosen, _note = fleet.route(model_id, modality, exclude_locations=tried, load=room,
-                                    require_capability=require_capability)
+                                    require_capability=require_capability, image_params=_job_params(job) if modality == "image" else None)
     if chosen is None or _location(chosen.id) in tried:
         return None
     record_route = getattr(store, "record_route", None)
@@ -1621,6 +1621,12 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 detail=f"provider '{provider_id}' is disabled or unknown",
             )
             return
+        if modality == "image" and not resume_id and not resend:
+            from . import image_limits
+            decision = image_limits.for_provider(provider_id, model_id, params)
+            if decision is not None and not decision["allowed"]:
+                _fail(store, job_id, code="IMAGE_LIMITS_NO_NODE", detail=decision["reason"])
+                return
         params["_client_request_id"] = _client_request_id(store, job_id, provider_id)
         request = BackendRequest(
             provider_id=provider_id,
@@ -2128,7 +2134,7 @@ class Worker:
         self.liveness_sweep: dict[str, int] = {"checked": 0, "said_something": 0, "failed": 0}
         #: `(model, modality)` shapes for which a late rebind found no site with room this
         #: pass, so the rest of the queue behind them does not repeat the search. Cleared each pass.
-        self._nowhere: set[tuple[str, str]] = set()
+        self._nowhere: set[tuple[object, ...]] = set()
         #: `(model, modality)` of normal fleet jobs still waiting, read once per pass at the first
         #: background job (`_background_room`); `None` until read. Cleared each pass.
         self._normal_waiting: set[tuple[str, str]] | None = None
@@ -2386,7 +2392,27 @@ class Worker:
             reads["pending"] = int(studio_hub.chat_queue_wait_seconds(provider_id, model_id) > 0)
         if is_background(job) and provider_id.startswith(fleet.PROVIDER_PREFIX):
             reads["background"] = self._background_reads(provider_id)
+        if modality == "image" and not job.get("upstream_job_id") and not job.get("dispatch_started_at"):
+            from . import image_limits
+            reads["image_limits"] = image_limits.for_provider(provider_id, model_id, _job_params(job))
         return reads
+
+    def _image_limits_refused(self, job: dict[str, Any]) -> bool:
+        """Settle an unsent job only when every applicable table explicitly refuses it."""
+        if job.get("modality") != "image" or job.get("upstream_job_id") or job.get("dispatch_started_at"):
+            return False
+        from . import image_limits
+        params = _job_params(job)
+        decision = image_limits.for_provider(str(job.get("provider_id") or ""), str(job.get("model_id") or ""), params)
+        if decision is None or decision["allowed"]:
+            return False
+        members = _pool_members_for(job, "image")
+        members = members if members is not None else [str(job.get("model_id") or "")]
+        if not members or any(image_limits.refusal(f"{fleet.FLEET_PROVIDER_ID}::{member}", params,
+                                                  fleet.pinned_location(params)) is None for member in members):
+            return False
+        _fail(self.store, job["id"], code="IMAGE_LIMITS_NO_NODE", detail=decision["reason"])
+        return True
 
     def _admit(self, job: dict[str, Any]) -> bool:
         """Reserve room for one job, or refuse it this pass.
@@ -2592,6 +2618,9 @@ class Worker:
                 return 0
             if site.get("row") is not None and fleet.publishes_model(site["row"], model_id) is False:
                 return 0
+        limits = reads.get("image_limits")
+        if limits is not None:
+            room = min(room, limits["eligible"] - self._per_lane.get((provider_id, modality), 0))
         cap = concurrency.model_fleet_cap(model_id) if fleet_site else None
         if room > 0 and cap is not None:
             with self._budget_lock:
@@ -2682,7 +2711,10 @@ class Worker:
         rebind = getattr(self.store, "rebind_unsent", None)
         if rebind is None or not provider_id.startswith(fleet.PROVIDER_PREFIX):
             return False
-        shape = (str(job.get("model_id") or ""), modality)
+        shape: tuple[object, ...] = (str(job.get("model_id") or ""), modality)
+        if modality == "image":
+            from . import image_limits
+            shape += image_limits.job_type(_job_params(job))
         if shape in self._nowhere:
             return False
         backoff = self._rebind_backoff.get(job["id"])
@@ -2705,11 +2737,11 @@ class Worker:
             if pool_members is not None:
                 candidates = fleet.apply_load(
                     fleet.pool_candidates(pool_members, modality, exclude_locations=tried,
-                                          require_capability=capability),
+                                          require_capability=capability, image_params=_job_params(job) if modality == "image" else None),
                     lambda pid: self._site_room(job, pid))
                 ready = [c for c in candidates if c["room"] > 0]
                 if not ready:
-                    self._nowhere.add((model_id, modality))
+                    self._nowhere.add(shape)
                     return False
                 best = min(ready, key=lambda c: fleet.rank_candidate(c, str(job["id"])))
                 if best["provider_id"] == provider_id or not rebind(
@@ -2728,7 +2760,7 @@ class Worker:
                 ahead = self._ahead.get((provider_id, model_id), 0)
                 pool = fleet.apply_load(
                     fleet.routing_candidates(model_id, modality, exclude_locations=tried - {here},
-                                             require_capability=capability),
+                                             require_capability=capability, image_params=_job_params(job) if modality == "image" else None),
                     lambda pid: self._site_room(job, pid))
                 best = min(pool, default=None, key=lambda c: fleet.rank_candidate(
                     c, str(job["id"]), ahead if c["provider_id"] == provider_id else 0))
@@ -2742,7 +2774,7 @@ class Worker:
             candidates = [
                 c for c in fleet.apply_load(
                     fleet.routing_candidates(model_id, modality, exclude_locations=tried,
-                                             require_capability=capability),
+                                             require_capability=capability, image_params=_job_params(job) if modality == "image" else None),
                     lambda pid: self._site_room(job, pid))
                 if c["room"] > 0
             ]
@@ -2862,7 +2894,7 @@ class Worker:
                 for job in due:
                     if self._stop.is_set():
                         return
-                    if self._expired_in_queue(job) or self._stranded_on_paused(job):
+                    if self._expired_in_queue(job) or self._stranded_on_paused(job) or self._image_limits_refused(job):
                         continue
                     # Reserve first, then claim: a claim that fails must not leave the
                     # budget holding a slot nobody will ever release.
