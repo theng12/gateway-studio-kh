@@ -27,6 +27,7 @@ from .config import BUNDLED_DATA_DIR, DATA_DIR, DB_PATH, gateway_api_key
 from .os_metadata import is_os_metadata
 from .providers import registry
 from .render_assets import RenderAssetStore
+from .render_contract import LATE_LABEL_CONTRACT
 from .render_hash_v1 import decode_render_json
 from .render_service import (FinalRenderService, RegisteredHubRenderClient, RenderDestination,
                              RenderServiceError, destination_for_candidate, probed_render_candidates)
@@ -242,13 +243,24 @@ def _render_destination(packet: dict) -> RenderDestination:
     """Production capacity first, then Macs the owner accepted unqualified (same network first - the
     candidate order already says so); only without either does a qualification candidate take it."""
     digest = packet["recipe"]["profile_digest"]
+    # The packet's own selected profile picks the contract; legacy packets keep the exact
+    # unscoped call shape they have always had.
+    contract = (LATE_LABEL_CONTRACT
+                if render_service.late_label_profile_digest is not None
+                and digest == render_service.late_label_profile_digest else None)
+    scoped = {} if contract is None else {"requested_contract": contract}
     def compatible(rows: list[dict]) -> list[dict]:
         return probed_render_candidates(rows, packet["recipe"]["encode"],
-                                        render_service.hub, available=True)
+                                        render_service.hub, available=True, **scoped)
 
-    candidates = (compatible(fleet_module.render_candidates(digest, resolve_encode_authority=True))
-                  or compatible(fleet_module.render_candidates(
-                      digest, qualification=True, resolve_encode_authority=True)))
+    try:
+        candidates = (compatible(fleet_module.render_candidates(
+                          digest, resolve_encode_authority=True, **scoped))
+                      or compatible(fleet_module.render_candidates(
+                          digest, qualification=True, resolve_encode_authority=True, **scoped)))
+    except fleet_module.ScopedRenderCapabilitiesError as exc:
+        # A scoped read that could not be trusted is a loud refusal, never an empty route.
+        raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503) from exc
     for row in candidates:
         try:
             return destination_for_candidate(row)

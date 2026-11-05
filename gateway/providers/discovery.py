@@ -948,7 +948,7 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             # guidance from here, and publishes the guidance unchanged.
             raw["hub_controls"] = hub_controls
         if facts:
-            for field in ("image_modes", "reference_lane", "image_workers"):
+            for field in ("image_modes", "reference_lane", "image_workers", "max_prompt_characters"):
                 if field in facts:
                     raw[field] = facts[field]
             raw["capabilities"] = facts.get("capabilities") or []

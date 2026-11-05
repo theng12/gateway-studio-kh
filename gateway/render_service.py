@@ -206,13 +206,18 @@ def destination_for_candidate(row: dict[str, Any]) -> RenderDestination:
 
 
 def probed_render_candidates(rows: list[dict], requested: dict, hub_client: Any, *,
-                             available: bool = False) -> list[dict]:
+                             available: bool = False,
+                             requested_contract: str | None = None) -> list[dict]:
     """Resolve read-only exact permission on an already owner-gated registered route."""
     validate_render_encode(requested)
+    if requested_contract is not None and requested_contract != LATE_LABEL_CONTRACT:
+        raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
+    probe_kwargs = {} if requested_contract is None else {"requested_contract": requested_contract}
     result = []
     for row in rows:
         try:
-            answer = hub_client.encode_probe(destination_for_candidate(row), requested)
+            answer = hub_client.encode_probe(destination_for_candidate(row), requested,
+                                             **probe_kwargs)
             authority = execution_authority(
                 answer, requested, physical_node_id=row["target_hub_controller_id"],
                 capability=row["capability"], chip=row["selected_machine"]["chip"],
@@ -247,7 +252,10 @@ def probed_render_candidates(rows: list[dict], requested: dict, hub_client: Any,
                 candidate.pop("authority", None)
                 candidate.pop("network", None)
             result.append(candidate)
-        except (RenderServiceError, ValueError, TypeError, KeyError, httpx.HTTPError):
+        except (RenderServiceError, ValueError, TypeError, KeyError, httpx.HTTPError) as exc:
+            if requested_contract is not None:
+                raise fleet.ScopedRenderCapabilitiesError(
+                    "scoped encode authority could not be verified") from exc
             continue
     return fleet._render_candidates_order(result)
 
@@ -428,18 +436,27 @@ class RegisteredHubRenderClient:
         return decoded
 
     def encode_probe(self, destination: RenderDestination, requested: dict[str, Any], *,
-                     start: bool = False) -> dict[str, Any]:
+                     start: bool = False,
+                     requested_contract: str | None = None) -> dict[str, Any]:
         validate_render_encode(requested)
         if type(start) is not bool:
             raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
+        if requested_contract is not None and requested_contract != LATE_LABEL_CONTRACT:
+            raise RenderServiceError("RENDER_REQUEST_INVALID", 422)
+        contract_query = ({} if requested_contract is None
+                          else {"requested_contract": requested_contract})
         if start:
+            suffix = "/encode-probes"
+            if contract_query:
+                suffix += "?" + urlencode(contract_query)
             body = _canonical({"format": "studio.render.encode-probe-request.v1",
                                "requested_encode": requested})
-            return self.json(destination, "POST", "/encode-probes", body=body,
+            return self.json(destination, "POST", suffix, body=body,
                              headers={"Content-Type": "application/json",
                                       "Content-Length": str(len(body))})
-        query = urlencode({"requested_encode": _canonical(requested).decode("ascii")})
-        return self.json(destination, "GET", "/encode-probes?" + query)
+        query = {"requested_encode": _canonical(requested).decode("ascii")}
+        query.update(contract_query)
+        return self.json(destination, "GET", "/encode-probes?" + urlencode(query))
 
     def blob_status(self, destination: RenderDestination, sha256: str,
                     size_bytes: int) -> dict[str, Any]:
@@ -586,17 +603,21 @@ class FinalRenderService:
         descriptor, profile_digest, _profile, facts = self._profile_for_contract(requested_contract)
         if requested_encode is not None:
             validate_render_encode(requested_encode)
+        # Legacy call shapes stay byte-identical: the kwarg exists only when scoped.
+        scoped = {} if requested_contract is None else {"requested_contract": requested_contract}
         try:
             candidates = (fleet.render_candidates(
                 profile_digest, qualification=True, available=False,
-                resolve_encode_authority=True) if requested_encode is not None else
-                fleet.render_candidates(profile_digest, qualification=True, available=False))
+                resolve_encode_authority=True, **scoped) if requested_encode is not None else
+                fleet.render_candidates(profile_digest, qualification=True, available=False,
+                                        **scoped))
             idle = (fleet.render_candidates(profile_digest, qualification=True,
-                                             resolve_encode_authority=True)
+                                             resolve_encode_authority=True, **scoped)
                     if requested_encode is not None else
-                    fleet.render_candidates(profile_digest, qualification=True))
+                    fleet.render_candidates(profile_digest, qualification=True, **scoped))
             if requested_encode is not None:
-                candidates = probed_render_candidates(candidates, requested_encode, self.hub)
+                candidates = probed_render_candidates(candidates, requested_encode, self.hub,
+                                                      **scoped)
                 supported = {(row["site_id"], row["roster_controller_id"], row["node_id"]): row
                              for row in candidates}
                 idle = [row for row in idle

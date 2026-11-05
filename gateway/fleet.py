@@ -39,7 +39,7 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 
@@ -47,6 +47,8 @@ from . import fleet_history
 from . import render_optin
 from .config import DATA_DIR
 from .hub import hub_base_url, hub_token
+from .render_contract import LATE_LABEL_CONTRACT
+from .render_hash_v1 import decode_render_json
 
 log = logging.getLogger("gateway.fleet")
 
@@ -4676,6 +4678,82 @@ def render_encode_supports(document: object, requested: object) -> bool:
             and requested in document["entries"])
 
 
+#: The Hub's closed envelope for one node's scoped late-label capability row: exactly the
+#: five keys both leads ACKed, with `reason` nonempty if and only if `worker` is null.
+_LATE_LABEL_CAPABILITIES_FORMAT = "studio.render.hub-late-label-capabilities.v1"
+#: A scoped read is a moment, not a fact — the same staleness bound as the fleet snapshot.
+_SCOPED_CAPABILITIES_MAX_AGE_S = _MEMBERS_STALE_AFTER_S
+_SCOPED_CAPABILITIES_TIMEOUT = httpx.Timeout(15.0, connect=6.0)
+_SCOPED_CAPABILITIES_MAX_JSON = 256 * 1024
+
+
+class ScopedRenderCapabilitiesError(Exception):
+    """A scoped capability read could not be trusted; never a measured zero."""
+
+
+def _decode_scoped_capabilities(payload: object, *, requested_contract: str,
+                                now: float) -> dict | None:
+    """Validate the closed envelope. `None` is the Hub's measured absence for this node."""
+    if (not isinstance(payload, dict)
+            or set(payload) != {"format", "requested_contract", "server_time", "worker", "reason"}
+            or payload["format"] != _LATE_LABEL_CAPABILITIES_FORMAT
+            or payload["requested_contract"] != requested_contract):
+        raise ScopedRenderCapabilitiesError("invalid scoped capability envelope")
+    server_time = payload["server_time"]
+    if type(server_time) is not int or not 0 < server_time <= 2**53 - 1:
+        raise ScopedRenderCapabilitiesError("invalid scoped capability clock")
+    if abs(now - server_time) > _SCOPED_CAPABILITIES_MAX_AGE_S:
+        raise ScopedRenderCapabilitiesError("stale scoped capability clock")
+    worker, reason = payload["worker"], payload["reason"]
+    if worker is None:
+        if not isinstance(reason, str) or not reason or len(reason) > 1024:
+            raise ScopedRenderCapabilitiesError("scoped capability absence has no reason")
+        return None
+    if reason is not None or not isinstance(worker, dict):
+        raise ScopedRenderCapabilitiesError("invalid scoped capability worker")
+    return worker
+
+
+def _scoped_capability_payload(controller_id: str, machine_id: str,
+                               requested_contract: str) -> object:
+    """One node's envelope over the registered controller route; no new credential or address."""
+    if controller_id == LOCAL_ID:
+        base, token = hub_base_url() or "", hub_token() or ""
+    else:
+        row = next((item for item in roster() if str(item.get("id") or "") == controller_id), None)
+        base = str((row or {}).get("url") or "")
+        token = _token_for(controller_id)
+    if not base or not token:
+        raise ScopedRenderCapabilitiesError("no registered route for the scoped capability read")
+    path = ("/api/hub/final-renders/capabilities"
+            if machine_id == LOCAL_ID else
+            f"/api/hub/fleet/nodes/{quote(machine_id, safe='')}/final-renders/capabilities")
+    url = base.rstrip("/") + path + "?" + urlencode({"requested_contract": requested_contract})
+    body = bytearray()
+    try:
+        with httpx.stream("GET", url, headers={"X-Hub-Token": token},
+                          timeout=_SCOPED_CAPABILITIES_TIMEOUT, follow_redirects=False) as response:
+            if response.status_code != 200:
+                raise ScopedRenderCapabilitiesError("scoped capability read was refused")
+            for piece in response.iter_bytes():
+                if len(body) + len(piece) > _SCOPED_CAPABILITIES_MAX_JSON:
+                    raise ScopedRenderCapabilitiesError("scoped capability response is too large")
+                body.extend(piece)
+    except httpx.HTTPError as exc:
+        raise ScopedRenderCapabilitiesError("scoped capability read did not answer") from exc
+    try:
+        return decode_render_json(bytes(body))
+    except ValueError:
+        raise ScopedRenderCapabilitiesError("scoped capability read was not valid JSON") from None
+
+
+def _fetch_scoped_worker(controller_id: str, machine_id: str,
+                         requested_contract: str) -> dict | None:
+    payload = _scoped_capability_payload(controller_id, machine_id, requested_contract)
+    return _decode_scoped_capabilities(payload, requested_contract=requested_contract,
+                                       now=time.time())
+
+
 def _render_candidate_shape(value: object, *, qualification: bool) -> dict | None:
     if not isinstance(value, dict):
         return None
@@ -4789,14 +4867,23 @@ def _render_candidates_order(candidates: list[dict]) -> list[dict]:
 
 def render_candidates(required_profile_digest: str | None, *,
                       qualification: bool = False, available: bool = True,
-                      resolve_encode_authority: bool = False) -> list[dict]:
+                      resolve_encode_authority: bool = False,
+                      requested_contract: str | None = None) -> list[dict]:
     """Qualified physical final-render candidates, independent of model catalogue rows.
 
     With `qualification`, a worker may offer its first qualification candidate. `available=False`
     describes enabled compatible workers without treating occupied slots or current memory as
     missing support. `resolve_encode_authority` yields provisional rows: the caller must resolve
     current tuple permission and memory bounds before advertising or dispatching them. That keeps
-    a measured tuple independent of a different legacy tier's unqualified owner grant."""
+    a measured tuple independent of a different legacy tier's unqualified owner grant.
+
+    With `requested_contract`, each operationally-eligible node's capability row comes from the
+    scoped Hub envelope for that exact contract instead of the snapshot's legacy row — while
+    every operational gate below still reads the fleet rows, and a transport, envelope or profile
+    failure raises rather than reading as measured zero support.
+    """
+    if requested_contract is not None and requested_contract != LATE_LABEL_CONTRACT:
+        return []
     if (not isinstance(required_profile_digest, str)
             or len(required_profile_digest) != 64
             or any(char not in "0123456789abcdef" for char in required_profile_digest)):
@@ -4850,25 +4937,6 @@ def render_candidates(required_profile_digest: str | None, *,
             exempt = worker.get(render_optin.PAUSED_RENDER_KEY) is True
             if location_paused and not exempt:
                 continue
-            production_shaped = (worker.get("production_enabled") is True
-                                 and worker.get("production_eligible") is True)
-            claim = render_optin.unqualified_claim(worker)
-            # A Hub that accepts unqualified work publishes a production-shaped row plus its evidence.
-            # That row is only ever used on the owner's say-so here; a claim that is not the Hub's
-            # evidence cannot be told from a qualified row, so it is not used at all.
-            unqualified = claim == "accepted" and production_shaped
-            if claim == "invalid" or (unqualified and not resolve_encode_authority
-                    and f"{location['id']}/{machine_id}" not in opted_in):
-                continue
-            if not production_shaped:
-                match = next((item for item in (worker.get("qualification_candidates") or [])
-                              if isinstance(item, dict)), None) if qualification else None
-                if match is None:
-                    continue
-                raw, qualifying = match, True
-            capability = _render_candidate_shape(raw, qualification=qualifying)
-            if capability is None or capability["profile_digest"] != required_profile_digest:
-                continue
             machine = machines.get(machine_id, {})
             node = nodes.get(machine_id, {})
             controller_local = machine_id == LOCAL_ID
@@ -4898,6 +4966,49 @@ def render_candidates(required_profile_digest: str | None, *,
                                            or node.get("current_job") is not None))
                         or node.get("on_previous_token") is not False))):
                 continue
+            if requested_contract is not None:
+                # The snapshot's own row is the legacy profile's; only the scoped envelope can
+                # authorise this contract, and it must name the digest this caller selected.
+                # Every operational gate above still came from the fleet rows, never from here.
+                scoped = _fetch_scoped_worker(location["id"], machine_id, requested_contract)
+                if scoped is None:
+                    continue
+                production_shaped = (scoped.get("production_enabled") is True
+                                     and scoped.get("production_eligible") is True)
+                claim = render_optin.unqualified_claim(scoped)
+                unqualified = claim == "accepted" and production_shaped
+                if claim == "invalid" or (unqualified and not resolve_encode_authority
+                        and f"{location['id']}/{machine_id}" not in opted_in):
+                    continue
+                if not production_shaped:
+                    # Protocol support alone grants no execution admission.
+                    continue
+                capability = _render_candidate_shape(scoped, qualification=False)
+                if capability is None:
+                    raise ScopedRenderCapabilitiesError("scoped capability row is malformed")
+                if capability["profile_digest"] != required_profile_digest:
+                    raise ScopedRenderCapabilitiesError(
+                        "scoped capability row pins another profile")
+            else:
+                production_shaped = (worker.get("production_enabled") is True
+                                     and worker.get("production_eligible") is True)
+                claim = render_optin.unqualified_claim(worker)
+                # A Hub that accepts unqualified work publishes a production-shaped row plus its evidence.
+                # That row is only ever used on the owner's say-so here; a claim that is not the Hub's
+                # evidence cannot be told from a qualified row, so it is not used at all.
+                unqualified = claim == "accepted" and production_shaped
+                if claim == "invalid" or (unqualified and not resolve_encode_authority
+                        and f"{location['id']}/{machine_id}" not in opted_in):
+                    continue
+                if not production_shaped:
+                    match = next((item for item in (worker.get("qualification_candidates") or [])
+                                  if isinstance(item, dict)), None) if qualification else None
+                    if match is None:
+                        continue
+                    raw, qualifying = match, True
+                capability = _render_candidate_shape(raw, qualification=qualifying)
+                if capability is None or capability["profile_digest"] != required_profile_digest:
+                    continue
             available_memory = (max(0, int((available_gb - 0.005) * 1_000_000_000))
                                 if type(available_gb) in (int, float)
                                 and math.isfinite(available_gb) else None)

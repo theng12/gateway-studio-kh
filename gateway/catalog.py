@@ -393,9 +393,23 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
                     "reference_generation_price_version": PRICE_VERSION,
                 }
             )
-    max_prompt_characters, max_prompt_source = _limit_with_source(
-        "max_prompt_characters", None, 4000, definition.id, model_id
-    )
+    prompt_stated = "max_prompt_characters" in raw
+    published_prompt = raw.get("max_prompt_characters")
+    if not prompt_stated and definition.kind == KIND_STUDIO_HUB:
+        contract = raw.get("lane_contract")
+        if isinstance(contract, dict):
+            prompt = _hub_declared_parameter(contract, "prompt") or {}
+            prompt_stated = "max_characters" in prompt
+            published_prompt = prompt.get("max_characters")
+    if prompt_stated:
+        # A stated unknown/invalid limit is not a gap for a curated number to fill.
+        max_prompt_characters = (published_prompt if type(published_prompt) is int
+                                 and published_prompt >= 0 else None)
+        max_prompt_source = "provider"
+    else:
+        max_prompt_characters, max_prompt_source = _limit_with_source(
+            "max_prompt_characters", None, None, definition.id, model_id
+        )
     # **Three answers, read from the model's own statement.** This used to be a
     # definite `True` for `studio_hub` and a definite `False` for everything
     # else, while `operations` claimed `image-to-image` on every row — so a
