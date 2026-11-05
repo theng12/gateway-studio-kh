@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.233 — 2026-11-05
+
+- Gateway checks matching Hub support and permission before accepting Story's late-label renders. Unavailable or unverified support is refused clearly; this update does not turn on remote rendering or certify label appearance.
+- Image models publish the prompt-length limit stated by their Hub instead of a flat 4,000 characters. Unknown limits stay unknown; shared models and pools retain the smallest known safe limit across their active locations.
+
 ## 0.2.232 — 2026-11-05
 
 - Fleet labels Story's queue as its last reported queue and shows the report age beside the counts. An unknown age is stated plainly.
