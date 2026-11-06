@@ -1934,7 +1934,10 @@ async function confirmShelfRemove() {
   const force = shelfNode('remove-force');
   const forced = !!(pending && pending.protectedShelf && force && force.checked);
   if (pending && pending.protectedShelf && !forced) {
-    shelfMessage('Tick the force box to remove the newest or only live version; nothing was removed.', true);
+    // The dialog is modal, so the page message behind it would be invisible. Say it inside.
+    const text = shelfNode('remove-text');
+    if (text) text.textContent = `Tick the force box above to remove ${pending.name}; nothing was removed.`;
+    if (force && typeof force.focus === 'function') force.focus();
     return;
   }
   closeShelfRemoveDialog();

@@ -668,7 +668,9 @@ test('shelved releases render Retire / Un-retire / Remove actions and retired st
   await h.context.removePack('release.retired');
   await h.context.confirmShelfRemove();
   assert.equal(calls.filter(([p]) => p === '/content-library/retire-version').length, 0);
-  assert.match(h.node('shelf-message').textContent, /Tick the force box/);
+  assert.equal(h.node('shelf-remove-dialog').open, true, 'the dialog stays open for the decision');
+  assert.match(h.node('shelf-remove-text').textContent, /Tick the force box above/);
+  assert.match(h.node('shelf-remove-text').textContent, /nothing was removed/);
 
   // The explicit tick is what allows the newest/only version to go.
   h.node('shelf-remove-force').checked = true;
