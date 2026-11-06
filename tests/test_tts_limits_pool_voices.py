@@ -127,7 +127,11 @@ class PoolConcurrencyTests(unittest.TestCase):
             budget = Worker(None, interval_s=10.0)._provider_budget("pool", "chat", "free")
         self.assertEqual(budget.limit, 7)
 
-    def _run_pool(self, members: list[str], limits: dict, jobs: int) -> dict[str, int]:
+    def _run_pool(self, members: list[str], limits: dict, jobs: int,
+                  barrier: threading.Barrier | None = None
+                  ) -> tuple[dict[str, int], list[BackendResult]]:
+        from concurrent.futures import ThreadPoolExecutor
+
         from gateway.adapters.pool import PoolBackend
 
         lock = threading.Lock()
@@ -139,9 +143,16 @@ class PoolConcurrencyTests(unittest.TestCase):
                 with lock:
                     live[request.provider_id] = live.get(request.provider_id, 0) + 1
                     peak[request.provider_id] = max(peak.get(request.provider_id, 0), live[request.provider_id])
-                time.sleep(0.15)
-                with lock:
-                    live[request.provider_id] -= 1
+                try:
+                    if barrier is not None:
+                        # Three calls must be in flight together to trip it; a pool that
+                        # serialises times out here instead of passing on a fast Mac.
+                        barrier.wait(5)
+                    else:
+                        time.sleep(0.15)
+                finally:
+                    with lock:
+                        live[request.provider_id] -= 1
                 return BackendResult(text="ok")
 
         def resolve(_modality, member):
@@ -152,25 +163,22 @@ class PoolConcurrencyTests(unittest.TestCase):
         backend.attach(resolve, lambda _definition: Adapter())
         request = BackendRequest(provider_id="pool", model_id="p", modality="chat",
                                  params={"messages": []}, values={}, base_url="")
-        threads = [threading.Thread(target=backend.generate, args=(request,)) for _ in range(jobs)]
         with patch.object(pools, "members", return_value=members), \
-                patch.object(concurrency, "_settings_providers", return_value=limits):
-            started = time.monotonic()
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(10)
-            peak["_seconds"] = int((time.monotonic() - started) * 100)
-        return peak
+                patch.object(concurrency, "_settings_providers", return_value=limits), \
+                ThreadPoolExecutor(max_workers=jobs) as executor:
+            futures = [executor.submit(backend.generate, request) for _ in range(jobs)]
+            results = [f.result(30) for f in futures]  # a worker's exception fails the test
+        return peak, results
 
     def test_concurrent_pool_calls_run_together_up_to_the_providers_limit(self) -> None:
-        peak = self._run_pool(["a::x"], {"a": {"limit": 3}}, jobs=6)
+        # A barrier of three, twice, is the proof: no wall clock to be slow on a busy Mac.
+        peak, results = self._run_pool(
+            ["a::x"], {"a": {"limit": 3}}, jobs=6, barrier=threading.Barrier(3))
         self.assertEqual(peak["a"], 3)
-        # Two waves of 0.15 s, not six in a row (0.9 s).
-        self.assertLess(peak["_seconds"], 60)
+        self.assertEqual([r.text for r in results], ["ok"] * 6)
 
     def test_a_provider_at_its_default_of_one_still_runs_one_at_a_time(self) -> None:
-        self.assertEqual(self._run_pool(["a::x"], {}, jobs=3)["a"], 1)
+        self.assertEqual(self._run_pool(["a::x"], {}, jobs=3)[0]["a"], 1)
 
 
 class GatewayVoiceLabelTests(unittest.TestCase):
