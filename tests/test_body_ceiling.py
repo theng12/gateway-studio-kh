@@ -123,6 +123,8 @@ _SELF_BOUNDED = {
     "/admin/api/content-shelf/remove-from-installs": 4 * MB,
     "/admin/api/content-shelf/retire": 4 * MB,
     "/admin/api/content-shelf/unretire": 4 * MB,
+    # The exact-version door uses the same validated admin JSON ceiling as its siblings.
+    "/admin/api/content-library/retire-version": 4 * MB,
 }
 
 
