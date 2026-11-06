@@ -10,6 +10,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.235 — 2026-11-06
+
+- The menu-bar dropdown shows the app version directly above Quit.
+- Run test keeps chip, memory and Mac filters aligned with the selected targets, checks availability again before starting, and shows retained-log progress and available memory. Publishing measured limits still requires a separate approval; a test stays unavailable until the Hub supplies the required support.
+- Image output choices retain each Hub model's own dimensions instead of substituting a generic size table. An explicitly empty or malformed size declaration no longer becomes an invented output option.
+- Release tools check which Gateway you selected before publishing or asking a Story Mac to update, preventing an unbound helper from acting on the wrong Gateway.
+- Hub and Story release forms show a Gateway-owned folder and accept a file name from it. Downloads paths are refused immediately with instructions, avoiding a hidden permission wait after an app update. Existing absolute deployment paths outside Downloads remain supported.
+
 ## 0.2.234 — 2026-11-06
 
 - Developer Mode has a separate owner page for supported Hub tests, collected logs, receipt review and explicit approval or rollback. It respects existing pause and availability controls; synthetic test results do not qualify a Mac.
