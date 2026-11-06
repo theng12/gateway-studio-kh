@@ -246,6 +246,46 @@ class CompleteWorkflowTests(unittest.TestCase):
                                 "kind": req["kind"], "model_id": req["model"]["id"],
                                 "settings": settings, "requested_limits": req["requested_limits"]})
 
+    def test_filters_bind_exact_inventory_target_and_survive_replay(self):
+        snapshot = self.service.inventory_source()
+        snapshot["machines"][0].update(chip="Apple M2 Pro", memory_gb=32)
+        filters = {"chip": "Apple M2 Pro", "ram_bytes": 32 * 1024**3,
+                   "query": self.cap["node_id"]}
+        wrapper = encoded({**json.loads(self.wrapper), "filters": filters})
+        first = self.service.run(wrapper)["runs"][0]
+        self.assertEqual(first["selection_filters"], filters)
+        self.assertEqual(first["ram_bytes"], 32 * 1024**3)
+        self.assertEqual(first["inventory_at"], snapshot["generated_at"])
+        snapshot["machines"] = []
+        replay = self.service.run(wrapper)["runs"][0]
+        self.assertEqual(replay["id"], first["id"])
+        self.assertEqual(replay["selection_filters"], filters)
+        self.assertEqual(self.operations.count("submit"), 1)
+
+    def test_nonmatching_or_invalid_filters_refuse_before_capabilities_or_submit(self):
+        for change, code in (({"chip": "Apple M2 Pro"}, "TARGET_FILTER_MISMATCH"),
+                             ({"ram_bytes": 32 * 1024**3}, "TARGET_FILTER_MISMATCH"),
+                             ({"query": "some-other-node"}, "TARGET_FILTER_MISMATCH"),
+                             ({"ram_bytes": True}, "INVALID_TARGET_FILTER"),
+                             ({"chip": ""}, "INVALID_TARGET_FILTER")):
+            filters = {"chip": None, "ram_bytes": None, "query": "", **change}
+            with self.subTest(change=change), self.assertRaises(DeveloperTestError) as caught:
+                self.service.run(encoded({**json.loads(self.wrapper), "filters": filters}))
+            self.assertEqual(caught.exception.code, code)
+        self.assertEqual(self.operations, [])
+        self.assertEqual(self.store.rows(), [])
+
+    def test_log_collection_progress_distinguishes_unknown_total_and_split_bytes(self):
+        attempt = self.service.run(self.wrapper)["runs"][0]
+        self.assertEqual(attempt["log_collected_bytes"], 0)
+        self.assertIsNone(attempt["log_total_bytes"])
+        partial = self.service.refresh(attempt["id"])
+        self.assertEqual(partial["log_collected_bytes"], 1)
+        self.assertEqual(partial["log_total_bytes"], len(self.log))
+        self.assertFalse(partial["log_complete"])
+        self.assertIsNone(self.service.log(attempt["id"])["text"])
+        self.assertEqual(developer_measurements(self.store)["rows"], [])
+
     def test_split_utf8_collection_requires_explicit_approval_and_rolls_back(self):
         row = self.service.run(self.wrapper)["runs"][0]
         attempt = row["id"]

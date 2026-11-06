@@ -201,13 +201,25 @@ class DeveloperTests:
         visible["request"] = json.loads(row["request_bytes"])
         visible["receipt"] = None if row["receipt_bytes"] is None else json.loads(row["receipt_bytes"])
         visible["log_complete"] = bool(row.get("log_complete"))
+        visible["log_collected_bytes"] = len(row["log_bytes"])
+        visible["log_total_bytes"] = (None if visible["receipt"] is None
+                                      else visible["receipt"].get("log", {}).get("size_bytes"))
         return visible
 
     def run(self, raw):
         if len(raw) > WIRE_CEILING:
             raise DeveloperTestError(413, "PAYLOAD_TOO_LARGE", "The run exceeds the reader byte limit.")
         body = decode_render_json(raw)
-        closed(body, ("run_id", "inventory_at", "targets", "kind", "model_id", "settings", "requested_limits"))
+        fields = ("run_id", "inventory_at", "targets", "kind", "model_id", "settings", "requested_limits")
+        closed(body, fields + (("filters",) if "filters" in body else ()))
+        filters = body.get("filters", {"chip": None, "ram_bytes": None, "query": ""})
+        closed(filters, ("chip", "ram_bytes", "query"))
+        if ((filters["chip"] is not None and (type(filters["chip"]) is not str
+                or not filters["chip"] or len(filters["chip"]) > 256))
+                or (filters["ram_bytes"] is not None and (type(filters["ram_bytes"]) is not int
+                    or not 0 < filters["ram_bytes"] <= 2**53 - 1))
+                or type(filters["query"]) is not str or len(filters["query"]) > 256):
+            raise DeveloperTestError(400, "INVALID_TARGET_FILTER", "Use a stated chip, physical RAM size or Mac name/node filter.")
         campaign = segment(body["run_id"])
         with self.store.connection() as db:
             prior = db.execute("SELECT body FROM campaigns WHERE id=?", (campaign,)).fetchone()
@@ -220,11 +232,19 @@ class DeveloperTests:
             raise DeveloperTestError(409, "STALE_INVENTORY", "Refresh the registered target list before Run.")
         if not isinstance(body["targets"], list) or not 1 <= len(body["targets"]) <= 4096:
             raise DeveloperTestError(400, "INVALID_TARGETS", "Select a finite set of registered Macs.")
+        targets = {(t["controller_id"], t["node_id"]): t for t in inventory["targets"]}
         rows, seen = [], set()
         for selection in body["targets"]:
             closed(selection, ("controller_id", "node_id"))
             controller, node = selection["controller_id"], selection["node_id"]
-            target = self.target(controller, node)
+            segment(controller), segment(node)
+            target = targets.get((controller, node))
+            if target is None:
+                raise DeveloperTestError(404, "UNKNOWN_TARGET", "This Mac is not in the selected inventory.")
+            if ((filters["chip"] is not None and target["chip"] != filters["chip"])
+                    or (filters["ram_bytes"] is not None and target["ram_bytes"] != filters["ram_bytes"])
+                    or filters["query"].casefold() not in f"{target['label']} {node}".casefold()):
+                raise DeveloperTestError(409, "TARGET_FILTER_MISMATCH", "A selected Mac does not match every chip, RAM and node filter.")
             if (controller, node) in seen:
                 raise DeveloperTestError(400, "DUPLICATE_TARGET", "Each Mac may appear once per run.")
             seen.add((controller, node))
@@ -266,7 +286,8 @@ class DeveloperTests:
                 raise DeveloperTestError(413, "PAYLOAD_TOO_LARGE", "The vector exceeds the Hub's live request limit.")
             _, _, pin = self.transport.identity(controller)
             rows.append({**target, "id": test_id, "campaign": campaign, "key": uuid4().hex,
-                         "inventory_at": inventory["inventory_at"], "capabilities": cap,
+                         "inventory_at": inventory["inventory_at"], "selection_filters": filters,
+                         "capabilities": cap,
                          "transport_pin": pin, "request_bytes": request_bytes,
                          "request_sha256": sha(request_bytes), "submitted": False,
                          "connectivity": "online", "state": "not_run", "reason": "Not submitted yet.",

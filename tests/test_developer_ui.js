@@ -17,6 +17,27 @@ function cap() {
     test_kinds: ['reference_counts'], fixture_sets: [{id:'fixtures', sha256:'digest'}],
     safety_policy: {requested_limits: {max_runtime_seconds: {minimum:1, maximum:60, unit:'seconds'}}}};
 }
+test('chip, physical RAM and node filters intersect without guessing unknown hardware', () => {
+  const targets = [
+    {node_id:'m2-pro-32', label:'Fleet Mac', chip:'Apple M2 Pro', ram_bytes:32*1024**3},
+    {node_id:'m2-pro-16', label:'Fleet Mac', chip:'Apple M2 Pro', ram_bytes:16*1024**3},
+    {node_id:'m2-32', label:'Fleet Mac', chip:'Apple M2', ram_bytes:32*1024**3},
+    {node_id:'unknown', label:'Apple M2 Pro 32 GB', chip:null, ram_bytes:null},
+  ];
+  const rows = context.window.DeveloperTestsUI.matchingTargets(targets, {chip:'Apple M2 Pro', ram:String(32*1024**3), filter:'m2-pro-32'});
+  assert.equal(rows.length,1); assert.equal(rows[0].node_id,'m2-pro-32');
+  assert.equal(context.window.DeveloperTestsUI.matchingTargets(targets, {chip:'Apple M2 Pro', ram:String(32*1024**3), filter:'other'}).length,0);
+});
+test('pre-run inventory refresh retains exact selected identity and never expands targets', () => {
+  const target={controller_id:'site',node_id:'chosen',chip:'Apple M2 Pro',ram_bytes:32*1024**3,online:true,paused:false};
+  const inventory={fresh:true,inventory_at:456,targets:[target,{...target,node_id:'new-unselected'}]};
+  const fresh=context.window.DeveloperTestsUI.freshInventoryAt;
+  assert.equal(fresh([target],inventory),456);
+  for (const change of [{online:false},{paused:true},{chip:'Apple M4'},{ram_bytes:16*1024**3},{node_id:'replacement'}])
+    assert.throws(()=>fresh([target],{...inventory,targets:[{...target,...change}]}));
+  assert.throws(()=>fresh([target],{...inventory,fresh:false}));
+  assert.throws(()=>fresh([target],{...inventory,targets:[target,target]}));
+});
 test('unknown metrics are distinct from a measured zero', () => {
   assert.equal(unknown(null), 'Not recorded'); assert.equal(unknown(0), '0');
 });
@@ -57,6 +78,6 @@ test('shared page has navigation, hash, section, script and app Fleet entry', ()
 });
 test('evidence uses text rendering and has no polling or automatic retry loop', () => {
   assert.doesNotMatch(script,/\.innerHTML\s*=/); assert.doesNotMatch(script,/setInterval|setTimeout/);
-  assert.match(script,/Review evidence/); assert.match(script,/Approve measured evidence/);
+  assert.match(script,/Review evidence/); assert.match(script,/Approve and publish measured limits/);
   assert.match(script,/Restore previous evidence/);
 });
