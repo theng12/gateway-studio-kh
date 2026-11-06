@@ -4433,7 +4433,13 @@ async def content_shelf_remove(request: Request) -> Any:
 
     pack_id = body.get("pack_id")
     version = body.get("version")
-    confirm = bool(body.get("confirm", False))
+    confirm = body.get("confirm", False)
+    force = body.get("force", False)
+    # A destructive decision is never coerced from a string: `"false"` is not false.
+    if type(confirm) is not bool:
+        return _error(422, "confirm must be true or false.", "CONTENT_REQUEST_INVALID")
+    if type(force) is not bool:
+        return _error(422, "force must be true or false.", "CONTENT_REQUEST_INVALID")
     release_id = body.get("release_id")
 
     if not pack_id and not release_id:
@@ -4453,6 +4459,53 @@ async def content_shelf_remove(request: Request) -> Any:
             str(pack_id),
             str(version) if version else None,
             confirm=confirm,
+            force=force,
+        )
+    except content_delivery.DeliveryError as exc:
+        return _error(exc.status, str(exc), exc.code)
+
+
+@router.post("/api/content-library/retire-version", dependencies=[Depends(require_admin)])
+async def content_library_retire_version(request: Request) -> Any:
+    """Retire and remove exactly one published version, keeping its ownership record.
+
+    Exact identity only: `pack_id` and `version`, or one `release_id`. A version with no
+    strictly newer live release of the same pack needs `force: true`; it is never inferred.
+    This never asks a Story app to uninstall anything.
+    """
+    from . import content_delivery
+    from .content_packs import _json, PackError
+
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        return _error(415, "This request requires Content-Type: application/json.")
+    try:
+        body = _json(await request.body())
+    except PackError:
+        return _error(422, "Send one unambiguous JSON object.")
+    if not isinstance(body, dict):
+        return _error(422, "Request body must be a JSON object.")
+
+    confirm = body.get("confirm", False)
+    force = body.get("force", False)
+    if type(confirm) is not bool:
+        return _error(422, "confirm must be true or false.", "CONTENT_REQUEST_INVALID")
+    if type(force) is not bool:
+        return _error(422, "force must be true or false.", "CONTENT_REQUEST_INVALID")
+
+    pack_id = body.get("pack_id")
+    version = body.get("version")
+    release_id = body.get("release_id")
+    if not pack_id and not release_id:
+        return _error(422, "pack_id and version, or release_id, are required.", "PACK_VERSION_REQUIRED")
+
+    try:
+        return await run_in_threadpool(
+            content_delivery.remove_release,
+            str(pack_id) if pack_id else None,
+            str(version) if version else None,
+            release_id=str(release_id) if release_id else None,
+            confirm=confirm,
+            force=force,
         )
     except content_delivery.DeliveryError as exc:
         return _error(exc.status, str(exc), exc.code)

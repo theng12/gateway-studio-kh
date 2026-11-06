@@ -472,6 +472,78 @@ test('a failed archive bank refresh is not drawn as an empty bank', async () => 
   assert.match(h.node('archive-preserve-message').textContent, /HTTP 500/);
 });
 
+test('an older retired version removes without force when a newer live sibling remains', async () => {
+  const shelf = {
+    ...READY_SHELF,
+    releases: [
+      {
+        release_id: 'release.old', pack_id: 'com.fixture.multi', version: '1.0.9',
+        archive_sha256: '1'.repeat(64), bytes: 900, title: 'Multi Pack', kind: 'topic-pack',
+        current: false, available: true, retired: true,
+        published_at: '2026-09-21T00:00:00Z',
+      },
+      {
+        release_id: 'release.new', pack_id: 'com.fixture.multi', version: '1.0.10',
+        archive_sha256: '2'.repeat(64), bytes: 900, title: 'Multi Pack', kind: 'topic-pack',
+        current: true, available: true, retired: false,
+        published_at: '2026-09-22T00:00:00Z',
+      },
+    ],
+  };
+  const calls = [];
+  const h = harness(async (pathName, options) => {
+    calls.push([pathName, options?.method || 'GET', options?.body ? JSON.parse(options.body) : null]);
+    return shelf;
+  });
+
+  await h.context.loadContentShelf();
+  await h.context.removePack('release.old');
+  // 1.0.10 is newer than 1.0.9: a string compare would read them the other way round.
+  assert.equal(h.node('shelf-remove-force-row').hidden, true);
+  assert.match(h.node('shelf-remove-text').textContent, /A newer live version stays available/);
+  await h.context.confirmShelfRemove();
+
+  const removeCall = calls.find(([p]) => p === '/content-library/retire-version');
+  assert.deepEqual(removeCall[2], {
+    pack_id: 'com.fixture.multi', version: '1.0.9', release_id: 'release.old',
+    confirm: true, force: false,
+  });
+});
+
+test('a refused removal reloads the shelf before showing the error', async () => {
+  const shelf = {
+    ...READY_SHELF,
+    releases: [
+      {
+        release_id: 'release.old', pack_id: 'com.fixture.refused', version: '1.0.0',
+        archive_sha256: '3'.repeat(64), bytes: 900, title: 'Refused Pack', kind: 'topic-pack',
+        current: false, available: true, retired: true,
+        published_at: '2026-09-21T00:00:00Z',
+      },
+      {
+        release_id: 'release.new', pack_id: 'com.fixture.refused', version: '1.0.1',
+        archive_sha256: '4'.repeat(64), bytes: 900, title: 'Refused Pack', kind: 'topic-pack',
+        current: true, available: true, retired: false,
+        published_at: '2026-09-22T00:00:00Z',
+      },
+    ],
+  };
+  let reads = 0;
+  const h = harness(async (pathName, options) => {
+    if (options?.method === 'POST') throw Error('HTTP 409: NEWEST_VERSION_REQUIRED');
+    if (pathName === '/content-shelf') reads += 1;
+    return shelf;
+  });
+
+  await h.context.loadContentShelf();
+  const before = reads;
+  await h.context.removePack('release.old');
+  await h.context.confirmShelfRemove();
+
+  assert.ok(reads > before, 'the refused action must re-read the shelf');
+  assert.match(h.node('shelf-message').textContent, /HTTP 409: NEWEST_VERSION_REQUIRED/);
+});
+
 test('the full console script remains valid JavaScript', () => {
   new vm.Script(source.match(/<script>([\s\S]*)<\/script>/)[1]);
 });
@@ -576,13 +648,39 @@ test('shelved releases render Retire / Un-retire / Remove actions and retired st
   const unretireCall = calls.find(([p]) => p === '/content-shelf/unretire');
   assert.deepEqual(unretireCall[2], {release_id: 'release.retired'});
 
-  // Test clicking remove on retired pack
+  // Remove asks in its own dialog. This retired pack is the only live version, so the force
+  // box is visible, unticked, and the removal is refused until the owner ticks it.
   await h.context.removePack('release.retired');
-  assert.equal(confirmations.length, 1);
-  assert.match(confirmations[0], /Remove Retired Pack v1\.0\.0\?/);
-  assert.match(confirmations[0], /Its file moves to the Gateway trash/);
-  const removeCall = calls.find(([p]) => p === '/content-shelf/remove');
-  assert.deepEqual(removeCall[2], {release_id: 'release.retired', confirm: true});
+  assert.equal(calls.filter(([p]) => p === '/content-library/retire-version').length, 0,
+    'opening the question must not post anything');
+  assert.equal(h.node('shelf-remove-dialog').open, true);
+  assert.match(h.node('shelf-remove-text').textContent, /Remove Retired Pack v1\.0\.0\?/);
+  assert.match(h.node('shelf-remove-text').textContent, /newest or only live version/);
+  assert.equal(h.node('shelf-remove-force-row').hidden, false);
+  assert.equal(h.node('shelf-remove-force').checked, false, 'force is never pre-ticked');
+
+  // Cancel closes and does nothing.
+  await h.context.cancelShelfRemove();
+  assert.equal(h.node('shelf-remove-dialog').open, false);
+  assert.equal(calls.filter(([p]) => p === '/content-library/retire-version').length, 0);
+
+  // Confirming without ticking the force box is refused, and the dialog stays open.
+  await h.context.removePack('release.retired');
+  await h.context.confirmShelfRemove();
+  assert.equal(calls.filter(([p]) => p === '/content-library/retire-version').length, 0);
+  assert.match(h.node('shelf-message').textContent, /Tick the force box/);
+
+  // The explicit tick is what allows the newest/only version to go.
+  h.node('shelf-remove-force').checked = true;
+  await h.context.confirmShelfRemove();
+  assert.equal(h.node('shelf-remove-dialog').open, false);
+  const removeCall = calls.find(([p]) => p === '/content-library/retire-version');
+  assert.deepEqual(removeCall[2], {
+    pack_id: 'com.fixture.retired', version: '1.0.0', release_id: 'release.retired',
+    confirm: true, force: true,
+  });
+  assert.equal('remove_from_installs' in removeCall[2], false,
+    'removing from the shelf never asks Story apps to uninstall');
 });
 
 test('ticking the box in the dialog is what asks Story apps to remove, and it never sticks', async () => {

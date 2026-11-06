@@ -1518,6 +1518,46 @@ def _digest_files(folder: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _has_newer_live_release(state: dict[str, Any], target: dict[str, Any]) -> bool:
+    """A strictly newer published release of the same pack is still live and downloadable.
+
+    `state["releases"]` holds published rows only, so a pending or failed import can never
+    stand in for a successor. Removed snapshots live in `state["removed"]`, not here, and
+    `_version` keeps 1.0.10 above 1.0.9 where a string compare would reverse them.
+    """
+    version = _version(target["version"])
+    return any(
+        row.get("release_id") != target.get("release_id")
+        and row.get("pack_id") == target.get("pack_id")
+        and not row.get("retired")
+        and _version(row["version"]) > version
+        and _available(row)
+        for row in state["releases"]
+    )
+
+
+def _require_replacement(state: dict[str, Any], targets: list[dict[str, Any]], *, force: bool) -> None:
+    """Refuse a removal unless every target leaves a newer live release of its own pack.
+
+    `force` is the owner's literal explicit override and only overrides this shelf protection.
+    It is never coerced from a string, and it has no Story-side uninstall effect.
+    """
+    if force is True:
+        return
+    for target in targets:
+        if _has_newer_live_release(state, target):
+            continue
+        family = [row for row in state["releases"] if row.get("pack_id") == target.get("pack_id")]
+        if len(family) == 1:
+            raise DeliveryError(
+                "This is the pack's last remaining version. Removing it leaves no installable "
+                "release; send force: true to go ahead.", 409, "LAST_VERSION_REQUIRED")
+        raise DeliveryError(
+            "No newer live release of this pack would remain. Removing the newest version leaves "
+            "customers without an installable release; send force: true to go ahead.",
+            409, "NEWEST_VERSION_REQUIRED")
+
+
 def _remove_releases_locked(state: dict[str, Any], targets: list[dict[str, Any]], *,
                             root: Path, now: str) -> list[dict[str, Any]]:
     """Move the targets' unshared archive folders under `root`, record them, and write the
@@ -1568,13 +1608,16 @@ def _remove_releases_locked(state: dict[str, Any], targets: list[dict[str, Any]]
     return entries
 
 
-def remove_pack(pack_id: str, version: str | None = None, *, confirm: bool = False) -> dict[str, Any]:
+def remove_pack(pack_id: str, version: str | None = None, *, confirm: bool = False,
+                force: bool = False) -> dict[str, Any]:
     """Remove a retired pack. Never deletes: the archive's whole library folder (the archive
     and every sidecar beside it) is moved under `content-trash/`, a manifest entry records what,
     when, from where and its sha256, and the release leaves the active records.
 
-    Refused unless every targeted release is retired. If the authority cannot be written after
-    the move, the folder is moved back.
+    Refused unless every targeted release is retired, and unless a strictly newer live release
+    of the same pack would remain — so the pack-wide form removing everything needs
+    `force is True`, exactly like removing its newest version. If the authority cannot be
+    written after the move, the folder is moved back.
     """
     if not pack_id:
         raise DeliveryError("pack_id is required.", 422, "PACK_ID_REQUIRED")
@@ -1591,6 +1634,7 @@ def remove_pack(pack_id: str, version: str | None = None, *, confirm: bool = Fal
             raise DeliveryError(
                 f"'{live[0].get('title', pack_id)}' v{live[0]['version']} is not retired. "
                 "Retire a pack before removing it.", 409, "CONTENT_PACK_NOT_RETIRED")
+        _require_replacement(state, targets, force=force)
         entries = _remove_releases_locked(state, targets, root=trash_root(), now=_now())
         return {"ok": True, "removed": True, "pack_id": pack_id, "version": version,
                 "removed_releases": entries}
@@ -1601,10 +1645,11 @@ def remove_release(pack_id: str | None = None, version: str | None = None, *,
                    force: bool = False) -> dict[str, Any]:
     """Retire and remove exactly one released version, atomically under the authority lock.
 
-    Internal for now: the public removal route is **not** opened until exact-version usage is
-    known safe (Story lead confirmation pending). Identify the version by `pack_id` **and**
-    `version`, or by an exact `release_id`; if both forms are given they must agree. A pack's
-    last remaining version is refused unless `force` is the literal `True`.
+    Internal primitive for the admin console: exact-version removal needs a strictly newer
+    non-retired published release of the same pack. Identify the version by `pack_id` **and**
+    `version`, or by an exact `release_id`; if both forms are given they must agree. A version
+    with no newer live sibling — including a pack's last remaining version — is refused unless
+    `force` is the literal `True`.
 
     Its archive folder moves under `content-delivery/_trash/` with a manifest, its release row
     leaves the active shelf, and a frozen ownership record stays in `state["removed"]` so the
@@ -1636,11 +1681,7 @@ def remove_release(pack_id: str | None = None, version: str | None = None, *,
         if pack_id is not None and (target.get("pack_id") != pack_id or target.get("version") != version):
             raise DeliveryError("The release does not match that pack and version.", 409, "CONTENT_RELEASE_CONFLICT")
 
-        family_versions = [row for row in state["releases"] if row.get("pack_id") == target["pack_id"]]
-        if len(family_versions) == 1 and force is not True:
-            raise DeliveryError(
-                "This is the pack's last remaining version. Removing it leaves no installable "
-                "release; send force: true to go ahead.", 409, "LAST_VERSION_REQUIRED")
+        _require_replacement(state, [target], force=force)
 
         now = _now()
         entries = _remove_releases_locked(state, [target], root=_retirement_trash_root(), now=now)

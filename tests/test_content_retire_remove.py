@@ -255,8 +255,13 @@ class ContentRetireRemoveTest(unittest.TestCase):
         with self.assertRaises(content_delivery.DeliveryError):
             content_delivery.remove_pack(pack_id, confirm=False)
 
-        # Remove with confirmation
-        res = content_delivery.remove_pack(pack_id, confirm=True)
+        # The pack's last live version needs the same literal force as the exact-version route.
+        with self.assertRaises(content_delivery.DeliveryError) as cm:
+            content_delivery.remove_pack(pack_id, confirm=True)
+        self.assertEqual(cm.exception.code, "LAST_VERSION_REQUIRED")
+
+        # Remove with confirmation and the explicit override
+        res = content_delivery.remove_pack(pack_id, confirm=True, force=True)
         self.assertTrue(res["ok"])
         self.assertTrue(res["removed"])
 
@@ -348,11 +353,15 @@ class ContentRetireRemoveTest(unittest.TestCase):
         r4 = self.client.post("/admin/api/content-shelf/remove", json={"pack_id": pack_id, "confirm": True})
         self.assertEqual(r4.status_code, 409)
 
-        # Retire then remove -> 200
+        # Retire then remove -> the last live version needs an explicit force
         self.client.post("/admin/api/content-shelf/retire", json={"pack_id": pack_id, "confirm_latest": True})
         r5 = self.client.post("/admin/api/content-shelf/remove", json={"pack_id": pack_id, "confirm": True})
-        self.assertEqual(r5.status_code, 200)
-        self.assertTrue(r5.json()["removed"])
+        self.assertEqual(r5.status_code, 409)
+        self.assertEqual(r5.json()["code"], "LAST_VERSION_REQUIRED")
+        r6 = self.client.post("/admin/api/content-shelf/remove",
+                              json={"pack_id": pack_id, "confirm": True, "force": True})
+        self.assertEqual(r6.status_code, 200)
+        self.assertTrue(r6.json()["removed"])
 
     def test_record_removed_migration_helper(self) -> None:
         pack_id = "com.storystudio.pack.topic.migrationfixture"
@@ -927,6 +936,123 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         state = content_delivery._configured_state()
         self.assertTrue(any(row["release_id"] == release_id for row in state["releases"]))
         self.assertFalse(any(entry.get("release_id") == release_id for entry in state.get("removed", [])))
+
+
+    def test_exact_removal_needs_a_newer_live_sibling_not_just_any_other_row(self) -> None:
+        pack_id = "com.storystudio.pack.topic.newestguard"
+        pub_old = content_delivery.import_and_publish(
+            make_archive(pack_id, "1.0.0", "Guard 1.0.0"))
+        pub_new = content_delivery.import_and_publish(
+            make_archive(pack_id, "1.0.1", "Guard 1.0.1"))
+        old_digest = pub_old["release"]["archive_sha256"]
+        new_digest = pub_new["release"]["archive_sha256"]
+
+        # The newest live version has only a retired older sibling: still refused without force.
+        content_delivery.retire_pack(pack_id, version="1.0.0")
+        with self.assertRaises(content_delivery.DeliveryError) as cm:
+            content_delivery.remove_release(pack_id, "1.0.1", confirm=True)
+        self.assertEqual(cm.exception.code, "NEWEST_VERSION_REQUIRED")
+        self.assertTrue((self.data_dir / "content-library" / new_digest / "archive.sspack").is_file())
+
+        # A newer-but-retired sibling cannot stand in for a live successor either.
+        content_delivery.retire_pack(pack_id, version="1.0.1", confirm_latest=True)
+        with self.assertRaises(content_delivery.DeliveryError) as cm:
+            content_delivery.remove_release(pack_id, "1.0.0", confirm=True)
+        self.assertEqual(cm.exception.code, "NEWEST_VERSION_REQUIRED")
+        self.assertTrue((self.data_dir / "content-library" / old_digest / "archive.sspack").is_file())
+
+        res = content_delivery.remove_release(pack_id, "1.0.1", confirm=True, force=True)
+        self.assertTrue(res["removed"])
+        self.assertEqual(res["remaining_versions"], ["1.0.0"])
+
+    def test_exact_removal_compares_versions_semantically_and_ignores_other_rows(self) -> None:
+        semantic_pack = "com.storystudio.pack.topic.semanticguard"
+        content_delivery.import_and_publish(make_archive(semantic_pack, "1.0.9", "Semantic 1.0.9"))
+        content_delivery.import_and_publish(make_archive(semantic_pack, "1.0.10", "Semantic 1.0.10"))
+
+        # 1.0.10 is newer than 1.0.9; a lexicographic compare would reverse them and refuse.
+        res = content_delivery.remove_release(semantic_pack, "1.0.9", confirm=True)
+        self.assertTrue(res["removed"])
+        self.assertEqual(res["remaining_versions"], ["1.0.10"])
+
+        # Another pack's newer release is not this pack's successor.
+        lonely = "com.storystudio.pack.topic.unrelatedguard"
+        other = "com.storystudio.pack.topic.otherfamilyguard"
+        content_delivery.import_and_publish(make_archive(lonely, "1.0.0", "Lonely 1.0.0"))
+        content_delivery.import_and_publish(make_archive(other, "9.9.9", "Other 9.9.9"))
+        with self.assertRaises(content_delivery.DeliveryError) as cm:
+            content_delivery.remove_release(lonely, "1.0.0", confirm=True)
+        self.assertEqual(cm.exception.code, "LAST_VERSION_REQUIRED")
+
+        # A removed snapshot (even a newer-looking one) is not an active release.
+        with content_delivery._lock():
+            state = content_delivery._read_state()
+            state.setdefault("removed", []).append({
+                "what": f"{lonely}@9.9.9", "when": "2026-11-06T00:00:00Z",
+                "pack_id": lonely, "version": "9.9.9", "release_id": "removed.fixture",
+                "retired": True, "archive_sha256": "f" * 64,
+            })
+            content_delivery._atomic_state(state)
+        with self.assertRaises(content_delivery.DeliveryError) as cm:
+            content_delivery.remove_release(lonely, "1.0.0", confirm=True)
+        self.assertEqual(cm.exception.code, "LAST_VERSION_REQUIRED")
+
+    def test_admin_exact_version_retirement_route_validates_identity_and_booleans(self) -> None:
+        pack_id = "com.storystudio.pack.topic.exactroute"
+        pub_old = content_delivery.import_and_publish(
+            make_archive(pack_id, "1.0.0", "Route 1.0.0"))
+        pub_new = content_delivery.import_and_publish(
+            make_archive(pack_id, "1.0.1", "Route 1.0.1"))
+        old_id = pub_old["release"]["release_id"]
+        new_id = pub_new["release"]["release_id"]
+        old_digest = pub_old["release"]["archive_sha256"]
+        new_digest = pub_new["release"]["archive_sha256"]
+
+        # Truthy strings and integers are not booleans, and nothing is removed.
+        for body in (
+            {"pack_id": pack_id, "version": "1.0.0", "confirm": "true"},
+            {"pack_id": pack_id, "version": "1.0.0", "confirm": 1},
+            {"pack_id": pack_id, "version": "1.0.0", "confirm": True, "force": "false"},
+            {"pack_id": pack_id, "version": "1.0.0", "confirm": True, "force": 1},
+        ):
+            response = self.client.post("/admin/api/content-library/retire-version", json=body)
+            self.assertEqual(response.status_code, 422, body)
+            self.assertEqual(response.json()["code"], "CONTENT_REQUEST_INVALID")
+        self.assertTrue((self.data_dir / "content-library" / old_digest / "archive.sspack").is_file())
+
+        # A pack id and version that disagree with the release id are a conflict, not a removal.
+        mismatch = self.client.post("/admin/api/content-library/retire-version", json={
+            "pack_id": pack_id, "version": "1.0.0", "release_id": new_id, "confirm": True})
+        self.assertEqual(mismatch.status_code, 409)
+        self.assertEqual(mismatch.json()["code"], "CONTENT_RELEASE_CONFLICT")
+
+        # The newest live version needs the explicit force; a pack-wide body is not accepted.
+        refused = self.client.post("/admin/api/content-library/retire-version", json={
+            "pack_id": pack_id, "version": "1.0.1", "confirm": True})
+        self.assertEqual(refused.status_code, 409)
+        self.assertEqual(refused.json()["code"], "NEWEST_VERSION_REQUIRED")
+        packwide = self.client.post("/admin/api/content-library/retire-version", json={
+            "pack_id": pack_id, "confirm": True})
+        self.assertEqual(packwide.status_code, 422)
+        self.assertEqual(packwide.json()["code"], "PACK_VERSION_REQUIRED")
+
+        # The older exact version, retired and removed in one call, keeps the newer sibling.
+        removed = self.client.post("/admin/api/content-library/retire-version", json={
+            "pack_id": pack_id, "version": "1.0.0", "release_id": old_id,
+            "confirm": True, "force": False})
+        self.assertEqual(removed.status_code, 200, removed.text)
+        body = removed.json()
+        self.assertTrue(body["removed"])
+        self.assertEqual(body["release_id"], old_id)
+        self.assertEqual(body["remaining_versions"], ["1.0.1"])
+        self.assertFalse((self.data_dir / "content-library" / old_digest).exists())
+        self.assertTrue((self.data_dir / "content-library" / new_digest / "archive.sspack").is_file())
+
+        # Forcing the newest is an explicit, separate decision.
+        forced = self.client.post("/admin/api/content-library/retire-version", json={
+            "release_id": new_id, "confirm": True, "force": True})
+        self.assertEqual(forced.status_code, 200, forced.text)
+        self.assertTrue(forced.json()["removed"])
 
 
 if __name__ == "__main__":

@@ -1187,6 +1187,18 @@
         <button id="shelf-retire-cancel" onclick="cancelShelfRetire()">Cancel</button>
       </div>
     </dialog>
+    <!-- Removing one version moves its file to the Gateway trash. When it is the newest or only
+         live version, the force box is the second, explicit decision; it is never pre-ticked. -->
+    <dialog id="shelf-remove-dialog" aria-labelledby="shelf-remove-heading">
+      <h2 id="shelf-remove-heading">Remove this version?</h2>
+      <p id="shelf-remove-text"></p>
+      <label class="check" id="shelf-remove-force-row" hidden><input id="shelf-remove-force" type="checkbox"> Remove it anyway — no newer live version would remain</label>
+      <p class="hint">Its file moves to the Gateway trash and the Gateway keeps a record of where it went. Nothing is deleted, and Story apps keep the copy they have.</p>
+      <div class="row" style="margin-top:12px">
+        <button id="shelf-remove-confirm" class="primary" onclick="confirmShelfRemove()">Remove</button>
+        <button id="shelf-remove-cancel" onclick="cancelShelfRemove()">Cancel</button>
+      </div>
+    </dialog>
 
     </div>
 
@@ -1738,12 +1750,31 @@ function shelfRowActions(row) {
 function shelfRelease(releaseId) {
   return ((shelfState.data && shelfState.data.releases) || []).find(row => row.release_id === releaseId);
 }
+function shelfVersionCompare(left, right) {
+  const a = String(left || '').split('.').map(Number);
+  const b = String(right || '').split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const one = a[i] || 0, other = b[i] || 0;
+    if (one !== other) return one - other;
+  }
+  return 0;
+}
+// The service refuses to remove a version unless a strictly newer live release remains. The row
+// only carries published active releases, so a removed snapshot or a retired sibling cannot count.
+function shelfHasNewerLiveSibling(row) {
+  return ((shelfState.data && shelfState.data.releases) || []).some(other =>
+    other !== row && other.pack_id === row.pack_id && !other.retired && other.available &&
+    shelfVersionCompare(other.version, row.version) > 0);
+}
 async function shelfPackAction(path, body, done) {
   try {
     await api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     await loadContentShelf();
     shelfMessage(done);
   } catch (error) {
+    // The refusal is the truth: re-read the shelf before showing it, so the rows never continue
+    // to offer an action the server just rejected.
+    await loadContentShelf();
     shelfMessage(`${error.message}`, true);
   }
 }
@@ -1857,12 +1888,75 @@ function shelfRemovalReport(row) {
   if ((report.not_reported || []).length) parts.push(`not reported yet: ${report.not_reported.join(', ')}`);
   return `<div class="muted">${esc(parts.join(' · '))}</div>`;
 }
+let shelfRemovePending = null;
+
+function removeDialog() {
+  return shelfNode('remove-dialog');
+}
+
+function closeShelfRemoveDialog() {
+  const dialog = removeDialog();
+  if (dialog) {
+    if (typeof dialog.close === 'function') dialog.close();
+    else dialog.removeAttribute('open');
+  }
+  shelfRemovePending = null;
+}
+
+function openShelfRemoveDialog(row) {
+  const name = `${row.title || row.pack_id} v${row.version}`;
+  const protectedShelf = !shelfHasNewerLiveSibling(row);
+  shelfRemovePending = {releaseId: row.release_id, packId: row.pack_id, version: row.version,
+                        name, protectedShelf};
+  const text = shelfNode('remove-text');
+  if (text) {
+    text.textContent = protectedShelf
+      ? `Remove ${name}? This is the newest or only live version of ${row.pack_id}. Removing it leaves no newer version on the shelf. Tick the box below to confirm.`
+      : `Remove ${name}? Its file moves to the Gateway trash and it leaves the shelf. A newer live version stays available.`;
+  }
+  const forceRow = shelfNode('remove-force-row');
+  if (forceRow) forceRow.hidden = !protectedShelf;
+  const force = shelfNode('remove-force');
+  if (force) force.checked = false;
+  const dialog = removeDialog();
+  if (!dialog) return false;
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', '');
+  return true;
+}
+
+function cancelShelfRemove() {
+  closeShelfRemoveDialog();
+}
+
+async function confirmShelfRemove() {
+  const pending = shelfRemovePending;
+  const force = shelfNode('remove-force');
+  const forced = !!(pending && pending.protectedShelf && force && force.checked);
+  if (pending && pending.protectedShelf && !forced) {
+    shelfMessage('Tick the force box to remove the newest or only live version; nothing was removed.', true);
+    return;
+  }
+  closeShelfRemoveDialog();
+  if (!pending) return;
+  await shelfPackAction('/content-library/retire-version',
+    {pack_id: pending.packId, version: pending.version, release_id: pending.releaseId,
+     confirm: true, force: forced},
+    `${pending.name} was moved to the Gateway trash. Story apps keep the copy they have.`);
+}
+
 async function removePack(releaseId) {
   const row = shelfRelease(releaseId);
   if (!row || !row.retired) return;
+  if (openShelfRemoveDialog(row)) return;
+  // No dialog element at all (a stripped page): the same decision through two plain questions.
   const name = `${row.title || row.pack_id} v${row.version}`;
   if (!confirm(`Remove ${name}?\n\nIts file moves to the Gateway trash and it leaves the shelf. Macs that already installed it keep working. The Gateway keeps a record of where it went.`)) return;
-  await shelfPackAction('/content-shelf/remove', {release_id: releaseId, confirm: true},
+  const protectedShelf = !shelfHasNewerLiveSibling(row);
+  if (protectedShelf && !confirm(`No newer live version of ${row.pack_id} would remain. Remove ${name} anyway?`)) return;
+  await shelfPackAction('/content-library/retire-version',
+    {pack_id: row.pack_id, version: row.version, release_id: releaseId,
+     confirm: true, force: protectedShelf},
     `${name} was moved to the Gateway trash.`);
 }
 function renderShelfReleases(releases) {
