@@ -74,6 +74,7 @@ SERIAL = {
     "test_fleet_layout.py": "native offscreen AppKit layout",
     "test_jobs_outputs.py": "native offscreen AppKit layout",
     "test_secret_field.py": "native offscreen AppKit layout",
+    "test_settings_retention_fields.py": "native offscreen AppKit layout",
     "test_task5_native.py": "native offscreen AppKit layout",
     "test_whats_new_page.py": "native offscreen AppKit layout",
     "test_window_size.py": "resizes the real app window and waits on a fixture server",

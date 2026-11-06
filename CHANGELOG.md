@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.236 — 2026-11-07
+
+- Every admin page shows the Mac's computer name beside its version and under Gateway Studio KH in the sidebar, so you can tell which Gateway you opened.
+
 ## 0.2.235 — 2026-11-06
 
 - The menu-bar dropdown shows the app version directly above Quit.
