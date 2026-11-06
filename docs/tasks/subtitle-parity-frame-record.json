@@ -1,0 +1,92 @@
+{
+  "format": "gateway.subtitle-parity-fixture.v1",
+  "comparison_boundary": "both final encoded MP4 video streams decoded to RGB24",
+  "comparison": "exact byte equality; zero tolerance",
+  "frame_index_origin": 0,
+  "fps": {
+    "numerator": 30,
+    "denominator": 1
+  },
+  "canvas": {
+    "width": 1280,
+    "height": 720
+  },
+  "duration_sec": 6,
+  "cue_semantics": "source SRT caption cue; start inclusive, end exclusive; ASS dialogue segmentation does not redefine the source cue",
+  "middle_rule": "floor((first_visible_frame + last_visible_frame) / 2); choose the earlier middle frame when there are two",
+  "encode_requirement": "same pinned compiler and identical encode settings for local and remote final MP4s",
+  "execution_path": "normal Story export -> Gateway -> enabled free non-paused Hub node -> receipt -> Story import",
+  "prohibited_node": "paused Studio",
+  "live_proof_status": "not run; requires reviewed Hub executor release installed on permitted node",
+  "descriptor_sha256": {
+    "profile": "2f888ec305ad7dac376f72e32ed184baebf78d86ddf037ed24296643886c75c0",
+    "tools": "98c25ae582d4ee43ee1cf665192365149f8d9f860c229a0be9da131df43eba8a",
+    "compiler": "6fcc6879969b20b68d843b6acba82b58b14a8f4b19b70d8f6d6ba45918b677c0"
+  },
+  "base_sha256": "22afcd4ffd2aca1db4daeb16085a9b5a6c989fe06ea70595c2b20877f7e7c0c9",
+  "ffmpeg_sha256": "ba3a9d9d20b43492a85649d7e03122144905e3f07b713279fb5a0e659cf73e84",
+  "cases": {
+    "en": {
+      "source_srt_sha256": "93f8480cde4b1a2cb36b5ad99eeaa33535443feaa057a8b670de827250fbbda9",
+      "ass_sha256": "3486dbf234685c947de63c57738bc16fa786bd446dbe767c587cf1fe93c15038",
+      "ass_size_bytes": 2312,
+      "font_family": "Anton",
+      "font_sha256": "a4ba3a92350ebb031da0cb47630ac49eb265082ca1bc0450442f4a83ab947cab",
+      "font_size_bytes": 170812,
+      "first_cue_seconds": [
+        "2/5",
+        "2"
+      ],
+      "longest_cue_number": 2,
+      "longest_cue_seconds": [
+        "11/5",
+        "21/5"
+      ],
+      "frame_indices": {
+        "first_cue_first": 12,
+        "first_cue_middle": 35,
+        "first_cue_last": 59,
+        "longest_cue_inside": 95,
+        "no_subtitle": 0
+      },
+      "frame_time_seconds_exact": {
+        "first_cue_first": "2/5",
+        "first_cue_middle": "7/6",
+        "first_cue_last": "59/30",
+        "longest_cue_inside": "19/6",
+        "no_subtitle": "0"
+      }
+    },
+    "km": {
+      "source_srt_sha256": "55d0bcdeab4f85019ea8f0343b1fcf253a9db39d9ace30303b1c8be53bb30ca6",
+      "ass_sha256": "8765bbb14e1c29421c91ed0594b5e1e6c9a4dbf5874181c739d4989482dbb8d2",
+      "ass_size_bytes": 1023,
+      "font_family": "Battambang",
+      "font_sha256": "4cd10f7a56a7d9d1fb4184b2219821f8ad6f425be290243ef73c4ef3a80c86ff",
+      "font_size_bytes": 111988,
+      "first_cue_seconds": [
+        "2/5",
+        "21/10"
+      ],
+      "longest_cue_number": 2,
+      "longest_cue_seconds": [
+        "12/5",
+        "23/5"
+      ],
+      "frame_indices": {
+        "first_cue_first": 12,
+        "first_cue_middle": 37,
+        "first_cue_last": 62,
+        "longest_cue_inside": 104,
+        "no_subtitle": 0
+      },
+      "frame_time_seconds_exact": {
+        "first_cue_first": "2/5",
+        "first_cue_middle": "37/30",
+        "first_cue_last": "31/15",
+        "longest_cue_inside": "52/15",
+        "no_subtitle": "0"
+      }
+    }
+  }
+}
