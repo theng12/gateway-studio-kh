@@ -552,6 +552,8 @@ test('the remove force label wraps instead of inheriting the check label nowrap'
   assert.ok(rule, 'the remove force label needs its own rule');
   assert.match(rule[1], /white-space:\s*normal/);
   assert.match(rule[1], /align-items:\s*flex-start/);
+  assert.match(source, /label\.check\.shelf-remove-force\[hidden\]\s*\{\s*display:\s*none;?\s*\}/,
+    'the author display rule must not override the hidden attribute');
 });
 
 test('the full console script remains valid JavaScript', () => {
