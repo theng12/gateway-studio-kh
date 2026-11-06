@@ -165,7 +165,10 @@ def offer() -> dict[str, Any]:
 
 
 def publish(artifact: str | Path) -> dict[str, Any]:
-    source = Path(artifact).expanduser()
+    try:
+        source = release_publisher.resolve_artifact(artifact)
+    except release_publisher.ReleaseError as exc:
+        raise StoryReleaseError(exc.message, exc.status, exc.code) from exc
     if not source.is_file():
         raise StoryReleaseError(f"No file at {source}.", 400, "STORY_RELEASE_MISSING")
     version, build = read_versions(source)

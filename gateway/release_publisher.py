@@ -134,6 +134,46 @@ def _state_path() -> Path:
     return Path(config.DATA_DIR) / "release-state.json"
 
 
+def artifact_directory() -> Path:
+    """Release intake belongs to the active Gateway profile, outside received artifacts."""
+    path = Path(config.DATA_DIR) / "releases"
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ReleaseError("Gateway's release folder could not be created.", 503,
+                           "RELEASE_STAGING_UNAVAILABLE") from exc
+    return path
+
+
+def resolve_artifact(artifact: str | Path) -> Path:
+    """Resolve staged filenames; refuse protected Downloads before opening a file."""
+    path = Path(artifact).expanduser()
+    if not path.is_absolute():
+        path = artifact_directory() / path
+    path = Path(os.path.abspath(path))
+    downloads = Path.home() / "Downloads"
+
+    def refuse() -> None:
+        raise ReleaseError(
+            "Gateway cannot publish from Downloads. Place the release file in "
+            f"{artifact_directory()} using Finder or the existing deployment copy, "
+            "then publish its file name.", 400, "RELEASE_ARTIFACT_NEEDS_STAGING")
+
+    def in_downloads(candidate: Path) -> bool:
+        # macOS can resolve the same protected folder through differently cased paths.
+        root, value = str(downloads).casefold(), str(candidate).casefold()
+        return value == root or value.startswith(root + os.sep)
+
+    # Check the literal path before filesystem metadata; resolve aliases only outside Downloads.
+    if in_downloads(path):
+        refuse()
+    resolved = path.resolve()
+    downloads = downloads.resolve()
+    if in_downloads(resolved):
+        refuse()
+    return path
+
+
 def _node_request(request: dict[str, Any]) -> dict[str, Any]:
     """One request to the Node signing helper. Never raises its errors as ours."""
     encoded = json.dumps(
@@ -726,6 +766,7 @@ _push_lock = threading.Lock()
 
 def publish(**kwargs: Any) -> dict[str, Any]:
     """`_publish`, one push at a time (see `_push_lock`)."""
+    kwargs["artifact_path"] = resolve_artifact(kwargs["artifact_path"])
     with _push_lock:
         return _publish(**kwargs)
 
@@ -768,7 +809,7 @@ def _publish(
     ordering and would take the older build, so the gateway is the only place that can
     stop it.
     """
-    path = Path(artifact_path).expanduser()
+    path = resolve_artifact(artifact_path)
     if not path.is_file():
         raise ReleaseError(f"No artifact at {path}.", 400, "RELEASE_ARTIFACT_MISSING")
     clock = time.monotonic()
@@ -962,7 +1003,10 @@ def _catchup_artifact(state: dict[str, Any], version: str) -> tuple[Path | None,
     if not state.get("artifact_path"):
         return None, (f"this Gateway did not record which file {version} was published from (it was "
                       "published before automatic catch-up existed); publish it once more to turn it on")
-    path = Path(str(state["artifact_path"]))
+    try:
+        path = resolve_artifact(str(state["artifact_path"]))
+    except ReleaseError as exc:
+        return None, exc.message
     try:
         stat = path.stat()
     except OSError:

@@ -93,9 +93,9 @@ def plan() -> list[tuple[str, str]]:
 def start(*, artifact_path: str | Path, version: str, build: str, filename: str | None = None,
           allow_downgrade: bool = False, force_full: bool = False) -> dict[str, Any]:
     """Begin a paced rollout in the background and answer at once with its state."""
-    from .release_publisher import ReleaseError
+    from .release_publisher import ReleaseError, resolve_artifact
 
-    path = Path(artifact_path).expanduser()
+    path = resolve_artifact(artifact_path)
     if not path.is_file():
         raise ReleaseError(f"No artifact at {path}.", 400, "RELEASE_ARTIFACT_MISSING")
     if not version.strip() or not build.strip():

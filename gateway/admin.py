@@ -4592,7 +4592,8 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     # App Update Key public key and comparison fingerprint to show.
     push = release_publisher.last_push()
     try:
-        out["release"] = {"identity": release_publisher.identity(), "last_push": push}
+        out["release"] = {"identity": release_publisher.identity(), "last_push": push,
+                          "artifact_directory": str(release_publisher.artifact_directory())}
     except release_publisher.ReleaseError as exc:
         out["release"] = {"identity": None, "last_push": push, "error": exc.message}
     # The paced rollout, live: which controller is updating, and each group's Macs on the new version.
@@ -5573,6 +5574,7 @@ def release_identity() -> Any:
         return {
             "identity": release_publisher.identity(),
             "last_push": release_publisher.last_push(),
+            "artifact_directory": str(release_publisher.artifact_directory()),
         }
     except release_publisher.ReleaseError as exc:
         return _error(exc.status, exc.message, exc.code)

@@ -641,6 +641,23 @@ test('Story queue counts and pause state are labelled as a dated report, includi
   assert.deepEqual(ctx.calls, [{ route: '/story/instances', opts: undefined }]);
 });
 
+test('release forms show the live Gateway staging folder without changing typed filenames', async () => {
+  const data = payload([machine()]);
+  data.release = { artifact_directory: '/custom Gateway profile/releases' };
+  const ctx = context(data);
+  node(ctx, 'fleet-release-path').value = 'Hub Studio KH.dmg';
+  node(ctx, 'fleet-story-path').value = 'Story Studio KH.dmg';
+  await ctx.loadFleet();
+  for (const id of ['fleet-release-staging', 'fleet-story-staging']) {
+    assert.match(node(ctx, id).textContent, /\/custom Gateway profile\/releases/);
+    assert.match(node(ctx, id).textContent, /Downloads paths are refused/);
+  }
+  assert.equal(node(ctx, 'fleet-release-path').value, 'Hub Studio KH.dmg');
+  assert.equal(node(ctx, 'fleet-story-path').value, 'Story Studio KH.dmg');
+  ctx.renderFleetRelease({ release: {} });
+  assert.match(node(ctx, 'fleet-release-staging').textContent, /has not been reported/);
+});
+
 test('a Studio Hub release is published with every override, and the rollout can be stopped and resumed', async () => {
   const ctx = context(payload([machine()]), {
     respond: route => {

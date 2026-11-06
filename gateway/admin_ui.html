@@ -274,6 +274,7 @@
   .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: var(--s12); }
   label { display: block; font-size: 12px; color: var(--dim); margin-bottom: var(--s4); }
   .hint { font-size: 12px; color: var(--dim); margin-top: var(--s4); }
+  #fleet-release-staging, #fleet-story-staging { overflow-wrap: anywhere; }
   .actions { display: flex; gap: var(--s8); margin-top: var(--s12); flex-wrap: wrap; align-items: center; }
   .msg { font-size: 12px; }
   .msg.ok { color: var(--ok-text); } .msg.bad { color: var(--bad-text); }
@@ -679,9 +680,10 @@
         <div id="fleet-rollout"></div>
         <p class="hint">"Held" is what each controller reports it has now — not what was pushed. A refusal is
           the controller's own sentence, quoted exactly.</p>
+        <p class="hint" id="fleet-release-staging"></p>
         <div class="row" id="fleet-release-form">
-          <label>Path on this Mac
-            <input id="fleet-release-path" placeholder="/Users/you/…/StudioHub-0.6.50-abc1234.dmg"></label>
+          <label>File name or path on the Gateway Mac
+            <input id="fleet-release-path" placeholder="Hub Studio KH.dmg"></label>
           <label>Version <input id="fleet-release-version" placeholder="0.6.50"></label>
           <label>Build <input id="fleet-release-build" placeholder="abc1234"></label>
           <label>File name <input id="fleet-release-filename" placeholder="StudioHub-0.6.50-abc1234.dmg"></label>
@@ -762,9 +764,10 @@
         <p class="hint">Signed with the same App Update Key as Studio Hub releases. A Story Mac checks in
           every 30 minutes, so Update Now applies at that Mac's next check (30 minutes at most); a Mac that
           has been silent for over 75 minutes shows as Offline.</p>
+        <p class="hint" id="fleet-story-staging"></p>
         <div class="row">
-          <label>Path on this Mac
-            <input id="fleet-story-path" placeholder="/Users/you/…/Story Studio KH-1.4.363.dmg"></label>
+          <label>File name or path on the Gateway Mac
+            <input id="fleet-story-path" placeholder="Story Studio KH.dmg"></label>
           <button type="button" onclick="fleetPublishStory(this)">Publish</button>
         </div>
       </details>
@@ -7836,6 +7839,12 @@ function fleetRolloutStepText(step, version) {
 
 function renderFleetRelease(d) {
   const release = (d && d.release) || {};
+  for (const id of ['fleet-release-staging', 'fleet-story-staging']) {
+    const hint = document.getElementById(id);
+    if (hint) hint.textContent = release.artifact_directory
+      ? `Place the release file in this folder on the Gateway Mac: ${release.artifact_directory}. Then enter its file name. Downloads paths are refused.`
+      : 'The Gateway release folder has not been reported. Refresh Fleet before publishing. Downloads paths are refused.';
+  }
   const status = document.getElementById('fleet-release-status');
   if (status) {
     const identity = release.identity || null;
@@ -7893,7 +7902,7 @@ async function fleetPublishRelease(button) {
   const allAtOnce = document.getElementById('fleet-release-all')?.checked === true;
   const forceFull = document.getElementById('fleet-release-full')?.checked === true;
   if (!artifactPath) {
-    fleetNote('fleet-release-note', 'A path is required — the Gateway signs the file on its own Mac.');
+    fleetNote('fleet-release-note', 'Enter the release file name from the Gateway folder shown above, or a full path outside Downloads.');
     return;
   }
   if (!version || !build) {
@@ -7910,7 +7919,7 @@ async function fleetPublishRelease(button) {
   }
   if (!confirm(`Publish ${filename}?\n\nThis gateway signs the DMG and rolls it out one location at a time: this `
     + `Mac's Studio Hub, then each controller in turn, waiting for each to come back on the new version. Each `
-    + `group's Macs then update themselves one by one, after finishing their current work.`
+    + `Mac then updates itself after finishing its current work.`
     + (allAtOnce ? '\n\nAll at once: every controller is sent it now, in parallel.' : ''))) return;
   const body = { artifact_path: artifactPath, version, build, filename };
   if (allowDowngrade) body.allow_downgrade = true;
@@ -8322,7 +8331,7 @@ async function fleetStoryUpdate(button) {
 async function fleetPublishStory(button) {
   const path = String(document.getElementById('fleet-story-path')?.value ?? '').trim();
   if (!path) {
-    fleetNote('fleet-story-note', 'A path is required — the Story release is signed on the Gateway\'s own Mac.');
+    fleetNote('fleet-story-note', 'Enter the release file name from the Gateway folder shown above, or a full path outside Downloads.');
     return;
   }
   const filename = path.split('/').pop();
