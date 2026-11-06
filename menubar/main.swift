@@ -1481,6 +1481,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Open data folder", #selector(openData)))
         menu.addItem(item("Open log", #selector(openLog)))
         menu.addItem(.separator())
+        let version = NSMenuItem(title: "Gateway Studio KH \(GatewayController.shared.appVersion)", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
         menu.addItem(item("Quit Gateway Studio KH", #selector(quit), key: "q"))
     }
 
