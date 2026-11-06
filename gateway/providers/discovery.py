@@ -979,9 +979,7 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             # of the table taken from the Hub's installed bundle, so a Hub that re-sized a
             # preset would be described by the old number. Carried unread, like every other Hub
             # fact here; the catalogue decides what it means.
-            if not isinstance(raw.get("image_sizes"), dict) and isinstance(
-                facts.get("image_sizes"), dict
-            ):
+            if "image_sizes" in facts:
                 raw["image_sizes"] = facts["image_sizes"]
             # Whether the Hub takes a **complete script** for this model and
             # sections it itself, and how. Read, never derived: `null` means it

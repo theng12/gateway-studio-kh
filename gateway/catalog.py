@@ -233,15 +233,15 @@ def _hub_image_sizes(raw: dict[str, Any]) -> dict[str, tuple[int, int]]:
     added to it, which is what makes a ratio the Hub states without a usable width/height
     publish with no geometry at all rather than with a plausible one.
 
-    Discovery does not carry `image_sizes` into `raw` yet, so `HUB_IMAGE_SIZE_BY_RATIO` —
-    the same table, read from the installed Hub 0.6.91 bundle and checked against this
-    Hub's `/api/hub/catalog` on 2026-09-28 — is the source in force today. It is consulted
-    **only while the Hub states no list**, the same direction every other provider fact
-    travels: the producer's own answer wins, our copy fills a silence.
+    Discovery preserves the Hub's current per-model list. The legacy table is used only
+    when that field is absent; an empty or invalid declaration states no usable geometry
+    rather than authorising plausible pixels from a different model.
     """
-    entries = raw.get("image_sizes")
-    if not isinstance(entries, list) or not entries:
+    if "image_sizes" not in raw:
         return dict(HUB_IMAGE_SIZE_BY_RATIO)
+    entries = raw["image_sizes"]
+    if not isinstance(entries, list):
+        return {}
     sizes: dict[str, tuple[int, int]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
