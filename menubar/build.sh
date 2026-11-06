@@ -302,10 +302,15 @@ compiler = exact(decode_render_json(raw["compiler.json"]), (
     "format", "implementation", "python_runtime_sha256", "render_hash_sha256",
     "render_contract_sha256", "final_render_compiler_sha256",
 ), "compiler")
-late_label = sys.argv[5] == "studio.render.late-label.v3"
-fixed_compiler = "hub-final-render-late-label-v3" if late_label else "hub-final-render-v1"
+fixed_compilers = {
+    "studio.render.profile.v1": "hub-final-render-v1",
+    "studio.render.late-label.v3": "hub-final-render-late-label-v3",
+    "studio.render.subtitle.v1": "hub-final-render-subtitle-v1",
+}
+if sys.argv[5] not in fixed_compilers:
+    invalid("authority contract")
 if (compiler["format"] != "studio.render.compiler.v1"
-        or compiler["implementation"] != fixed_compiler):
+        or compiler["implementation"] != fixed_compilers[sys.argv[5]]):
     invalid("compiler fixed fields")
 for key in (
     "python_runtime_sha256", "render_hash_sha256", "render_contract_sha256",
@@ -319,16 +324,27 @@ profile = exact(decode_render_json(raw["profile.json"]), (
     "execution_bounds", "hardware_qualification_record_sha256",
     "fidelity_record_sha256", "production_eligible",
 ), "profile")
-fixed_profile = {
-    "format": "studio.render.profile.v3" if late_label else "studio.render.profile.v1",
-    "implementation": "story-classic-late-label-v3" if late_label else "story-classic-no-font-v1",
-    "recipe_namespace": "studio.render.final.v1",
-    "combination_set": "retained-classic-late-label-candidate-v3" if late_label
-                       else "retained-classic-no-font-candidate-v1",
-    "tier_policy": "story-final-chain-v1",
-    "output_policy": "story-final-output-v1",
+fixed_profiles = {
+    "studio.render.profile.v1": {
+        "format": "studio.render.profile.v1", "implementation": "story-classic-no-font-v1",
+        "recipe_namespace": "studio.render.final.v1",
+        "combination_set": "retained-classic-no-font-candidate-v1",
+        "tier_policy": "story-final-chain-v1", "output_policy": "story-final-output-v1",
+    },
+    "studio.render.late-label.v3": {
+        "format": "studio.render.profile.v3", "implementation": "story-classic-late-label-v3",
+        "recipe_namespace": "studio.render.final.v1",
+        "combination_set": "retained-classic-late-label-candidate-v3",
+        "tier_policy": "story-final-chain-v1", "output_policy": "story-final-output-v1",
+    },
+    "studio.render.subtitle.v1": {
+        "format": "studio.render.profile.v4", "implementation": "story-classic-subtitle-v1",
+        "recipe_namespace": "studio.render.final.v1",
+        "combination_set": "retained-classic-subtitle-candidate-v1",
+        "tier_policy": "story-final-chain-v1", "output_policy": "story-final-output-v1",
+    },
 }
-if any(profile[key] != value for key, value in fixed_profile.items()):
+if any(profile[key] != value for key, value in fixed_profiles[sys.argv[5]].items()):
     invalid("profile fixed fields")
 if profile["production_eligible"] is not False:
     invalid("profile production_eligible")
@@ -436,6 +452,45 @@ PY
       [ "$(shasum -a 256 "$LATE_LABEL_SOURCE/$NAME" | cut -d ' ' -f1)" \
         = "$(shasum -a 256 "$LATE_LABEL_DESTINATION/$NAME" | cut -d ' ' -f1)" ] || {
           echo "ERROR: late-label render authority changed while staging: $NAME" >&2
+          exit 1
+        }
+    done
+  fi
+
+  SUBTITLE_SOURCE="$ROOT/data/final-render-subtitle"
+  if [ -e "$SUBTITLE_SOURCE" ] || [ -L "$SUBTITLE_SOURCE" ]; then
+    [ -d "$SUBTITLE_SOURCE" ] && [ ! -L "$SUBTITLE_SOURCE" ] || {
+      echo "ERROR: unsafe subtitle render authority source" >&2
+      exit 1
+    }
+    SUBTITLE_COUNT="$(find "$SUBTITLE_SOURCE" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')"
+    [ "$SUBTITLE_COUNT" = 3 ] || {
+      echo "ERROR: subtitle render authority requires exactly three files" >&2
+      exit 1
+    }
+    for NAME in profile.json tools.json compiler.json; do
+      SOURCE_FILE="$SUBTITLE_SOURCE/$NAME"
+      [ -f "$SOURCE_FILE" ] && [ ! -L "$SOURCE_FILE" ] \
+        && [ "$(wc -c < "$SOURCE_FILE" | tr -d '[:space:]')" -ge 2 ] \
+        && [ "$(wc -c < "$SOURCE_FILE" | tr -d '[:space:]')" -le 1048576 ] \
+        && [ "$(stat -f '%Lp' "$SOURCE_FILE")" = 644 ] || {
+          echo "ERROR: invalid subtitle render authority file: $NAME" >&2
+          exit 1
+        }
+    done
+    SUBTITLE_PROFILE_SHA256="$(shasum -a 256 "$SUBTITLE_SOURCE/profile.json" | cut -d ' ' -f1)"
+    SUBTITLE_TOOLS_SHA256="$(shasum -a 256 "$SUBTITLE_SOURCE/tools.json" | cut -d ' ' -f1)"
+    SUBTITLE_COMPILER_SHA256="$(shasum -a 256 "$SUBTITLE_SOURCE/compiler.json" | cut -d ' ' -f1)"
+    validate_render_authority "$SUBTITLE_SOURCE" \
+      "$SUBTITLE_PROFILE_SHA256" "$SUBTITLE_TOOLS_SHA256" "$SUBTITLE_COMPILER_SHA256" \
+      "studio.render.subtitle.v1"
+    SUBTITLE_DESTINATION="$APP/Contents/Resources/gateway/data/final-render-subtitle"
+    mkdir "$SUBTITLE_DESTINATION"
+    for NAME in profile.json tools.json compiler.json; do
+      cp "$SUBTITLE_SOURCE/$NAME" "$SUBTITLE_DESTINATION/$NAME"
+      [ "$(shasum -a 256 "$SUBTITLE_SOURCE/$NAME" | cut -d ' ' -f1)" \
+        = "$(shasum -a 256 "$SUBTITLE_DESTINATION/$NAME" | cut -d ' ' -f1)" ] || {
+          echo "ERROR: subtitle render authority changed while staging: $NAME" >&2
           exit 1
         }
     done
