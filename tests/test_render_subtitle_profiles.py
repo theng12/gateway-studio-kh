@@ -5,6 +5,7 @@ explicitly synthetic and must never be treated as production authority.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -52,6 +53,9 @@ _BOUNDS = {
     "output_limit_bytes": 5000,
     "process_tree_rss_limit_bytes": 1000,
     "cumulative_wall_seconds": 60,
+    "max_subtitle_fonts": 8,
+    "max_subtitle_font_bytes": 33554432,
+    "max_subtitle_ass_bytes": 4194304,
 }
 
 
@@ -84,7 +88,7 @@ def _bundle_values() -> dict[str, dict]:
         "tools_artifact_sha256": hashlib.sha256(_canonical(tools)).hexdigest(),
         "combination_set": "retained-classic-subtitle-candidate-v1",
         "tier_policy": "story-final-chain-v1", "output_policy": "story-final-output-v1",
-        "execution_bounds": _BOUNDS,
+        "execution_bounds": copy.deepcopy(_BOUNDS),
         "hardware_qualification_record_sha256": None,
         "fidelity_record_sha256": None, "production_eligible": False,
     }
@@ -162,6 +166,49 @@ class SubtitleDescriptorLoaderTests(unittest.TestCase):
             (root / "final-render-subtitle" / "extra.json").write_bytes(b"{}")
             self.assertEqual(self.load(root), (None, {}))
 
+    def test_missing_or_invalid_subtitle_bound_keys_fail_closed(self) -> None:
+        for key in ("max_subtitle_fonts", "max_subtitle_font_bytes", "max_subtitle_ass_bytes"):
+            with self.subTest(missing=key), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _write_bundle(root, change=lambda v: v["profile"]["execution_bounds"].pop(key))
+                self.assertEqual(self.load(root), (None, {}))
+        for key, value in (("max_subtitle_fonts", 0), ("max_subtitle_font_bytes", True),
+                           ("max_subtitle_ass_bytes", "4194304")):
+            with self.subTest(key=key, value=value), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _write_bundle(root, change=lambda v: v["profile"]["execution_bounds"].update(
+                    {key: value}))
+                self.assertEqual(self.load(root), (None, {}))
+
+    def test_legacy_subtitle_bounds_shape_is_rejected(self) -> None:
+        def legacy(values: dict) -> None:
+            bounds = values["profile"]["execution_bounds"]
+            del bounds["bounds_version"], bounds["canvas_range"]
+            bounds["canvas_pairs"] = [{"width": 1920, "height": 1080}]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write_bundle(root, change=legacy)
+            self.assertEqual(self.load(root), (None, {}))
+
+    def test_base_profile_does_not_accept_subtitle_bound_keys(self) -> None:
+        from tests import test_task6_packaging as packaging
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payloads = dict(packaging._authority_files())
+            profile = json.loads(payloads["profile.json"])
+            profile["execution_bounds"].update({
+                "max_subtitle_fonts": 8,
+                "max_subtitle_font_bytes": 33554432,
+                "max_subtitle_ass_bytes": 4194304,
+            })
+            payloads["profile.json"] = packaging._canonical(profile)
+            directory = root / "final-render"
+            directory.mkdir()
+            for name, payload in payloads.items():
+                (directory / name).write_bytes(payload)
+            with mock.patch.object(runtime, "BUNDLED_DATA_DIR", root):
+                self.assertEqual(runtime._bundled_render_descriptors(), (None, {}))
+
     def test_runtime_wires_the_loaded_profile_and_asset_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -217,6 +264,27 @@ class SubtitleBundleBuildTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("profile fixed fields", result.stderr)
+
+    def test_subtitle_bounds_missing_invalid_or_legacy_fail_the_build(self) -> None:
+        def missing(values: dict) -> None:
+            values["profile"]["execution_bounds"].pop("max_subtitle_fonts")
+
+        def invalid(values: dict) -> None:
+            values["profile"]["execution_bounds"]["max_subtitle_font_bytes"] = 0
+
+        def legacy(values: dict) -> None:
+            bounds = values["profile"]["execution_bounds"]
+            del bounds["bounds_version"], bounds["canvas_range"]
+            bounds["canvas_pairs"] = [{"width": 1920, "height": 1080}]
+
+        for label, change, expected in (
+                ("missing", missing, "profile.execution_bounds has missing or unknown fields"),
+                ("invalid", invalid, "max_subtitle_font_bytes"),
+                ("legacy", legacy, "profile execution bounds version")):
+            with self.subTest(label=label):
+                _fixture, _payloads, result = self.build(change=change)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
 
 
 if __name__ == "__main__":

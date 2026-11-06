@@ -355,12 +355,15 @@ if (profile["tools_artifact_sha256"] != hashlib.sha256(raw["tools.json"]).hexdig
         or profile["compiler_artifact_sha256"]
         != hashlib.sha256(raw["compiler.json"]).hexdigest()):
     invalid("descriptor dependency digests")
+subtitle = sys.argv[5] == "studio.render.subtitle.v1"
 bound_keys = {
     "canvas_pairs", "working_fps", "max_duration_sec", "max_operations",
     "max_assets", "max_asset_bytes", "max_total_input_bytes", "max_pixel_frames",
     "scratch_reserve_bytes", "output_limit_bytes", "process_tree_rss_limit_bytes",
     "cumulative_wall_seconds",
 }
+if subtitle:
+    bound_keys |= {"max_subtitle_fonts", "max_subtitle_font_bytes", "max_subtitle_ass_bytes"}
 bounds = profile["execution_bounds"]
 if type(bounds) is dict and "bounds_version" in bounds:
     bounds = exact(bounds, bound_keys - {"canvas_pairs"} | {"bounds_version", "canvas_range"},
@@ -373,6 +376,8 @@ if type(bounds) is dict and "bounds_version" in bounds:
     if canvas["max_edge"] < 2 or canvas["max_edge"] % 2 or canvas["max_pixels"] < 4:
         invalid("profile canvas range")
 else:
+    if subtitle:
+        invalid("profile execution bounds version")
     bounds = exact(bounds, bound_keys, "profile.execution_bounds")
     if type(bounds["canvas_pairs"]) is not list or not bounds["canvas_pairs"]:
         invalid("profile execution canvas pairs")

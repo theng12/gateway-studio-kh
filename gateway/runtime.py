@@ -51,7 +51,11 @@ def _positive_integer(value: object) -> bool:
     return type(value) is int and 1 <= value <= 9_007_199_254_740_991
 
 
-def _valid_bounds(value: object) -> bool:
+_SUBTITLE_BOUND_KEYS = frozenset((
+    "max_subtitle_fonts", "max_subtitle_font_bytes", "max_subtitle_ass_bytes",
+))
+
+def _valid_bounds(value: object, extra_integer_keys: frozenset[str] = frozenset()) -> bool:
     keys = {
         "canvas_pairs", "working_fps", "max_duration_sec", "max_operations",
         "max_assets", "max_asset_bytes", "max_total_input_bytes", "max_pixel_frames",
@@ -60,8 +64,11 @@ def _valid_bounds(value: object) -> bool:
     }
     if type(value) is not dict:
         return False
+    if extra_integer_keys and "bounds_version" not in value:
+        return False
     if "bounds_version" in value:
         if (set(value) != keys - {"canvas_pairs"} | {"bounds_version", "canvas_range"}
+                | set(extra_integer_keys)
                 or type(value["bounds_version"]) is not int or value["bounds_version"] != 2):
             return False
         canvas = value["canvas_range"]
@@ -71,7 +78,7 @@ def _valid_bounds(value: object) -> bool:
                 or canvas["max_pixels"] < 4):
             return False
     else:
-        if set(value) != keys:
+        if set(value) != keys | set(extra_integer_keys):
             return False
         pairs = value["canvas_pairs"]
         if (type(pairs) is not list or not pairs
@@ -81,7 +88,8 @@ def _valid_bounds(value: object) -> bool:
             return False
     fps = value["working_fps"]
     duration = value["max_duration_sec"]
-    integers = keys - {"canvas_pairs", "working_fps", "max_duration_sec"}
+    integers = (keys - {"canvas_pairs", "working_fps", "max_duration_sec"}
+                | set(extra_integer_keys))
     return (
         type(fps) is list and bool(fps) and all(_positive_integer(item) for item in fps)
         and type(duration) in (int, float) and math.isfinite(duration) and duration > 0
@@ -191,7 +199,9 @@ def _bundled_render_descriptors(
                 or any(profile.get(key) != value for key, value in profile_literals.items())
                 or type(profile.get("production_eligible")) is not bool
                 or must_be_ineligible and profile["production_eligible"] is not False
-                or not _valid_bounds(profile.get("execution_bounds"))
+                or not _valid_bounds(
+                    profile.get("execution_bounds"),
+                    _SUBTITLE_BOUND_KEYS if requested_contract == SUBTITLE_CONTRACT else frozenset())
                 or any(value is not None and not _digest(value) for value in (
                     profile.get("hardware_qualification_record_sha256"),
                     profile.get("fidelity_record_sha256"),
