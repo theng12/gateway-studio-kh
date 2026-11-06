@@ -91,6 +91,25 @@ _QUALIFICATION_KEYS = frozenset((
     "profile_execution_bounds", "production_eligible", "qualification_only",
     "available_capacity",
 ))
+#: The frozen v4 subtitle input ceilings; missing or malformed values fail scoped work closed.
+_SUBTITLE_INPUT_BOUND_KEYS = ("max_subtitle_fonts", "max_subtitle_font_bytes",
+                              "max_subtitle_ass_bytes")
+
+
+class _ExactSizeReader:
+    """Refuse leased bytes whose actual length differs from the manifest's exact size."""
+
+    def __init__(self, reader: Any, size_bytes: int) -> None:
+        self._reader = reader
+        self._size_bytes = size_bytes
+        self.total = 0
+
+    def read(self, count: int) -> bytes:
+        data = self._reader.read(count)
+        self.total += len(data)
+        if self.total > self._size_bytes:
+            raise ValueError("leased bytes exceed the manifest size")
+        return data
 _GATEWAY_RECEIPT_KEYS = frozenset((
     "format", "owner_scope", "gateway_instance_id", "story_instance_id",
     "gateway_job_id", "gateway_attempt_key", "story_uuid", "intent_id", "attempt_no",
@@ -777,6 +796,27 @@ class FinalRenderService:
                     > bounds.get("max_pixel_frames", 0)):
             raise RenderServiceError("RENDER_PROFILE_MISMATCH", 409)
 
+    def _subtitle_input_bounds(self, profile: dict | None) -> tuple[int, int, int, int]:
+        execution = (profile or {}).get("execution_bounds")
+        if type(execution) is not dict:
+            raise RenderServiceError("RENDER_PROFILE_MISMATCH", 409)
+        values = tuple(execution.get(key) for key in (
+            "max_asset_bytes", *_SUBTITLE_INPUT_BOUND_KEYS))
+        if any(type(value) is not int or value <= 0 for value in values):
+            raise RenderServiceError("RENDER_PROFILE_MISMATCH", 409)
+        return values
+
+    def _require_subtitle_packet_bounds(self, packet: dict, profile: dict | None) -> None:
+        """Frozen v4 ceilings, checked before selection and before any leased read."""
+        _asset_bytes, max_fonts, max_font_bytes, max_ass_bytes = \
+            self._subtitle_input_bounds(profile)
+        fonts = [item for item in packet["manifest"] if item["role"] == "subtitle_font"]
+        ass = [item for item in packet["manifest"] if item["role"] == "subtitle_ass"]
+        if (len(fonts) > max_fonts or len(ass) != 1
+                or any(item["size_bytes"] > max_font_bytes for item in fonts)
+                or ass[0]["size_bytes"] > max_ass_bytes):
+            raise RenderServiceError("RENDER_PROFILE_MISMATCH", 409)
+
     def _require_cue_assets(self, principal: AuthenticatedPrivateRender,
                             packet: dict, handles: dict) -> None:
         canvas = packet["recipe"]["canvas"]
@@ -810,8 +850,12 @@ class FinalRenderService:
                 raise RenderServiceError("RENDER_CUE_ASSET_INVALID", 422)
 
     def _require_subtitle_assets(self, principal: AuthenticatedPrivateRender,
-                                 packet: dict, handles: dict) -> None:
+                                 packet: dict, handles: dict,
+                                 profile: dict | None) -> None:
         from .render_subtitles import validate_subtitle_ass, validate_subtitle_font
+        self._require_subtitle_packet_bounds(packet, profile)
+        max_asset_bytes, _max_fonts, max_font_bytes, max_ass_bytes = \
+            self._subtitle_input_bounds(profile)
         entries = {item["logical_id"]: item for item in packet["manifest"]}
         recipe = packet["recipe"]
         try:
@@ -823,15 +867,25 @@ class FinalRenderService:
                     logical_id = font["asset"]["logical_id"]
                     entry = entries[logical_id]
                     with self.assets.open_reader(principal.owner_scope, handles[logical_id]) as reader:
-                        validate_subtitle_font(reader, max_bytes=entry["size_bytes"],
-                                               expected_sha256=entry["sha256"], family=font["family"])
+                        bounded = _ExactSizeReader(reader, entry["size_bytes"])
+                        validate_subtitle_font(
+                            bounded, max_bytes=min(max_asset_bytes, max_font_bytes,
+                                                  entry["size_bytes"]),
+                            expected_sha256=entry["sha256"], family=font["family"])
+                        if bounded.total != entry["size_bytes"]:
+                            raise ValueError("subtitle font size differs from the manifest")
                     families.append(font["family"])
                 logical_id = operation["ass"]["logical_id"]
                 entry = entries[logical_id]
                 with self.assets.open_reader(principal.owner_scope, handles[logical_id]) as reader:
-                    validate_subtitle_ass(reader, max_bytes=entry["size_bytes"],
-                                          expected_sha256=entry["sha256"], canvas=recipe["canvas"],
-                                          duration=recipe["target_duration_sec"], families=families)
+                    bounded = _ExactSizeReader(reader, entry["size_bytes"])
+                    validate_subtitle_ass(
+                        bounded, max_bytes=min(max_asset_bytes, max_ass_bytes,
+                                              entry["size_bytes"]),
+                        expected_sha256=entry["sha256"], canvas=recipe["canvas"],
+                        duration=recipe["target_duration_sec"], families=families)
+                    if bounded.total != entry["size_bytes"]:
+                        raise ValueError("subtitle ASS size differs from the manifest")
         except (ValueError, OSError, AssetRecoveryRequiredError):
             raise RenderServiceError("RENDER_SUBTITLE_ASSET_INVALID", 422) from None
 
@@ -914,6 +968,8 @@ class FinalRenderService:
             packet = (validate_render_packet_syntax(packet_raw, contract=contract)
                       if contract is not None else validate_render_packet_syntax(packet_raw))
             self._require_packet_bounds(packet, profile)
+            if contract == SUBTITLE_CONTRACT:
+                self._require_subtitle_packet_bounds(packet, profile)
             handles = request["assets"]
             if type(handles) is not dict or set(handles) != {
                     item["logical_id"] for item in packet["manifest"]}:
@@ -938,7 +994,7 @@ class FinalRenderService:
         if contract is not None:
             self._require_cue_assets(principal, packet, handles)
         if contract == SUBTITLE_CONTRACT:
-            self._require_subtitle_assets(principal, packet, handles)
+            self._require_subtitle_assets(principal, packet, handles, profile)
         destination = self.destination_selector(packet)
         if not isinstance(destination, RenderDestination):
             raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)

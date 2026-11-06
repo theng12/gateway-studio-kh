@@ -17,7 +17,8 @@ from tests import test_render_service as fixtures
 from tests import test_render_late_scoped as scoped
 from gateway import fleet, runtime
 from gateway.render_contract import LATE_LABEL_CONTRACT, LATE_LABEL_MOTIONS, SUBTITLE_CONTRACT
-from gateway.render_service import PrivateRenderUnavailable, RegisteredHubRenderClient, probed_render_candidates
+from gateway.render_service import (PrivateRenderUnavailable, RegisteredHubRenderClient,
+                                    RenderServiceError, probed_render_candidates)
 
 LATE = {"format": LATE_LABEL_CONTRACT, "motions": list(LATE_LABEL_MOTIONS)}
 SUBTITLE_ENVELOPE_FORMAT = "studio.render.hub-subtitle-capabilities.v1"
@@ -179,6 +180,9 @@ class SubtitleCapabilitiesTests(fixtures.RenderServiceCase):
         super().setUp()
         profile = json.loads(fixtures.PROFILE_RAW)
         profile.update(format="subtitle-fixture-profile", production_eligible=False)
+        profile["execution_bounds"].update(
+            max_subtitle_fonts=8, max_subtitle_font_bytes=32 * 1024 * 1024,
+            max_subtitle_ass_bytes=4 * 1024 * 1024)
         raw = fixtures.canonical(profile)
         self.service.subtitle_profile_descriptor = raw
         self.service.subtitle_profile = profile
@@ -207,6 +211,8 @@ class SubtitleCapabilitiesTests(fixtures.RenderServiceCase):
     def subtitle_destination(self):
         capability = {**self.destination.capability_snapshot,
                       "profile_digest": self.service.subtitle_profile_digest,
+                      "profile_execution_bounds":
+                          self.service.subtitle_profile["execution_bounds"],
                       "font_support": True, "subtitles": {"format": SUBTITLE_CONTRACT}}
         return replace(self.destination, capability_snapshot=capability,
             capability_snapshot_sha256=hashlib.sha256(fixtures.canonical(capability)).hexdigest())
@@ -269,6 +275,87 @@ class SubtitleCapabilitiesTests(fixtures.RenderServiceCase):
                              fixtures.principal(), "subtitle-over-bound", fixtures.canonical(value))
             select.assert_not_called()
 
+    def test_v4_subtitle_input_bounds_are_exact_and_fail_closed(self):
+        profile = self.service.subtitle_profile
+        packet = json.loads(self.subtitle_request())["packet"]
+        self.service._require_subtitle_packet_bounds(packet, profile)
+        fonts = [item for item in packet["manifest"] if item["role"] == "subtitle_font"]
+        ass = next(item for item in packet["manifest"] if item["role"] == "subtitle_ass")
+        extras = [{**copy.deepcopy(fonts[0]), "logical_id": f"subtitle_font_{index:04d}",
+                   "safe_name": f"subtitle_font_{index:04d}.ttf"} for index in range(1, 8)]
+        eight = {**packet, "manifest": packet["manifest"] + extras}
+        self.service._require_subtitle_packet_bounds(eight, profile)
+        ninth = {**copy.deepcopy(fonts[0]), "logical_id": "subtitle_font_0008",
+                 "safe_name": "subtitle_font_0008.ttf"}
+        with self.assertRaises(RenderServiceError) as caught:
+            self.service._require_subtitle_packet_bounds(
+                {**eight, "manifest": eight["manifest"] + [ninth]}, profile)
+        self.assertEqual(caught.exception.code, "RENDER_PROFILE_MISMATCH")
+        for role, key in (("subtitle_font", "max_subtitle_font_bytes"),
+                          ("subtitle_ass", "max_subtitle_ass_bytes")):
+            target = ass if role == "subtitle_ass" else fonts[0]
+            cap = profile["execution_bounds"][key]
+            at_cap = [{**item, "size_bytes": cap} if item is target else item
+                      for item in packet["manifest"]]
+            self.service._require_subtitle_packet_bounds({**packet, "manifest": at_cap}, profile)
+            over = [{**item, "size_bytes": cap + 1} if item is target else item
+                    for item in packet["manifest"]]
+            with self.assertRaises(RenderServiceError) as caught:
+                self.service._require_subtitle_packet_bounds({**packet, "manifest": over}, profile)
+            self.assertEqual(caught.exception.code, "RENDER_PROFILE_MISMATCH")
+        second_ass = {**copy.deepcopy(ass), "logical_id": "subtitle_ass_extra",
+                      "safe_name": "subtitle_ass_extra.ass"}
+        with self.assertRaises(RenderServiceError) as caught:
+            self.service._require_subtitle_packet_bounds(
+                {**packet, "manifest": packet["manifest"] + [second_ass]}, profile)
+        self.assertEqual(caught.exception.code, "RENDER_PROFILE_MISMATCH")
+        execution = profile["execution_bounds"]
+        for changed in (
+                {key: value for key, value in execution.items() if key != "max_subtitle_fonts"},
+                {**execution, "max_subtitle_font_bytes": 0},
+                {**execution, "max_subtitle_ass_bytes": True}):
+            with self.assertRaises(RenderServiceError) as caught:
+                self.service._require_subtitle_packet_bounds(
+                    packet, {**profile, "execution_bounds": changed})
+            self.assertEqual(caught.exception.code, "RENDER_PROFILE_MISMATCH")
+
+    def test_over_bound_subtitle_inputs_refuse_before_selection_and_journal(self):
+        from tests.test_render_late_labels import seal
+        for index, (role, size) in enumerate((
+                ("subtitle_font", 32 * 1024 * 1024 + 1),
+                ("subtitle_ass", 4 * 1024 * 1024 + 1))):
+            value = json.loads(self.subtitle_request())
+            entry = next(item for item in value["packet"]["manifest"] if item["role"] == role)
+            entry["size_bytes"] = size
+            seal(value["packet"])
+            key = f"subtitle-over-bound-{index}"
+            with mock.patch.object(self.service, "destination_selector") as select:
+                self.assert_code("RENDER_PROFILE_MISMATCH", self.service.accept,
+                                 fixtures.principal(), key, fixtures.canonical(value))
+                select.assert_not_called()
+            self.assertIsNone(self.store.get_render_staging_by_attempt_key(
+                owner_scope=fixtures.OWNER, gateway_attempt_key=key))
+
+    def test_subtitle_leased_reads_use_the_frozen_minimum_and_exact_size(self):
+        for role in ("subtitle_font", "subtitle_ass"):
+            value = json.loads(self.subtitle_request())
+            packet, handles = value["packet"], value["assets"]
+            entry = next(item for item in packet["manifest"] if item["role"] == role)
+            entry["size_bytes"] += 1
+            with self.assertRaises(RenderServiceError) as caught:
+                self.service._require_subtitle_assets(fixtures.principal(), packet, handles,
+                                                      self.service.subtitle_profile)
+            self.assertEqual(caught.exception.code, "RENDER_SUBTITLE_ASSET_INVALID")
+        value = json.loads(self.subtitle_request())
+        packet, handles = value["packet"], value["assets"]
+        font = next(item for item in packet["manifest"] if item["role"] == "subtitle_font")
+        self.service.subtitle_profile["execution_bounds"]["max_asset_bytes"] = \
+            font["size_bytes"] - 1
+        with self.assertRaises(RenderServiceError) as caught:
+            self.service._require_subtitle_assets(fixtures.principal(), packet, handles,
+                                                  self.service.subtitle_profile)
+        self.assertEqual(caught.exception.code, "RENDER_SUBTITLE_ASSET_INVALID")
+
     def capabilities(self, rows):
         with mock.patch("gateway.render_service.fleet.render_candidates", return_value=rows):
             return self.service.capabilities(fixtures.principal(), requested_contract=SUBTITLE_CONTRACT)
@@ -277,6 +364,8 @@ class SubtitleCapabilitiesTests(fixtures.RenderServiceCase):
         row = subtitle_row(combined=combined)
         capability = {**self.destination.capability_snapshot,
                       "profile_digest": self.service.subtitle_profile_digest,
+                      "profile_execution_bounds":
+                          self.service.subtitle_profile["execution_bounds"],
                       "font_support": True, "subtitles": {"format": SUBTITLE_CONTRACT}}
         if combined:
             capability["late_labels"] = copy.deepcopy(LATE)
@@ -334,6 +423,8 @@ class SubtitleCapabilitiesTests(fixtures.RenderServiceCase):
         capability = {**self.destination.capability_snapshot, "hardware_class": "Apple M4",
                       "vector_id": "subtitle-qualification", "exact_encoder": "libx264",
                       "profile_digest": self.service.subtitle_profile_digest,
+                      "profile_execution_bounds":
+                          self.service.subtitle_profile["execution_bounds"],
                       "font_support": True, "subtitles": {"format": SUBTITLE_CONTRACT},
                       "production_eligible": False, "qualification_only": True,
                       "available_capacity": {"slots": 1, "slots_total": 1}}
@@ -373,10 +464,7 @@ class SubtitleCapabilitiesTests(fixtures.RenderServiceCase):
                 self.service.capabilities(fixtures.principal(), requested_contract=SUBTITLE_CONTRACT)
 
     def test_changed_destination_support_refuses_before_journal(self):
-        value = json.loads(self.request())
-        value["packet"]["recipe"]["profile_digest"] = self.service.subtitle_profile_digest
-        from tests.test_render_late_labels import seal
-        seal(value["packet"])
+        value = json.loads(self.subtitle_request())
         raw = fixtures.canonical(value)
         capability = {**self.destination.capability_snapshot,
                       "profile_digest": self.service.subtitle_profile_digest}
