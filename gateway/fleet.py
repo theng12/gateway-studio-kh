@@ -4686,6 +4686,12 @@ def render_encode_supports(document: object, requested: object) -> bool:
 #: The Hub's closed envelope for one node's scoped late-label capability row: exactly the
 #: five keys both leads ACKed, with `reason` nonempty if and only if `worker` is null.
 _LATE_LABEL_CAPABILITIES_FORMAT = "studio.render.hub-late-label-capabilities.v1"
+#: The jointly frozen subtitle envelope: same five keys, its own format literal.
+_SUBTITLE_CAPABILITIES_FORMAT = "studio.render.hub-subtitle-capabilities.v1"
+_SCOPED_CAPABILITIES_FORMATS = {
+    LATE_LABEL_CONTRACT: _LATE_LABEL_CAPABILITIES_FORMAT,
+    SUBTITLE_CONTRACT: _SUBTITLE_CAPABILITIES_FORMAT,
+}
 #: A scoped read is a moment, not a fact — the same staleness bound as the fleet snapshot.
 _SCOPED_CAPABILITIES_MAX_AGE_S = _MEMBERS_STALE_AFTER_S
 _SCOPED_CAPABILITIES_TIMEOUT = httpx.Timeout(15.0, connect=6.0)
@@ -4709,12 +4715,12 @@ def render_subtitle_support(value: object, *, late_labels: bool = False) -> bool
 def _decode_scoped_capabilities(payload: object, *, requested_contract: str,
                                 now: float) -> dict | None:
     """Validate the closed envelope. `None` is the Hub's measured absence for this node."""
-    # Subtitle envelope and new descriptor pins await Hub's post-0.6.222 freeze.
-    if requested_contract != LATE_LABEL_CONTRACT:
+    expected_format = _SCOPED_CAPABILITIES_FORMATS.get(requested_contract)
+    if expected_format is None:
         raise ScopedRenderCapabilitiesError("scoped capability authority is not frozen")
     if (not isinstance(payload, dict)
             or set(payload) != {"format", "requested_contract", "server_time", "worker", "reason"}
-            or payload["format"] != _LATE_LABEL_CAPABILITIES_FORMAT
+            or payload["format"] != expected_format
             or payload["requested_contract"] != requested_contract):
         raise ScopedRenderCapabilitiesError("invalid scoped capability envelope")
     server_time = payload["server_time"]
@@ -4729,6 +4735,8 @@ def _decode_scoped_capabilities(payload: object, *, requested_contract: str,
         return None
     if reason is not None or not isinstance(worker, dict):
         raise ScopedRenderCapabilitiesError("invalid scoped capability worker")
+    if requested_contract == SUBTITLE_CONTRACT and not render_subtitle_support(worker):
+        raise ScopedRenderCapabilitiesError("scoped subtitle worker lacks exact support")
     return worker
 
 

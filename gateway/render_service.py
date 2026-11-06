@@ -614,11 +614,28 @@ class FinalRenderService:
     def capabilities(self, principal: AuthenticatedPrivateRender, *,
                      requested_encode: dict[str, Any] | None = None,
                      requested_contract: str | None = None) -> dict[str, Any]:
-        descriptor, profile_digest, _profile, facts = self._profile_for_contract(requested_contract)
+        descriptor, profile_digest, profile, facts = self._profile_for_contract(requested_contract)
         if requested_encode is not None:
             validate_render_encode(requested_encode)
         # Legacy call shapes stay byte-identical: the kwarg exists only when scoped.
         scoped = {} if requested_contract is None else {"requested_contract": requested_contract}
+
+        def subtitle_candidate_ok(row: dict[str, Any]) -> bool:
+            # The same descriptor identity and bounds `accept` will demand, so a
+            # published subtitle candidate can never be refused there for its own row.
+            capability = row["capability"]
+            bounds = capability.get("bounds")
+            return (fleet.render_subtitle_support(capability)
+                    and capability.get("profile_execution_bounds")
+                        == profile.get("execution_bounds")
+                    and capability.get("profile_digest") == profile_digest
+                    and capability.get("tools_digest") == (facts.get("tools") or {}).get("digest")
+                    and capability.get("compiler_digest")
+                        == (facts.get("compiler") or {}).get("digest")
+                    and type(bounds) is dict
+                    and type(bounds.get("output_limit_bytes")) is int
+                    and bounds["output_limit_bytes"] > 0)
+
         try:
             candidates = (fleet.render_candidates(
                 profile_digest, qualification=True, available=False,
@@ -633,14 +650,13 @@ class FinalRenderService:
                 candidates = probed_render_candidates(candidates, requested_encode, self.hub,
                                                       **scoped)
                 if requested_contract == SUBTITLE_CONTRACT:
-                    candidates = [row for row in candidates
-                                  if fleet.render_subtitle_support(row["capability"])]
+                    candidates = [row for row in candidates if subtitle_candidate_ok(row)]
                 supported = {(row["site_id"], row["roster_controller_id"], row["node_id"]): row
                              for row in candidates}
                 idle = [row for row in idle
                         if (row["site_id"], row["roster_controller_id"], row["node_id"]) in supported
                         and (requested_contract != SUBTITLE_CONTRACT
-                             or fleet.render_subtitle_support(row["capability"]))
+                             or subtitle_candidate_ok(row))
                         and type(row["available_memory_source"]["conservative_bytes"]) is int
                         and row["available_memory_source"]["conservative_bytes"] >= supported[
                             (row["site_id"], row["roster_controller_id"], row["node_id"])
@@ -649,13 +665,12 @@ class FinalRenderService:
                           "entries": [requested_encode] if candidates else []}
             else:
                 if requested_contract == SUBTITLE_CONTRACT:
-                    candidates = [row for row in candidates
-                                  if fleet.render_subtitle_support(row["capability"])]
+                    candidates = [row for row in candidates if subtitle_candidate_ok(row)]
                     supported = {(row["site_id"], row["roster_controller_id"], row["node_id"])
                                  for row in candidates}
                     idle = [row for row in idle
                             if (row["site_id"], row["roster_controller_id"], row["node_id"]) in supported
-                            and fleet.render_subtitle_support(row["capability"])]
+                            and subtitle_candidate_ok(row)]
                 encode = fleet.render_encode_intersection(candidates)
         except Exception:
             if requested_contract is not None:
@@ -942,9 +957,14 @@ class FinalRenderService:
             raise RenderServiceError("RENDER_DESTINATION_UNAVAILABLE", 503)
         qualification_only = destination.capability_snapshot.get("qualification_only") is True
         qualification_capacity = destination.capability_snapshot.get("available_capacity")
+        # A real subtitle qualification row also carries its own same-worker feature record;
+        # legacy qualification rows stay exactly the old closed set.
+        allowed_extras = {"encode"} | (
+            {"subtitles", "late_labels"} if contract == SUBTITLE_CONTRACT else set())
         if (qualification_only and (
-                    set(destination.capability_snapshot)
-                        not in (_QUALIFICATION_KEYS, _QUALIFICATION_KEYS | {"encode"})
+                    not _QUALIFICATION_KEYS <= set(destination.capability_snapshot)
+                    or set(destination.capability_snapshot) - _QUALIFICATION_KEYS
+                        - allowed_extras
                     or destination.qualification_vector_id is None
                     or destination.capability_snapshot.get("vector_id")
                         != destination.qualification_vector_id

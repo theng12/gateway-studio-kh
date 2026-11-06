@@ -20,6 +20,7 @@ from gateway.render_contract import LATE_LABEL_CONTRACT, LATE_LABEL_MOTIONS, SUB
 from gateway.render_service import PrivateRenderUnavailable, RegisteredHubRenderClient, probed_render_candidates
 
 LATE = {"format": LATE_LABEL_CONTRACT, "motions": list(LATE_LABEL_MOTIONS)}
+SUBTITLE_ENVELOPE_FORMAT = "studio.render.hub-subtitle-capabilities.v1"
 
 
 def subtitle_row(*, combined=False, **changes):
@@ -32,8 +33,21 @@ def subtitle_row(*, combined=False, **changes):
     return row
 
 
+def subtitle_capability(digest=scoped.V3, *, production=True, **extra):
+    row = scoped.capability_row(digest, production=production,
+                                font_support=True, subtitles={"format": SUBTITLE_CONTRACT})
+    row.update(extra)
+    return row
+
+
+def subtitle_envelope(worker, *, reason=None, server_time=int(scoped.NOW),
+                      contract=SUBTITLE_CONTRACT, fmt=SUBTITLE_ENVELOPE_FORMAT):
+    return scoped.envelope(worker, reason=reason, server_time=server_time,
+                           contract=contract, fmt=fmt)
+
+
 class SubtitleSupportTests(unittest.TestCase):
-    def test_old_envelope_cannot_supply_unfrozen_subtitle_authority(self):
+    def test_late_label_envelope_cannot_supply_subtitle_authority(self):
         payload = scoped.envelope(subtitle_row()["capability"], contract=SUBTITLE_CONTRACT)
         with self.assertRaises(fleet.ScopedRenderCapabilitiesError):
             fleet._decode_scoped_capabilities(payload, requested_contract=SUBTITLE_CONTRACT,
@@ -71,6 +85,93 @@ class SubtitleSupportTests(unittest.TestCase):
         with mock.patch("gateway.render_service.execution_authority", return_value=authority):
             self.assertEqual(probed_render_candidates([subtitle_row()], scoped.REQUESTED,
                              scoped.RecorderHub(), requested_contract=SUBTITLE_CONTRACT), [])
+
+
+class SubtitleScopedEnvelopeTests(unittest.TestCase):
+    def decode(self, payload, *, contract=SUBTITLE_CONTRACT, now=scoped.NOW):
+        return fleet._decode_scoped_capabilities(payload, requested_contract=contract, now=now)
+
+    def test_frozen_subtitle_worker_and_measured_absence_both_decode(self):
+        row = subtitle_capability()
+        self.assertEqual(self.decode(subtitle_envelope(row)), row)
+        self.assertIsNone(self.decode(subtitle_envelope(None, reason="no subtitle executor")))
+        joint = subtitle_capability(late_labels=copy.deepcopy(LATE))
+        self.assertEqual(self.decode(subtitle_envelope(joint)), joint)
+
+    def test_closed_shape_contract_and_clock_fail_closed(self):
+        good = subtitle_capability()
+        cases = [
+            {},
+            {**subtitle_envelope(good), "extra": 1},
+            {key: value for key, value in subtitle_envelope(good).items() if key != "reason"},
+            subtitle_envelope(good, fmt="studio.render.hub-late-label-capabilities.v1"),
+            subtitle_envelope(good, contract=LATE_LABEL_CONTRACT),
+            subtitle_envelope(good, server_time=True),
+            subtitle_envelope(good, server_time=0),
+            subtitle_envelope(good, server_time=int(scoped.NOW) - 1000),
+            subtitle_envelope(good, server_time=int(scoped.NOW) + 1000),
+            subtitle_envelope(good, reason="worker present cannot carry a reason"),
+            subtitle_envelope(None, reason=""),
+            subtitle_envelope(None, reason="x" * 1025),
+            subtitle_envelope("not a worker"),
+        ]
+        for index, payload in enumerate(cases):
+            with self.subTest(index=index), self.assertRaises(fleet.ScopedRenderCapabilitiesError):
+                self.decode(payload)
+
+    def test_subtitle_worker_must_support_its_exact_closed_record(self):
+        for bad in (subtitle_capability(font_support=False),
+                    subtitle_capability(subtitles=None),
+                    subtitle_capability(subtitles={"format": SUBTITLE_CONTRACT, "extra": True}),
+                    subtitle_capability(late_labels=None),
+                    subtitle_capability(late_labels={"format": LATE_LABEL_CONTRACT}),
+                    subtitle_capability(late_labels={**LATE, "motions": []}),
+                    subtitle_capability(late_labels=True)):
+            with self.subTest(bad=bad), self.assertRaises(fleet.ScopedRenderCapabilitiesError):
+                self.decode(subtitle_envelope(bad))
+
+    def test_cross_contract_envelopes_never_supply_each_other(self):
+        late_format = subtitle_envelope(
+            subtitle_capability(), fmt="studio.render.hub-late-label-capabilities.v1")
+        with self.assertRaises(fleet.ScopedRenderCapabilitiesError):
+            self.decode(late_format)
+        with self.assertRaises(fleet.ScopedRenderCapabilitiesError):
+            self.decode(subtitle_envelope(subtitle_capability()), contract=LATE_LABEL_CONTRACT)
+        with self.assertRaises(fleet.ScopedRenderCapabilitiesError):
+            self.decode(scoped.envelope(subtitle_capability()), contract=SUBTITLE_CONTRACT)
+
+
+class SubtitleScopedCandidateTests(unittest.TestCase):
+    def rows(self, *locations, digest=scoped.V3, payload=None):
+        response = subtitle_envelope(subtitle_capability()) if payload is None else payload
+        with scoped.Fleet(*locations), mock.patch.object(
+                fleet, "_scoped_capability_payload", return_value=response) as read:
+            result = fleet.render_candidates(digest, requested_contract=SUBTITLE_CONTRACT)
+        return result, read
+
+    def test_scoped_subtitle_row_is_admitted_over_a_legacy_snapshot_row(self):
+        macs = {"m1": {"worker": scoped.worker("m1")}}
+        rows, read = self.rows(scoped.location(macs))
+        self.assertEqual([row["node_id"] for row in rows], ["m1"])
+        self.assertEqual(rows[0]["capability"]["profile_digest"], scoped.V3)
+        read.assert_called_once_with("roster-a", "m1", SUBTITLE_CONTRACT)
+
+    def test_wrong_pin_or_untrusted_subtitle_read_is_loud_not_empty(self):
+        macs = {"m1": {"worker": scoped.worker("m1")}}
+        for payload in (subtitle_envelope(subtitle_capability(scoped.WRONG)),
+                        {},
+                        subtitle_envelope(subtitle_capability(font_support=False))):
+            with self.subTest(payload=payload), self.assertRaises(
+                    fleet.ScopedRenderCapabilitiesError):
+                self.rows(scoped.location(macs), payload=payload)
+
+    def test_legacy_no_query_never_reads_subtitle_authority(self):
+        macs = {"m1": {"worker": scoped.worker("m1")}}
+        with scoped.Fleet(scoped.location(macs)), mock.patch.object(
+                fleet, "_scoped_capability_payload",
+                side_effect=AssertionError("scoped route touched")):
+            rows = fleet.render_candidates(scoped.LEGACY)
+        self.assertEqual([row["node_id"] for row in rows], ["m1"])
 
 
 class SubtitleCapabilitiesTests(fixtures.RenderServiceCase):
@@ -172,6 +273,17 @@ class SubtitleCapabilitiesTests(fixtures.RenderServiceCase):
         with mock.patch("gateway.render_service.fleet.render_candidates", return_value=rows):
             return self.service.capabilities(fixtures.principal(), requested_contract=SUBTITLE_CONTRACT)
 
+    def subtitle_candidate(self, *, combined=False, **changes):
+        row = subtitle_row(combined=combined)
+        capability = {**self.destination.capability_snapshot,
+                      "profile_digest": self.service.subtitle_profile_digest,
+                      "font_support": True, "subtitles": {"format": SUBTITLE_CONTRACT}}
+        if combined:
+            capability["late_labels"] = copy.deepcopy(LATE)
+        capability.update(changes)
+        row["capability"] = capability
+        return row
+
     def test_missing_descriptor_refuses_and_legacy_stays_closed(self):
         self.service.subtitle_profile_descriptor = None
         with self.assertRaises(PrivateRenderUnavailable):
@@ -182,20 +294,78 @@ class SubtitleCapabilitiesTests(fixtures.RenderServiceCase):
         self.assertNotIn("late_labels", result)
 
     def test_empty_or_non_font_candidates_do_not_advertise_subtitles(self):
-        for rows in ([], [subtitle_row(font_support=False)]):
+        for rows in ([], [self.subtitle_candidate(font_support=False)]):
             result = self.capabilities(rows)
             self.assertEqual(result["eligible"], 0)
+            self.assertEqual(result["idle"], 0)
             self.assertNotIn("subtitles", result)
             self.assertNotIn("late_labels", result)
 
     def test_joint_records_are_published_only_for_the_same_candidates(self):
-        result = self.capabilities([subtitle_row(combined=True)])
+        result = self.capabilities([self.subtitle_candidate(combined=True)])
+        self.assertEqual(result["eligible"], 1)
+        self.assertEqual(result["idle"], 1)
         self.assertEqual(result["subtitles"], {"format": SUBTITLE_CONTRACT})
         self.assertEqual(result["late_labels"], LATE)
-        result = self.capabilities([subtitle_row(combined=True), subtitle_row()])
+        result = self.capabilities([self.subtitle_candidate(combined=True),
+                                    self.subtitle_candidate()])
         self.assertEqual(result["eligible"], 2)
         self.assertIn("subtitles", result)
         self.assertNotIn("late_labels", result)
+
+    def test_identity_or_bound_mismatch_is_not_advertised(self):
+        good = self.subtitle_candidate(combined=True)
+        capability = good["capability"]
+        for changed in (
+                {**capability, "tools_digest": "f" * 64},
+                {**capability, "compiler_digest": "f" * 64},
+                {**capability, "profile_execution_bounds":
+                    {**capability["profile_execution_bounds"], "unexpected": 1}},
+                {**capability, "bounds": {**capability["bounds"], "output_limit_bytes": 0}},
+                {**capability, "bounds": {**capability["bounds"], "output_limit_bytes": True}}):
+            with self.subTest(changed=changed):
+                result = self.capabilities([{**good, "capability": changed}])
+                self.assertEqual(result["eligible"], 0)
+                self.assertEqual(result["idle"], 0)
+                self.assertNotIn("subtitles", result)
+                self.assertNotIn("late_labels", result)
+
+    def test_subtitle_qualification_row_carries_its_feature_record_and_pins(self):
+        capability = {**self.destination.capability_snapshot, "hardware_class": "Apple M4",
+                      "vector_id": "subtitle-qualification", "exact_encoder": "libx264",
+                      "profile_digest": self.service.subtitle_profile_digest,
+                      "font_support": True, "subtitles": {"format": SUBTITLE_CONTRACT},
+                      "production_eligible": False, "qualification_only": True,
+                      "available_capacity": {"slots": 1, "slots_total": 1}}
+        capability.pop("production_enabled")
+
+        def select(value, vector_id="subtitle-qualification"):
+            return replace(self.destination, qualification_vector_id=vector_id,
+                           capability_snapshot=value,
+                           capability_snapshot_sha256=hashlib.sha256(
+                               fixtures.canonical(value)).hexdigest())
+
+        raw = self.subtitle_request()
+        with mock.patch.object(self.service, "destination_selector", return_value=select(capability)):
+            accepted = self.service.accept(fixtures.principal(), "subtitle-qualification", raw)
+        self.assertEqual(accepted["state"], "staging")
+
+        for index, (key, value) in enumerate((
+                ("compiler_digest", "f" * 64), ("tools_digest", "f" * 64),
+                ("profile_execution_bounds",
+                 {**capability["profile_execution_bounds"], "unexpected": 1}),
+                ("bounds", {**capability["bounds"], "output_limit_bytes": 0}),
+                ("subtitles", {"format": SUBTITLE_CONTRACT, "extra": True}),
+                ("late_labels", {"format": LATE_LABEL_CONTRACT}))):
+            changed = {**capability, key: value}
+            with mock.patch.object(self.service, "destination_selector",
+                                   return_value=select(changed)):
+                self.assert_code("RENDER_DESTINATION_UNAVAILABLE", self.service.accept,
+                                 fixtures.principal(), f"subtitle-qualification-{index}", raw)
+        with mock.patch.object(self.service, "destination_selector",
+                               return_value=select(capability, vector_id=None)):
+            self.assert_code("RENDER_DESTINATION_UNAVAILABLE", self.service.accept,
+                             fixtures.principal(), "subtitle-qualification-no-intent", raw)
 
     def test_fresh_scoped_read_failures_are_loud(self):
         with mock.patch("gateway.render_service.fleet.render_candidates", side_effect=ValueError("unreadable")):
