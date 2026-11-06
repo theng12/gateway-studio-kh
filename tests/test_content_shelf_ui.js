@@ -544,6 +544,16 @@ test('a refused removal reloads the shelf before showing the error', async () =>
   assert.match(h.node('shelf-message').textContent, /HTTP 409: NEWEST_VERSION_REQUIRED/);
 });
 
+test('the remove force label wraps instead of inheriting the check label nowrap', () => {
+  // At 375px the inherited nowrap clipped the force sentence. Assert the narrow override and
+  // the label that opts into it, not a full stylesheet parse.
+  assert.match(source, /<label class="check shelf-remove-force" id="shelf-remove-force-row" hidden>/);
+  const rule = source.match(/label\.check\.shelf-remove-force\s*\{([^}]*)\}/);
+  assert.ok(rule, 'the remove force label needs its own rule');
+  assert.match(rule[1], /white-space:\s*normal/);
+  assert.match(rule[1], /align-items:\s*flex-start/);
+});
+
 test('the full console script remains valid JavaScript', () => {
   new vm.Script(source.match(/<script>([\s\S]*)<\/script>/)[1]);
 });
@@ -669,7 +679,7 @@ test('shelved releases render Retire / Un-retire / Remove actions and retired st
   await h.context.confirmShelfRemove();
   assert.equal(calls.filter(([p]) => p === '/content-library/retire-version').length, 0);
   assert.equal(h.node('shelf-remove-dialog').open, true, 'the dialog stays open for the decision');
-  assert.match(h.node('shelf-remove-text').textContent, /Tick the force box above/);
+  assert.match(h.node('shelf-remove-text').textContent, /Select “Remove it anyway”/);
   assert.match(h.node('shelf-remove-text').textContent, /nothing was removed/);
 
   // The explicit tick is what allows the newest/only version to go.

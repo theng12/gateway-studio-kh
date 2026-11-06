@@ -147,6 +147,9 @@
   .shelf-section .body p { margin: 0 0 var(--s8); }
   label.check.shelf-ack { margin-top: var(--s12); white-space: normal; align-items: flex-start; }
   label.check.shelf-ack input { flex: 0 0 auto; margin-top: var(--s4); }
+  /* The remove force sentence is long; a nowrap check label clips it at phone width. */
+  label.check.shelf-remove-force { white-space: normal; align-items: flex-start; }
+  label.check.shelf-remove-force input { flex: 0 0 auto; margin-top: var(--s4); }
   .shelf-meta { display: flex; gap: var(--s8); flex-wrap: wrap; align-items: center; margin-bottom: var(--s8); }
   .shelf-meta h2 { margin: 0; }
   .shelf-release-meta { overflow-wrap: anywhere; }
@@ -1192,7 +1195,7 @@
     <dialog id="shelf-remove-dialog" aria-labelledby="shelf-remove-heading">
       <h2 id="shelf-remove-heading">Remove this version?</h2>
       <p id="shelf-remove-text"></p>
-      <label class="check" id="shelf-remove-force-row" hidden><input id="shelf-remove-force" type="checkbox"> Remove it anyway — no newer live version would remain</label>
+      <label class="check shelf-remove-force" id="shelf-remove-force-row" hidden><input id="shelf-remove-force" type="checkbox"> Remove it anyway — no newer live version would remain</label>
       <p class="hint">Its file moves to the Gateway trash and the Gateway keeps a record of where it went. Nothing is deleted, and Story apps keep the copy they have.</p>
       <div class="row" style="margin-top:12px">
         <button id="shelf-remove-confirm" class="primary" onclick="confirmShelfRemove()">Remove</button>
@@ -1936,7 +1939,7 @@ async function confirmShelfRemove() {
   if (pending && pending.protectedShelf && !forced) {
     // The dialog is modal, so the page message behind it would be invisible. Say it inside.
     const text = shelfNode('remove-text');
-    if (text) text.textContent = `Tick the force box above to remove ${pending.name}; nothing was removed.`;
+    if (text) text.textContent = `Select “Remove it anyway” to remove ${pending.name}; nothing was removed.`;
     if (force && typeof force.focus === 'function') force.focus();
     return;
   }
