@@ -396,6 +396,9 @@
   .nav-bar { display: none; align-items: center; gap: var(--s8); }
   .nav-bar select { flex: 1 1 auto; min-width: 0; }
   .nav-title { margin: 0 var(--s8) var(--s4); font-weight: 600; font-size: 13px; }
+  .nav-machine { display: block; margin-top: 2px; font-weight: 400; font-size: 11px;
+    color: var(--dim); overflow-wrap: anywhere; }
+  .nav-machine[hidden] { display: none; }
   .nav-group { margin: var(--s12) 0 0; }
   .nav-head { margin: 0 0 var(--s4); padding: 0 var(--s8); font-size: 11px; font-weight: 600; color: var(--dim); }
   .nav-row {
@@ -546,7 +549,7 @@
     <select id="web-page" aria-label="Page" onchange="openNav(this.value)"></select>
     <button class="sm" onclick="signOut()">Sign Out</button>
   </div>
-  <div class="nav-title">Gateway Studio KH</div>
+  <div class="nav-title">Gateway Studio KH<span class="nav-machine" id="nav-machine" hidden></span></div>
   <div class="nav-list" id="nav-list"></div>
   <div class="nav-foot">
     <div class="nav-status" id="nav-status">Reading the gateway…</div>
@@ -2238,8 +2241,14 @@ async function downloadPreservedArchive(button, digest) {
 async function loadStatus() {
   try {
     const s = await api('/status');
+    const machine = s.computer_name ? ` · on ${s.computer_name}` : '';
     const version = document.getElementById('app-version');
-    if (version) version.textContent = s.version ? `Version ${s.version}` : 'Version not read yet';
+    if (version) version.textContent = s.version ? `Version ${s.version}${machine}` : `Version not read yet${machine}`;
+    const navMachine = document.getElementById('nav-machine');
+    if (navMachine) {
+      navMachine.textContent = s.computer_name ? `on ${s.computer_name}` : '';
+      navMachine.hidden = !s.computer_name;
+    }
     const m = s.models.by_modality || {};
     const parts = Object.entries(m).map(([k,v]) => `${v} ${k === 'tts' ? 'TTS' : k}`).join(' · ') || 'no models enabled';
     const stats = document.getElementById('stats');

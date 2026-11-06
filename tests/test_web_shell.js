@@ -99,3 +99,41 @@ test('the shell is a left sidebar beside one page, and a top bar at phone width'
   // The Machines table becomes labelled rows rather than scrolling sideways.
   assert.match(source, /\.ftable td::before \{ content: attr\(data-label\)/);
 });
+
+function statusPayload(extra) {
+  return Object.assign({
+    version: '0.2.236', computer_name: 'terranash-1301',
+    models: {by_modality: {}, publishable_models: 1, withheld_models: 0},
+    providers: {enabled: 1, total: 2},
+    hub: {running: true, base_url: 'http://127.0.0.1:8787'},
+  }, extra);
+}
+
+function runStatus(payload) {
+  const nodes = {};
+  const ctx = vm.createContext({
+    api: async () => payload,
+    document: {getElementById: id => (nodes[id] ||= {textContent: '', innerHTML: '', className: '', hidden: false})},
+    esc: value => String(value ?? ''),
+  });
+  vm.runInContext(between('async function loadStatus()', 'let voiceSampleAudio'), ctx);
+  return {nodes, done: vm.runInContext('loadStatus()', ctx)};
+}
+
+test('the version line names the Mac, and the name is text, never markup', async () => {
+  // A Computer Name is system text, not trusted markup: it is written with textContent.
+  const {nodes, done} = runStatus(statusPayload({computer_name: '<b>not a tag</b>'}));
+  await done;
+  assert.equal(nodes['app-version'].textContent, 'Version 0.2.236 · on <b>not a tag</b>');
+  assert.equal(nodes['app-version'].innerHTML, '', 'the label is text, so no markup is parsed');
+  assert.equal(nodes['nav-machine'].textContent, 'on <b>not a tag</b>');
+  assert.equal(nodes['nav-machine'].hidden, false);
+});
+
+test('an unreadable computer name leaves the version line as it was', async () => {
+  const {nodes, done} = runStatus(statusPayload({computer_name: null}));
+  await done;
+  assert.equal(nodes['app-version'].textContent, 'Version 0.2.236');
+  assert.equal(nodes['nav-machine'].textContent, '');
+  assert.equal(nodes['nav-machine'].hidden, true, 'the sidebar line hides rather than guessing');
+});

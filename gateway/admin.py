@@ -17,7 +17,9 @@ import html
 import json
 import math
 import re
+import subprocess
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
@@ -530,11 +532,29 @@ def maintenance_resume() -> dict[str, Any]:
     return {"dispatch_paused": worker.dispatch_paused()}
 
 
+@lru_cache(maxsize=1)
+def computer_name() -> str | None:
+    """This Mac's Computer Name, read once; `None` when macOS cannot say.
+
+    `scutil` is the only source. A hostname is not the Computer Name the owner
+    sees in System Settings, so nothing is substituted for it.
+    """
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/scutil", "--get", "ComputerName"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (result.stdout.strip() or None) if result.returncode == 0 else None
+
+
 @router.get("/api/status", dependencies=[Depends(require_admin)])
 def status() -> dict[str, Any]:
     from . import __version__
     return {
         "version": __version__,
+        "computer_name": computer_name(),
         "hub": hub_status(),
         # Proof of life for the integration question: did Story Studio call this
         # gateway, when, and did it authenticate?
