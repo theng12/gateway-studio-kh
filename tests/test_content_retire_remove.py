@@ -750,6 +750,184 @@ process.exit(verify(null,Buffer.from(canonical(row.payload),'utf8'),key,Buffer.f
         self.assertFalse(by_version["1.0.0"]["archive_available"], "the retired version is refused")
         self.assertTrue(by_version["1.0.1"]["archive_available"])
 
+    # ── Exact-version retirement (internal primitive; no public route yet) ─────────────────
+
+    def test_exact_version_removal_keeps_sibling_and_ownership_history(self) -> None:
+        pack_id = "com.storystudio.pack.topic.exactscope"
+        doc1 = json.dumps({"schema_version": 1, "kind": "topic-pack", "id": f"{pack_id}.item",
+                           "name": "Exact 1.0.0", "description": "d1"}).encode()
+        doc2 = json.dumps({"schema_version": 1, "kind": "topic-pack", "id": f"{pack_id}.item",
+                           "name": "Exact 1.0.1", "description": "d2"}).encode()
+        pub1 = content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Exact 1.0.0", doc1))
+        pub2 = content_delivery.import_and_publish(make_archive(pack_id, "1.0.1", "Exact 1.0.1", doc2))
+        family = pub2["archive"]["entitlement"]["family"]
+        rid1 = pub1["release"]["release_id"]
+        rid2 = pub2["release"]["release_id"]
+        digest1 = pub1["release"]["archive_sha256"]
+
+        res = content_delivery.remove_release(pack_id, "1.0.0", confirm=True)
+        self.assertTrue(res["removed"])
+        self.assertEqual(res["remaining_versions"], ["1.0.1"])
+
+        self.assertFalse((self.data_dir / "content-library" / digest1).exists())
+        trash = self.data_dir / "content-delivery" / "_trash" / digest1
+        self.assertTrue((trash / "archive.sspack").is_file())
+        entry = json.loads((trash / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(entry["release"]["release_id"], rid1)
+        self.assertEqual(entry["release"]["entitlement_family"], family)
+
+        active = [r for r in content_delivery.status()["releases"] if r["pack_id"] == pack_id]
+        self.assertEqual([r["version"] for r in active], ["1.0.1"])
+        product = next(p for p in content_delivery.products("1.4.213")["products"]
+                       if p["entitlement_family"] == family)
+        self.assertEqual(product["current_release"]["version"], "1.0.1")
+
+        receipts = content_delivery.receipts()
+        self._assert_story_entitlement_rule(receipts)
+        entitlement = next(e for e in receipts["entitlements"] if e["entitlement_family"] == family)
+        self.assertFalse(entitlement["retired"])
+        self.assertEqual(entitlement["current_release"]["release_id"], rid2)
+
+        history = content_delivery.release_history(family)
+        self._assert_history_matches_entitlement(entitlement, history)
+        by_version = {row["version"]: row for row in history["releases"]}
+        self.assertEqual(set(by_version), {"1.0.0", "1.0.1"})
+        self.assertEqual(by_version["1.0.0"]["release_id"], rid1)
+        self.assertFalse(by_version["1.0.0"]["archive_available"])
+        self.assertTrue(by_version["1.0.1"]["archive_available"])
+
+        owned = content_delivery.account()["owned"]
+        self.assertTrue(any(o["entitlement_family"] == family for o in owned))
+        refused = self.client.post("/v1/content/downloads", headers=self._story_headers(),
+                                   json={"release_id": rid1})
+        self.assertEqual(refused.status_code, 404)
+
+    def test_exact_removal_refuses_last_version_unless_force_is_literal_true(self) -> None:
+        pack_id = "com.storystudio.pack.topic.exactlast"
+        pub = content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Exact Last"))
+        release_id = pub["release"]["release_id"]
+        digest = pub["release"]["archive_sha256"]
+        family = pub["archive"]["entitlement"]["family"]
+        authority = content_delivery._configured_state()["authority"].copy()
+        key_bytes = (self.data_dir / "content-delivery" / "signing-key.pem").read_bytes()
+
+        for bad_force in ("true", 1, None):
+            with self.assertRaises(content_delivery.DeliveryError) as cm:
+                content_delivery.remove_release(pack_id, "1.0.0", confirm=True, force=bad_force)
+            self.assertEqual(cm.exception.code, "LAST_VERSION_REQUIRED")
+        self.assertTrue((self.data_dir / "content-library" / digest / "archive.sspack").is_file())
+
+        res = content_delivery.remove_release(pack_id, "1.0.0", confirm=True, force=True)
+        self.assertTrue(res["removed"])
+
+        state = content_delivery._configured_state()
+        self.assertEqual(state["authority"], authority)
+        self.assertEqual((self.data_dir / "content-delivery" / "signing-key.pem").read_bytes(), key_bytes)
+
+        receipts = content_delivery.receipts()
+        self._assert_story_entitlement_rule(receipts)
+        entitlement = next(e for e in receipts["entitlements"] if e["entitlement_family"] == family)
+        self.assertTrue(entitlement["retired"])
+        self.assertFalse(entitlement["download_available"])
+        self.assertEqual(entitlement["current_release"]["release_id"], release_id)
+        self.assertFalse(entitlement["current_release"]["archive_available"])
+
+        owned = next(o for o in content_delivery.account()["owned"] if o["entitlement_family"] == family)
+        self.assertEqual(owned["current_release"]["release_id"], release_id)
+        self.assertFalse(owned["current_release"]["archive_available"])
+
+        history = content_delivery.release_history(family)
+        self._assert_history_matches_entitlement(entitlement, history)
+        self.assertEqual(history["current_release_id"], release_id)
+        self.assertTrue(history["retired"])
+        self.assertFalse(any(row["archive_available"] for row in history["releases"]))
+
+        self.assertFalse(any(p["entitlement_family"] == family
+                             for p in content_delivery.products("1.4.213")["products"]))
+        self.assertFalse(any(row["release_id"] == release_id for row in state["releases"]))
+        entry = next(e for e in state["removed"] if e["release_id"] == release_id)
+        self.assertEqual(entry["release"]["title"], "Exact Last")
+        self.assertTrue(entry["release"]["retired"])
+
+    def test_exact_removal_requires_confirmation_and_an_exact_identity(self) -> None:
+        pack_id = "com.storystudio.pack.topic.exactidentity"
+        pub = content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Exact Identity"))
+        release_id = pub["release"]["release_id"]
+
+        for bad_confirm in (False, "yes", 1):
+            with self.assertRaises(content_delivery.DeliveryError) as cm:
+                content_delivery.remove_release(pack_id, "1.0.0", confirm=bad_confirm)
+            self.assertEqual(cm.exception.code, "CONFIRMATION_REQUIRED")
+
+        for args, kwargs in (
+            ((pack_id,), {}),
+            ((), {"version": "1.0.0"}),
+            ((pack_id,), {"release_id": release_id}),
+        ):
+            with self.assertRaises(content_delivery.DeliveryError) as cm:
+                content_delivery.remove_release(*args, confirm=True, **kwargs)
+            self.assertEqual(cm.exception.code, "PACK_VERSION_REQUIRED")
+
+        with self.assertRaises(content_delivery.DeliveryError) as cm:
+            content_delivery.remove_release(release_id="missing", confirm=True)
+        self.assertEqual(cm.exception.code, "CONTENT_RELEASE_NOT_FOUND")
+
+        with self.assertRaises(content_delivery.DeliveryError) as cm:
+            content_delivery.remove_release("com.storystudio.pack.topic.other", "1.0.0",
+                                            release_id=release_id, confirm=True)
+        self.assertEqual(cm.exception.code, "CONTENT_RELEASE_CONFLICT")
+
+        res = content_delivery.remove_release(release_id=release_id, confirm=True, force=True)
+        self.assertTrue(res["removed"])
+        self.assertEqual(res["release_id"], release_id)
+
+    def test_exact_removal_keeps_a_folder_another_release_still_uses(self) -> None:
+        pack_id = "com.storystudio.pack.topic.shareddigest"
+        pub = content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Shared Digest"))
+        release_id = pub["release"]["release_id"]
+        digest = pub["release"]["archive_sha256"]
+
+        with content_delivery._lock():
+            state = content_delivery._read_state()
+            row = next(r for r in state["releases"] if r["release_id"] == release_id)
+            twin = json.loads(json.dumps(row))
+            twin.update({
+                "pack_id": pack_id + ".twin",
+                "release_id": "gateway.private.release." + "b" * 24,
+                "product_id": "com.storystudio.product.shareddigesttw.in",
+                "entitlement_family": "com.storystudio.family.shareddigesttw.in",
+                "title": "Shared Digest Twin",
+            })
+            state["releases"].append(twin)
+            content_delivery._atomic_state(state)
+
+        res = content_delivery.remove_release(pack_id, "1.0.0", confirm=True, force=True)
+        self.assertTrue(res["removed"])
+        self.assertIsNone(res["removed_releases"][0]["trash_path"])
+        self.assertTrue((self.data_dir / "content-library" / digest / "archive.sspack").is_file())
+        self.assertFalse((self.data_dir / "content-delivery" / "_trash" / digest).exists())
+
+    def test_exact_removal_moves_the_folder_back_when_the_authority_write_fails(self) -> None:
+        from unittest.mock import patch
+
+        pack_id = "com.storystudio.pack.topic.exactrollback"
+        pub = content_delivery.import_and_publish(make_archive(pack_id, "1.0.0", "Exact Rollback"))
+        release_id = pub["release"]["release_id"]
+        digest = pub["release"]["archive_sha256"]
+
+        def fail(_state: dict) -> None:
+            raise content_delivery.DeliveryError("write failed", 503, "CONTENT_DELIVERY_UNAVAILABLE")
+
+        with patch.object(content_delivery, "_atomic_state", side_effect=fail):
+            with self.assertRaises(content_delivery.DeliveryError):
+                content_delivery.remove_release(pack_id, "1.0.0", confirm=True, force=True)
+
+        self.assertTrue((self.data_dir / "content-library" / digest / "archive.sspack").is_file())
+        self.assertFalse((self.data_dir / "content-delivery" / "_trash" / digest).exists())
+        state = content_delivery._configured_state()
+        self.assertTrue(any(row["release_id"] == release_id for row in state["releases"]))
+        self.assertFalse(any(entry.get("release_id") == release_id for entry in state.get("removed", [])))
+
 
 if __name__ == "__main__":
     unittest.main()

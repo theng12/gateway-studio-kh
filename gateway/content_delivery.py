@@ -927,23 +927,72 @@ def _current_releases(state: dict[str, Any]) -> list[tuple[dict[str, Any], dict[
     return [(row, public[row["release_id"]]) for row in state["releases"] if row["release_id"] in public]
 
 
+_REMOVED_SNAPSHOT_FIELDS = (
+    "release_id", "pack_id", "version", "title", "kind", "publisher_id", "product_id",
+    "entitlement_family", "item_ids", "min_story_version", "description", "tags",
+    "changelog", "dependencies", "receipt_revision", "receipt_ref", "archive_sha256",
+    "bytes", "published_at",
+)
+_REMOVED_SNAPSHOT_REQUIRED = (
+    "release_id", "pack_id", "version", "title", "kind", "publisher_id", "product_id",
+    "entitlement_family", "min_story_version", "changelog", "archive_sha256", "bytes",
+    "published_at",
+)
+
+
+def _removed_snapshot(row: dict[str, Any], now: str) -> dict[str, Any]:
+    """Freeze the release record before its active row leaves the shelf."""
+    snapshot = {key: row[key] for key in _REMOVED_SNAPSHOT_FIELDS if key in row}
+    for key in ("item_ids", "tags", "dependencies"):
+        if isinstance(snapshot.get(key), list):
+            snapshot[key] = list(snapshot[key])
+    snapshot["retired"] = True
+    snapshot["retired_at"] = row.get("retired_at") or now
+    return snapshot
+
+
+def _removed_release_rows(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ownership records preserved from removed versions; never catalogue or download rows."""
+    rows = []
+    for entry in state.get("removed", []):
+        snapshot = entry.get("release") if isinstance(entry, dict) else None
+        if not isinstance(snapshot, dict) or any(key not in snapshot for key in _REMOVED_SNAPSHOT_REQUIRED):
+            continue
+        row = {key: snapshot[key] for key in _REMOVED_SNAPSHOT_FIELDS if key in snapshot}
+        row["retired"] = True
+        row["retired_at"] = snapshot.get("retired_at") or entry.get("when")
+        row["_removed"] = True
+        rows.append(row)
+    return rows
+
+
 def _owned_releases(state: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """What a Mac that already installed a pack is still told it owns: every family with an
     available release, retired or not. Retiring hides a pack from the catalogue and blocks new
     installs (`_current_releases`), but must not make an installed pack look lost, so the
     account and restore receipt keep it, flagged `retired`. A live release of a family wins over
-    a retired one; otherwise the highest version does."""
+    a retired one, then an active record over a removed one; otherwise the highest version does.
+    A removed version keeps its ownership record but is never downloadable."""
     public = {row["release_id"]: row for row in _release_rows(state) if row["available"]}
+    candidates = [row for row in state["releases"]
+                  if isinstance(row, dict) and row.get("release_id") in public]
+    for row in _removed_release_rows(state):
+        if row["release_id"] not in public:
+            public[row["release_id"]] = {"available": False}
+            candidates.append(row)
+
+    def priority(row: dict[str, Any]) -> tuple[int, tuple[int, int, int]]:
+        if row.get("_removed"):
+            return (0, _version(row["version"]))
+        return (2 if not row.get("retired") else 1, _version(row["version"]))
+
     latest: dict[str, dict[str, Any]] = {}
-    for row in state["releases"]:
-        if not isinstance(row, dict) or row.get("release_id") not in public:
-            continue
+    for row in candidates:
         family = row.get("entitlement_family")
         if not isinstance(family, str):
             continue
         held = latest.get(family)
-        if held is None or ((not row.get("retired")), _version(row["version"])) > (
-                (not held.get("retired")), _version(held["version"])):
+        if held is None or priority(row) > priority(held):
             latest[family] = row
     return [(latest[f], public[latest[f]["release_id"]]) for f in sorted(latest)]
 
@@ -1147,9 +1196,15 @@ def release_history(family: str, state: dict[str, Any] | None = None) -> dict[st
     state = state if state is not None else _configured_state()
     matches = [row for row in state["releases"] if row["entitlement_family"] == family
                and not row.get("cover_pending")]
+    listed = {row["release_id"] for row in matches}
+    historical = [row for row in _removed_release_rows(state)
+                  if row.get("entitlement_family") == family and row["release_id"] not in listed]
+    matches += historical
     if not matches:
         raise DeliveryError("No such private entitlement.", 404, "CONTENT_ENTITLEMENT_NOT_FOUND")
     public = {row["release_id"]: row for row in _release_rows(state)}
+    for row in historical:
+        public[row["release_id"]] = {"available": False}
     owned = next(((row, availability) for row, availability in _owned_releases(state)
                   if row["entitlement_family"] == family), None)
     described = owned[0] if owned else matches[0]
@@ -1445,6 +1500,15 @@ def trash_root() -> Path:
     return Path(config.DATA_DIR) / "content-trash"
 
 
+def _retirement_trash_root() -> Path:
+    """Canonical destination for exact-version retirement (owner, 2026-11-06).
+
+    Beside `authority.json`, so the authority and the archive it records move and back up
+    together. Existing `content-trash/` records are left untouched.
+    """
+    return _root() / "_trash"
+
+
 def _digest_files(folder: Path) -> list[dict[str, Any]]:
     rows = []
     for item in sorted(folder.iterdir()):
@@ -1452,6 +1516,56 @@ def _digest_files(folder: Path) -> list[dict[str, Any]]:
             rows.append({"name": item.name, "bytes": item.stat().st_size,
                          "sha256": hashlib.sha256(item.read_bytes()).hexdigest()})
     return rows
+
+
+def _remove_releases_locked(state: dict[str, Any], targets: list[dict[str, Any]], *,
+                            root: Path, now: str) -> list[dict[str, Any]]:
+    """Move the targets' unshared archive folders under `root`, record them, and write the
+    authority — one durable step. Called with `_lock` held; a write failure moves every folder
+    back so the state and the filesystem agree."""
+    target_ids = {row["release_id"] for row in targets}
+    remaining = [row for row in state["releases"] if row["release_id"] not in target_ids]
+    shared = {row["archive_sha256"] for row in remaining}
+    moved: list[tuple[Path, Path]] = []
+    entries: list[dict[str, Any]] = []
+    try:
+        for row in targets:
+            digest = row["archive_sha256"]
+            source = content_packs.LIBRARY / digest
+            destination = None
+            files: list[dict[str, Any]] = []
+            if digest not in shared and source.is_dir() and not source.is_symlink():
+                root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                destination = root / digest
+                if destination.exists():
+                    destination = root / f"{digest}.{uuid4().hex[:8]}"
+                files = _digest_files(source)
+                source.rename(destination)
+                moved.append((destination, source))
+            entry = {
+                "what": f"{row['pack_id']}@{row['version']}", "when": now,
+                "from_where": str(source), "sha256": digest, "archive_sha256": digest,
+                "pack_id": row["pack_id"], "version": row["version"], "title": row.get("title", ""),
+                "release_id": row["release_id"], "retired": True,
+                "trash_path": str(destination / "archive.sspack") if destination else None,
+                "files": files,
+                "release": _removed_snapshot(row, now),
+            }
+            entries.append(entry)
+            if destination is not None:
+                (destination / "manifest.json").write_text(json.dumps(entry, indent=2) + "\n", encoding="utf-8")
+        state["releases"] = remaining
+        state.setdefault("removed", []).extend(entries)
+        _atomic_state(state)
+    except BaseException:
+        for destination, source in reversed(moved):
+            try:
+                (destination / "manifest.json").unlink(missing_ok=True)
+                destination.rename(source)
+            except OSError:
+                pass
+        raise
+    return entries
 
 
 def remove_pack(pack_id: str, version: str | None = None, *, confirm: bool = False) -> dict[str, Any]:
@@ -1477,51 +1591,66 @@ def remove_pack(pack_id: str, version: str | None = None, *, confirm: bool = Fal
             raise DeliveryError(
                 f"'{live[0].get('title', pack_id)}' v{live[0]['version']} is not retired. "
                 "Retire a pack before removing it.", 409, "CONTENT_PACK_NOT_RETIRED")
-        target_ids = {r["release_id"] for r in targets}
-        remaining = [r for r in state["releases"] if r["release_id"] not in target_ids]
-        shared = {r["archive_sha256"] for r in remaining}
-        root = trash_root()
-        now = _now()
-        moved: list[tuple[Path, Path]] = []
-        entries: list[dict[str, Any]] = []
-        try:
-            for r in targets:
-                digest = r["archive_sha256"]
-                source = content_packs.LIBRARY / digest
-                destination = None
-                files: list[dict[str, Any]] = []
-                if digest not in shared and source.is_dir() and not source.is_symlink():
-                    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    destination = root / digest
-                    if destination.exists():
-                        destination = root / f"{digest}.{uuid4().hex[:8]}"
-                    files = _digest_files(source)
-                    source.rename(destination)
-                    moved.append((destination, source))
-                entry = {
-                    "what": f"{r['pack_id']}@{r['version']}", "when": now,
-                    "from_where": str(source), "sha256": digest, "archive_sha256": digest,
-                    "pack_id": r["pack_id"], "version": r["version"], "title": r.get("title", ""),
-                    "release_id": r["release_id"], "retired": True,
-                    "trash_path": str(destination / "archive.sspack") if destination else None,
-                    "files": files,
-                }
-                entries.append(entry)
-                if destination is not None:
-                    (destination / "manifest.json").write_text(json.dumps(entry, indent=2) + "\n", encoding="utf-8")
-            state["releases"] = remaining
-            state.setdefault("removed", []).extend(entries)
-            _atomic_state(state)
-        except BaseException:
-            for destination, source in reversed(moved):
-                try:
-                    (destination / "manifest.json").unlink(missing_ok=True)
-                    destination.rename(source)
-                except OSError:
-                    pass
-            raise
+        entries = _remove_releases_locked(state, targets, root=trash_root(), now=_now())
         return {"ok": True, "removed": True, "pack_id": pack_id, "version": version,
                 "removed_releases": entries}
+
+
+def remove_release(pack_id: str | None = None, version: str | None = None, *,
+                   release_id: str | None = None, confirm: bool = False,
+                   force: bool = False) -> dict[str, Any]:
+    """Retire and remove exactly one released version, atomically under the authority lock.
+
+    Internal for now: the public removal route is **not** opened until exact-version usage is
+    known safe (Story lead confirmation pending). Identify the version by `pack_id` **and**
+    `version`, or by an exact `release_id`; if both forms are given they must agree. A pack's
+    last remaining version is refused unless `force` is the literal `True`.
+
+    Its archive folder moves under `content-delivery/_trash/` with a manifest, its release row
+    leaves the active shelf, and a frozen ownership record stays in `state["removed"]` so the
+    account, restore receipt and release history still name what the Mac owns — with no
+    download and nothing in the catalogue. Nothing is reissued or regenerated.
+    """
+    if confirm is not True:
+        raise DeliveryError("Removing a release needs explicit confirmation.", 422, "CONFIRMATION_REQUIRED")
+    if release_id is not None:
+        if not isinstance(release_id, str) or not release_id:
+            raise DeliveryError("release_id is invalid.", 422, "RELEASE_ID_REQUIRED")
+        if (pack_id is None) != (version is None):
+            raise DeliveryError("Give both pack_id and version, or neither.", 422, "PACK_VERSION_REQUIRED")
+    elif not pack_id or not version:
+        raise DeliveryError("pack_id and version are both required.", 422, "PACK_VERSION_REQUIRED")
+
+    with _lock():
+        state = _read_state()
+        if release_id is not None:
+            matches = [row for row in state["releases"] if row.get("release_id") == release_id]
+        else:
+            matches = [row for row in state["releases"]
+                       if row.get("pack_id") == pack_id and row.get("version") == version]
+        if not matches:
+            raise DeliveryError("No published release matches that pack and version.", 404, "CONTENT_RELEASE_NOT_FOUND")
+        if len(matches) != 1:
+            raise DeliveryError("That release identity is ambiguous.", 409, "CONTENT_RELEASE_CONFLICT")
+        target = matches[0]
+        if pack_id is not None and (target.get("pack_id") != pack_id or target.get("version") != version):
+            raise DeliveryError("The release does not match that pack and version.", 409, "CONTENT_RELEASE_CONFLICT")
+
+        family_versions = [row for row in state["releases"] if row.get("pack_id") == target["pack_id"]]
+        if len(family_versions) == 1 and force is not True:
+            raise DeliveryError(
+                "This is the pack's last remaining version. Removing it leaves no installable "
+                "release; send force: true to go ahead.", 409, "LAST_VERSION_REQUIRED")
+
+        now = _now()
+        entries = _remove_releases_locked(state, [target], root=_retirement_trash_root(), now=now)
+        return {
+            "ok": True, "removed": True, "retired": True,
+            "pack_id": target["pack_id"], "version": target["version"],
+            "release_id": target["release_id"], "removed_releases": entries,
+            "remaining_versions": [row["version"] for row in state["releases"]
+                                   if row.get("pack_id") == target["pack_id"]],
+        }
 
 
 def record_removed(pack_id: str, version: str, archive_sha256: str, *, trash_path: str,
@@ -1548,6 +1677,8 @@ def record_removed(pack_id: str, version: str, archive_sha256: str, *, trash_pat
             "release_id": (listed or {}).get("release_id"), "retired": True,
             "trash_path": trash_path, "files": [],
         }
+        if listed:
+            entry["release"] = _removed_snapshot(listed, entry["when"])
         state["releases"] = [r for r in state["releases"] if r is not listed]
         removed.append(entry)
         _atomic_state(state)
