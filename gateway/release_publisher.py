@@ -80,7 +80,7 @@ _RECOVER_INTERVAL = 5.0
 #: connection is "Server disconnected without sending a response"). Not read timeouts.
 _TRANSIENT = (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ConnectError)
 MANIFEST_SCHEMA = "studiohub.file-manifest.v1"
-# ponytail: proposed first sealed-baseline release; confirm against Hub's first shipped fix before release.
+# ponytail: Hub froze 0.6.225 as the first sealed-baseline release; older/unknown identities use full DMGs.
 _DELTA_BASELINE_MIN = (0, 6, 225)
 # ponytail: Hub's 256 MiB expanded-group ceiling; revise together if its manifest codec changes.
 _MANIFEST_GROUP_MAX_BYTES = 256 * 1024 * 1024
