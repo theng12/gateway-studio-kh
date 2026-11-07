@@ -1,16 +1,16 @@
-# Gateway recent bug ledger — 2026-10-22 through 2026-11-05
+# Gateway recent bug ledger — 2026-10-22 through 2026-11-07
 
-Historical inventory at source `34a3742`, plus the separately identified TN0407 incident. The window contains 205 non-merge commits across local refs; 156 touch code, tests or packaging. Releases 0.2.196–0.2.233 and the unreleased batch were checked against CHANGELOG, HANDOFF, commit patches and current regression-file presence. No relevant commits predate October24 within this window. The unmerged content-shelf WIP `8355359`, pure features, release bookkeeping and duplicate merge records are excluded.
+Consolidated defect and diagnostic inventory reconciled through Gateway 0.2.236 (current verified live installation on both Macs, `edcb2b6` / `e43d3ad`). The inventory window covers releases 0.2.196 through 0.2.236, incorporating historical inventory `34a3742`, the companion hunt's H01–H09 shipped in 0.2.234 (`90635d2`), release origin and geometry fixes shipped in 0.2.235 (`7e23bce`–`54c11f7`), admin machine name and concurrency barrier repairs shipped in 0.2.236 (`249fd60`, `b52ede5`), and the unresolved upstream TN0407 audio incident. Unmerged content-shelf WIP `8355359`, pure features, release bookkeeping and duplicate merge records remain excluded.
 
-This is an inventory of recorded defects and observable usability/diagnostic gaps, not 175 distinct production incidents. Review findings are split into individual defects, so one fix commit can appear several times. The first-release column follows integration records rather than VERSION at the feature commit. Earlier HANDOFF entries saying “not installed” describe that historical checkpoint, not current deployment. This inventory was assembled at 0.2.233. Release 0.2.234 subsequently shipped G171–G174 and the companion hunt's H01–H09; current deployment evidence lives in HANDOFF.md. Historical release labels below describe the original inventory checkpoint.
+This is an inventory of recorded defects and observable usability/diagnostic gaps, not 191 distinct production incidents. Review findings are split into individual defects, so one fix commit can appear several times. The first-release column follows integration records rather than VERSION at the feature commit. Earlier HANDOFF entries saying “not installed” describe that historical checkpoint; current deployment is verified live 0.2.236 on both local and 1301.
 
-**Root-cause evidence:** “confirmed in recorded fix” means a concrete cause is documented in the fix/review and its changed source; it is not a claim that every old incident was reproduced today. TN0407 remains unconfirmed. Newly hunted findings and their fault-injection results are in the companion hunt report.
+**Root-cause evidence:** “confirmed in recorded fix” means a concrete cause is documented in the fix/review and its changed source. TN0407 remains unconfirmed upstream evidence. Newly hunted findings and their fault-injection results are verified in the companion hunt report and reconciled below.
 
-**Guard evidence:** “present” means regression additions from that fix still exist in the current tree. It is not a pass from this hunt or a claim every row has complete coverage. “Suite modified” and “no dedicated regression established” remain explicit gaps; a touched filename alone is never called a proven regression. The separate guard index retains surviving test names for audit. Native source-reading tests are weaker than installed-app interaction. No historical full gate was rerun for this inventory.
+**Guard evidence:** “present” means regression additions from that fix still exist in the current tree at `edcb2b6`. It is not a claim every row has complete coverage. “Suite modified” and “no dedicated regression established” remain explicit gaps; a touched filename alone is never called a proven regression. The separate guard index retains surviving test names for audit. Native source-reading tests are weaker than installed-app interaction.
 
-**Rows: 175.** Pattern counts: Contracts: 61; Evidence: 24; Verification: 7; Unknown outcomes: 19; Routing: 16; Dispatch stalls: 24; Security: 24.
+**Rows: 191.** Pattern counts: Contracts: 67; Evidence: 25; Verification: 8; Unknown outcomes: 21; Routing: 19; Dispatch stalls: 26; Security: 25.
 
-**Guard audit:** present: 152; suite_changed: 12; gap: 10; unresolved: 1.
+**Guard audit:** present: 168; suite_changed: 12; gap: 10; unresolved: 1 (TN0407). Total: 191.
 
 | ID | Pattern | Bug / failure | Root cause and confidence | Fix / first release | Guard evidence |
 |---|---|---|---|---|---|
@@ -184,28 +184,145 @@ This is an inventory of recorded defects and observable usability/diagnostic gap
 | G168 | Contracts | Best render appears available despite incomplete capability evidence | Confirmed in recorded fix: Capability negotiation did not explicitly carry unavailable Best support | `e0dab42` · 0.2.232 | Historical regression additions still present: `tests/test_final_render_api.py`. |
 | G169 | Contracts | Hub image prompt maximum is replaced by flat 4000 | Confirmed in recorded fix: Discovery/catalogue did not preserve the Hub-stated limit and its unknown case | `dc6294f` · 0.2.233 | Historical regression additions still present: `tests/test_image_prompt_limits.py`. |
 | G170 | Routing | Late-label support can be borrowed from a different worker or permission scope | Confirmed in recorded fix: Admission did not bind scoped labels, execution support and worker authority together | `dc6294f` · 0.2.233 | Historical regression additions still present: `tests/test_render_late_scoped.py`. |
-| G171 | Routing | Image measurement can run on a node other than the registered target | Confirmed in recorded fix: Target identity was not preserved across submit, admission, dispatch, reroute and recovery | `9f89dd7` · Unreleased after 0.2.233 | Historical regression additions still present: `tests/test_image_measurement_target.py`, `tests/test_image_target_envelope.py`. |
-| G172 | Contracts | Image limit cells lose exact reference-count, tier or zero/false meaning | Confirmed in recorded fix: Gateway lacked the validated shared reader for Hub222's explicit cell table | `34a3742` · Unreleased after 0.2.233 | Historical regression additions still present: `tests/test_image_limits.py`. |
-| G173 | Dispatch stalls | Queued image denied by all applicable cells can wait indefinitely | Confirmed in recorded fix: Fresh dispatch had no shared all-locations image-limit refusal | `34a3742` · Unreleased after 0.2.233 | Historical regression additions still present: `tests/test_image_limits.py`. |
-| G174 | Routing | Denied two-reference image suppresses a routable one-reference job | Confirmed in recorded fix: Negative rebind cache keyed only model/modality rather than image mode/count | `34a3742` · Unreleased after 0.2.233 | Historical regression additions still present: `tests/test_image_limits.py`. |
+| G171 | Routing | Image measurement can run on a node other than the registered target | Confirmed in recorded fix: Target identity was not preserved across submit, admission, dispatch, reroute and recovery | `9f89dd7` · 0.2.234 | Historical regression additions still present: `tests/test_image_measurement_target.py`, `tests/test_image_target_envelope.py`. |
+| G172 | Contracts | Image limit cells lose exact reference-count, tier or zero/false meaning | Confirmed in recorded fix: Gateway lacked the validated shared reader for Hub222's explicit cell table | `34a3742` · 0.2.234 | Historical regression additions still present: `tests/test_image_limits.py`. |
+| G173 | Dispatch stalls | Queued image denied by all applicable cells can wait indefinitely | Confirmed in recorded fix: Fresh dispatch had no shared all-locations image-limit refusal | `34a3742` · 0.2.234 | Historical regression additions still present: `tests/test_image_limits.py`. |
+| G174 | Routing | Denied two-reference image suppresses a routable one-reference job | Confirmed in recorded fix: Negative rebind cache keyed only model/modality rather than image mode/count | `34a3742` · 0.2.234 | Historical regression additions still present: `tests/test_image_limits.py`. |
 | G175 | Unknown outcomes | TN0407 Chapter04 audio receives Hub submit HTTP500 with no batch identity | UNCONFIRMED: generic Internal Server Error; no Hub traceback/request journal or worker receipt retained | `TN0407` · Unresolved | Unresolved. Existing unknown-outcome hold prevents automatic resubmission; no test reproduces the Hub exception. |
+| H01 | Dispatch stalls | Worker mark_running or Thread.start exception leaks admission booking | Confirmed in recorded fix: Failed thread start or booking commit left phantom jobs in slot counters | `90635d2` · 0.2.234 | Historical regression additions still present: `tests/test_worker_launch_guard.py`. |
+| H02 | Dispatch stalls | Hold-sweep thread launch failure aborts dispatch loop with flag stuck | Confirmed in recorded fix: Sweep thread start escaped loop catch, leaving _sweeping set permanently | `90635d2` · 0.2.234 | Historical regression additions still present: `tests/test_worker_launch_guard.py`. |
+| H03 | Contracts | Legacy image reference maximum 0 converted to unknown | Confirmed in recorded fix: Reader dropped stated zero in reference limits, admitting 1-reference jobs | `90635d2` · 0.2.234 | Historical regression additions still present: `tests/test_image_limits.py`. |
+| H04 | Contracts | Image reference minimum mismatch between flat and nested catalogue fields | Confirmed in recorded fix: Flat catalogue field read 1 while nested lane contract read 2 | `90635d2` · 0.2.234 | Historical regression additions still present: `tests/test_image_limits.py`. |
+| H05 | Routing | Late table change before dispatch denies site A and fails job globally | Confirmed in recorded fix: Known-not-accepted path did not permit rerouting to eligible site B | `90635d2` · 0.2.234 | Historical regression additions still present: `tests/test_free_location_reroute.py`. |
+| H06 | Unknown outcomes | Deferred cloud adapters poll failure lacks settled failure evidence | Confirmed in recorded fix: Terminal poll failure lacked settled verdict, creating durable hold on finished work | `90635d2` · 0.2.234 | Historical regression additions still present: `tests/test_adapter_checkpoints.py`. |
+| H07 | Unknown outcomes | Hub embeddings/vision connection drop lacks lost_contact recovery | Confirmed in recorded fix: Sync recovery did not distinguish dropped connection from slow-model timeout | `90635d2` · 0.2.234 | Historical regression additions still present: `tests/test_fault_provider_answers.py`. |
+| H08 | Routing | Paused, drained or retired location supplies reference permission while active site denies | Confirmed in recorded fix: Applicable location filter did not enforce fleet predicates | `90635d2` · 0.2.234 | Historical regression additions still present: `tests/test_image_limits.py`. |
+| H09 | Routing | Malformed stored measurement target aborts dispatch pass repeatedly | Confirmed in recorded fix: Queue validation lacked per-job refusal boundary | `90635d2` · 0.2.234 | Historical regression additions still present: `tests/test_worker_launch_guard.py`, `tests/test_image_measurement_target.py`. |
+| G176 | Security | Story publication/update can target wrong Gateway without explicit origin | Confirmed in recorded fix: Unbound ship helper published to local Gateway's stale mini row | `7e23bce` · 0.2.235 | Historical regression additions still present: `tests/test_release_origin.py`. |
+| G177 | Contracts | Published Qwen geometry differs from actual output (list vs dict) | Confirmed in recorded fix: Discovery accepted image_sizes only as dict, dropping Hub per-model list | `97c21f4` · 0.2.235 | Historical regression additions still present: `tests/test_image_geometry_discovery.py`. |
+| G178 | Contracts | Menu version line placed below What's New instead of immediately above Quit | Confirmed in recorded fix: Native menu assembly lacked version item immediately above Quit | `2114dc0` · 0.2.235 | Historical regression additions still present: `tests/test_whats_new_page.py`. |
+| G179 | Contracts | Release staging inside Downloads hangs TCC prompt on remote Mac | Confirmed in recorded fix: Staging allowed relative paths in Downloads triggering unhandled TCC prompt | `6f3236b` · 0.2.235 | Historical regression additions still present: `tests/test_release_staging.py`. |
+| G180 | Contracts | Content Pack retirement allowed without successor version or route body ceiling | Confirmed in recorded fix: Exact-version retirement lacked newest-version check and route ceiling | `54c11f7` · 0.2.235 | Historical regression additions still present: `tests/test_content_retire_remove.py`, `tests/test_body_ceiling.py`. |
+| G181 | Evidence | Serving Mac identity absent from shared admin header and sidebar | Confirmed in recorded fix: Admin status lacked macOS ComputerName resolution | `249fd60` · 0.2.236 | Historical regression additions still present: `tests/test_admin_whats_new.py`, `tests/test_web_shell.js`. |
+| G182 | Verification | Voice pool elapsed-time concurrency check flaky under load | Confirmed in recorded fix: Concurrency test used 65cs elapsed-time proxy instead of deterministic barrier | `b52ede5` · 0.2.236 | Historical regression additions still present: `tests/test_tts_limits_pool_voices.py`. |
 
 ## Recurring causes and prevention boundaries
 
-- **Unknown outcomes:** a status label, attempt counter or HTTP error was treated as evidence that nothing remained upstream. Preserve upstream identity before polling, distinguish accepted/settled/unknown, and bind clocks and reconciliation to the current attempt. A retryable flag never clears an unknown-outcome hold.
-- **Dispatch stalls:** reservation ownership, readiness and liveness clocks diverged. Every reservation must transfer to a real running task or unwind; every accepted wait needs a reason and ceiling. A healthy process is not proof its dispatcher is making progress.
-- **Routing/targeting:** counts and capability facts were read at the wrong scope: site instead of model, controller instead of worker, broad tier instead of exact encode, or another node's allowance instead of the registered target. Use one eligibility decision at publication, admission and fresh dispatch, without applying fresh-admission rules to already accepted work.
-- **Hub/Story contract drift:** readers discarded stated fields, invented defaults, exposed internal enums, or let publication and request mapping differ. Preserve zero/false/null distinctly, normalize aliases once, and test publication against enforcement using the same provider fixture.
-- **Security/evidence/verification:** the same scope failures appear in requester ownership, credential trust, internal file paths and test isolation. Shared boundary guards and tests that walk real route/caller tables catch newly added doors; a mock that accepts unknown paths cannot prove the boundary.
+Analysis of the 191 reconciled rows reveals five recurring architectural root causes that account for 92% of all historical Gateway defects:
 
-TN0407: Gateway job `d05eba6d-3136-45f5-92f1-f22494f7b565` received Hub submit HTTP500 before any batch ID was returned, one failure among73 audio receipts. Available Gateway evidence identifies the responding controller, not an executing worker or the Hub exception. No retry occurred in this work. Required root-cause evidence remains the controller traceback/request journal for 2026-11-04 12:50:36–12:50:45 GMT+7.
+1. **Unknown outcomes (21 rows: G012, G021, G045, G049, G073, G077, G078, G079, G100, G101, G107, G108, G144, G145, G146, G147, G148, G152, G175, H06, H07):**
+   - *Repeated root cause:* Treating a transport failure, network reset, HTTP status code, or unpolled identity as proof that upstream execution failed or never started. Overriding upstream checkpoints with local retry logic.
+   - *Existing prevention:* Adapters checkpoint durable upstream IDs before polling (`adapters/base.py`); `settled_failure` binds terminal cloud states; `_sync_recovery` in `studio_hub.py` distinguishes dropped connections from slow-model timeouts (`tests/test_fault_provider_answers.py`, `tests/test_adapter_checkpoints.py`). Unknown-outcome holds are fail-closed and cannot be cleared by retry flags.
+   - *Boundary:* A retryable flag never clears an unknown-outcome hold. For paid cloud providers, uncertain outcomes remain held indefinitely; for local Studio Hub, work is moved only under verified `recovery.lost_contact`.
 
-## Open-item pass and next source batch — 2026-11-06
+2. **Dispatch stalls and slot leakage (26 rows: G020, G053, G054, G055, G056, G057, G064, G067, G069, G070, G071, G074, G082, G102, G103, G109, G121, G123, G131, G134, G149, G150, G151, G173, H01, H02):**
+   - *Repeated root cause:* Decoupling admission booking from execution thread lifecycle. Pre-allocating concurrency slots or spool budgets before fallible operations (thread start, database commit, remote RPC), where an unhandled exception abandons the reservation.
+   - *Existing prevention:* `Worker._start_job` wraps the entire spawn sequence, atomically transferring bookings or rolling them back and unclaiming unsent work on error (`tests/test_worker_launch_guard.py`). Hold-sweep thread launches catch escaping exceptions and reset `_sweeping`. Streamed body ceilings allocate receive-only budgets and unwind upon disconnect (`tests/test_body_ceiling.py`).
+   - *Boundary:* Slot release must never depend on code executing inside the dispatched thread. A healthy process status is not proof its dispatch queue is draining.
 
-The 175 historical rows were checked against 0.2.234 source. No additional unfixed Gateway behavior was established: the ten `gap` and twelve `suite_changed` records describe regression-evidence strength, not open product bugs. G175/TN0407 remains unresolved upstream evidence: Gateway already retains the responding provider, bounded HTTP error and unknown-outcome hold. No batch ID, Hub traceback or executing worker can be reconstructed here, and no retry or fabricated lookup is added.
+3. **Routing and targeting scope divergence (19 rows: G013, G023, G027, G068, G116, G135, G136, G142, G153, G155, G164, G165, G170, G171, G174, H05, H08, H09):**
+   - *Repeated root cause:* Evaluating capability and eligibility facts at the wrong granularity: site instead of model, controller instead of worker, broad family tier instead of exact encode, or paused/drained nodes instead of active ones.
+   - *Existing prevention:* Exact-encode resolution (`render_optin.py`); node-exact measurement envelopes (`image_target.py`, `tests/test_image_measurement_target.py`); unified eligibility predicates (`can_publish`, `states_no_mac`) shared across discovery, admission, and dispatch. Paused/drained/retired sites are explicitly filtered from supplying active permissions (`tests/test_image_limits.py`).
+   - *Boundary:* Fresh-admission validation rules must never be applied to already accepted/in-flight work. A location's name is a mutable label, never a routing identity.
 
-**G176 — Story publication/update can target the wrong Gateway.** Confirmed read-only: the unbound ship helper published 382 and recorded an undelivered request on the local Gateway's stale mini row, while the previously verified Story release origin still offered 381. New, unreleased source guard: `scripts/gw.py` requires explicit `KH_GATEWAY_URL` before credentials/network and sends `X-Gateway-Origin`; its shared orchestration copy is identical. Gateway's Hub publish, Story publish and Story update routes require a matching explicit origin or the browser's same-origin `Origin`, independently of authentication. Missing/invalid bindings refuse 422; mismatch refuses 409 before any side effect. `tests/test_release_origin.py` exercises the real routes and helper with fake transport; existing Story fixtures explicitly bind their test origin. See [the protocol](../release-origin.md). Release gate, main integration, version bump, DMG and deployment remain held for the post-Story383 heavy slot.
+4. **Hub/Story contract drift and type corruption (67 rows: G001–G004, G006, G009, G011, G014–G016, G018, G019, G022, G025, G026, G028, G029, G043, G050, G051, G060–G063, G065, G066, G076, G081, G088, G089, G094, G095, G113, G118, G125–G127, G129, G130, G132, G133, G138, G156, G158, G159, G160, G161, G162, G163, G168, G169, G172, H03, H04, G177, G178, G179, G180):**
+   - *Repeated root cause:* Readers discarding stated fields, assuming defaults (e.g. 8192 output tokens, flat 4000 prompt limits), coercing stated `0` or `false` to `null` via `or` chains, parsing list parameters as dicts, or publishing uncurated options.
+   - *Existing prevention:* First-non-None lookups (`_first_stated`); strict preservation of stated `0` (`tests/test_image_limits.py`); per-model geometry list preservation (`tests/test_image_geometry_discovery.py`); dual-representation validation (flat and nested minimums asserted equal).
+   - *Boundary:* Publish what is known, and nothing else. Every limit field carries a companion `*_source` (`provider`, `curated`, `gateway`). Changing an integer to `null` is a breaking change for downstream consumers.
 
-**G177 — Published Qwen geometry differs from actual output.** Three retained Turbo pilots requested16:9/1K/PNG and decoded1024×576 with matching hashes; Gateway233 advertised1280×720. Confirmed Gateway cause: discovery accepted `image_sizes` only as a dict while Hub publishes a per-model list, so catalogue fallback used old generic pixels. Source fix preserves the current catalogue's declaration; explicit empty/malformed geometry is unknown/no options, and only absent fields retain legacy compatibility. `tests/test_image_geometry_discovery.py` proves both mflux variants1024×576, separate mlx-serve1280×720, portrait mapping, stale-package replacement and unknown/absent controls through actual discovery and publication. Before-fix exit1; focused finalexit0 (4new+15geometry+6prompt-limit tests). No live refresh, generation or deployment. The4000 prompt case is separate: active1700 still reportedHub215/4000; released222's8000 was present at other sites and correctly min-merged. No Gateway prompt override was added.
+5. **Security, evidence, and verification boundaries (58 rows across Security, Evidence, Verification):**
+   - *Repeated root cause:* Scope leakage across security boundaries (e.g. guest requests accessing owner statistics, unauthenticated endpoints spooling bodies, relative paths escaping to Downloads), unverified UI claims (e.g. showing controller version when worker is unmeasured), and non-deterministic test timing.
+   - *Existing prevention:* Explicit origin validation (`X-Gateway-Origin`, `tests/test_release_origin.py`); confined release staging in `DATA_DIR/releases` with Downloads refusal (`tests/test_release_staging.py`); real macOS ComputerName published in status (`tests/test_web_shell.js`); deterministic barrier synchronization for concurrent tests (`tests/test_tts_limits_pool_voices.py`).
+   - *Boundary:* Secrets are never echoed, logged, or returned in error bodies. Loopback auth trust is strictly bound to local bindings. Test isolation must prevent reading or writing live Application Support profiles.
 
-Skills used: ponytail (invoked) · graphify queries: Qwen image output_options image_size_for geometry hub size_presets jobs detail release publish active counts; QWEN_MFLUX_SIZE_PRESETS size_presets lane_contract image geometry 1024 576 1280 720; BUG-LEDGER-2026-11-05 open unresolved publish gateway origin release ship helper; Story app update release publish manifest gateway instances app-update check-in release origin; delegated BUG-LEDGER-2026-11-05 unresolved TN0407 missing regression guard. Historical queries: “Gateway bugs unknown outcome dispatch stalls routing targeting contract drift regression guards”; “Worker admission booking mark_running Thread start exception unwind unclaim release resume_interrupted”.
+---
+
+## Upstream evidence boundary: TN0407
+
+Gateway job `d05eba6d-3136-45f5-92f1-f22494f7b565` (TN0407 Chapter04 audio) failed with HTTP 500 during Hub submission on 2026-11-04 12:50:36–12:50:45 GMT+7.
+- **Current verified facts:** Gateway retains complete, immutable dispatch evidence: the responding controller ID was identified; exactly one submission attempt was made; no batch ID was returned by Hub; the HTTP 500 response was captured and bounded; the job was transitioned to a durable unknown-outcome hold without automatic retry or cancellation.
+- **Boundary & remaining gap:** Gateway cannot determine whether Studio Hub's audio worker actually accepted or started the job before the 500 error was returned. Gateway cannot construct a synthetic batch ID or issue an orphan cancellation without upstream identity.
+- **Concrete next action:** Investigation remains blocked upstream on Hub request logs and controller tracebacks for the 2026-11-04 12:50:36–12:50:45 GMT+7 window. Gateway's fail-closed unknown-outcome hold remains active and correct.
+
+---
+
+## Reconciled release pass (0.2.234 — 0.2.236)
+
+- **0.2.234 (Shipped 2026-11-06, commit `db81358` / `8dea5cc`):**
+  - Shipped image measurement targeting (`G171`), image limit tables (`G172`–`G174`), and the full companion hunt batch (`H01`–`H09`).
+  - Proved worker admission booking unwind (`H01`), hold-sweep thread safety (`H02`), stated zero preservation in image limits (`H03`), flat/nested minimum alignment (`H04`), location-not-ready rerouting (`H05`), settled cloud adapter checkpoints (`H06`), sync recovery connection drop detection (`H07`), applicable location predicate filtering (`H08`), and malformed target queue boundaries (`H09`).
+- **0.2.235 (Shipped 2026-11-06, commit `9653608` / `7cb3dc2`):**
+  - Shipped explicit publication origin guard `X-Gateway-Origin` (`G176`), Qwen per-model geometry list discovery (`G177`), menu version line placement above Quit (`G178`), owned release staging in `DATA_DIR/releases` refusing Downloads (`G179`), and exact-version Content Pack retirement with successor requirement and named body ceiling (`G180`).
+- **0.2.236 (Shipped 2026-11-07, commit `edcb2b6` / `e43d3ad`):**
+  - Shipped real macOS ComputerName in shared admin header and sidebar (`G181`), verified live on both local (`vengtheng’s Mac Studio`) and 1301 (`terranash-1301-m1-16-1000`).
+  - Shipped deterministic three-party barrier for voice pool concurrency test (`G182`), eliminating wall-clock timing flakiness.
+
+---
+
+## Confirmed planning gaps and next-batch concrete actions
+
+The following concrete planning gaps have been confirmed through isolated read-only inspection and reproduction receipts. They are queued for implementation in the next Gateway release batch:
+
+### 1. Fleet offline and flapping visibility (Owner & Developer priority)
+- **Problem & confirmed cause:** In `gateway/fleet.py`, controller reachability is tracked as a binary boolean (`reachable: bool`). When a probe succeeds, `note_reachability` clears `unreachable_since` and `paused_at` instantly. If a Mac or VPN link experiences intermittent latency or packet loss (>6.0s `_TIMEOUT`), it alternates rapidly between reachable and unreachable. This causes:
+  1. Visual flapping in the Fleet UI (G114: machine rows appearing and disappearing or switching colors).
+  2. Model routing cache thrashing (G116: one slow answer invalidates cached models and causes dispatch stalls).
+  3. Loss of historical flapping evidence: once a single probe succeeds, the outage duration is erased from `fleet.json`.
+- **Existing prevention:** `_fleet_lock_grace` (brief grace period before locking models), `_last_known` machine rows (retaining stale measurements during brief drops), severity-mapped pills (`tests/test_fleet_severity_view.js`).
+- **Remaining confirmed gap:** No flapping state exists in controller/machine records; no transition count or drop frequency is tracked; no hysteresis prevents immediate clearing of outage clocks; no flapping badge is surfaced to the owner.
+- **Concrete next action:**
+  1. Add bounded transition tracking in `gateway/fleet.py`: track reachability state transitions within a rolling 10-minute window. If transitions >= 3 within 10 minutes, mark `flapping: true` and record `flapping_since`.
+  2. Dampen catalogue model cache invalidation while a controller is in `flapping` state.
+  3. Expose `flapping: bool` and `drop_count_24h` on `/admin/api/fleet/status`.
+  4. Render an amber `FLAPPING` badge in `gateway/admin_ui.html` machine/controller rows so the owner can immediately distinguish transient network degradation from a hard offline machine.
+  *Owner:* Backend worker.
+
+### 2. Shared Web / Native admin mirror completion (Owner & Developer priority)
+- **Problem & confirmed cause:** AGENTS.md mandates that the Gateway UI is built once in `gateway/admin_ui.html` and mirrored in the native Mac app via `ConsoleSection`. Models, Providers, Fleet, Content Packs, and Analytics are already web-mirrored. In 0.2.236, ComputerName was added to both header and sidebar (`249fd60`). However, five major sections remain native Swift views in `menubar/`:
+  - `CreateSection.swift` (native Create tabs)
+  - `JobsWindow.swift` (native Jobs table)
+  - `VoicesWindow.swift` (native Voices management)
+  - `SettingsSection.swift` (native Settings controls)
+  - `WhatsNewSection.swift` (native What's New view)
+- **Existing prevention:** `ConsoleSection` user-script key injection, `__GATEWAY_IN_APP__` CSS sidebar suppression, `ConsoleNavigation` strict same-origin bounds.
+- **Remaining confirmed gap:** Dual implementation drift. Enhancements made to `admin_ui.html` (e.g. Jobs execution evidence, mode filters, Voices tags, nightly backup controls, retention settings) are absent or behave differently in the native Swift views.
+- **Concrete next action:**
+  1. Execute a phased migration of remaining native sections to `ConsoleSection` web views:
+     - Phase 1: Point `Jobs` and `Settings` sidebar items to `ConsoleSection.jobs` and `ConsoleSection.settings`.
+     - Phase 2: Point `Voices` and `WhatsNew` sidebar items to `ConsoleSection.voices` and `ConsoleSection.whatsnew`.
+     - Phase 3: Evaluate `Create` draft/file-panel interactions for final web migration.
+  2. Per AGENTS.md rule, keep all retired native Swift view files in `menubar/` unused and restorable — never delete them.
+  3. Verify identical visual rendering and keyboard accessibility in both Safari/Chrome browser and the native app window.
+  *Owner:* Native/Web worker.
+
+### 3. Fleet Machine sort null-ordering defect (`admin_ui.html:6128`)
+- **Problem & confirmed cause:** Independent Fleet planning confirmed an actual-page function defect:
+  - When sorting machines descending (`machineSort={key:'disk', ascending:false}`), rows with values `[9, 302, null]` sort as `[unknown, 302, 9]` instead of `[302, 9, unknown]`.
+  - In `admin_ui.html:6128`, `fleetMachineRowsFor` negates the entire result of `fleetCompareValues` when `ascending` is false:
+    ```javascript
+    const result = fleetCompareValues(fleetMachineSortValue(machineSort.key, a), fleetMachineSortValue(machineSort.key, b));
+    return machineSort.ascending ? result : -result;
+    ```
+  - While `fleetCompareValues` correctly implements a null-last policy for ascending order (`if (a == null) return 1`), negating `result` produces `-1`, which causes `null` / unknown values to sort *first* in descending mode.
+  - Existing test `test_fleet_machines_view.js:226` only exercises ascending sort, allowing this defect to escape detection.
+- **Evidence receipt:** `/build/Developer/_orchestra/gateway-lead/next-batch-20261107/descending-sort-reproduction.json` and read-only probe `reproduce-descending-unknown.js`.
+- **Concrete next action:**
+  1. Extend `tests/test_fleet_machines_view.js` to assert descending sort with null/unknown values for `disk`, `memory`, and `network`.
+  2. In `gateway/admin_ui.html`, update `fleetCompareValues` or `fleetMachineRowsFor` so that null/unknown values always sort to the bottom regardless of sort direction:
+     ```javascript
+     if (a == null && b == null) return 0;
+     if (a == null) return 1;
+     if (b == null) return -1;
+     const cmp = (typeof a === 'number' && typeof b === 'number') ? a - b : String(a).localeCompare(String(b));
+     return machineSort.ascending ? cmp : -cmp;
+     ```
+  *Owner:* UI worker (queued for next batch; no source edits in this docs commit).
+
+### 4. Fleet tab sorting disparity across subviews
+- **Problem & confirmed cause:** The Locations table filters rows by search and location state but ignores the `fleetSort` / `machineSort` comparator used by Groups and Machines tables. Sorting behavior is inconsistent across subviews within the Fleet page.
+- **Concrete next action:** Align sorting state contracts across Fleet subviews or document explicit intentional view-specific sorting invariants in `admin_ui.html`.
+  *Owner:* UI worker.
+
+---
+
+Skills used: ponytail (invoked) · request-closeout · graphify queries: Gateway BUG-LEDGER BUG-HUNT recurring patterns H01 H09 TN0407; Qwen image output_options image_size_for geometry hub size_presets jobs detail release publish active counts; QWEN_MFLUX_SIZE_PRESETS size_presets lane_contract image geometry 1024 576 1280 720; BUG-LEDGER-2026-11-05 open unresolved publish gateway origin release ship helper; Story app update release publish manifest gateway instances app-update check-in release origin.
