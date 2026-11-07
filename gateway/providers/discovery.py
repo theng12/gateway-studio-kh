@@ -634,7 +634,7 @@ def _hub_catalog(base: str, token: str, *, local: bool = False) -> dict[str, dic
             # A ready text worker must not hide another Mac's qualified reference lane.
             image_workers.setdefault(key, []).append({field: row[field] for field in (
                 "hub_machine", "hub_cached", "memory_eligible", "runtime_ready", "available",
-                "image_modes", "capabilities", "reference_lane", "lane_contract",
+                "image_modes", "capabilities", "reference_lane", "lane_contract", "hub_memory_admission",
             ) if field in row})
     return {key: {**row, **({"image_workers": image_workers[key]} if key in image_workers else {})}
             for key, row in indexed.items()} or None
@@ -948,7 +948,8 @@ def _studio_hub(definition: ProviderDefinition, values: dict[str, str]) -> Disco
             # guidance from here, and publishes the guidance unchanged.
             raw["hub_controls"] = hub_controls
         if facts:
-            for field in ("image_modes", "reference_lane", "image_workers", "max_prompt_characters"):
+            for field in ("image_modes", "reference_lane", "image_workers", "hub_machine",
+                          "hub_memory_admission", "max_prompt_characters"):
                 if field in facts:
                     raw[field] = facts[field]
             raw["capabilities"] = facts.get("capabilities") or []

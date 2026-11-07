@@ -103,6 +103,49 @@ class HubImageModeTests(unittest.TestCase):
         self.assertEqual(len(indexed['fixture']['image_workers']), 2)
         self.assertTrue(hub_image_modes(indexed['fixture'])[1]['available'])
 
+    def test_discovery_keeps_each_producing_nodes_policy(self):
+        controller_policy = {'node_id': 'controller', 'model': 'fixture', 'revision': 'a' * 64,
+                             'reference': {'edit': {'effective': {'allowed': True}}}}
+        node_policy = {'node_id': 'node', 'model': 'fixture', 'revision': 'b' * 64,
+                       'reference': {'edit': {'effective': {
+                           'allowed': False, 'max_reference_images': 0, 'swap_allowance_gb': None}}}}
+        rows = [
+            {'repo': 'fixture', 'hub_machine': 'controller', 'hub_cached': True,
+             'image_modes': modes(), 'hub_memory_admission': controller_policy},
+            {'repo': 'fixture', 'hub_machine': 'node', 'hub_cached': True,
+             'image_modes': modes(), 'hub_memory_admission': node_policy},
+            {'repo': 'fixture', 'hub_machine': 'unknown', 'image_modes': modes(),
+             'hub_memory_admission': None},
+            {'repo': 'fixture', 'hub_machine': 'legacy', 'image_modes': modes()},
+        ]
+        response = SimpleNamespace(status_code=200, json=lambda: {'models': rows})
+        with patch.object(discovery.httpx, 'get', return_value=response):
+            indexed = discovery._hub_catalog('http://fixture', 'fixture-token')
+        workers = {row['hub_machine']: row for row in indexed['fixture']['image_workers']}
+        self.assertEqual(workers['controller']['hub_memory_admission'], controller_policy)
+        self.assertEqual(workers['node']['hub_memory_admission'], node_policy)
+        self.assertIn('hub_memory_admission', workers['unknown'])
+        self.assertIsNone(workers['unknown']['hub_memory_admission'])
+        self.assertNotIn('hub_memory_admission', workers['legacy'])
+
+    def test_package_discovery_keeps_policy_for_single_worker_fallback(self):
+        definition = SimpleNamespace(id='studio-hub-fixture')
+        for value in ({'node_id': 'node', 'revision': 'c' * 64}, None):
+            with self.subTest(value=value):
+                facts = {'capabilities': ['txt2img'], 'hub_machine': 'node', 'hub_memory_admission': value}
+                response = SimpleNamespace(status_code=200, json=lambda: {'packages': [
+                    {'model_id': 'fixture', 'package_id': 'fixture', 'modality': 'image'},
+                ]})
+                with patch.object(discovery.httpx, 'get', return_value=response), \
+                        patch.object(discovery, '_hub_catalog', return_value={'fixture': facts}), \
+                        patch.object(discovery, '_hub_controls', return_value={}):
+                    result = discovery._studio_hub(definition, {'base_url': 'http://fixture'})
+                self.assertIsNone(result.error)
+                self.assertEqual(len(result.models), 1)
+                self.assertEqual(result.models[0].raw['hub_machine'], 'node')
+                self.assertIn('hub_memory_admission', result.models[0].raw)
+                self.assertEqual(result.models[0].raw['hub_memory_admission'], value)
+
     def test_catalogue_publishes_modes_and_merges_qualified_sites(self):
         from gateway import catalog
         definition = SimpleNamespace(id='studio-hub-one', kind='studio_hub')
