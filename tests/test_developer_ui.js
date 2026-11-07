@@ -81,3 +81,21 @@ test('evidence uses text rendering and has no polling or automatic retry loop', 
   assert.match(script,/Review evidence/); assert.match(script,/Approve and publish measured limits/);
   assert.match(script,/Restore previous evidence/);
 });
+test('terminal runs guard against cancel action', () => {
+  assert.match(script, /!terminal/);
+});
+test('submit button is re-enabled if run request throws an error', () => {
+  assert.match(script, /run\.disabled\s*=\s*false/);
+});
+test('review evidence includes close review action', () => {
+  assert.match(script, /Close review/);
+});
+test('matchingTargets trims filter whitespace and handles null labels safely', () => {
+  const targets = [
+    {node_id:'mac-one', label:null, chip:'Apple M2', ram_bytes:16*1024**3},
+    {node_id:'mac-two', label:'Worker Studio', chip:'Apple M2 Pro', ram_bytes:32*1024**3},
+  ];
+  assert.equal(context.window.DeveloperTestsUI.matchingTargets(targets, {filter:'  mac-one  '}).length, 1);
+  assert.equal(context.window.DeveloperTestsUI.matchingTargets(targets, {filter:'worker'}).length, 1);
+  assert.equal(context.window.DeveloperTestsUI.matchingTargets(targets, {filter:'nonexistent'}).length, 0);
+});

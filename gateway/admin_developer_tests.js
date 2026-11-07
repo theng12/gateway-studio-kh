@@ -37,7 +37,8 @@
   }
   const measurementNames = {measured_start_min_available_memory_bytes: 'Available memory before start', measured_runtime_seconds: 'Inference time', measured_peak_process_tree_rss_bytes: 'Peak owned process memory', measured_system_swap_growth_bytes: 'System swap growth'};
   function matchingTargets(targets, {filter = '', chip = '', ram = ''}) {
-    return targets.filter(t => (!filter || `${t.label} ${t.node_id}`.toLowerCase().includes(filter)) && (!chip || t.chip === chip) && (!ram || String(t.ram_bytes) === ram));
+    const q = (filter || '').trim().toLowerCase();
+    return targets.filter(t => (!q || `${t.label || ''} ${t.node_id || ''}`.toLowerCase().includes(q)) && (!chip || t.chip === chip) && (!ram || String(t.ram_bytes) === ram));
   }
   function freshInventoryAt(selected, inventory) {
     if (!inventory.fresh) throw Error('The fleet inventory is stale. Refresh before Run.');
@@ -87,20 +88,20 @@
     for (const t of visible()) {
       const row = el('div', null, {className: 'developer-target'});
       const select = el('input', null, {type: 'checkbox', checked: state.selected.has(key(t)), disabled: t.paused || !t.online, 'aria-label': `Select ${t.label}`});
-      select.addEventListener('change', async () => { if (select.checked) { state.selected.add(key(t)); await read(t); } else state.selected.delete(key(t)); render(); });
+      select.addEventListener('change', async () => { if (select.checked) { state.selected.add(key(t)); render(); await read(t); } else state.selected.delete(key(t)); render(); });
       const label = el('label'); label.append(select, document.createTextNode(` ${t.label} · ${unknown(t.chip)} · ${t.ram_bytes == null ? 'RAM not recorded' : (t.ram_bytes / 1024 ** 3).toLocaleString() + ' GiB'}`));
       row.append(label, el('span', t.paused ? 'Paused — not selectable' : !t.online ? 'Offline — not selectable' : 'Online', {className: 'muted'}));
       const entry = state.caps.get(key(t)); const cap = entry?.cap;
       if (cap) {
         const verified = cap.setting.verified;
-        const toggle = button(state.pending.has(key(t)) ? 'Reconcile switch' : verified ? (cap.setting.enabled ? 'On' : 'Off') : 'Unverified — read again', () => changeSwitch(t, cap), !verified);
+        const toggle = button(state.pending.has(key(t)) ? 'Reconcile switch' : verified ? (cap.setting.enabled ? 'Developer Mode: On' : 'Developer Mode: Off') : 'Unverified — read again', () => changeSwitch(t, cap), !verified);
         toggle.setAttribute('aria-label', `Developer Mode for ${t.label}`);
         toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(verified && cap.setting.enabled));
         row.append(toggle);
-        if (!cap.supported) row.append(el('span', cap.reason?.detail || 'This Hub has not proved support.', {className: 'muted'}));
+        if (!cap.supported) row.append(el('span', cap.reason?.detail || 'This Hub has not proved support.', {className: 'developer-refusal'}));
       }
       row.append(button(entry?.error ? 'Read again' : 'Read switch', async () => { await read(t); render(); }, !t.online));
-      if (entry?.error) row.append(el('span', entry.error, {className: 'muted'}));
+      if (entry?.error) row.append(el('span', entry.error, {className: 'developer-refusal'}));
       host.append(row);
     }
     if (!host.childNodes.length) host.append(el('p', 'No registered Macs match these filters.'));
@@ -139,7 +140,7 @@
       Object.entries(shared.bounds).forEach(([name, range]) => numberField(fields, name, range, ['width_px', 'height_px'].includes(name) ? shared.multiple : name === 'guidance' ? 'any' : 1));
       const limits = el('fieldset'); limits.append(el('legend', 'This attempt’s safety budgets'));
       Object.entries(shared.limits).forEach(([name, range]) => numberField(limits, name, range, name === 'max_runtime_seconds' ? 'any' : 1));
-      const note = el('p', `Production runs first. Tests wait for an idle slot and may yield when production arrives. Missing models are downloaded by the Hub and verified; installed weights stay after the test. ${shared.models.filter(m => !m.installed).length} selected Macs need installation. These budgets apply only to this attempt. Run does not approve evidence or change model defaults. Gateway reader ceiling: ${state.ceiling.toLocaleString()} bytes; prompt construction also stops at that many code points.`, {className: 'muted'});
+      const note = el('p', `Production runs first. Tests wait for an idle slot and may yield when production arrives. Missing models are downloaded by the Hub and verified; installed weights stay after the test. ${shared.models.filter(m => !m.installed).length} selected Macs need installation. These budgets apply only to this attempt. Run does not approve evidence or change model defaults. Gateway reader ceiling: ${(state.ceiling ?? 8388608).toLocaleString()} bytes; prompt construction also stops at that many code points.`, {className: 'muted'});
       const run = el('button', 'Run test', {type: 'submit', className: 'primary', disabled: selected.some(t => state.pending.has(key(t)))});
       form.append(el('p', `Run on: ${selected.map(t => `${t.label} (${t.node_id})`).join(', ')}`, {id: 'developer-run-targets'}), fields, limits, note, run);
       form.addEventListener('submit', async event => {
@@ -155,10 +156,10 @@
           await post('/runs', payload); message('Run recorded. Collect status / log to follow the original attempt.'); await load();
         }
         catch (e) { message(`${e.message} Refresh the ledger before starting anything else; an attempted submission may need recovery.`); }
-        finally { run.disabled = true; }
+        finally { run.disabled = false; }
       });
       host.append(form);
-    } catch (e) { host.append(el('p', e.message, {role: 'status'})); }
+    } catch (e) { host.append(el('p', e.message, {role: 'status', className: 'developer-refusal'})); }
   }
   function renderRuns() {
     const body = root('developer-results'); body.replaceChildren();
@@ -171,10 +172,11 @@
         metrics?.swap_growth_bytes, receipt?.measurement_metadata?.available_memory_before_start_bytes,
         row.log_total_bytes == null ? null : `${row.log_collected_bytes ?? 0} / ${row.log_total_bytes} bytes${row.log_complete ? ' · verified' : ' · collect remaining'}`,
         row.state, row.reason]) tr.append(el('td', unknown(value)));
-      const actions = el('td');
+      const actions = el('td', null, {className: 'developer-actions'});
       actions.append(button('Collect status / log', async () => { await post(`/runs/${row.id}/refresh`, {}); await load(); }));
-      if (row.submitted && !receipt) actions.append(button('Cancel test', async () => { await post(`/runs/${row.id}/cancel`, {format: 'studio.developer-test.cancel.v1', request_id: crypto.randomUUID()}); await load(); }));
-      actions.append(button('Read log', async () => { const log = await call(`/runs/${row.id}/log`); root('developer-detail').textContent = log.complete ? log.text : log.reason; }));
+      const terminal = ['passed', 'failed', 'cancelled', 'not_run', 'interrupted'].includes(row.state);
+      if (row.submitted && !receipt && !terminal) actions.append(button('Cancel test', async () => { await post(`/runs/${row.id}/cancel`, {format: 'studio.developer-test.cancel.v1', request_id: crypto.randomUUID()}); await load(); }));
+      actions.append(button('Read log', async () => { const log = await call(`/runs/${row.id}/log`); root('developer-detail').textContent = `Log for ${row.node_id} (${row.id.slice(0, 8)}):\n` + (log.complete ? log.text : log.reason); }));
       if (row.state === 'passed' && row.log_complete) actions.append(button('Review evidence', () => review(row)));
       tr.append(actions); body.append(tr);
     }
@@ -185,13 +187,16 @@
     const host = root('developer-review'); host.replaceChildren(el('h2', 'Review measured evidence'), el('p', 'Applies only to this exact node, hardware, model revision, runner and settings. This is observed success, never an engine maximum.'));
     host.append(el('p', `${proposal.scope.node_ids.join(', ')} · ${proposal.scope.chip_model} · ${(proposal.scope.ram_bytes / 1024 ** 3).toLocaleString()} GiB · ${proposal.scope.model.id} (${proposal.scope.model.revision})`));
     const changes = el('ul');
-    for (const change of proposal.changes) changes.append(el('li', `${measurementNames[change.field]}: ${change.previous_value == null ? 'not previously approved' : change.previous_value.toLocaleString()} → ${change.value.toLocaleString()} ${change.unit}`));
+    for (const change of proposal.changes) changes.append(el('li', `${measurementNames[change.field] || change.field}: ${change.previous_value == null ? 'not previously approved' : change.previous_value.toLocaleString()} → ${change.value.toLocaleString()} ${change.unit}`));
     const details = el('details'); details.append(el('summary', 'Exact settings and evidence identity'), el('pre', JSON.stringify(proposal, null, 2)));
     host.append(changes, details);
-    host.append(button('Approve and publish measured limits', async () => {
+    const actionButtons = el('div', null, {className: 'actions'});
+    actionButtons.append(button('Approve and publish measured limits', async () => {
       await post(`/runs/${row.id}/approve`, {proposal_sha256: proposal.proposal_sha256, expected_store_revision: proposal.expected_store_revision, owner_action_id: crypto.randomUUID()});
       host.replaceChildren(el('p', 'Measured limits published for this exact scope. Intrinsic limits, Hub grants and model defaults are unchanged.')); await load();
     }));
+    actionButtons.append(button('Close review', () => { host.replaceChildren(); }));
+    host.append(actionButtons);
   }
   async function renderApprovals() {
     const evidence = await call('/measurements'); const host = root('developer-approvals');
@@ -223,7 +228,12 @@
       root('developer-refresh').addEventListener('click', async () => { for (const t of state.targets.filter(t => state.selected.has(key(t)))) await read(t); await load(); });
       root('developer-filter').addEventListener('input', event => { state.filter = event.target.value.toLowerCase(); render(); });
       for (const field of ['chip', 'ram']) root('developer-' + field).addEventListener('change', event => { state[field] = event.target.value; render(); });
-      root('developer-select-shown').addEventListener('click', async () => { for (const t of visible().filter(t => t.online && !t.paused)) { state.selected.add(key(t)); await read(t); } render(); });
+      root('developer-select-shown').addEventListener('click', async () => {
+        for (const t of visible().filter(t => t.online && !t.paused)) state.selected.add(key(t));
+        render();
+        for (const t of visible().filter(t => t.online && !t.paused)) await read(t);
+        render();
+      });
       root('developer-clear').addEventListener('click', () => { state.selected.clear(); render(); });
     }
     await load();
@@ -233,4 +243,7 @@
     }
   };
   window.DeveloperTestsUI = {common, intersect, unknown, matchingTargets, freshInventoryAt};
+  if (typeof document !== 'undefined' && document.getElementById('view-developer-tests')) {
+    window.loadDeveloperTests();
+  }
 })();
