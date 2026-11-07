@@ -243,6 +243,7 @@ _OPTIONAL_PROBES: tuple[tuple[str, object], ...] = (
     ("/api/hub/model-packages", {}),
     ("/api/hub/model-health", {}),
     ("/api/hub/release", {}),
+    ("/api/hub/fleet/nodes/local/work-policy", {}),
 )
 
 
@@ -1170,6 +1171,7 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "machine_summary": None,
         "nodes": [],
         "node_summary": None,
+        "local_machine_paused": None,
         "running_jobs": [],
         # **Did the in-flight read actually answer?** `running_jobs: []` cannot say whether a
         # controller has nothing running or its jobs route failed — the orphan check must not
@@ -1201,13 +1203,13 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
     try:
         # Exits in reverse: the pool drains before the client it shares closes.
         with httpx.Client(timeout=timeout) as client, ThreadPoolExecutor(max_workers=1) as pool:
-            # **The nine enrichment reads, all at once -- and beside the overview,
+            # **The enrichment reads, all at once -- and beside the overview,
             # not after it.** Nothing below needs anything else below, so fetching
             # them in sequence -- which is what this did -- made each pay the full
             # per-request timeout one after the other. On a Hub that is up but busy
             # rendering, that is ~22 s for one snapshot against the app's 15 s
             # timeout, so the Fleet page loaded only when the fleet was idle. The
-            # overview, too, was a serial round trip in front of the nine (up to 2 s
+            # overview, too, was a serial round trip in front of them (up to 2 s
             # measured on a loaded controller over Tailscale).
             pending = pool.submit(_fetch_optional, client, base, token)
             overview = _fetch(client, base, token, "/api/hub/fleet/overview")
@@ -1221,8 +1223,13 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             packages_payload = optional["/api/hub/model-packages"]
             health_payload = optional["/api/hub/model-health"]
             release_payload = optional["/api/hub/release"]
+            policy_payload = optional["/api/hub/fleet/nodes/local/work-policy"]
+            policy = policy_payload.get("work_policy") if isinstance(policy_payload, dict) else None
+            enabled = policy.get("machine_enabled") if isinstance(policy, dict) else None
+            # The controller is absent from its joined-node roster; its own work policy owns this flag.
+            location["local_machine_paused"] = not enabled if type(enabled) is bool else None
 
-            # Why each of the nine is best-effort rather than required, kept
+            # Why each enrichment is best-effort rather than required, kept
             # beside the read it explains:
             #
             # * `fleet/nodes` -- the *second* thing to go wrong on a Hub that is
@@ -1247,6 +1254,9 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             # * `release` -- **what this controller actually holds**, read back
             #   rather than the push it was sent. Absence is `null`: a Hub with no
             #   release route answered nothing, which is not an empty release.
+            #
+            # * `fleet/nodes/local/work-policy` -- the controller's own machine
+            #   enablement; it has no joined-node row. Absent or invalid stays unknown.
             #
             # Each degrades to its own empty value in `_OPTIONAL_PROBES`; one
             # broken route must never make a whole location read as offline.
@@ -3082,9 +3092,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
     `unreachable`; the machine table drew neither, so eight dead nodes read as
     eight identical "offline" rows with nothing to act on. The join is on the
     node **id**, which is the machine id the overview uses — never the label,
-    which is the owner's to change. A machine with no node row is the
-    controller's own Mac, and the node fields stay `None` rather than borrowing
-    the machine's own facts.
+    which is the owner's to change. The controller's own Mac has no node row;
+    only its pause flag comes from its own authenticated work policy. Other node
+    fields stay `None`, and missing policy evidence stays unknown.
     """
     out: list[dict] = []
     baseline = counters_since()
@@ -3099,6 +3109,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
 
         def node_fields(mid: str) -> dict:
             node = nodes.get(mid) or {}
+            paused = row.get("local_machine_paused") if mid == "local" else node.get("paused")
             return {
                 "node_state": node.get("state"),
                 "node_detail": node.get("detail"),
@@ -3122,7 +3133,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "node_via": node.get("via"),
                 # The owner paused this Mac by hand on its controller (Hub 0.6.135); `None` when the
                 # Hub does not say, never read as "not paused".
-                "node_paused": node.get("paused"),
+                "node_paused": paused if type(paused) is bool else None,
             }
 
         # Each Mac's model readiness, from the Hub's own `model-health` rows (absent on an older Hub).
