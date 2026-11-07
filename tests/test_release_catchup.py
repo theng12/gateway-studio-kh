@@ -176,6 +176,14 @@ class Decisions(Base):
                          (self.dmg, "0.6.132", "e6a8b80", ["n"]))
         self.assertTrue(self.outcome()["ok"])
 
+    def test_manifest_refusal_keeps_its_code_and_detail(self) -> None:
+        error = rp.ReleaseError("The file manifest is invalid.", 400, "RELEASE_MANIFEST_INVALID")
+        with patch.object(rp, "_publish", side_effect=error):
+            self.assertEqual(rp.catch_up(self.fleet_rows(row("n", None)), wait=True), "n")
+        self.assertFalse(self.outcome()["ok"])
+        self.assertEqual(self.outcome()["code"], "RELEASE_MANIFEST_INVALID")
+        self.assertEqual(self.outcome()["detail"], error.message)
+
     def test_offline_then_online(self) -> None:
         self.assertIsNone(rp.catch_up(self.fleet_rows(row("n", "0.6.131", reachable=False)), wait=True))
         self.assertEqual(self.pushes, [])

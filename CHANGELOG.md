@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.237 — 2026-11-07
+
+- Studio Hub updates verify the sealed app files before sending a release. Damaged manifests and files are refused with a clear reason. Hubs running 0.6.224 or an unknown version receive the full disk image; delta delivery starts with the confirmed 0.6.225 baseline.
+
 ## 0.2.236 — 2026-11-07
 
 - Every admin page shows the Mac's computer name beside its version and under Gateway Studio KH in the sidebar, so you can tell which Gateway you opened.
