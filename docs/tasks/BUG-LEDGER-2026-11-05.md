@@ -208,9 +208,9 @@ This is an inventory of recorded defects and observable usability/diagnostic gap
 
 ## Recurring causes and prevention boundaries
 
-Analysis of the 191 reconciled rows reveals five recurring architectural root causes that account for 92% of all historical Gateway defects:
+Analysis of the 191 reconciled rows groups the historical Gateway defects into five recurring architectural patterns across all categories (Contracts 67, Dispatch stalls 26, Evidence 25, Security 25, Unknown outcomes 21, Routing 19, Verification 8):
 
-1. **Unknown outcomes (21 rows: G012, G021, G045, G049, G073, G077, G078, G079, G100, G101, G107, G108, G144, G145, G146, G147, G148, G152, G175, H06, H07):**
+1. **Unknown outcomes (21 rows: G012, G021, G045, G049, G073, G077, G078, G079, G094, G096, G097, G098, G100, G101, G102, G105, G106, G108, G175, H06, H07):**
    - *Repeated root cause:* Treating a transport failure, network reset, HTTP status code, or unpolled identity as proof that upstream execution failed or never started. Overriding upstream checkpoints with local retry logic.
    - *Existing prevention:* Adapters checkpoint durable upstream IDs before polling (`adapters/base.py`); `settled_failure` binds terminal cloud states; `_sync_recovery` in `studio_hub.py` distinguishes dropped connections from slow-model timeouts (`tests/test_fault_provider_answers.py`, `tests/test_adapter_checkpoints.py`). Unknown-outcome holds are fail-closed and cannot be cleared by retry flags.
    - *Boundary:* A retryable flag never clears an unknown-outcome hold. For paid cloud providers, uncertain outcomes remain held indefinitely; for local Studio Hub, work is moved only under verified `recovery.lost_contact`.
@@ -220,7 +220,7 @@ Analysis of the 191 reconciled rows reveals five recurring architectural root ca
    - *Existing prevention:* `Worker._start_job` wraps the entire spawn sequence, atomically transferring bookings or rolling them back and unclaiming unsent work on error (`tests/test_worker_launch_guard.py`). Hold-sweep thread launches catch escaping exceptions and reset `_sweeping`. Streamed body ceilings allocate receive-only budgets and unwind upon disconnect (`tests/test_body_ceiling.py`).
    - *Boundary:* Slot release must never depend on code executing inside the dispatched thread. A healthy process status is not proof its dispatch queue is draining.
 
-3. **Routing and targeting scope divergence (19 rows: G013, G023, G027, G068, G116, G135, G136, G142, G153, G155, G164, G165, G170, G171, G174, H05, H08, H09):**
+3. **Routing and targeting scope divergence (19 rows: G013, G023, G027, G068, G116, G135, G136, G140, G142, G148, G155, G164, G165, G170, G171, G174, H05, H08, H09):**
    - *Repeated root cause:* Evaluating capability and eligibility facts at the wrong granularity: site instead of model, controller instead of worker, broad family tier instead of exact encode, or paused/drained nodes instead of active ones.
    - *Existing prevention:* Exact-encode resolution (`render_optin.py`); node-exact measurement envelopes (`image_target.py`, `tests/test_image_measurement_target.py`); unified eligibility predicates (`can_publish`, `states_no_mac`) shared across discovery, admission, and dispatch. Paused/drained/retired sites are explicitly filtered from supplying active permissions (`tests/test_image_limits.py`).
    - *Boundary:* Fresh-admission validation rules must never be applied to already accepted/in-flight work. A location's name is a mutable label, never a routing identity.
@@ -263,52 +263,17 @@ Gateway job `d05eba6d-3136-45f5-92f1-f22494f7b565` (TN0407 Chapter04 audio) fail
 
 The following concrete planning gaps have been confirmed through isolated read-only inspection and reproduction receipts. They are queued for implementation in the next Gateway release batch:
 
-### 1. Fleet offline and flapping visibility (Owner & Developer priority)
-- **Problem & confirmed cause:** In `gateway/fleet.py`, controller reachability is tracked as a binary boolean (`reachable: bool`). When a probe succeeds, `note_reachability` clears `unreachable_since` and `paused_at` instantly. If a Mac or VPN link experiences intermittent latency or packet loss (>6.0s `_TIMEOUT`), it alternates rapidly between reachable and unreachable. This causes:
-  1. Visual flapping in the Fleet UI (G114: machine rows appearing and disappearing or switching colors).
-  2. Model routing cache thrashing (G116: one slow answer invalidates cached models and causes dispatch stalls).
-  3. Loss of historical flapping evidence: once a single probe succeeds, the outage duration is erased from `fleet.json`.
-- **Existing prevention:** `_fleet_lock_grace` (brief grace period before locking models), `_last_known` machine rows (retaining stale measurements during brief drops), severity-mapped pills (`tests/test_fleet_severity_view.js`).
-- **Remaining confirmed gap:** No flapping state exists in controller/machine records; no transition count or drop frequency is tracked; no hysteresis prevents immediate clearing of outage clocks; no flapping badge is surfaced to the owner.
-- **Concrete next action:**
-  1. Add bounded transition tracking in `gateway/fleet.py`: track reachability state transitions within a rolling 10-minute window. If transitions >= 3 within 10 minutes, mark `flapping: true` and record `flapping_since`.
-  2. Dampen catalogue model cache invalidation while a controller is in `flapping` state.
-  3. Expose `flapping: bool` and `drop_count_24h` on `/admin/api/fleet/status`.
-  4. Render an amber `FLAPPING` badge in `gateway/admin_ui.html` machine/controller rows so the owner can immediately distinguish transient network degradation from a hard offline machine.
-  *Owner:* Backend worker.
-
-### 2. Shared Web / Native admin mirror completion (Owner & Developer priority)
-- **Problem & confirmed cause:** AGENTS.md mandates that the Gateway UI is built once in `gateway/admin_ui.html` and mirrored in the native Mac app via `ConsoleSection`. Models, Providers, Fleet, Content Packs, and Analytics are already web-mirrored. In 0.2.236, ComputerName was added to both header and sidebar (`249fd60`). However, five major sections remain native Swift views in `menubar/`:
-  - `CreateSection.swift` (native Create tabs)
-  - `JobsWindow.swift` (native Jobs table)
-  - `VoicesWindow.swift` (native Voices management)
-  - `SettingsSection.swift` (native Settings controls)
-  - `WhatsNewSection.swift` (native What's New view)
-- **Existing prevention:** `ConsoleSection` user-script key injection, `__GATEWAY_IN_APP__` CSS sidebar suppression, `ConsoleNavigation` strict same-origin bounds.
-- **Remaining confirmed gap:** Dual implementation drift. Enhancements made to `admin_ui.html` (e.g. Jobs execution evidence, mode filters, Voices tags, nightly backup controls, retention settings) are absent or behave differently in the native Swift views.
-- **Concrete next action:**
-  1. Execute a phased migration of remaining native sections to `ConsoleSection` web views:
-     - Phase 1: Point `Jobs` and `Settings` sidebar items to `ConsoleSection.jobs` and `ConsoleSection.settings`.
-     - Phase 2: Point `Voices` and `WhatsNew` sidebar items to `ConsoleSection.voices` and `ConsoleSection.whatsnew`.
-     - Phase 3: Evaluate `Create` draft/file-panel interactions for final web migration.
-  2. Per AGENTS.md rule, keep all retired native Swift view files in `menubar/` unused and restorable — never delete them.
-  3. Verify identical visual rendering and keyboard accessibility in both Safari/Chrome browser and the native app window.
-  *Owner:* Native/Web worker.
-
-### 3. Fleet Machine sort null-ordering defect (`admin_ui.html:6128`)
-- **Problem & confirmed cause:** Independent Fleet planning confirmed an actual-page function defect:
-  - When sorting machines descending (`machineSort={key:'disk', ascending:false}`), rows with values `[9, 302, null]` sort as `[unknown, 302, 9]` instead of `[302, 9, unknown]`.
-  - In `admin_ui.html:6128`, `fleetMachineRowsFor` negates the entire result of `fleetCompareValues` when `ascending` is false:
-    ```javascript
-    const result = fleetCompareValues(fleetMachineSortValue(machineSort.key, a), fleetMachineSortValue(machineSort.key, b));
-    return machineSort.ascending ? result : -result;
-    ```
-  - While `fleetCompareValues` correctly implements a null-last policy for ascending order (`if (a == null) return 1`), negating `result` produces `-1`, which causes `null` / unknown values to sort *first* in descending mode.
-  - Existing test `test_fleet_machines_view.js:226` only exercises ascending sort, allowing this defect to escape detection.
-- **Evidence receipt:** `/build/Developer/_orchestra/gateway-lead/next-batch-20261107/descending-sort-reproduction.json` and read-only probe `reproduce-descending-unknown.js`.
-- **Concrete next action:**
-  1. Extend `tests/test_fleet_machines_view.js` to assert descending sort with null/unknown values for `disk`, `memory`, and `network`.
-  2. In `gateway/admin_ui.html`, update `fleetCompareValues` or `fleetMachineRowsFor` so that null/unknown values always sort to the bottom regardless of sort direction:
+### 1. Fleet visibility — reuse measured history and address demonstrated ordering gaps
+- **Existing facts:** `gateway/admin_ui.html` already provides Offline now and Problematic filters, an editable flapping threshold (`flapping_drops_day`, default 4, range 1–100, stored in `fleet_health.json`), likely-cause evidence, and Groups sort orders (Issues, Offline, Most problematic, Longest unseen, Most drops, Name). Existing tests `tests/test_fleet_machines_view.js` and `tests/test_fleet_severity_view.js` pin filters, unknown histories, causes, and severity. `gateway/fleet_history.py` is the existing, tested reachability history source (recording 7-day rolling window transitions, drops in 24 h and 7 days, offline time, and problematic status) — not a reason to add another poller, database, telemetry, or routing-cache dampening.
+- **Demonstrated source gaps:**
+  1. `renderFleetLocations` (`admin_ui.html:8138`) filters rows by search and location state but never applies `fleetSort`; `fleetSetSort` updates the Groups order only.
+  2. Machines uses separate `machineSort` state and header controls, so the visible overall order and actual table order can diverge.
+  3. `fleetMachineRowsFor` inverts the entire null-last comparison for descending headers; existing unknown-last test covers ascending only.
+  4. An isolated Node VM probe of the actual current page reproduced disk-descending `[unknown, large, small]` for values `null/302/9`, instead of `[large, small, unknown]`. Evidence: `/build/Developer/_orchestra/gateway-lead/next-batch-20261107/descending-sort-reproduction.json` and read-only probe `reproduce-descending-unknown.js`.
+- **Small change & next action:**
+  1. Use the existing stable row ordering for Locations and the default Machines order; preserve explicit header sorting and make the selected sort's scope truthful.
+  2. Extend `tests/test_fleet_machines_view.js` to assert descending sort with null/unknown values for `disk`, `memory`, and `network`.
+  3. In `gateway/admin_ui.html:6128`, update `fleetCompareValues` / `fleetMachineRowsFor` so that null/unknown values always sort to the bottom regardless of sort direction:
      ```javascript
      if (a == null && b == null) return 0;
      if (a == null) return 1;
@@ -316,12 +281,25 @@ The following concrete planning gaps have been confirmed through isolated read-o
      const cmp = (typeof a === 'number' && typeof b === 'number') ? a - b : String(a).localeCompare(String(b));
      return machineSort.ascending ? cmp : -cmp;
      ```
-  *Owner:* UI worker (queued for next batch; no source edits in this docs commit).
+  4. Keep unknown/unobserved history last in either direction, stable identity tie-breaks, refused credentials distinct from offline, 24-hour/7-day windows labelled, thresholds sourced from existing settings (`fleet_health.json`), and unknown causes explicitly unknown.
+  5. *Constraint:* No new telemetry, routing inputs, periodic work, enabling, pausing, or guessing causes.
+  *Owner:* One UI worker, sequential ownership of `admin_ui.html`.
 
-### 4. Fleet tab sorting disparity across subviews
-- **Problem & confirmed cause:** The Locations table filters rows by search and location state but ignores the `fleetSort` / `machineSort` comparator used by Groups and Machines tables. Sorting behavior is inconsistent across subviews within the Fleet page.
-- **Concrete next action:** Align sorting state contracts across Fleet subviews or document explicit intentional view-specific sorting invariants in `admin_ui.html`.
-  *Owner:* UI worker.
+### 2. Admin mirror — one shared view, release-failing checks
+- **Existing facts:** `MainWindow.swift` `ConsoleSection` already embeds the same web page for Models, Providers, Fleet, Content Packs, and Analytics. `tests/test_fleet_web_parity.js` extracts native Fleet route calls and compares them with web callers; `scripts/run_gate.py` explicitly does not run Node suites.
+- **Remaining native entries in `MainWindow.swift`:** Overview, six Create lanes, Jobs, Voices, Settings, and What's New. Do not declare whole-admin parity complete while these still have independent native behavior.
+- **Seams & capability boundaries:**
+  - Browser-supported native pages must move to the already existing matching web workflow only after their actions, settings, and error states pass; keep retired native implementations unused and restorable.
+  - Native menu, shortcuts, notifications/alerts, lifecycle, file panels (`NSOpenPanel`), and permissions retain AGENTS.md's explicit native exceptions.
+  - Create's real-state ownership (`CreateStateStore`) and native file-panel seams must be inventoried and preserved; no silent ownership migration.
+  - Treat example capability divergence between native and web as unverified until the formal native action/read/file-panel seam inventory is run; do not make broad migration claims.
+- **Smallest approach & next action:**
+  1. Reuse `ConsoleSection` and existing page/navigation identifiers; no new renderer, native screen, or synchronization framework.
+  2. First inventory native action/read/file-panel seams against existing web pages; then cut over compatible management pages using `ConsoleSection` in one reviewed UI batch.
+  3. Extend existing parity extraction/checks to current shared sections, validate each native `viewName` resolves to a web page, and fail new duplicated browser-capable sidebar surfaces unless they use the shared adapter.
+  4. Cover API action reachability and wire the parity mapping guard into the normal lightweight frontend preflight (`node --test`); retain Python gate unchanged.
+  5. Any unmatched capability stays an explicit open migration item with owner and next action; do not hide it behind a broad permanent allowlist. This batch is not allowed to close the original all-admin mirror request on Fleet-only tests.
+  *Owner:* Release coordinator and UI worker.
 
 ---
 
