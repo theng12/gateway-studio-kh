@@ -48,7 +48,7 @@ os.environ["GATEWAY_HOST"] = "127.0.0.1"
 
 from fastapi.testclient import TestClient
 
-from gateway import admin, config, retention, voice_import, voices
+from gateway import admin, api, config, retention, voice_import, voices
 from gateway.admin import computer_name
 from gateway.api import app, require_auth, GatewayError
 from gateway.render_assets import (
@@ -106,20 +106,16 @@ class FamilyF1MachineLabelsTest(unittest.TestCase):
                     data = client.get("/admin/api/status").json()
                 self.assertIsNone(data["computer_name"], f"Failed honest null for {reason}")
 
-    def test_01_f1_shared_page_template_anchors_and_deferred_live_proof(self) -> None:
-        """The shared admin HTML contains the exact literal machine label and version anchors."""
+    def test_01_f1_shared_page_template_anchors(self) -> None:
+        """The shared admin HTML contains the exact literal machine label and version anchors.
+
+        Live visual proof on an installed serving Mac (1301 and local) is recorded NOT-CHECKED in
+        the lane report; this test only proves the served page carries the anchors the client needs.
+        """
         client = TestClient(app, client=("127.0.0.1", 50000))
         page = client.get("/admin").text
         self.assertIn('<span class="nav-machine" id="nav-machine" hidden></span>', page)
         self.assertIn('id="app-version"', page)
-        # Live visual proof on installed serving-Mac (1301 and local) remains explicitly deferred
-        deferred_marker = {
-            "check": "01 — F1: Installed serving-Mac labels",
-            "phase": "AFTER install",
-            "status": "QUEUED / NOT-CHECKED",
-            "live_proof_deferred": True,
-        }
-        self.assertTrue(deferred_marker["live_proof_deferred"])
 
 
 class FamilyF2SettingsPersistenceTest(unittest.TestCase):
@@ -263,115 +259,29 @@ class FamilyF2SettingsPersistenceTest(unittest.TestCase):
 class FamilyF3IdempotencyRecoveryTest(unittest.TestCase):
     """Check 05, 06, 07 — F3: Repeated create, lost submit replay, interrupted asset winning handle."""
 
-    def test_05_f3_repeated_create_single_dispatch_and_single_settlement(self) -> None:
-        """Idempotent replay returns original job with single dispatch and single terminal settlement."""
-        with tempfile.TemporaryDirectory(prefix="idempotency-") as tmp:
-            store = JobStore(Path(tmp) / "jobs.sqlite3")
-            key = "idemp-key-05"
-            refs = ["digest-aaa", "digest-bbb"]
+    def test_05_f3_repeated_create_proved_by_real_image_idempotency_suite(self) -> None:
+        """Repeated create / one dispatch / one settlement is proved by tests/test_image_idempotency_references.py.
 
-            # First submit
-            job, created = store.submit(
-                modality="image",
-                model_id="flux",
-                provider_id="mock-provider",
-                params={"references": refs},
-                idempotency_key=key,
-            )
-            self.assertTrue(created)
-            dispatch_count = 1
+        That suite drives the real `POST /v1/images/generations` door (create_image): ReplayTests
+        asserts the same key with the same references returns the original job (idempotent_replay
+        True, same id), a replay survives the upload window, and the same key with different
+        references is a 409 IDEMPOTENCY_KEY_REUSED. One-job-one-dispatch follows from the store's
+        created=False replay path that the door returns before dispatch. Re-asserting with a
+        hand-rolled model would duplicate real coverage with a weaker check.
+        """
+        self.skipTest("covered by tests/test_image_idempotency_references.py (real create_image door)")
 
-            # Second submit with identical key and references -> idempotent replay
-            replay_job, replay_created = store.submit(
-                modality="image",
-                model_id="flux",
-                provider_id="mock-provider",
-                params={"references": refs},
-                idempotency_key=key,
-            )
-            self.assertFalse(replay_created)
-            self.assertEqual(job["id"], replay_job["id"])
-            # Upstream dispatch must NOT be called again
-            self.assertEqual(dispatch_count, 1, "Upstream dispatch count must remain 1 on replay")
+    def test_06_f3_lost_submit_recovery_states_via_production_worker(self) -> None:
+        """The real worker/interrupted-resend path is covered by tests/test_restart_resend.py.
 
-            # Settle terminal job
-            store.succeed(job["id"])
-            settled = store.get(job["id"])
-            self.assertEqual(settled["state"], "succeeded")
-            settlement_records = [settled] if settled["state"] in ("succeeded", "failed") else []
-            self.assertEqual(len(settlement_records), 1)
-
-            # Replay after settlement
-            again_job, again_created = store.submit(
-                modality="image",
-                model_id="flux",
-                provider_id="mock-provider",
-                params={"references": refs},
-                idempotency_key=key,
-            )
-            self.assertFalse(again_created)
-            self.assertEqual(len(settlement_records), 1, "Settlement count must remain 1 (no duplicate debit)")
-
-            # Changed references with same idempotency key constitutes a conflict
-            changed_refs = ["digest-aaa", "digest-ccc"]
-            existing = store.find_by_idempotency_key(key)
-            self.assertIsNotNone(existing)
-            stored_params = json.loads(existing["params"]) if isinstance(existing["params"], str) else existing["params"]
-            self.assertNotEqual(stored_params.get("references"), changed_refs)
-            store.close()
-
-    def test_06_f3_lost_submit_resend_dedupes_hub_and_holds_paid_cloud(self) -> None:
-        """Free Hub unanswered submit replays to existing batch; paid cloud unknown outcome is held."""
-        with tempfile.TemporaryDirectory(prefix="resend-") as tmp:
-            store = JobStore(Path(tmp) / "jobs.sqlite3")
-
-            # 1. Free Hub unanswered submit at shutdown
-            hub_job, _ = store.submit(
-                modality="image",
-                model_id="flux",
-                provider_id="studio-hub-a",
-                params={"prompt": "test"},
-                idempotency_key="hub-resend-key",
-            )
-            store.mark_running(hub_job["id"])
-
-            # Hub deduplication simulation: Hub broker dedupes on clientRequestId
-            hub_posts = []
-            hub_work_runs = 0
-            existing_batches = {hub_job["id"]: "batch-existing-001"}
-
-            def fake_hub_post(req_id: str) -> str:
-                nonlocal hub_work_runs
-                hub_posts.append(req_id)
-                if req_id in existing_batches:
-                    # Attached to existing batch, no new work started
-                    return existing_batches[req_id]
-                hub_work_runs += 1
-                return f"batch-new-{req_id}"
-
-            batch_id = fake_hub_post(hub_job["id"])
-            self.assertEqual(batch_id, "batch-existing-001")
-            self.assertEqual(hub_work_runs, 0, "Deduplication must attach to existing batch without new run")
-            self.assertEqual(hub_posts, [hub_job["id"]])
-
-            # 2. Paid cloud unknown outcome remains held and is NEVER re-sent
-            cloud_job, _ = store.submit(
-                modality="image",
-                model_id="fal-video",
-                provider_id="fal",
-                params={"prompt": "cloud test"},
-                idempotency_key="cloud-hold-key",
-            )
-            store.mark_running(cloud_job["id"])
-            # Recovery marks unknown outcome as failed/hold
-            store.fail(cloud_job["id"], code="UNKNOWN_OUTCOME", detail="cloud unknown outcome hold")
-            held = store.get(cloud_job["id"])
-            self.assertEqual(held["state"], "failed")
-            self.assertEqual(held["error_code"], "UNKNOWN_OUTCOME")
-            # Resend counter for cloud must be zero
-            cloud_resend_count = 0
-            self.assertEqual(cloud_resend_count, 0, "Paid cloud unknown outcome must not be re-sent")
-            store.close()
+        That suite drives the production `Worker._restart`/resend path with a fake Hub that
+        records acceptance counts (test_it_is_re_sent_with_the_same_key_and_attaches_to_the_existing_batch
+        asserts `hub.runs == 0` and the same clientRequestId) and holds a paid cloud lane
+        (test_a_cloud_lane_is_held_as_before asserts UNKNOWN_OUTCOME and no resend). Re-asserting
+        those here would duplicate real coverage with a weaker, hand-rolled fake, so this check is
+        recorded as covered-by-reference rather than restated.
+        """
+        self.skipTest("covered by tests/test_restart_resend.py (real worker resend/hold boundaries)")
 
     def test_07_f3_interrupted_asset_upload_has_one_immutable_winning_handle(self) -> None:
         """Chunk replay/finish replay preserves exact hash and single handle; interrupted range holds across reopen."""
@@ -436,88 +346,23 @@ class FamilyF3IdempotencyRecoveryTest(unittest.TestCase):
 class FamilyF4ContractClosureAndParityTest(unittest.TestCase):
     """Check 08, 09, 10 — F4: Asset/font contract closure, deployment readback, subtitle parity."""
 
-    def test_08_f4_subtitle_contract_enforces_bounds_and_refuses_malformed_assets(self) -> None:
-        """Subtitle contract enforces 4-asset constraint and refuses malformed fonts/ASS before selection/journal."""
-        # 1. Test 4-asset bound rule
-        max_assets_allowed = 4
-        manifest_with_five = [
-            {"role": "base_video", "sha256": "a" * 64},
-            {"role": "subtitle_ass", "sha256": "b" * 64},
-            {"role": "subtitle_font", "sha256": "c" * 64},
-            {"role": "subtitle_font", "sha256": "d" * 64},
-            {"role": "subtitle_font", "sha256": "e" * 64},
-        ]
-        self.assertGreater(len(manifest_with_five), max_assets_allowed)
-        with self.assertRaises(ValueError):
-            if len(manifest_with_five) > max_assets_allowed:
-                raise ValueError("RENDER_PROFILE_MISMATCH: exceeded maximum 4 assets")
+    def test_08_f4_subtitle_contract_proved_by_real_scoped_suite(self) -> None:
+        """The real subtitle contract boundary is covered by the scoped/late-label suites.
 
-        # 2. Malformed font/ASS validation fails closed
-        malformed_font_bytes = b"not-a-valid-ttf-font-header"
-        with self.assertRaises(ValueError):
-            if not malformed_font_bytes.startswith((b"\x00\x01\x00\x00", b"OTTO", b"true")):
-                raise ValueError("RENDER_SUBTITLE_ASSET_INVALID: font header unrecognized")
+        tests/test_render_subtitle_scoped.py drives the production `RenderService.accept` path:
+        test_published_four_asset_bound_is_not_expanded_for_fonts (RENDER_PROFILE_MISMATCH before
+        destination selection), test_invalid_leased_content_refuses_before_selection_and_journal
+        (RENDER_SUBTITLE_ASSET_INVALID, no journal row), test_missing_or_mismatched_asset_handles_
+        refuse_before_selection. tests/test_render_subtitles.py proves the closed font/ASS
+        validation. Re-implementing those validators here would pass even if production broke, so
+        this check is recorded as covered-by-reference rather than restated.
+        """
+        self.skipTest("covered by tests/test_render_subtitle_scoped.py + tests/test_render_subtitles.py")
 
-        malformed_ass_bytes = b"missing-v4-styles-section"
-        with self.assertRaises(ValueError):
-            if b"[V4+ Styles]" not in malformed_ass_bytes:
-                raise ValueError("RENDER_SUBTITLE_ASSET_INVALID: malformed ASS script")
-
-    def test_09_f4_intended_machine_deployment_readback_independent_contract(self) -> None:
-        """Deployment readback requires independent receipts per machine (1301 and local never inferred)."""
-        # Independent contract assertion: receipts must have distinct machine identity and non-empty status
-        def validate_receipt(record: dict) -> bool:
-            required = ["machine", "version", "build", "status", "signature_valid"]
-            return all(k in record for k in required) and record["status"] == 200
-
-        local_receipt = {
-            "machine": "local-serving-mac",
-            "version": "0.2.236",
-            "build": "e43d3ad-202611062013",
-            "status": 200,
-            "signature_valid": True,
-        }
-        remote_1301_receipt = {
-            "machine": "terranash-1301",
-            "version": "0.2.236",
-            "build": "e43d3ad-202611062013",
-            "status": 200,
-            "signature_valid": True,
-        }
-        self.assertTrue(validate_receipt(local_receipt))
-        self.assertTrue(validate_receipt(remote_1301_receipt))
-        self.assertNotEqual(local_receipt["machine"], remote_1301_receipt["machine"])
-
-        # Live deployment readback is explicitly deferred
-        deferred_deployment = {
-            "check": "09 — F4: Intended-machine deployment readback, including 1301",
-            "phase": "AFTER install",
-            "status": "QUEUED / NOT-CHECKED",
-            "live_proof_deferred": True,
-        }
-        self.assertTrue(deferred_deployment["live_proof_deferred"])
-
-    def test_10_f4_subtitle_remote_parity_baseline_contract_and_deferred_proof(self) -> None:
-        """Subtitle parity contract binds exact frozen zero-tolerance frames; live remote execution deferred."""
-        # Contract frozen frame indices
-        frozen_frames_en = [0, 12, 35, 59, 95]
-        frozen_frames_km = [0, 12, 37, 62, 104]
-        fps = 30
-        tolerance = 0  # zero tolerance on decoded RGB24 pixels
-
-        self.assertEqual(len(frozen_frames_en), 5)
-        self.assertEqual(len(frozen_frames_km), 5)
-        self.assertEqual(tolerance, 0)
-
-        # Live remote execution against unpaused Hub target remains explicitly deferred
-        deferred_parity = {
-            "check": "10 — F4: Normal Story local/remote subtitle final-output compatibility",
-            "phase": "AFTER install of paired subtitle releases",
-            "status": "QUEUED / NOT-CHECKED",
-            "dependencies": ["reviewed Hub executor", "Story v4 admission", "approved private target"],
-            "live_proof_deferred": True,
-        }
-        self.assertTrue(deferred_parity["live_proof_deferred"])
+    # Checks 09 (intended-machine deployment readback including 1301) and 10 (local/remote subtitle
+    # final-output MP4 parity) are live-only: they need authorized installs, a running Hub target,
+    # and real encoded MP4 decoding. They are recorded NOT-CHECKED in the lane report and are
+    # deliberately NOT written as passing tests, because a fixture cannot satisfy them.
 
 
 class FamilyF5ResourceProtectionTest(unittest.TestCase):
@@ -580,15 +425,6 @@ class FamilyF5ResourceProtectionTest(unittest.TestCase):
                     self.assertIn("blocked_reason", fc_result)
 
             store.close()
-
-            # Live pilot resource measurements stay explicitly deferred
-            deferred_pilot = {
-                "check": "11 — F5: Bounded resources and recoverable release cleanup",
-                "phase": "AFTER quiet point",
-                "status": "QUEUED / NOT-CHECKED",
-                "live_proof_deferred": True,
-            }
-            self.assertTrue(deferred_pilot["live_proof_deferred"])
 
 
 if __name__ == "__main__":
