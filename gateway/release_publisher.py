@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import io
 import json
 import os
 import plistlib
@@ -81,6 +82,8 @@ _TRANSIENT = (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, http
 MANIFEST_SCHEMA = "studiohub.file-manifest.v1"
 # ponytail: proposed first sealed-baseline release; confirm against Hub's first shipped fix before release.
 _DELTA_BASELINE_MIN = (0, 6, 225)
+# ponytail: Hub's 256 MiB expanded-group ceiling; revise together if its manifest codec changes.
+_MANIFEST_GROUP_MAX_BYTES = 256 * 1024 * 1024
 #: Parallel blob PUTs to ONE controller (the contract says "a handful" is fine).
 _BLOB_WORKERS = 4
 _CHUNK = 3 * 1024 * 1024  # multiple of 3, so every base64 chunk but the last has no padding
@@ -371,6 +374,11 @@ class Manifest(NamedTuple):
 
 def load_manifest(root: Path) -> Manifest:
     """Prefer the sealed sidecar; verify every record against the actual app closure."""
+    if not __debug__:
+        raise ReleaseError(
+            "File manifests cannot be verified under optimized Python; start Gateway without -O/PYTHONOPTIMIZE.",
+            500, "RELEASE_MANIFEST_INVALID",
+        )
     apps = sorted(root.glob("*.app"))
     app = apps[0] if apps else None
     directory = root / "file-manifest"
@@ -392,7 +400,13 @@ def load_manifest(root: Path) -> Manifest:
         for name, info in described.items():
             assert re.fullmatch(r"core|runtime-[A-Za-z0-9_.+-]{1,64}", name)
             raw = (directory / f"{name}.tsv.gz").read_bytes()
-            text = gzip.decompress(raw)
+            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+                text = stream.read(_MANIFEST_GROUP_MAX_BYTES + 1)
+            if len(text) > _MANIFEST_GROUP_MAX_BYTES:
+                raise ReleaseError(
+                    f"The expanded file-manifest group exceeds the {_MANIFEST_GROUP_MAX_BYTES}-byte limit.",
+                    400, "RELEASE_MANIFEST_INVALID",
+                )
             assert hashlib.sha256(text).hexdigest() == info["sha256"]
             groups[name] = base64.b64encode(raw).decode("ascii")
             group_count = group_bytes = 0
@@ -440,7 +454,9 @@ def load_manifest(root: Path) -> Manifest:
         assert actual_paths == listed and len(listed) == count and measured_bytes == total
         committed = "".join(f"{n}\0{described[n]['sha256']}\n" for n in sorted(described))
         assert hashlib.sha256(committed.encode()).hexdigest() == index["files_sha256"]
-    except (OSError, EOFError, zlib.error, ValueError, KeyError, TypeError, AssertionError) as exc:
+    except ReleaseError:
+        raise
+    except (OSError, EOFError, zlib.error, ValueError, KeyError, TypeError, AssertionError, MemoryError, RecursionError) as exc:
         raise ReleaseError(
             f"The disk image's file manifest is unusable ({type(exc).__name__}).",
             400, "RELEASE_MANIFEST_INVALID",
@@ -1176,8 +1192,8 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
                         force_full=bool(state.get("force_full")),
                     )["locations"][cid]
                 except Exception as exc:  # noqa: BLE001 - recorded and backed off, never raised
-                    outcome = {"ok": False, "status": None, "code": "RELEASE_PUSH_FAILED", "release": None,
-                               "detail": f"the push failed: {type(exc).__name__}: {exc}", "label": label,
+                    outcome = {"ok": False, "status": None, "code": getattr(exc, "code", "RELEASE_PUSH_FAILED"), "release": None,
+                               "detail": getattr(exc, "message", None) or f"the push failed: {type(exc).__name__}: {exc}", "label": label,
                                "auto": True, "at": int(time.time())}
                     failed = _read_state()
                     failed.setdefault("locations", {})[cid] = outcome

@@ -7,6 +7,8 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -155,6 +157,48 @@ class SealedManifest(unittest.TestCase):
                 path.write_bytes(original)
         (app / "Contents/Resources/unlisted.txt").write_bytes(b"not in the manifest")
         self.refused_before_push(self.harness.controller())
+
+    def test_optimized_python_refuses_instead_of_skipping_validation(self):
+        app, _ = self.materialize(sidecar=True)
+        (app / "Contents/Resources/version.txt").write_bytes(b"tampered")
+        source = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
+            "from tests._isolation import sandbox_env\n"
+            "_sandbox = sandbox_env()\n"
+            "from pathlib import Path\n"
+            "from gateway import release_publisher as rp\n"
+            "try:\n"
+            f" rp.load_manifest(Path({str(self.root)!r}))\n"
+            "except rp.ReleaseError as exc:\n"
+            " print(exc.code)\n"
+            " sys.exit(0 if exc.code == 'RELEASE_MANIFEST_INVALID' else 2)\n"
+            "sys.exit(1)\n"
+        )
+        result = subprocess.run([sys.executable, "-I", "-B", "-O", "-c", source],
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), "RELEASE_MANIFEST_INVALID")
+
+    def test_expanded_group_limit_refuses_before_push_and_states_ceiling(self):
+        _, directory = self.materialize(sidecar=True)
+        (directory / "core.tsv.gz").write_bytes(gzip.compress(b"x" * 4096, mtime=0))
+        controller = self.harness.controller()
+        with patch.object(rp, "_MANIFEST_GROUP_MAX_BYTES", 32):
+            with self.assertRaises(rp.ReleaseError) as caught:
+                self.publish(controller)
+        self.assertEqual(caught.exception.code, "RELEASE_MANIFEST_INVALID")
+        self.assertIn("32-byte limit", caught.exception.message)
+        self.assertEqual((controller.posts, controller.puts), ([], []))
+
+    def test_manifest_resource_errors_are_named_refusals(self):
+        self.materialize(sidecar=True)
+        for error in (MemoryError(), RecursionError()):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(rp.json, "loads", side_effect=error):
+                    with self.assertRaises(rp.ReleaseError) as caught:
+                        rp.load_manifest(self.root)
+                self.assertEqual(caught.exception.code, "RELEASE_MANIFEST_INVALID")
 
     def test_executable_and_symlink_substitution_are_refused(self):
         app, _ = self.materialize(sidecar=True)
