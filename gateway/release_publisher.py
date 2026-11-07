@@ -35,6 +35,8 @@ import json
 import os
 import plistlib
 import re
+import stat
+import zlib
 import subprocess
 import tempfile
 import threading
@@ -47,6 +49,7 @@ from typing import Any, Iterator, NamedTuple
 import httpx
 
 from . import config, fleet, node_tool
+from .os_metadata import is_os_metadata
 
 
 SCHEMA = "studiohub.app-release.v1"
@@ -76,6 +79,8 @@ _RECOVER_INTERVAL = 5.0
 #: connection is "Server disconnected without sending a response"). Not read timeouts.
 _TRANSIENT = (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError, httpx.ConnectError)
 MANIFEST_SCHEMA = "studiohub.file-manifest.v1"
+# ponytail: proposed first sealed-baseline release; confirm against Hub's first shipped fix before release.
+_DELTA_BASELINE_MIN = (0, 6, 225)
 #: Parallel blob PUTs to ONE controller (the contract says "a handful" is fine).
 _BLOB_WORKERS = 4
 _CHUNK = 3 * 1024 * 1024  # multiple of 3, so every base64 chunk but the last has no padding
@@ -365,31 +370,77 @@ class Manifest(NamedTuple):
 
 
 def load_manifest(root: Path) -> Manifest:
-    """Read and self-check `<app>/Contents/Resources/file-manifest/` under a mounted image."""
-    app = next(iter(sorted(root.glob("*.app"))), None)
-    directory = app / "Contents/Resources/file-manifest" if app else None
-    if directory is None or not (directory / "index.json").is_file():
+    """Prefer the sealed sidecar; verify every record against the actual app closure."""
+    apps = sorted(root.glob("*.app"))
+    app = apps[0] if apps else None
+    directory = root / "file-manifest"
+    if not os.path.lexists(directory):
+        directory = app / "Contents/Resources/file-manifest" if app else directory
+    if not os.path.lexists(directory):
         raise ReleaseError("The disk image carries no file manifest.", 400, "RELEASE_NO_MANIFEST")
     try:
-        index = json.loads((directory / "index.json").read_text(encoding="utf-8"))
+        assert app is not None and len(apps) == 1 and not app.is_symlink() and not directory.is_symlink()
+        index = json.loads((directory / "index.json").read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
         assert index["schema"] == MANIFEST_SCHEMA
         described = index["groups"]
         count, total = int(index["files_count"]), int(index["files_bytes"])
-        assert count > 0 and total > 0 and described
+        assert count > 0 and total > 0 and isinstance(described, dict) and described
         groups: dict[str, str] = {}
         blobs: dict[str, Path] = {}
+        listed: set[str] = set()
+        measured_bytes = 0
         for name, info in described.items():
+            assert re.fullmatch(r"core|runtime-[A-Za-z0-9_.+-]{1,64}", name)
             raw = (directory / f"{name}.tsv.gz").read_bytes()
             text = gzip.decompress(raw)
             assert hashlib.sha256(text).hexdigest() == info["sha256"]
             groups[name] = base64.b64encode(raw).decode("ascii")
+            group_count = group_bytes = 0
+            previous = b""
             for line in text.decode("utf-8").splitlines():
-                kind, _x, _size, digest, rel = line.split("\t", 4)
+                kind, executable, size_text, digest, rel = line.split("\t")
+                assert rel and not any(c in rel for c in "\\\0\r\n")
+                assert not rel.startswith("/") and all(p not in ("", ".", "..") for p in rel.split("/"))
+                assert rel.encode() > previous and rel not in listed
+                assert executable in ("0", "1") and size_text.isascii() and size_text.isdigit()
+                previous = rel.encode()
+                listed.add(rel)
+                path = app / rel
+                assert not any(parent.is_symlink() for parent in path.parents if parent != app and parent.is_relative_to(app))
+                size = int(size_text)
+                mode = path.lstat().st_mode
                 if kind == "f":
-                    blobs.setdefault(digest, app / rel)
+                    assert stat.S_ISREG(mode) and re.fullmatch(r"[0-9a-f]{64}", digest)
+                    assert path.stat().st_size == size and bool(mode & stat.S_IXUSR) == (executable == "1")
+                    actual = hashlib.sha256()
+                    with path.open("rb") as stream:
+                        for chunk in iter(lambda: stream.read(1 << 20), b""):
+                            actual.update(chunk)
+                    assert actual.hexdigest() == digest
+                    blobs.setdefault(digest, path)
+                else:
+                    assert kind == "l" and stat.S_ISLNK(mode) and size == 0 and executable == "0"
+                    assert digest and os.readlink(path) == digest
+                group_count += 1
+                group_bytes += size
+            assert group_count == info["files"] and group_bytes == info["bytes"]
+            measured_bytes += group_bytes
+        actual_paths: set[str] = set()
+        for folder, dirs, names in os.walk(app, followlinks=False):
+            if Path(folder) == app / "Contents/Resources/file-manifest":
+                dirs[:] = []
+                continue
+            dirs[:] = [name for name in dirs if not is_os_metadata(name)]
+            for name in list(dirs):
+                if (Path(folder) / name).is_symlink():
+                    dirs.remove(name)
+                    names.append(name)
+            actual_paths.update((Path(folder) / name).relative_to(app).as_posix()
+                                for name in names if not is_os_metadata(name))
+        assert actual_paths == listed and len(listed) == count and measured_bytes == total
         committed = "".join(f"{n}\0{described[n]['sha256']}\n" for n in sorted(described))
         assert hashlib.sha256(committed.encode()).hexdigest() == index["files_sha256"]
-    except (OSError, ValueError, KeyError, TypeError, AssertionError) as exc:
+    except (OSError, EOFError, zlib.error, ValueError, KeyError, TypeError, AssertionError) as exc:
         raise ReleaseError(
             f"The disk image's file manifest is unusable ({type(exc).__name__}).",
             400, "RELEASE_MANIFEST_INVALID",
@@ -406,27 +457,38 @@ def _headers(token: str) -> dict[str, str]:
     return {"X-Hub-Token": token} if token else {}
 
 
-def _probe(base: str, token: str) -> tuple[dict[str, Any] | None, bool]:
-    """What a controller holds, and whether it can take a delta push.
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("Ambiguous JSON object")
+    return result
 
-    The release is the controller's own answer: `{"release": null}` is published as
-    `None`, never as a stub that could read as a release. A `delta` key with the
-    manifest schema is the capability marker (0.6.115+); no key means the full push.
-    """
+
+def _probe(base: str, token: str) -> tuple[dict[str, Any] | None, bool]:
+    """Return the held release; delta also requires a known fixed executing baseline."""
     try:
-        with httpx.Client(timeout=httpx.Timeout(20.0, connect=6.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(20.0, connect=6.0), follow_redirects=False) as client:
             response = client.get(f"{base.rstrip('/')}/api/hub/release", headers=_headers(token))
-        body = response.json() if response.status_code == 200 else None
+            body = response.json() if response.status_code == 200 else None
+            if not isinstance(body, dict):
+                return None, False
+            release = body.get("release")
+            held = release if isinstance(release, dict) else None
+            delta = body.get("delta")
+            if not isinstance(delta, dict) or delta.get("schema") != MANIFEST_SCHEMA:
+                return held, False
+            try:
+                response = client.get(f"{base.rstrip('/')}/api/version", headers=_headers(token))
+                running = json.loads(response.content, object_pairs_hook=_unique_object) if response.status_code == 200 else None
+                version = running.get("version") if isinstance(running, dict) else None
+                if not isinstance(version, str) or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version):
+                    return held, False
+                parsed = version_key(version)
+                return held, bool(parsed and parsed >= _DELTA_BASELINE_MIN)
+            except (httpx.HTTPError, ValueError):
+                return held, False
     except (httpx.HTTPError, ValueError):
         return None, False
-    if not isinstance(body, dict):
-        return None, False
-    release = body.get("release")
-    delta = body.get("delta")
-    return (
-        release if isinstance(release, dict) else None,
-        isinstance(delta, dict) and delta.get("schema") == MANIFEST_SCHEMA,
-    )
 
 
 def read_release(base: str, token: str) -> dict[str, Any] | None:
@@ -853,12 +915,14 @@ def _publish(
 
         manifest: Manifest | None = None
         skipped: str | None = None
-        if any(capable for _, capable in probes):
-            try:
-                manifest = load_manifest(stack.enter_context(_mounted(path)))
-            except ReleaseError as exc:
-                skipped = f"delta push skipped ({exc.message}); the whole image was sent"
-        delta_descriptor = descriptor_for(**fields, files=manifest.files) if manifest else None
+        # Validate before every transport, including old baselines and explicit full pushes.
+        try:
+            manifest = load_manifest(stack.enter_context(_mounted(path)))
+        except ReleaseError as exc:
+            if exc.code != "RELEASE_NO_MANIFEST":
+                raise
+            skipped = f"delta push skipped ({exc.message}); the whole image was sent"
+        delta_descriptor = descriptor_for(**fields, files=manifest.files) if manifest and any(capable for _, capable in probes) and not force_full else None
         lap("mount_manifest_sign")
 
         def one(row: tuple[str, Any, str], probe: tuple[dict[str, Any] | None, bool]) -> dict[str, Any]:

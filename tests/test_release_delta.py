@@ -73,8 +73,11 @@ class Controller:
 
     def __init__(self, mode: str = "delta", preheld: set[str] | None = None,
                  barrier: threading.Barrier | None = None, break_post: bool = False,
-                 drop: str | None = None, drop_first_puts: int = 0) -> None:
+                 drop: str | None = None, drop_first_puts: int = 0,
+                 running_version: object = "0.6.225") -> None:
         self.mode, self.preheld, self.barrier, self.break_post = mode, set(preheld or ()), barrier, break_post
+        self.running_version = running_version
+        self.version_reads = 0
         # `drop`: hang up on the POST without answering, "before_store" or "after_store".
         self.drop, self.drop_puts = drop, drop_first_puts
         self.held: dict | None = None
@@ -100,7 +103,10 @@ class Controller:
                 return sorted({d for d in me.needed_all() if d not in have})
 
             def do_GET(self):
-                if self.path == "/api/hub/release":
+                if self.path == "/api/version":
+                    me.version_reads += 1
+                    self._send(200, {"version": me.running_version})
+                elif self.path == "/api/hub/release":
                     body = {"release": me.held, "trusted_publisher": None}
                     if me.mode != "legacy":
                         body["delta"] = {"schema": SCHEMA, "manifest": me.manifest is not None}
@@ -352,8 +358,8 @@ class ReleaseDelta(unittest.TestCase):
 
     def test_a_controller_without_the_capability_gets_the_full_image(self) -> None:
         c = self.controller(mode="legacy")
-        with patch.object(rp, "_mounted", side_effect=AssertionError("nothing to mount for a legacy fleet")):
-            outcome = self.publish(c)["locations"]["c0"]
+        outcome = self.publish(c)["locations"]["c0"]
+        self.assertEqual(self.mounts, {"entered": 1, "exited": 1})
         self.assertTrue(outcome["ok"], outcome)
         self.assertEqual(outcome["mode"], "full")
         body = c.posts[0]
@@ -373,7 +379,7 @@ class ReleaseDelta(unittest.TestCase):
         self.assertNotIn("files_sha256", c.posts[1]["descriptor"])
 
     def test_an_image_with_no_manifest_falls_back_and_says_why(self) -> None:
-        (self.tree / "Studio Hub.app/Contents/Resources/file-manifest/index.json").unlink()
+        (self.tree / "Studio Hub.app/Contents/Resources/file-manifest").rename(self.root / "manifest-not-in-image")
         c = self.controller()
         outcome = self.publish(c)["locations"]["c0"]
         self.assertTrue(outcome["ok"], outcome)

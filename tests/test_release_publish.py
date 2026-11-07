@@ -85,6 +85,7 @@ class ReleasePublish(unittest.TestCase):
         self.patches = [
             patch.object(rp, "key_path", lambda: self.root / "release-publisher.pem"),
             patch.object(rp, "_state_path", lambda: self.root / "release-state.json"),
+            patch.object(rp, "_mounted", lambda _dmg: contextlib.nullcontext(self.root / "legacy-image")),
         ]
         for started in self.patches:
             started.start()

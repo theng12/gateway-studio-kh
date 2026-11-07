@@ -555,6 +555,9 @@ export async function startController({
   }
 
   function routeFor(method, pathname) {
+    if (pathname === '/api/version') {
+      return { scope: 'fleet', methods: ['GET'], handler: (req, res) => sendJson(res, 200, { version: '0.6.225' }) }
+    }
     if (pathname === '/api/hub/release/trust') {
       return { scope: 'hub', methods: ['POST'], handler: handleTrust }
     }
