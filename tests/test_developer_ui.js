@@ -14,7 +14,7 @@ function cap() {
   ranges.dimension_multiple = 8;
   return {supported: true, setting: {enabled: true, verified: true}, bounds: {input_refs: 4},
     models: [{model: {id: 'model'}, installable: true, settings_bounds: ranges, memory_modes: ['default', 'bounded-staged']}],
-    test_kinds: ['reference_counts'], fixture_sets: [{id:'fixtures', sha256:'digest'}],
+    test_kinds: ['reference_counts'], fixture_sets: [{id:'fixtures', sha256:'digest', reference_order: ['ref-1']}],
     safety_policy: {requested_limits: {max_runtime_seconds: {minimum:1, maximum:60, unit:'seconds'}}}};
 }
 test('chip, physical RAM and node filters intersect without guessing unknown hardware', () => {
@@ -84,9 +84,6 @@ test('evidence uses text rendering and has no polling or automatic retry loop', 
 test('terminal runs guard against cancel action', () => {
   assert.match(script, /!terminal/);
 });
-test('submit button is re-enabled if run request throws an error', () => {
-  assert.match(script, /run\.disabled\s*=\s*false/);
-});
 test('review evidence includes close review action', () => {
   assert.match(script, /Close review/);
 });
@@ -98,4 +95,141 @@ test('matchingTargets trims filter whitespace and handles null labels safely', (
   assert.equal(context.window.DeveloperTestsUI.matchingTargets(targets, {filter:'  mac-one  '}).length, 1);
   assert.equal(context.window.DeveloperTestsUI.matchingTargets(targets, {filter:'worker'}).length, 1);
   assert.equal(context.window.DeveloperTestsUI.matchingTargets(targets, {filter:'nonexistent'}).length, 0);
+});
+
+// --- executed behaviour: the page wrapper and the Run form, driven as events ---
+
+function domEl(tag = 'div') {
+  const listeners = {};
+  return {
+    tagName: tag, textContent: '', value: '', checked: false, disabled: false,
+    className: '', hidden: false, type: '', name: '', id: '', min: '', max: '',
+    step: '', required: false, children: [], options: [], attributes: {}, style: {},
+    get childNodes() { return this.children; },
+    append(...items) {
+      for (const item of items) {
+        this.children.push(item);
+        if (this.tagName === 'select' && item && item.tagName === 'option') this.options.push(item);
+      }
+    },
+    replaceChildren(...items) { this.children = items; if (this.tagName === 'select') this.options = []; },
+    setAttribute(k, v) { this.attributes[k] = v; },
+    addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+    async dispatch(type, event) {
+      const results = [];
+      for (const fn of listeners[type] || []) results.push(fn(event));
+      return Promise.all(results);
+    },
+    reportValidity: () => true,
+  };
+}
+
+function pageDocument(nodes) {
+  return {
+    getElementById: id => nodes[id] ||= domEl(),
+    createElement: tag => domEl(tag),
+    createTextNode: text => ({textContent: text}),
+    head: {append() {}},
+  };
+}
+
+const indexPayload = () => ({
+  fresh: true, inventory_at: 1000, reader_byte_ceiling: 8388608,
+  targets: [{controller_id: 'site', node_id: 'mac-one', label: 'Fleet Mac',
+             chip: 'Apple M2 Pro', ram_bytes: 32 * 1024 ** 3, online: true, paused: false}],
+  runs: [],
+});
+
+test('page load executes the developer loader exactly once, never twice', async () => {
+  let loads = 0;
+  let indexReads = 0;
+  const nodes = {};
+  const sandbox = {
+    window: {},
+    api: async path => { if (path === '/developer-tests') indexReads += 1; return path === '/developer-tests' ? indexPayload() : {store_revision: 'r1', rows: []}; },
+    crypto: {randomUUID: () => '00000000-0000-4000-8000-000000000001'},
+    fetch: async () => ({ok: true, text: async () => script}),
+    adminHeaders: () => ({}),
+    document: pageDocument(nodes),
+  };
+  sandbox.document.head.append = node => {
+    vm.runInContext(node.textContent, sandboxContext);
+    const inner = sandbox.window.loadDeveloperTests;
+    sandbox.window.loadDeveloperTests = () => { loads += 1; return inner(); };
+  };
+  const sandboxContext = vm.createContext(sandbox);
+  vm.runInContext(between(html, 'let developerPageLoad;', 'const NAV = ['), sandboxContext);
+  await vm.runInContext('loadDeveloperTests()', sandboxContext);
+  assert.equal(loads, 1, 'the wrapper must invoke the page loader exactly once');
+  assert.equal(indexReads, 1, 'the initial load must read the ledger exactly once');
+});
+
+function between(source, start, end) {
+  const first = source.indexOf(start);
+  const last = source.indexOf(end, first + 1);
+  if (first < 0 || last < 0) throw new Error(`admin_ui.html moved: ${start}`);
+  return source.slice(first, last);
+}
+
+async function runFormHarness() {
+  const nodes = {};
+  let mode = 'ok';
+  let postAttempts = 0;
+  const sandbox = {
+    window: {},
+    document: pageDocument(nodes),
+    crypto: {randomUUID: () => '00000000-0000-4000-8000-000000000002'},
+    api: async (path, opts) => {
+      if (opts && opts.method === 'POST') {
+        if (path === '/developer-tests/runs') {
+          postAttempts += 1;
+          throw new Error('connection reset');
+        }
+        return {};
+      }
+      if (path === '/developer-tests') return mode === 'stale' ? {...indexPayload(), fresh: false} : indexPayload();
+      if (path === '/developer-tests/measurements') return {store_revision: 'r1', rows: []};
+      if (path.startsWith('/developer-tests/targets/')) return {capabilities: cap()};
+      return {};
+    },
+  };
+  const ctx = vm.createContext(sandbox);
+  vm.runInContext(script, ctx);
+  await sandbox.window.loadDeveloperTests();
+  const row = nodes['developer-targets'].children[0];
+  const checkbox = row.children[0].children[0];
+  checkbox.checked = true;
+  await checkbox.dispatch('change', {});
+  const form = nodes['developer-vector'].children.at(-1);
+  assert.equal(form.tagName, 'form');
+  const run = form.children.at(-1);
+  assert.equal(run.tagName, 'button');
+  return {
+    run, form, nodes,
+    setMode: value => { mode = value; },
+    postAttempts: () => postAttempts,
+    // A disabled submit control cannot submit its form, so the harness mirrors the browser.
+    submit: () => run.disabled ? Promise.resolve() : form.dispatch('submit', {preventDefault() {}}),
+    message: () => nodes['developer-message'].textContent,
+  };
+}
+
+test('a preflight failure with no submission re-enables Run and says nothing was sent', async () => {
+  const h = await runFormHarness();
+  h.setMode('stale');
+  await h.submit();
+  assert.equal(h.postAttempts(), 0, 'a stale inventory must not reach POST /runs');
+  assert.equal(h.run.disabled, false, 'no submission means the owner may correct and Run again');
+  assert.match(h.message(), /Nothing was submitted/);
+});
+
+test('an attempted submission with an uncertain outcome keeps Run locked', async () => {
+  const h = await runFormHarness();
+  h.setMode('ok');
+  await h.submit();
+  assert.equal(h.postAttempts(), 1);
+  assert.equal(h.run.disabled, true, 'an unknown POST outcome must stay locked for recovery');
+  assert.match(h.message(), /attempted submission may need recovery/);
+  await h.submit();
+  assert.equal(h.postAttempts(), 1, 'a locked Run button must not fire a second submission');
 });

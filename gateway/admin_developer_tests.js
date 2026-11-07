@@ -146,6 +146,7 @@
       form.addEventListener('submit', async event => {
         event.preventDefault(); if (!form.reportValidity()) return;
         run.disabled = true;
+        let attempted = false;
         const settings = {};
         for (const name of [...Object.keys(shared.bounds), 'memory_mode', 'fixture_set_id']) settings[name] = state.values[name];
         const requested_limits = Object.fromEntries(Object.keys(shared.limits).map(name => [name, state.values[name]]));
@@ -153,10 +154,17 @@
         const payload = {run_id: crypto.randomUUID(), inventory_at: state.inventory_at, filters, targets: selected.map(t => ({controller_id: t.controller_id, node_id: t.node_id})), kind: state.values.kind, model_id: state.model, settings, requested_limits};
         try {
           payload.inventory_at = freshInventoryAt(selected, await call());
+          attempted = true;
           await post('/runs', payload); message('Run recorded. Collect status / log to follow the original attempt.'); await load();
         }
-        catch (e) { message(`${e.message} Refresh the ledger before starting anything else; an attempted submission may need recovery.`); }
-        finally { run.disabled = false; }
+        catch (e) {
+          message(attempted
+            ? `${e.message} Refresh the ledger before starting anything else; an attempted submission may need recovery.`
+            : `${e.message} Nothing was submitted; correct the selection and Run again.`);
+        }
+        // A POST we fired may or may not have been accepted: only a preflight
+        // failure with no submission is safe to unlock for.
+        finally { run.disabled = attempted; }
       });
       host.append(form);
     } catch (e) { host.append(el('p', e.message, {role: 'status', className: 'developer-refusal'})); }
@@ -243,7 +251,4 @@
     }
   };
   window.DeveloperTestsUI = {common, intersect, unknown, matchingTargets, freshInventoryAt};
-  if (typeof document !== 'undefined' && document.getElementById('view-developer-tests')) {
-    window.loadDeveloperTests();
-  }
 })();
