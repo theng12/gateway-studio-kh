@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.238 — 2026-11-08
+
+- Fleet Locations and Machines follow the page's Sort choice, while a selected Machines column keeps its own order. Unknown values stay last.
+- Image admission follows the producing Hub's current memory policy. Controller-local pause state comes from that controller's own work policy.
+- Run test handles loading and uncertain submissions more safely. Verification uses the real voice payload and saved catalogue readers.
+- Remote subtitle support checks the matching Hub contract and validated subtitle/font inputs. This release does not qualify subtitle appearance or hardware performance.
+
 ## 0.2.237 — 2026-11-07
 
 - Studio Hub updates verify the sealed app files before sending a release. Damaged manifests and files are refused with a clear reason. Hubs running 0.6.224 or an unknown version receive the full disk image; delta delivery starts with the confirmed 0.6.225 baseline.
