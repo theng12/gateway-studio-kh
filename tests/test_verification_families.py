@@ -1,31 +1,18 @@
-"""Cheap isolated Gateway verification checks across families F1-F5.
+"""Isolated checks supplementing the verification-families-20261107 request.
 
-Covers the 11-check verification set from:
-    /build/Developer/_orchestra/gateway-lead/verification-checks-20261107.txt
-and the canonical work_state list:
-    verification-families-20261107
-
-Families:
-    F1 (Check 01): Machine labels, literal special characters, honest null fallback, DOM anchors.
-    F2 (Check 02): Retention partial save and process reopen persistence.
-    F2 (Check 03): Voice choices (transcript switch/language) reopen persistence, words exclusion, profile isolation.
-    F2 (Check 04): Config rotation live re-read without restart, old key refusal, reopen persistence.
-    F3 (Check 05): Repeated create idempotency, single dispatch, single terminal settlement, payload conflict.
-    F3 (Check 06): Free Hub lost submit deduplication replay vs paid cloud unknown outcome hold.
-    F3 (Check 07): Asset upload immutable winning handle, idempotent finish replay, reopen hold.
-    F4 (Check 08): Subtitle asset/font closure bounds (4-asset limit) and pre-dispatch refusal of malformed assets.
-    F4 (Check 09): Intended-machine deployment readback independent receipt contract (live proof deferred).
-    F4 (Check 10): Story local/remote subtitle parity zero-tolerance frame contract (live proof deferred).
-    F5 (Check 11): Input protection for referenced/recovery files, unreadable fail-closed, recoverable move.
+Exercises machine-label responses and shared-page anchors (F1), settings and
+voice persistence plus key rotation (F2), asset-upload replay (F3), and active
+input protection with recoverable pruning (F5). Existing idempotency, restart,
+subtitle and retention-input suites cover the other offline boundaries.
+Installed-machine readback, final-video parity and resource measurements need
+separate live evidence; this file does not prove them.
 """
 from __future__ import annotations
 
-import copy
 import hashlib
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,7 +21,6 @@ import unittest
 import wave
 from pathlib import Path
 from types import SimpleNamespace
-from unittest import mock
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,15 +34,13 @@ os.environ["GATEWAY_HOST"] = "127.0.0.1"
 
 from fastapi.testclient import TestClient
 
-from gateway import admin, api, config, retention, voice_import, voices
+from gateway import config, retention, voice_import, voices
 from gateway.admin import computer_name
 from gateway.api import app, require_auth, GatewayError
 from gateway.render_assets import (
     AssetConflictError,
-    AssetRecoveryRequiredError,
     RenderAssetStore,
 )
-from gateway.render_contract import SUBTITLE_CONTRACT
 from gateway.store import JobStore
 
 
@@ -186,16 +170,23 @@ class FamilyF2SettingsPersistenceTest(unittest.TestCase):
                 self.assertFalse(found.get("include_reference_transcript", True))
                 self.assertEqual(found.get("language"), "km")
 
-                # Simulate TTS request payload generation: words excluded when transcript is False
-                ref_words = found.get("words", "")
-                sent_words = None if not found.get("include_reference_transcript", True) else ref_words
-                self.assertIsNone(sent_words, "Audio-only voice must send no reference words in request")
+                # Nonempty stored words must still be excluded by the actual Hub payload builder.
+                payload = voice_import.push_fields({
+                    **found,
+                    "reference_transcript": "These words must not travel.",
+                    "reference_segments": [{"text": "These words must not travel."}],
+                })
+                self.assertEqual(payload["transcript"], "")
+                self.assertEqual(json.loads(payload["transcript_segments"]), [])
 
             # Fresh process reopen in Profile A
             script = (
                 "import json\n"
                 "from pathlib import Path\n"
-                f"data = json.loads(Path(r'{catalog_a}').read_text(encoding='utf-8'))\n"
+                "from gateway import voice_import\n"
+                f"voice_import.VOICES_PATH = Path({str(catalog_a)!r})\n"
+                "voice_import.WRITABLE_VOICES_PATH = voice_import.VOICES_PATH\n"
+                "data = voice_import._read_catalog()\n"
                 f"v = next(item for item in data.get('voices', []) if item['id'] == r'{voice_id}')\n"
                 "print(json.dumps({'transcript': v.get('include_reference_transcript', True), 'language': v.get('language')}))\n"
             )
@@ -206,12 +197,11 @@ class FamilyF2SettingsPersistenceTest(unittest.TestCase):
 
             # Profile B cannot see Profile A's voice
             catalog_b = Path(dir_b) / "voices.json"
-            if catalog_b.exists():
-                data_b = json.loads(catalog_b.read_text(encoding="utf-8"))
-                self.assertIsNone(next((v for v in data_b.get("voices", []) if v["id"] == voice_id), None),
-                                  "Profile B must not access Profile A voices")
-            else:
-                self.assertFalse(catalog_b.exists(), "Profile B catalog must be separate")
+            with patch.object(voice_import, "VOICES_PATH", catalog_b), \
+                 patch.object(voice_import, "WRITABLE_VOICES_PATH", catalog_b):
+                data_b = voice_import._read_catalog()
+            self.assertFalse(any(v["id"] == voice_id for v in data_b.get("voices", [])),
+                             "Profile B must not access Profile A voices")
 
     def test_04_f2_config_rotation_live_read_and_reopen_persists_ownership(self) -> None:
         """Wrong key refused first; .env rotation accepted without restart; reopen retains file choice."""
@@ -257,31 +247,7 @@ class FamilyF2SettingsPersistenceTest(unittest.TestCase):
 
 
 class FamilyF3IdempotencyRecoveryTest(unittest.TestCase):
-    """Check 05, 06, 07 — F3: Repeated create, lost submit replay, interrupted asset winning handle."""
-
-    def test_05_f3_repeated_create_proved_by_real_image_idempotency_suite(self) -> None:
-        """Repeated create / one dispatch / one settlement is proved by tests/test_image_idempotency_references.py.
-
-        That suite drives the real `POST /v1/images/generations` door (create_image): ReplayTests
-        asserts the same key with the same references returns the original job (idempotent_replay
-        True, same id), a replay survives the upload window, and the same key with different
-        references is a 409 IDEMPOTENCY_KEY_REUSED. One-job-one-dispatch follows from the store's
-        created=False replay path that the door returns before dispatch. Re-asserting with a
-        hand-rolled model would duplicate real coverage with a weaker check.
-        """
-        self.skipTest("covered by tests/test_image_idempotency_references.py (real create_image door)")
-
-    def test_06_f3_lost_submit_recovery_states_via_production_worker(self) -> None:
-        """The real worker/interrupted-resend path is covered by tests/test_restart_resend.py.
-
-        That suite drives the production `Worker._restart`/resend path with a fake Hub that
-        records acceptance counts (test_it_is_re_sent_with_the_same_key_and_attaches_to_the_existing_batch
-        asserts `hub.runs == 0` and the same clientRequestId) and holds a paid cloud lane
-        (test_a_cloud_lane_is_held_as_before asserts UNKNOWN_OUTCOME and no resend). Re-asserting
-        those here would duplicate real coverage with a weaker, hand-rolled fake, so this check is
-        recorded as covered-by-reference rather than restated.
-        """
-        self.skipTest("covered by tests/test_restart_resend.py (real worker resend/hold boundaries)")
+    """Check 07 — F3: Interrupted asset upload retains its winning handle."""
 
     def test_07_f3_interrupted_asset_upload_has_one_immutable_winning_handle(self) -> None:
         """Chunk replay/finish replay preserves exact hash and single handle; interrupted range holds across reopen."""
@@ -343,33 +309,11 @@ class FamilyF3IdempotencyRecoveryTest(unittest.TestCase):
             reopened_store.close()
 
 
-class FamilyF4ContractClosureAndParityTest(unittest.TestCase):
-    """Check 08, 09, 10 — F4: Asset/font contract closure, deployment readback, subtitle parity."""
-
-    def test_08_f4_subtitle_contract_proved_by_real_scoped_suite(self) -> None:
-        """The real subtitle contract boundary is covered by the scoped/late-label suites.
-
-        tests/test_render_subtitle_scoped.py drives the production `RenderService.accept` path:
-        test_published_four_asset_bound_is_not_expanded_for_fonts (RENDER_PROFILE_MISMATCH before
-        destination selection), test_invalid_leased_content_refuses_before_selection_and_journal
-        (RENDER_SUBTITLE_ASSET_INVALID, no journal row), test_missing_or_mismatched_asset_handles_
-        refuse_before_selection. tests/test_render_subtitles.py proves the closed font/ASS
-        validation. Re-implementing those validators here would pass even if production broke, so
-        this check is recorded as covered-by-reference rather than restated.
-        """
-        self.skipTest("covered by tests/test_render_subtitle_scoped.py + tests/test_render_subtitles.py")
-
-    # Checks 09 (intended-machine deployment readback including 1301) and 10 (local/remote subtitle
-    # final-output MP4 parity) are live-only: they need authorized installs, a running Hub target,
-    # and real encoded MP4 decoding. They are recorded NOT-CHECKED in the lane report and are
-    # deliberately NOT written as passing tests, because a fixture cannot satisfy them.
-
-
 class FamilyF5ResourceProtectionTest(unittest.TestCase):
     """Check 11 — F5: Bounded resources and recoverable release cleanup."""
 
-    def test_11_f5_referenced_and_recovery_inputs_protected_and_unreadable_fails_closed(self) -> None:
-        """Referenced/held inputs remain protected; unreadable protection fails closed; pruning moves to _trash."""
+    def test_11_f5_active_inputs_protected_and_unreadable_fails_closed(self) -> None:
+        """Active inputs remain protected; unreadable protection fails closed; pruning moves to _trash."""
         with tempfile.TemporaryDirectory(prefix="retention-protect-") as tmp:
             root = Path(tmp)
             art_dir = root / "artifacts"
