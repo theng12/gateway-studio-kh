@@ -620,7 +620,8 @@
          the 15 s poll redraws the list and never the control under the owner's hand. -->
     <div class="row" id="fleet-controls">
       <label>Show <select id="fleet-filter" onchange="fleetSetFilter(this.value)"></select></label>
-      <label>Sort <select id="fleet-sort" onchange="fleetSetSort(this.value)"></select></label>
+      <label>Sort <select id="fleet-sort" title="Orders Groups, Locations and the Machines table — a column header on Machines takes over from it"
+        onchange="fleetSetSort(this.value)"></select></label>
       <select id="fleet-location" aria-label="Location" onchange="fleetSetLocation(this.value)"></select>
       <input type="search" id="fleet-search" placeholder="Filter machines, models, jobs…"
              autocomplete="off" aria-label="Filter machines, models, jobs">
@@ -5438,9 +5439,10 @@ const FLEET_STATES = {
 let fleetFilter = 'all';    // all | offline | down | degraded | issues | problematic
 let fleetLocation = 'all';  // a location id, or all
 let fleetQuery = '';
-// The Groups list's order. **Issues (worst first) is the default** — the owner, 2026-10-30:
+// The page-wide order: **Issues (worst first) is the default** — the owner, 2026-10-30:
 // *"how many issues are there? and also why can't i sort by the issues?"* — because the page is
-// sorted worst-first without being asked, which is the order someone fixing Macs wants.
+// sorted worst-first without being asked, which is the order someone fixing Macs wants. It orders
+// Groups, Locations and the Machines table alike; a Machines column header takes over that table.
 let fleetSort = 'issues';   // issues | offline | problematic | site | lastseen | drops | name
 let fleetTab = 'groups';    // groups | locations | machines | models | jobs | story
 let machineSort = { key: null, ascending: true };   // a header click starts the sort
@@ -5460,7 +5462,7 @@ let fleetOrphanAnswers = {};
 const FLEET_FILTERS = [['all', 'All machines'], ['offline', 'Offline now'],
   ['down', 'Down'], ['degraded', 'Degraded'], ['issues', 'Has any issue'],
   ['problematic', 'Problematic']];
-// The Groups list's own orders. One visible control, because `fleetSetSort` existed and nothing
+// The page's orders. One visible control, because `fleetSetSort` existed and nothing
 // rendered it — the owner could not reach the sort at all (2026-10-30).
 const FLEET_SORTS = [['issues', 'Issues (worst first)'], ['offline', 'Offline first'],
   ['problematic', 'Most problematic'], ['site', 'Site'], ['lastseen', 'Longest unseen'],
@@ -5618,14 +5620,16 @@ function fleetItemMatches(item) {
     item.row.chip, item.row.limitation, fleetCauseLine(item.row.causes)], fleetQuery);
 }
 
-function fleetVisible(items) {
-  const filtered = items.filter(fleetItemMatches);
+// The one ordering Groups, Locations and the default Machines table share, driven by the page's
+// Sort choice — the three tabs cannot disagree about which row is worst. Items are `fleetItems`
+// shapes ({kind, row, label, site}), so a site and a Mac are ordered by the same rules.
+function fleetOrder(items) {
   // **A total order, so a 15 s refresh cannot reshuffle equal rows under the reader.** The name is
   // the visible key; the kind and id settle the rest, and they never change between reads.
   const byName = (a, b) => String(a.label).localeCompare(String(b.label))
     || String(a.kind).localeCompare(String(b.kind))
     || String(a.row.id ?? a.row.machine ?? '').localeCompare(String(b.row.id ?? b.row.machine ?? ''));
-  return filtered.slice().sort((a, b) => {
+  return items.slice().sort((a, b) => {
     switch (fleetSort) {
       case 'site':
         return String(a.site).localeCompare(String(b.site)) || byName(a, b);
@@ -5658,6 +5662,11 @@ function fleetVisible(items) {
       }
     }
   });
+}
+
+// The Groups list: everything that matches the Show/location/search controls, in that order.
+function fleetVisible(items) {
+  return fleetOrder(items.filter(fleetItemMatches));
 }
 
 // The likely cause in plain words, with its evidence kept in the tooltip so the row stays one line.
@@ -6116,12 +6125,15 @@ function fleetMachineSortValue(key, m) {
 }
 
 // Unknown sorts last whichever way the header points: a Mac nobody measured is not the best.
-function fleetCompareValues(a, b) {
+// The direction flips the measured values only — negating the whole result once put every null
+// first under a descending header (disk descending drew unknown, large, small).
+function fleetCompareValues(a, b, ascending = true) {
   if (a == null && b == null) return 0;
   if (a == null) return 1;
   if (b == null) return -1;
-  if (typeof a === 'number' && typeof b === 'number') return a - b;
-  return String(a).localeCompare(String(b));
+  const result = typeof a === 'number' && typeof b === 'number'
+    ? a - b : String(a).localeCompare(String(b));
+  return ascending ? result : -result;
 }
 
 function fleetMachineRowsFor(d) {
@@ -6130,12 +6142,15 @@ function fleetMachineRowsFor(d) {
     && fleetRowMatchesFilter('machine', m)
     && fleetMatchesSearch([m.label, m.machine, m.location, fleetStateLabel(m), m.state_text, m.chip,
       m.limitation, fleetCauseLine(m.causes)], fleetQuery));
-  if (!machineSort.key) return rows;
-  return rows.slice().sort((a, b) => {
-    const result = fleetCompareValues(
-      fleetMachineSortValue(machineSort.key, a), fleetMachineSortValue(machineSort.key, b));
-    return machineSort.ascending ? result : -result;
-  });
+  // A column header wins for this table; until one is chosen the table follows the page's Sort,
+  // so the visible order and the table's order are the same fact.
+  if (!machineSort.key) {
+    return fleetOrder(rows.map(m => ({ kind: 'machine', row: m,
+      label: m.label || m.machine, site: m.location || '' }))).map(item => item.row);
+  }
+  return rows.slice().sort((a, b) => fleetCompareValues(
+    fleetMachineSortValue(machineSort.key, a), fleetMachineSortValue(machineSort.key, b),
+    machineSort.ascending));
 }
 
 function fleetSortBy(key) {
@@ -8147,9 +8162,13 @@ async function fleetStopInstall(button) {
 function renderFleetLocations(d) {
   const wrap = document.getElementById('fleet-locations-wrap');
   const status = document.getElementById('fleet-locations-status');
-  const rows = (d.locations || []).filter(L => fleetLocation === 'all' || String(L.id) === fleetLocation)
+  // The same filters as before, then the page's Sort — a down site comes first here exactly as
+  // it does in the card list. The wrap is `fleetItems`' own site shape, so both share one order.
+  const rows = fleetOrder((d.locations || []).filter(L => fleetLocation === 'all' || String(L.id) === fleetLocation)
     .filter(L => fleetRowMatchesFilter('site', L))
-    .filter(L => fleetMatchesSearch([L.label, L.id, L.url, L.error, fleetCauseLine(L.causes)], fleetQuery));
+    .filter(L => fleetMatchesSearch([L.label, L.id, L.url, L.error, fleetCauseLine(L.causes)], fleetQuery))
+    .map(L => ({ kind: 'site', row: L, label: L.label || L.id, site: L.label || L.id })))
+    .map(item => item.row);
   if (status) {
     const all = (d.locations || []).length;
     status.textContent = rows.length === all

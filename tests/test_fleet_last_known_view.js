@@ -11,7 +11,8 @@
  * 2. **Nothing that reads as a live measurement is drawn**: Disk, Memory, Network, actions and the
  *    history cells say "—", and no action button is offered.
  * 3. **The "Offline now" filter does not count it as down**, in the table or the Groups list.
- * 4. **It keeps its site's place in the list**.
+ * 4. **It keeps its place with its site's rows**, in the page's shared order (measured rows
+ *    first, the carried pair last and together).
  * 5. **The summary says how many were carried**, separately from the measured online count.
  */
 const assert = require('node:assert/strict');
@@ -189,9 +190,12 @@ test('a carried row keeps its site\'s place in the list', async () => {
   await ctx.loadFleet();
   const table = ctx.nodes.get('fleet-machines-wrap').innerHTML;
   const at = name => table.indexOf(`>${name}<`);
-  assert.ok(at('g1') < at('m1'), 'Garage first, in the order the Gateway sent');
+  // The Machines table now draws the page's shared order (the same one the cards use): the Mac
+  // that is down first, measured rows next, and the carried pair last — still together, still in
+  // the order the Gateway sent them, never scattered between measured rows of other sites.
+  assert.ok(at('b1') < at('g1'), 'the down Mac comes first, as the cards draw it');
+  assert.ok(at('g1') < at('m1'), 'a measured row is never drawn after a carried one');
   assert.ok(at('m1') < at('m2'), 'the slow site\'s rows stay together');
-  assert.ok(at('b1') > at('m2'), 'then the next site');
 });
 
 test('the summary says how many rows were carried, apart from the measured online count', async () => {

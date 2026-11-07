@@ -236,6 +236,67 @@ test('a header sorts numerically, and an unknown value sorts last', async () => 
   assert.ok(html.indexOf('>large<') < html.indexOf('>unknown<'), 'a Mac nobody measured sorts last');
 });
 
+// The defect this pins: descending negated the whole comparison, so every unknown moved to the
+// front — disk descending drew [unknown, large, small] where the measured values belong first.
+test('a descending header still leaves an unknown value last', async () => {
+  const ctx = context(payload([
+    machine({ machine: 'small', label: 'small', disk_free_gb: 9 }),
+    machine({ machine: 'large', label: 'large', disk_free_gb: 302 }),
+    machine({ machine: 'unknown', label: 'unknown', disk_free_gb: null, disk_total_gb: null }),
+  ]));
+  await ctx.loadFleet();
+  ctx.fleetSortBy('disk');   // ascending
+  ctx.fleetSortBy('disk');   // descending
+  const names = Array.from(
+    ctx.nodes.get('fleet-machines-wrap').innerHTML.matchAll(/class="ft-name">([^<]+)</g),
+    m => m[1]);
+  assert.deepEqual(names, ['large', 'small', 'unknown'],
+    'measured values descending, then the Mac nobody measured');
+});
+
+// Until a column header is chosen the Machines table follows the page's Sort, so the visible
+// order and the table's order cannot disagree; an explicit header choice then wins for that table.
+test('the default Machines order is the page Sort, and a header choice keeps it', async () => {
+  const ctx = context(payload([
+    machine({ machine: 'alpha', label: 'alpha', disk_free_gb: 300 }),
+    machine({ machine: 'zulu', label: 'zulu', disk_free_gb: 50, reachable: false, state: 'offline',
+      history: history({ online: false, offline_since: 1 }) }),
+  ]));
+  await ctx.loadFleet();
+  const table = () => ctx.nodes.get('fleet-machines-wrap').innerHTML;
+  assert.ok(table().indexOf('>zulu<') < table().indexOf('>alpha<'),
+    'the default Issues order puts the down Mac first, as the cards do');
+  ctx.fleetSortBy('disk');            // ascending: 50 before 300
+  ctx.fleetSetSort('name');           // name would say alpha first
+  assert.ok(table().indexOf('>zulu<') < table().indexOf('>alpha<'),
+    'the header sort survives a new page Sort choice');
+});
+
+// Locations filtered but never ordered: the site rows kept the Gateway's payload order whatever
+// the Sort control said. They now share the one ordering the cards use. The Show filters are the
+// same predicates the cards and the Machines table already use, applied to a site row.
+test('the Locations table follows the page Sort, worst first by default', async () => {
+  const ctx = context(payload([machine()], [
+    location({ id: 'L1', label: 'Alpha room', reachable: true }),
+    location({ id: 'L2', label: 'Zulu room', reachable: false, error: 'No answer within 5s.',
+      history: history({ problematic: true }),
+      causes: [{ code: 'controller_silent', text: 'It answered nothing in time' }] }),
+  ]));
+  await ctx.loadFleet();
+  const table = () => ctx.nodes.get('fleet-locations-wrap').innerHTML;
+  assert.ok(table().indexOf('Zulu room') < table().indexOf('Alpha room'),
+    'the down site is first even though the payload listed it last');
+  ctx.fleetSetSort('name');
+  assert.ok(table().indexOf('Alpha room') < table().indexOf('Zulu room'),
+    'the visible Sort control is what chooses the order');
+  ctx.fleetSetFilter('offline');
+  assert.match(table(), /Zulu room/);
+  assert.doesNotMatch(table(), /Alpha room/);
+  ctx.fleetSetFilter('problematic');
+  assert.match(table(), /Zulu room/);
+  assert.doesNotMatch(table(), /Alpha room/);
+});
+
 test('the warnings box names the Mac and its free space, and skips a Mac that is not answering', async () => {
   const ctx = context(payload([
     machine({ machine: 's2-2', label: 's2-2', disk_free_gb: 14, disk_total_gb: 460,
