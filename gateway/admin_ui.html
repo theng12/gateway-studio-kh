@@ -5752,10 +5752,17 @@ function fleetMac(m) {
     .filter(Boolean).join(' · ') : '';
   const version = m.hub_version
     ? 'Hub ' + m.hub_version + (m.version_status && m.version_status !== 'latest' ? ` (${m.version_status})` : '') : '';
+  const inv = m.developer_gate_inventory || null;
+  const gateTools = fleetGateToolsSummary(inv);
+  const gateSpace = fleetGateSpaceSummary(inv);
+  const gateCleanup = fleetGateCleanupSummary(inv);
   const facts = [
     m.location ? 'Site: ' + m.location : '',
     version, m.chip, m.memory_gb ? Math.round(m.memory_gb) + ' GB' : '',
     m.disk_free_gb != null ? Math.round(m.disk_free_gb) + ' GB free' : '',
+    gateTools ? 'Gate tools: ' + gateTools : '',
+    gateSpace || '',
+    gateCleanup || '',
     `${m.completed == null && m.failed == null ? 'job counts not reported'
       : `${m.completed ?? 'not reported'} done · ${m.failed ?? 'not reported'} failed`}`,
     !m.reachable && m.node_last_seen_at ? 'seen ' + ago(m.node_last_seen_at) : '',
@@ -6092,6 +6099,96 @@ function fleetBadge(text, health) {
 
 // ---- Machines --------------------------------------------------------------
 
+function fleetGateBytes(bytes) {
+  if (bytes == null || !isFinite(bytes)) return '—';
+  return fleetBytes(bytes);
+}
+
+function fleetGateToolsSummary(inv) {
+  if (!inv || !Array.isArray(inv.toolchains) || !inv.toolchains.length) return '';
+  return inv.toolchains.map(t => {
+    const id = t.id || 'tool';
+    if (t.pin && t.pin.version) {
+      return `${id} ${t.pin.version}${t.available === false ? ' (unavailable)' : ''}`;
+    }
+    if (t.available === false) return `${id} (unavailable)`;
+    return id;
+  }).join(' · ');
+}
+
+function fleetGateToolsTooltip(inv) {
+  if (!inv || !Array.isArray(inv.toolchains) || !inv.toolchains.length) return '';
+  const lines = ['Toolchains:'];
+  for (const t of inv.toolchains) {
+    const ver = t.pin && t.pin.version ? `v${t.pin.version}` : 'unversioned';
+    const avail = t.available === true ? 'available' : t.available === false ? 'unavailable' : 'status unknown';
+    const bytes = t.installed_bytes != null ? `, ${fleetGateBytes(t.installed_bytes)}` : '';
+    const reason = t.reason && t.reason.code ? ` — ${t.reason.code}: ${t.reason.detail}` : '';
+    lines.push(`• ${t.id} (${ver}, ${avail}${bytes})${reason}`);
+  }
+  return lines.join('\n');
+}
+
+function fleetGateSpaceSummary(inv) {
+  if (!inv || !inv.developer_gate_space) return '';
+  const s = inv.developer_gate_space;
+  const parts = [];
+  if (s.workspace_bytes != null || s.workspace_limit_bytes != null) {
+    parts.push(`Workspace: ${fleetGateBytes(s.workspace_bytes)}${s.workspace_limit_bytes != null ? ` / ${fleetGateBytes(s.workspace_limit_bytes)}` : ''}`);
+  }
+  if (s.result_spool_bytes != null || s.result_spool_limit_bytes != null) {
+    parts.push(`Spool: ${fleetGateBytes(s.result_spool_bytes)}${s.result_spool_limit_bytes != null ? ` / ${fleetGateBytes(s.result_spool_limit_bytes)}` : ''}`);
+  }
+  if (s.shared_cache_bytes != null || s.shared_cache_limit_bytes != null) {
+    parts.push(`Cache: ${fleetGateBytes(s.shared_cache_bytes)}${s.shared_cache_limit_bytes != null ? ` / ${fleetGateBytes(s.shared_cache_limit_bytes)}` : ''}`);
+  }
+  return parts.join(' · ');
+}
+
+function fleetGateCleanupSummary(inv) {
+  if (!inv || !inv.developer_gate_space) return '';
+  const s = inv.developer_gate_space;
+  if (!s.cleanup_state && !s.reason && !s.observed_at) return '';
+  const parts = [];
+  if (s.cleanup_state) parts.push(`Cleanup: ${s.cleanup_state}`);
+  if (s.reason && s.reason.code) {
+    parts.push(`(${s.reason.code}${s.reason.detail ? `: ${s.reason.detail}` : ''})`);
+  }
+  if (s.observed_at) parts.push(`at ${s.observed_at}`);
+  return parts.join(' ');
+}
+
+function fleetGateStorageTooltip(inv) {
+  if (!inv) return '';
+  const lines = [];
+  const d = inv.internal_physical_drive;
+  if (d) {
+    const internal = d.internal === true ? 'internal' : d.internal === false ? 'external' : 'internal/external unknown';
+    const physical = d.physical === true ? 'physical' : d.physical === false ? 'virtual' : 'physical/virtual unknown';
+    const size = d.size_bytes != null ? fleetGateBytes(d.size_bytes) : 'capacity unknown';
+    lines.push(`Physical drive: ${d.device_id || '—'} (${internal}, ${physical}, ${size} via ${d.source || 'unknown'})`);
+    if (d.workspace_backing_device_id) {
+      lines.push(`Workspace backing device: ${d.workspace_backing_device_id} via ${d.backing_source || 'unknown'}`);
+    }
+    if (d.reason && d.reason.code) {
+      lines.push(`Drive status: ${d.reason.code} — ${d.reason.detail}`);
+    }
+  }
+  if (inv.free_bytes != null) {
+    lines.push(`Gate filesystem free: ${fleetGateBytes(inv.free_bytes)}`);
+  }
+  const s = inv.developer_gate_space;
+  if (s) {
+    lines.push(`Workspace space: ${fleetGateBytes(s.workspace_bytes)} (limit ${s.workspace_limit_bytes != null ? fleetGateBytes(s.workspace_limit_bytes) : 'unknown'})`);
+    lines.push(`Result spool: ${fleetGateBytes(s.result_spool_bytes)} (limit ${s.result_spool_limit_bytes != null ? fleetGateBytes(s.result_spool_limit_bytes) : 'unknown'})`);
+    lines.push(`Shared cache: ${fleetGateBytes(s.shared_cache_bytes)} (limit ${s.shared_cache_limit_bytes != null ? fleetGateBytes(s.shared_cache_limit_bytes) : 'unknown'})`);
+    if (s.cleanup_state) lines.push(`Cleanup state: ${s.cleanup_state}`);
+    if (s.reason && s.reason.code) lines.push(`Cleanup reason: ${s.reason.code} — ${s.reason.detail}`);
+    if (s.observed_at) lines.push(`Observed at: ${s.observed_at}`);
+  }
+  return lines.join('\n');
+}
+
 const FLEET_MACHINE_COLUMNS = [
   ['machine', 'Machine'], ['state', 'State'], ['health', 'Health'], ['seen', 'Seen'],
   ['week', 'Drops · 7 days'], ['cause', 'Likely cause'], ['version', 'Version'],
@@ -6141,7 +6238,10 @@ function fleetMachineRowsFor(d) {
     fleetInLocation(m)
     && fleetRowMatchesFilter('machine', m)
     && fleetMatchesSearch([m.label, m.machine, m.location, fleetStateLabel(m), m.state_text, m.chip,
-      m.limitation, fleetCauseLine(m.causes)], fleetQuery));
+      m.limitation, fleetCauseLine(m.causes),
+      fleetGateToolsSummary(m.developer_gate_inventory),
+      fleetGateSpaceSummary(m.developer_gate_inventory),
+      fleetGateCleanupSummary(m.developer_gate_inventory)], fleetQuery));
   // A column header wins for this table; until one is chosen the table follows the page's Sort,
   // so the visible order and the table's order are the same fact.
   if (!machineSort.key) {
@@ -6172,6 +6272,12 @@ function fleetMachineRow(m) {
   // state are shown; nothing that would read as a live measurement is, and no action is offered on
   // a row the Gateway cannot currently reach.
   const carried = m.last_known === true;
+  const inv = m.developer_gate_inventory || null;
+  const gateTools = fleetGateToolsSummary(inv);
+  const gateToolsTip = fleetGateToolsTooltip(inv);
+  const gateSpace = fleetGateSpaceSummary(inv);
+  const gateCleanup = fleetGateCleanupSummary(inv);
+  const gateStorageTip = fleetGateStorageTooltip(inv);
   const facts = [m.location && m.location !== name ? m.location : '',
     m.network ? `Network ${m.network}` : '', fleetHardwareText(m),
     fleetIsNode(m) ? '' : 'controller'].filter(Boolean).join(' · ');
@@ -6197,6 +6303,7 @@ function fleetMachineRow(m) {
     <td class="ft-lead" data-label="Machine">
       <div class="ft-name">${esc(name)}</div>
       ${facts ? `<div class="ft-sub" title="${esc(facts)}">${esc(facts)}</div>` : ''}
+      ${gateTools ? `<div class="ft-sub" title="${esc(gateToolsTip)}">Gate tools: ${esc(gateTools)}</div>` : ''}
       ${carried ? `<div class="ft-sub">${esc(m.state_text || 'Last report')} — shown from its last answer</div>` : ''}
     </td>
     <td class="nowrap" data-label="State"><div>${fleetBadge(stateWord, fleetBadgeHealth(m))}${
@@ -6217,7 +6324,9 @@ function fleetMachineRow(m) {
       : (version ? fleetBadge(version.text, version.health) : esc(m.hub_version || '—'))}${
       versionCaption ? `<div class="ft-sub">${versionCaption}</div>` : ''}</div></td>
     <td class="nowrap" data-label="Disk"><div>${carried || m.reachable === false ? '—'
-      : `${esc(fleetGb(diskFree) + ' free')}${fleetMeter(fleetFraction(diskFree, fleetDiskTotal(m)), fleetDiskHealth(m))}`}</div></td>
+      : `${esc(fleetGb(diskFree) + ' free')}${fleetMeter(fleetFraction(diskFree, fleetDiskTotal(m)), fleetDiskHealth(m))}`}${
+      gateSpace ? `<div class="ft-sub" title="${esc(gateStorageTip)}">${esc(gateSpace)}</div>` : ''}${
+      gateCleanup ? `<div class="ft-sub" title="${esc(gateStorageTip)}">${esc(gateCleanup)}</div>` : ''}</div></td>
     <td class="nowrap" data-label="Memory"><div>${carried || m.reachable === false ? '—'
       : `${esc(fleetGb(memoryFree) + ' free')}${fleetMeter(fleetFraction(memoryFree, m.memory_gb), fleetMemoryHealth(m))}`}</div></td>
     <td class="nowrap" data-label="Network" title="${esc(carried

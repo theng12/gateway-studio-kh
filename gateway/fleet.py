@@ -3079,6 +3079,18 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
     return ("long_idle" if age >= _LONG_IDLE_S else "ready"), None, None
 
 
+def project_developer_gate_inventory(raw: Any) -> dict[str, Any] | None:
+    """Preserve closed Hub facts, including null; never manufacture readback provenance."""
+    from .gate_contract import decode, encoded, GateError
+    from .gate_transport import JSON_CEILING
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return decode(encoded(raw), "inventory", ceiling=JSON_CEILING)
+    except (GateError, ValueError, TypeError, RecursionError):
+        return None
+
+
 def machines_flat(rows: list[dict]) -> list[dict]:
     """Every machine in the fleet as one row, with its location attached.
 
@@ -3253,6 +3265,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "function_enabled": _machine_function_enabled_map(machine, node),
                 "current": _current_job(machine, entry),
                 "installable_models": installable_models(row, mid, machine.get("memory_gb")),
+                "developer_gate_inventory": project_developer_gate_inventory(
+                    machine.get("developer_gate_inventory") or node.get("developer_gate_inventory")
+                ),
                 **health_fields(mid, machine, entry, startup, workstation),
             })
         # A machine the activity report knows about but the overview omitted is
@@ -3287,6 +3302,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "chat_priority": bool(priority_order and priority_order[0] == "chat"),
                 "function_enabled": _machine_function_enabled_map({}, nodes.get(mid) or {}),
                 "current": _current_job({}, entry),
+                "developer_gate_inventory": project_developer_gate_inventory(
+                    nodes.get(mid, {}).get("developer_gate_inventory")
+                ),
                 **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {}), workstation),
             })
     now = time.time()

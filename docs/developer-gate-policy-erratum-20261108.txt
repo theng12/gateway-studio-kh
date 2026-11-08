@@ -1,0 +1,27 @@
+studio.developer-gate.v1 — owner policy erratum, 2026-11-08
+
+Applies alongside frozen revision2:
+schema SHA256 a97d32a008f62f17293ee0666001ba79207c0367b4424ce6888731f40e66ad9a
+wire SHA256 67122d464f591daf34dcaa58664c7e82d8e7b7ef425373ff28aacd5375cf43dd
+
+Owner clarification relayed by Developer and Hub:
+"The owner means the nominal 512 GB drive class and up, since they want Macs with more room. Use measured ≥ 500,000,000,000 bytes as the default, and keep it editable. The per-run free-disk check stays the real gate."
+
+This replaces only the initial minimum_internal_physical_bytes default stated
+as 512000000000 in frozen wire revision2: the new initial default is
+500000000000 measured physical-device bytes. The field remains owner-editable.
+Neither the frozen schema shape nor the canonical request encoding changes.
+
+An existing persisted owner policy is never silently rewritten. Requests pin
+the effective persisted policy revision and minimum_internal_physical_bytes,
+not a hardcoded default. A changed policy requires a new revision and matching
+request/capability policy values. Setting the minimum to0 still disables only
+the capacity comparison.
+
+Internal/physical flags, verified workspace-to-physical-device mapping,
+registered identity/authentication, fresh per-run actual free-disk evidence,
+idle/Production priority, exclusions and all finite resource bounds remain
+required. A nominal class label or filesystem capacity is never used as a
+physical-device measurement. Inventory alone never confers admission.
+
+No deployment, supported runner, installation or remote dispatch is implied.

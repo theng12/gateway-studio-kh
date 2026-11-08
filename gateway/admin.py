@@ -5886,6 +5886,10 @@ from .developer_admin import router as developer_router
 
 router.include_router(developer_router)
 
+from .gate_admin import router as gate_router
+
+router.include_router(gate_router)
+
 from .image_limits_admin import router as image_limits_router
 
 router.include_router(image_limits_router)

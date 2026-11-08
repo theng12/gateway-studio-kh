@@ -49,6 +49,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import __version__
 from .build import build_id
+from .gate_transport import SOURCE_CEILING as _GATE_SOURCE_CEILING
 from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters.studio_hub import SUPPORTED_STUDIO_HUB_VERSION
 from .catalog import (
@@ -185,6 +186,8 @@ _UPLOAD_CEILINGS: tuple[tuple["re.Pattern[str]", int, str, str], ...] = (
     (re.compile(r"^/admin/api/content-library/import$"), _MAX_PACK_BODY, "a Content Pack", "upload"),
     (re.compile(r"^/admin/api/content-library/import-and-publish$"), _MAX_PACK_BODY,
      "a Content Pack", "upload"),
+    (re.compile(r"^/admin/api/developer-gates/runs/[^/]+/source$"), _GATE_SOURCE_CEILING,
+     "a pinned app-gate source archive", "upload"),
     # Pictures in a chat turn arrive as base64 data URIs inside the JSON.
     (re.compile(r"^/v1/chat/completions$"), _CHAT_BODY_CEILING, "a chat turn", "body"),
     (re.compile(r"^/v1/chat/responses$"), _CHAT_BODY_CEILING, "a chat turn", "body"),
