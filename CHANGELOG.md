@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.240 — 2026-11-08
+
+- The health check now says how many requests the gateway is answering right now, by kind (status checks, downloads, uploads and changes), so an update can wait for real work to finish instead of waiting for every connection to close.
+- Launch at login is on by default. Turn it off in Settings and it stays off.
+
 ## 0.2.239 — 2026-11-08
 
 - Developer app gates have a fixed v1 contract: a gate request, its inventory and its result are checked against one schema before anything is sent or shown.
