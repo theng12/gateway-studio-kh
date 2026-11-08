@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 
+from . import fleet
 from .developer_contract import DeveloperTestError
 from .developer_tests import HubDeveloperClient, segment
 
@@ -41,6 +42,14 @@ class GateTransport(HubDeveloperClient):
                   'status': ('GET', '/by-key/{key}'), 'cancel': ('POST', '/by-key/{key}/cancel'),
                   'source': ('PUT', '/by-key/{key}/source'),
                   'result': ('GET', '/by-key/{key}/result'), 'ack': ('POST', '/by-key/{key}/ack')}
+
+    def identity(self, controller):
+        segment(controller)
+        # The shared client's local path reads an operator token, never a Fleet credential.
+        if controller == fleet.LOCAL_ID:
+            raise DeveloperTestError(503, 'CREDENTIAL_UNAVAILABLE',
+                                     'App gates require a registered Fleet credential; local operator credentials are refused.')
+        return super().identity(controller)
 
     @contextmanager
     def exchange(self, controller, node, operation, *, key=None, pin=None, content=None,

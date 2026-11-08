@@ -3079,11 +3079,13 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
     return ("long_idle" if age >= _LONG_IDLE_S else "ready"), None, None
 
 
-def project_developer_gate_inventory(raw: Any) -> dict[str, Any] | None:
-    """Preserve closed Hub facts, including null; never manufacture readback provenance."""
+def project_developer_gate_inventory(raw: Any, *, controller_id: str | None,
+                                     node_id: str) -> dict[str, Any] | None:
+    """Preserve only closed facts bound to this controller and physical node."""
     from .gate_contract import decode, encoded, GateError
     from .gate_transport import JSON_CEILING
-    if not isinstance(raw, dict):
+    if (not isinstance(raw, dict) or not controller_id
+            or raw.get("controller_id") != controller_id or raw.get("node_id") != node_id):
         return None
     try:
         return decode(encoded(raw), "inventory", ceiling=JSON_CEILING)
@@ -3266,7 +3268,8 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "current": _current_job(machine, entry),
                 "installable_models": installable_models(row, mid, machine.get("memory_gb")),
                 "developer_gate_inventory": project_developer_gate_inventory(
-                    machine.get("developer_gate_inventory") or node.get("developer_gate_inventory")
+                    machine.get("developer_gate_inventory") or node.get("developer_gate_inventory"),
+                    controller_id=row.get("controller_id"), node_id=mid,
                 ),
                 **health_fields(mid, machine, entry, startup, workstation),
             })
@@ -3303,7 +3306,8 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "function_enabled": _machine_function_enabled_map({}, nodes.get(mid) or {}),
                 "current": _current_job({}, entry),
                 "developer_gate_inventory": project_developer_gate_inventory(
-                    nodes.get(mid, {}).get("developer_gate_inventory")
+                    nodes.get(mid, {}).get("developer_gate_inventory"),
+                    controller_id=row.get("controller_id"), node_id=mid,
                 ),
                 **health_fields(mid, {}, entry, _startup_fact({}, nodes.get(mid) or {}), workstation),
             })

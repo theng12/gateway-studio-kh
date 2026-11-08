@@ -179,6 +179,16 @@ class TestValidateRequest(TestGateContractIsolation):
         self.assertEqual(val["format"], "studio.developer-gate.request.v1")
         self.assertEqual(val["run_id"], "run-001")
 
+    def test_foreign_inventory_cannot_supply_admission_measurements(self):
+        for field in ('controller_id', 'node_id'):
+            cap = copy.deepcopy(self.cap)
+            cap['inventory'][field] = 'foreign'
+            for wire_bytes in (False, True):
+                with self.subTest(field=field, wire_bytes=wire_bytes):
+                    with self.assertRaises(GateError) as ctx:
+                        validate_request(self.req, encoded(cap) if wire_bytes else cap, self.pol, 'c1', 'n1')
+                    self.assertEqual(ctx.exception.code, 'IDENTITY_MISMATCH')
+
     def test_nominal_512gb_class_uses_owner_editable_measured_minimum(self):
         drive = self.cap['inventory']['internal_physical_drive']
         drive['size_bytes'] = 500277792768

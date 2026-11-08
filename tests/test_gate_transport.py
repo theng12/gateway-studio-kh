@@ -3,11 +3,13 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tests._isolation import sandbox_env
 PROFILE = sandbox_env('gate-transport-')
 
 import httpx
+from gateway import fleet, hub
 from gateway.developer_contract import DeveloperTestError
 from gateway.gate_transport import GateTransport
 
@@ -47,6 +49,36 @@ class GateTransportTests(unittest.TestCase):
             self.assertEqual(request.headers.get('Idempotency-Key'), 'key1' if operation=='submit' else None)
         self.assertEqual(len(self.client.OPERATIONS),7)
         with self.assertRaises(DeveloperTestError): self.client.json('c1','n1','shell')
+
+    def test_local_operator_path_is_refused_before_reading_or_sending_credential(self):
+        with patch.object(hub, 'hub_token') as operator, patch.object(hub, 'hub_base_url') as address:
+            with self.assertRaises(DeveloperTestError) as caught:
+                GateTransport(self.http).json(fleet.LOCAL_ID, 'n1', 'capabilities')
+            self.assertEqual(caught.exception.code, 'CREDENTIAL_UNAVAILABLE')
+            operator.assert_not_called()
+            address.assert_not_called()
+        self.assertEqual(self.calls, [])
+
+    def test_registered_remote_uses_only_fleet_slot_and_never_falls_back(self):
+        roster = [{'id': 'c1', 'url': 'http://controller.test'}]
+        with patch.object(fleet, 'roster', return_value=roster), \
+                patch.object(fleet, '_token_for', return_value='fleet-only-fixture') as credential, \
+                patch.object(fleet, 'admin_token_for') as admin, patch.object(hub, 'hub_token') as operator:
+            client = GateTransport(self.http)
+            client.json('c1', 'n1', 'capabilities')
+            credential.assert_called_once_with('c1')
+            self.assertEqual(self.calls[-1].headers['X-Hub-Token'], 'fleet-only-fixture')
+            self.calls.clear()
+            credential.return_value = ''
+            with self.assertRaises(DeveloperTestError) as caught:
+                client.json('c1', 'n1', 'capabilities')
+            self.assertEqual(caught.exception.code, 'CREDENTIAL_UNAVAILABLE')
+            self.assertEqual(self.calls, [])
+            with self.assertRaises(DeveloperTestError):
+                client.json('unregistered', 'n1', 'capabilities')
+            self.assertEqual(self.calls, [])
+            admin.assert_not_called()
+            operator.assert_not_called()
 
     def test_changed_destination_and_unsafe_node_stop_before_wire(self):
         with self.assertRaises(DeveloperTestError): self.client.json('c1','n1','status',key='key1',pin='different')

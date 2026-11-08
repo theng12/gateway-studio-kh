@@ -163,6 +163,9 @@ def validate(value: object, kind: str) -> object:
 
 
 def _capability_semantics(caps: dict) -> None:
+    inventory = caps["inventory"]
+    if any(inventory[field] != caps[field] for field in ("controller_id", "node_id")):
+        raise GateError(409, "IDENTITY_MISMATCH", "Capability inventory belongs to another controller or node.")
     bounds = caps["bounds"]
     if caps["supported"]:
         proof = caps.get("stop_proof")
