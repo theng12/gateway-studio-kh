@@ -96,432 +96,82 @@ instead of something we keep building each time."*
   described above; never derive their origin from untrusted Host headers.
 ## Publish what is known, and nothing else
 
-**Story Studio's notes:** *never let "the answer is none" and "I could not work
-out the answer" produce the same value, and never invent a number the customer
-will mistake for the model's own.*
+- A field a provider does not state is published **`null`**, never a plausible default: "the answer is none" and "I could not work it out" must never be the same value.
+- When a provider states a figure, read it (spellings differ: `context_length`/`inputTokenLimit`, `top_provider.max_completion_tokens`/`outputTokenLimit`, `maximum_text_length_per_request`). Read with `_first_stated()` (first non-`None`), **never an `or` chain**: a stated `0` is a claim.
+- A voice's language is stated (folder `metadata.json`, or a sibling `<name>.json`) or it is `""`, and `story_row` publishes `"multilingual"`. Never assume `"en"`. The Hub requires a language, so a language-less voice is refused a fleet push: that is the gate working.
+- Changing an int to `null` breaks the reader (Story's `normalizeMaxOutputTokens` substitutes 8,192). List every field whose *guarantee* changed.
+- The one invented value is TTS `maximum_input_characters` (Story calls `.toLocaleString()` on it): the provider's figure, else 15,000 on a Hub location and 25,000 on a cloud lane, with `maximum_input_characters_source`.
+- The local lane publishes one number, 15,000 (`catalog._TTS_CHARACTERS_LOCAL`); chunking is the Hub's job, and the Hub's `text_max_characters` is not mirrored. The only exception is `catalog._HARD_CAP_CHARACTERS` (bark 150, orpheus 170), applied only while that model's `long_form_delivery` is absent. `spark-tts-mlx` is deliberately absent. Section budgets are per family, never a uniform ≤200.
+- Every limit carries a `*_source` (`provider` / `curated` / `gateway`), and the value and its source come from **one function**.
 
-Every field a provider does not state is published **`null`**, never as a
-plausible default. The audit found `context_window_tokens: 0` on 37 rows,
-`max_output_tokens` hardcoded to `8192` on every provider,
-`supports_vision: false` for every model while 273 of OpenRouter's 445 accept
-images, `provider_name` missing on video, keyed differently on transcription,
-transcription claiming English-only *and* auto-detect, TTS languages as
-stringified Python dicts, and Google's `inputTokenLimit`/`outputTokenLimit`
-discarded.
+History and measurements: [docs/publish-what-is-known.md](docs/publish-what-is-known.md).
 
-**When a provider states it, read it.** Providers spell the same figure —
-`context_length` vs `inputTokenLimit`, `top_provider.max_completion_tokens` vs
-`outputTokenLimit`, `maximum_text_length_per_request`.
-
-**A published `0` is a claim, and an `or` chain throws it away.**
-`_first_stated()` exists because
-`raw.get("context_length") or raw.get("context_window") or …` treats a stated
-`0` as absent: `_stated` and `limits.gap` — both preserving a stated zero —
-never see one, and the curated value is published *as the provider's*. Read with
-a first-non-`None` lookup, never with `or`.
-
-**A voice's language is stated or it is absent — never assumed English.**
-Imports stored `"en"` for any clip whose metadata said nothing, making the
-readiness gate's "it has no language" unreachable. A folder reads its
-`metadata.json`, a loose clip a sibling `<name>.json`; nothing stated means
-`""`, and `story_row` publishes the `"multilingual"` sentinel.
-The ten voices imported before this still say `"en"`; the old import wrote it
-either way, so the original is unrecoverable and clearing them would be a guess.
-**The Hub requires a language** (`raise ValueError("language is required")`), so
-a language-less voice is refused a fleet push locally in one sentence — the gate
-working, not a regression.
-
-**Changing an int to `null` is a breaking change for the reader.** It made an
-unreachable fallback in Story Studio live (`normalizeMaxOutputTokens`
-substitutes 8,192 and prints it as the model's own figure). The handoff's
-field-change audit is the pattern: list every field whose *guarantee* changed,
-not just its value.
-
-**One value must stay invented:** TTS `maximum_input_characters` — Story Studio
-calls `.toLocaleString()` unconditionally, so `null` would crash the page. Per
-model where the provider states one (ElevenLabs publishes it), otherwise
-**15,000** on a Studio Hub location, 25,000 on a cloud lane — each carrying
-`maximum_input_characters_source` (`provider` / `curated` / `gateway`), because
-"we chose this" has to be readable next to the number.
-
-**The local lane presents one number, and chunking is Studio Hub's job.** Every
-Studio Hub location publishes **15,000** (`catalog._TTS_CHARACTERS_LOCAL`),
-because the Hub takes the complete script and renders sentence-safe sections.
-The caller is told what it may submit; it is never told how the work is cut up.
-That is the owner's *presentation* decision rather than a measurement, so the
-gateway does **not** mirror the Hub's audited
-`execution_contract.text_max_characters` (10,000–40,000 across the installed
-set), wrong for a field the caller cannot act on. The mirroring was tried and
-withdrawn on 2026-09-20.
-
-**The one exception, and it sequences itself.** A model the Hub does not section
-gets the whole script, so an engine cliff applies:
-`catalog._HARD_CAP_CHARACTERS` (bark 150, orpheus 170) is consulted
-**only while `long_form_delivery` is absent** for that model, read from the Hub's
-own table. So Orpheus
-publishes 170 today and **becomes 15,000 automatically** the moment the Hub
-starts sectioning it — no gateway change, no coordination. The rule is one constant,
-`catalog._TTS_CHARACTERS_LOCAL` (15,000), beside `catalog._HARD_CAP_CHARACTERS`; the
-handoff that recorded the decision was removed from `_handoffs/`, so this file names the
-code rather than a dead pointer.
-`spark-tts-mlx` is *deliberately absent* from that table despite the Hub's 750:
-as `auto-split`, 750 is where quality is best, not a limit on what may be sent.
-
-**A uniform section size is not ≤200.** The Hub's two hard-cap engines are Bark
-at **150** and Orpheus at **170**, so a 200-character section is past both and a
-180-character one is still past Bark. Every other family sections at 280–3000; a
-uniform 150 would mean 100 sections per 15,000-character request for engines
-needing 5, against the Hub's measured coverage curve (99.4% at 288, 83% at 600).
-Per-family budgets, which the Hub already has and justifies, are the right
-shape; the gap was only that two families had none.
-
-**Every limit now says whose number it is.** `context_window_tokens`,
-`max_output_tokens`, `max_prompt_characters` and `maximum_input_characters` each
-carry a companion `*_source` — `provider`, `curated` (the owner's
-`model-limits.local.json`) or `gateway` (ours: a default or the recorded cliff).
-Measured live: 48 chat rows `provider`, **18 `curated`**; the curated file's 24
-entries are all `1000000/128000`, a flat default rendered as the model's own
-window. The value is still published, now labelled (nulling it makes Story
-Studio substitute 8,192). **The value and its source come from one function**,
-because a separate "where did that come from?" reader is free to disagree with
-the chooser the first time either gains a step — how the quote route kept
-publishing a flat 40,000 after the catalogue stopped.
 ## A video model describes itself, and the record is also the request mapping
 
-**One record per model, in `gateway/video_capabilities.py`, and nothing else in the gateway types a
-video option.** `catalog._video_row` published `["16:9","9:16","1:1"]` and `5s`/`10s` at `"720p"`
-for every cloud video model — a canvas almost none of them accept, published as the model's own.
-The record now states, per model: modes (T2V/I2V/R2V), aspect ratios, resolutions, the duration
-range as `{min, max, step, default?}`, whether the clip carries audio and which field turns it off,
-which request field a first frame, a final frame and reference images go in, how many reference
-images are accepted, and the source of every value.
+- One `VideoCapability` record per model in `gateway/video_capabilities.py`, and nothing else types a video option; `adapters/fal.py` names no model. Provenance is `provider` (the endpoint's own schema) or `curated` with `source_date` = the date it was read. A record older than the provider's schema is re-read, never edited from memory.
+- A model with no record publishes its mode and no variants: visible and enableable, never selectable.
+- A value the record does not publish is **refused**, never clamped or dropped (fal validates at the worker, after reporting `COMPLETED`).
+- The scene image must arrive: `POST /v1/videos/source-images` → `api._stage_video_reference` → each adapter sends the bytes in its provider's own field. A staged file that has gone is a named refusal.
+- Adding a model: read the endpoint schema (fal: `curl 'https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<id>'`), append a record, run `tests/test_video_capabilities.py`. A new provider also needs an adapter and its pinning test. Enabling is the owner's switch.
 
-- **Two provenance words, the same ones limits use.** `provider` means read from the provider's own
-  machine-readable endpoint schema (fal publishes one per endpoint:
-  `https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<id>`). `curated` means typed from the
-  provider's documentation page, and then `source_date` is the date it was **read** — a record older
-  than the provider's current schema is stale and must be re-read, not edited from memory.
-- **A model with no record publishes its mode and no variants.** It is not offered with a guess:
-  Story Studio's `selectLiveImageToVideoModel` requires at least one variant, so an undescribed
-  model is visible in the console (and enableable) but never selectable. "The answer is none" and
-  "we could not work it out" must not produce the same row.
-- **The record is the field mapping, not a second opinion.** Wan 3.0 puts its first frame in
-  `start_image_url` and its audio switch in `audio`; Seedance 2.5 puts the same two things in
-  `image_url` and `generate_audio`, declares `duration` as a **string** enum, and names its reference
-  images `image_urls` where Wan says `reference_image_urls`. So a new endpoint is one record, and
-  `adapters/fal.py` names no model.
-- **A value the record does not publish is refused, never clamped or dropped.** fal's queue accepts
-  any body and validates at the worker, so a wrong option reports the job `COMPLETED` and fails when
-  the result is fetched — long after the caller could have been told the accepted list.
-- **The picture must actually arrive.** Story Studio uploads the exact scene image to
-  `POST /v1/videos/source-images`, submits its id, and `api._stage_video_reference` copies the bytes
-  beside the job (`_reference_path`). Each adapter sends those bytes in **its provider's own field**:
-  fal as a `data:` URI in the endpoint's declared image field, xAI as `image: {url}`, MiniMax v2 as
-  a `content[]` item with `role: "first_frame"`, and Kie — whose inputs take URLs, not base64 — by
-  uploading to its `file-base64-upload` route and using the returned `downloadUrl` in `image_urls`.
-  A staged file that has gone is a named refusal: a video generated without the scene image is a
-  video of something else and looks exactly like a success.
+History and measurements: [docs/video-capabilities.md](docs/video-capabilities.md).
 
-**Recipe — adding the next video model is one record plus, at most, one mapping.**
-1. Read the endpoint's own schema (not a blog post, not a memory): for fal,
-   `curl 'https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<id>'`.
-2. Append a `VideoCapability` to `VIDEO_CAPABILITIES` in `gateway/video_capabilities.py` — modes,
-   ratios, resolutions, `duration_min/max/step`, audio field, start/end/reference fields, source and
-   date. `_fal()` fills the provider-sourced defaults.
-3. That is all, for a provider whose adapter already speaks the model's shape. A **new provider**
-   needs an adapter that maps the same staged inputs — and the test in
-   `tests/test_video_capabilities.py` that pins it.
-4. Run `tests/test_video_capabilities.py`. Enabling the model is the owner's switch in the console;
-   nothing here enables one.
 ## Discovery ≠ availability
 
-A provider publishing 300 models must not put 300 rows in the picker. Nothing
-reaches Story Studio until it is enabled. The local Studio Hub is the sole
-exception (`auto_enable_discovered`), and that is deliberate. A provider whose
-kind has no adapter stays discoverable and configurable but **its models are
-withheld** — offering a model that fails on use is worse than not offering it.
-`IMPLEMENTED_KINDS` in `providers/definitions.py` is the single source of truth,
-asserted at import by `adapters/__init__.py`.
+- Nothing reaches Story until it is enabled; the local Studio Hub (`auto_enable_discovered`) is the sole exception. A kind with no adapter stays configurable but its models are withheld. `IMPLEMENTED_KINDS` (`providers/definitions.py`) is the single source of truth.
+- An adapter for a kind ≠ every modality works. Transcription is `openai_compat` and `studio_hub` only, and always asks for `srt`: enable OpenAI's `whisper-1`, not Google's. Groq's Whisper is withheld. Non-SRT models are in `TRANSCRIPTION_SRT_UNSUPPORTED`. Groq chat needs `GROQ_API_KEY`.
+- fal: read its per-endpoint schema (field types differ per model; its queue validates at the worker). fal TTS is its ElevenLabs routes, with voices curated from the schema's `examples` (`voices._fal_tts_voices`). Discovery keeps only `text-to-speech` / `text-to-audio`.
+- xAI is `KIND_XAI` with its own adapter: images take `aspect_ratio`/`resolution`, never `size`. Video is deferred: branch on the JSON `status` (202 = working; a failure arrives as HTTP 200). The first frame is `image: {url}`.
+- Text-to-video lanes stay listed (owner, 2026-10-26).
+- Lyria is Gemini `:generateContent`: scan **every** part for `inlineData`. `lyria-realtime-exp` is withheld, Lyria is paid-tier only, a 200 with no audio is `retryable`, and a refusal is in `promptFeedback.blockReason`. OpenRouter's Lyria rows are withheld (no music path).
+- `ModelInventory.can_publish` is the single rule for both the catalogue and the console list.
+- fal's ElevenLabs routes accept ElevenLabs voice ids (`accepted_voice_providers`), keyed on the provider *kind* plus `elevenlabs` in the endpoint, never on a provider id.
+- A voice can be saved by id (`POST /admin/api/voices/import`, `provider_voice_id`); ElevenLabs also needs the owner id.
+- An upload past 25 MB is refused **413** (never 402).
+- A voice is never invented: a missing `voice_id` refuses (fal's `Rachel` and ElevenLabs' account default stay). Speed outside `catalog._TTS_SPEED_RANGES` refuses: what is offered is what is sent.
+- The worker re-checks `enabled_models(modality)` at run time (`MODEL_NOT_OFFERABLE`), and `add_user_model` refuses a modality nothing serves.
+- OpenRouter `:batch` variants stay off (owner, 2026-09-19); use the sibling without the suffix.
+- "Hub is running" is `hub.hub_probe()` (`/api/health`, 5 s cache), with three states. It gates `start_annotation`. Each location publishes its `provider_id`.
+- `fleet._is_probe_machine` drops `probe-fleet`/`probe-hub` by **id**, never label (`probe_machines_hidden`); online/offline counts are per machine.
 
-**A kind having an adapter does not mean every modality of it works.** That
-assert compares *kinds*, and a modality can be missing inside one. Google's backend
-delegates to the OpenAI-compatible shim serving `/audio/transcriptions`, so a
-Google transcription row would publish and fail on use. Transcription is
-implemented for `openai_compat` and `studio_hub`: **enable OpenAI's
-transcription models, not Google's.** Verified end to end: `whisper-1` through
-the gateway returns a real SRT. **Groq serves chat through the same shim** and
-needs `GROQ_API_KEY` before its models appear. **Its Whisper cannot serve
-transcription here** — measured live 2026-09-20,
-`HTTP 400: response_format must be one of [json text verbose_json]`, and this
-gateway must ask for `srt` — so `whisper-large-v3` and `whisper-large-v3-turbo`
-are withheld.
+History and measurements: [docs/discovery-and-availability.md](docs/discovery-and-availability.md).
 
-**The gateway asks every cloud transcription lane for `response_format: "srt"`,
-so a model that cannot answer in SRT must not be offered.** There, only
-`whisper-1` can: the `gpt-4o-transcribe` and `gpt-transcribe` families accept
-`json`/`text` only and answer 400, while `gpt-4o-transcribe-diarize`,
-`gpt-live-transcribe` and `gpt-realtime-whisper` are diarising or streaming
-endpoints. They are listed in `TRANSCRIPTION_SRT_UNSUPPORTED`
-(`providers/definitions.py`) and withheld from Story Studio; they stay visible
-in the inventory, so ticking one still works as a control, it just never
-publishes. Google's transcription rows are impossible for a different reason (the
-route does not exist) and are refused by the modality gate. Curated rather than
-discovered, because no provider publishes which formats it accepts.
-
-**fal publishes a per-endpoint JSON schema, and reading it is not optional.**
-`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<id>` states the
-exact fields and **types**. `duration` is a *string* enum on
-`bytedance/seedance-*` but an *integer* on `minimax/h3-max` and
-`google/gemini-omni-flash`, and `minimax/h3-max` declares
-`prompt_expansion_mode` required despite a default. **fal's queue accepts any
-body and validates at the worker**, so a wrong body reports the job `COMPLETED`
-and fails when the result is fetched — a `422 {"detail":[{"type":"missing"…}]}`
-in place of the artifact. Verified live: submitting `{}` to four fal endpoints
-queued and completed all four, because the worker rejected each for a missing
-`prompt`/`text`.
-
-**fal's TTS lane is its ElevenLabs routes, and it has no voice list.** The model
-schema carries no voice endpoint and no `enum` on `voice` — only twenty
-`examples` and a default of `Rachel` — so `voices._fal_tts_voices` curates those
-names as the lane's voices. Discovery keeps only fal categories `text-to-speech`
-and `text-to-audio`; other audio endpoints do not accept the `text` this adapter
-sends.
-
-**xAI is OpenAI-compatible for chat and nothing else.** Its image API rejects
-`size` outright — measured: `HTTP 400: Argument not supported: size` — so
-delegating images to the OpenAI shim published three models that failed on use;
-it takes `aspect_ratio` and `resolution` instead. Its video API is a
-**deferred** endpoint (`POST /v1/videos/generations` → `request_id` → poll
-`GET /v1/videos/{id}`). Hence `KIND_XAI` with its own adapter, chat only. Two
-traps in the poll: **202 means still working, and a failure arrives as HTTP
-200** with `status: "failed"` — so branch on the JSON `status`, never on the
-HTTP code, or a failed generation reads as a success. The first frame is
-`image: {url}`, not the `image_url` string the Python SDK accepts.
-
-**Text-to-video lanes stay listed** (owner, 2026-10-26). Story Studio generates
-image-to-video only today, but the owner keeps the gateway's text-to-video lanes as a
-possible next feature — do not "fix" a video lane by removing its text-to-video mode.
-
-**Lyria music is Gemini's `:generateContent`, not a `:predict`, and the audio is
-inline base64.** It lives at `candidates[0].content.parts[N].inlineData` — and
-Google warns the lyrics are interleaved in the same array, so **scan every
-part**; indexing `[0]` silently yields no audio. `lyria-realtime-exp` is
-withheld: a bidirectional WebSocket session with no unary call could never
-answer a one-shot request. Lyria is **paid-tier only**, which is why
-`google-ai-free` does not declare the music modality. A 200 with candidates but
-no audio part is transient on the preview model — observed live, succeeding on
-the next identical call — so it is raised `retryable`; a safety refusal carries
-`promptFeedback.blockReason`.
-
-**OpenRouter publishes no music path at all.** Its catalogue lists
-`google/lyria-3-*` with a live upstream provider, but its OpenAPI has zero
-occurrences of "lyria" or "music" across 92 paths. Those rows are withheld: a
-listing is not a serving contract.
-
-**The console must not list a model that can never run.**
-`ModelInventory.can_publish` is the single rule, used by both readers: the
-catalogue asks what to publish, `_flat_models` what to *show*. The console's
-weaker conditions advertised rows the catalogue dropped: nine OpenAI
-transcription models of which only `whisper-1` can return SRT, four
-`google-ai-free` Lyria rows, and OpenRouter's two Lyria rows.
-
-**A proxy that speaks another provider's ids is the one exception to "a voice
-belongs to its provider".** fal's ElevenLabs routes accept an ElevenLabs voice
-id unchanged, now verified through the gateway (the owner's own voice, 51,871
-bytes of MP3), and the owner has driven them that way many times. Matching a
-voice on its provider alone offered only the twenty names fal happens to
-`example`, so a voice saved from his own account was invisible for that lane
-while working perfectly through it. `accepted_voice_providers` keys the exception
-on the provider's
-*kind* and the word `elevenlabs` in the endpoint — never on a hardcoded provider
-id, and never for a lane that is not ElevenLabs.
-
-**A provider voice known by its id can be saved without searching for it.** The
-library search finds only what the provider will *search* for, so a voice known
-from a share link had no way in. `POST /admin/api/voices/import` always accepted
-an explicit `provider_voice_id`; the Voices window now has fields for it and for
-the owner id. **ElevenLabs is the one provider that needs both**, because its
-import route is `/v1/voices/add/{owner_id}/{voice_id}` — refused locally rather
-than as an opaque 422.
-
-**An upload past 25 MB is refused 413, not queued and then failed.** Every cloud
-transcription API on the gateway caps a single upload there; a caller that
-crosses it should be told the number, not handed a provider error after staging.
-The ceiling is one flat number because no provider *publishes* its limit over
-its API — `ponytail:` in `api.py` names the upgrade path (read it per model, as
-TTS limits come from `maximum_text_length_per_request`). **413, never 402.**
-
-**A voice the caller did not choose is never invented.** A missing `voice_id`
-used to become a specific named speaker — `English_expressive_narrator` on
-MiniMax, `alloy` on the OpenAI-compatible shim. Both refuse now, naming the
-field. fal's `Rachel` and ElevenLabs' account-first-voice stay, because those
-providers genuinely default and the catalogue offers that default *as a voice*.
-**speed** follows the same rule: fal's routes accept 0.7–1.2 while the catalogue
-published 0.5–2.0, and the adapter *dropped* anything outside its range — a
-caller picked a speed it had been told was valid and got normal speed. It
-refuses now, and `catalog._TTS_SPEED_RANGES` publishes the accepted range: what
-is offered is what is sent.
-
-**A toggle has to still be a toggle when the job runs.** The worker re-checked
-*provider* enablement only, so a model switched off after submit still ran, a
-mid-queue `catalogued`/`memory_eligible` flip did not stop the job, and a
-modality the adapter cannot serve was still dispatched. It now asks
-`enabled_models(modality)` and fails `MODEL_NOT_OFFERABLE` naming the model,
-provider and modality. **The same rule is enforced at the door:**
-`add_user_model` refuses a modality nothing serves, because `can_publish`
-requires `serves()` and the form only asked whether the provider *declared* it
-(Google declares six, serves four) — so it could create a row that was enabled,
-counted, and never published.
-
-**A model that is enabled but cannot serve is the worst state, and OpenRouter's
-`:batch` variants are exactly that.** They are the providers' Batch APIs — half
-price, turnaround in hours — and a normal `/chat/completions` request answers
-**404 "This model is only available through the Batch API."** Such a row fails
-the moment it is picked. **Nine of the owner's twenty-three enabled OpenRouter
-models were these, and on 2026-09-19 he had them switched off** — each had a
-working non-`:batch` sibling, so nothing was lost and OpenRouter went from 23
-enabled to 14. Do not re-enable them; the sibling without the suffix is the same
-model on a route that answers.
-
-**"Studio Hub is running" is a measurement, not a file.** `hub_status()` used to
-publish `running: bool(hub_base_url())` — the existence of a `hub-ready.json` —
-so the page said "running" while the menu bar's `/api/health` probe and
-`fleet._probe` reported it unreachable. `hub.hub_probe()` asks `/api/health` (no
-token needed) and distinguishes **three** states, never two: no ready-file, a
-ready-file with nothing behind it, and one that answers; the answer is cached 5
-s. The same probe gates `start_annotation`, which promised "refuses without a
-reachable Hub" while gating on URL presence — a stale file made every voice fail
-without the actionable sentence. Anything acting on a location's *models* needs
-its **`provider_id`** (`studio-hub-<controller-id>`), published per location on
-both branches, so no client derives it.
-
-**A Hub lists its own connectivity probes as machines, and they must not be
-counted as the owner's hardware.** Studio Hub reports `probe-fleet` and
-`probe-hub` — labelled "probe", permanently unreachable. This Mac read "3
-machines, 2 offline"; six sites, ~12 broken machines. `fleet._is_probe_machine`
-drops them from the machine list, machine table, routing capacity and activity
-list, and `probe_machines_hidden` says how many were hidden. The online/offline
-counts are derived **per machine** from the filtered activity list rather than
-from the Hub's aggregate `pulse`, because the aggregate carries no machine
-identity and a counted probe could not be taken out. Matched on the id, never
-the label: the label is the owner's to change.
 ## Sound sources are managed like providers, and are not providers
 
-The owner, 2026-10-25: *"make it a 'provider' but have it in a new tab called SFX or something. This
-way we can manage them easier. And also make sure all the providers are organised properly too."*
-Both halves are display: neither changes what can run.
+- A sound source has no entry in `providers/definitions.py`. It is declared once in `sound_sources.SOUND_SOURCE_DEFINITIONS` with one class per kind in `_ADAPTERS`, and the two are checked against each other at import.
+- The SFX tab is a pane of the Providers page (`#sfx`); no native work.
+- Credentials go in `CredentialStore` under the source's `credential_id` (`openverse-sound`; never rename it). `set_values_for` refuses an unknown key.
+- A secret is never echoed, logged or put in error text (`mask()`; `tests/test_sfx_providers.py`).
+- `configured` and `registered` are separate facts; quota reads "not read yet", never `0`.
+- Provider cards are grouped by `definitions.service_group()` (first lane the adapter actually serves). It is display only, and the filter matches lanes too.
 
-- **A sound source contributes no catalogue row, so it has no entry in
-  `providers/definitions.py`.** Adding one there failed `test_e2e`'s "every provider has a working
-  adapter" — the gate working, not a reason to relax it. Sources are declared once in
-  `sound_sources.SOUND_SOURCE_DEFINITIONS` (id, adapter `kind`, credential fields, where a key comes
-  from, which field is actually sent) with one class per kind in `_ADAPTERS`; the two are checked
-  against each other at import, so a declaration with no adapter cannot be listed and an adapter
-  nothing declares cannot be reached. A second source is one entry plus one class.
-- **The SFX tab is a pane of the Providers page**, which is the same page in a browser and in the
-  app's own window (`ConsoleSection` loads `#providers`), so it needs no native work. `#sfx` opens it.
-- **Credentials go in the same `CredentialStore` as every provider key**, under the source's own
-  `credential_id` — `openverse-sound`, the key this lane has always read; renaming it would hide a
-  stored token, which is the one thing a store migration must never do. `set_values_for` is the only
-  write that does not resolve a `ProviderDefinition`; it takes the field list from the caller's own
-  declaration and **refuses** an unknown key rather than dropping it, because "saved" and "saved
-  nothing" must not be the same answer.
-- **A secret is never echoed, logged, or in error text.** `sound_sources.describe` masks with the
-  same `mask()` the provider console uses; `tests/test_sfx_providers.py` asserts the raw value is
-  absent from every response and from every log line captured across save, list, search and clear.
-- **Anonymous is not unconfigured.** Openverse answers with no key, so the card publishes
-  `configured` and `registered` as two separate facts; one badge would call a working lane dead. The
-  quota line says **not read yet** until a search has read the upstream's own headers — never `0`.
-- **Provider cards are grouped by what they serve, derived from `modalities`.**
-  `definitions.service_group()` files a provider under its first lane in `MODALITIES` order **that
-  its adapter can actually serve** (`serves()`, not the declared tuple: Kie declares chat and cannot
-  run it, so it is filed under Image); `group_by_service()` orders the headings off the same rows.
-  There is no hand-kept vendor list, every provider lands in exactly one group, and dispatch,
-  enablement and discovery read none of it. The console's filter matches lanes too, because a
-  multi-lane provider is filed under only one of them.
+History and measurements: [docs/sound-sources.md](docs/sound-sources.md).
+
 ## Received artifacts are temporary
 
-The gateway is a **receiver**, not the owner: a node renders an artifact, this
-Mac serves it to Story Studio, and **Story Studio keeps the copy that matters**.
-Nothing pruned them before `gateway/retention.py`, so `data/artifacts/` grew
-unbounded.
+- The gateway is a receiver; Story keeps the copy that matters. `gateway/retention.py` prunes at **3 days or 10 GB**, whichever comes first. A pin (`/admin/api/artifacts/keep`) outranks both. API: `/admin/api/settings/retention`, `/admin/api/artifacts/prune`.
+- Nothing younger than an hour is removed; active and recovery-held inputs are protected.
+- Pruning **moves**: first to `DATA_DIR/_trash/` (old `DATA_DIR/trash/` still recognised), then entries over 7 days old, or the oldest above 20 GiB, go to macOS Trash. A failed move keeps the source and is reported. Never a permanent delete. `max_bytes` counts the live store only; `usage()` reports retired files separately.
+- Settings live in `DATA_DIR/retention.json`, not `.env`. This is the owner's explicit exception to the project `_trash/` rules.
 
-Two limits, editable via the API (`/admin/api/settings/retention`,
-`/admin/api/artifacts/prune`) — **3 days** or **10 GB**, whichever comes
-first. A **pin** (`/admin/api/artifacts/keep`) outranks both:
+History and measurements: [docs/received-artifacts.md](docs/received-artifacts.md).
 
-- **Age** is the norm: three days unfetched by Story Studio and it is pruned.
-- **Size** is the burst fallback: long videos can pass the cap in a day, so the
-  oldest go first and the newest stay fetchable.
-
-**Nothing younger than an hour is ever removed**, whatever the limits say: a
-freshly-written artifact is about to be fetched and a staged upload is being
-read, so the newest stay safe by construction, not luck.
-
-**Pruning moves, it does not delete.** A pruned file is moved into
-`DATA_DIR/_trash/`; existing `DATA_DIR/trash/` entries remain recognized. The first
-stage keeps the existing defaults of **3 days / 10 GiB**, plus saved overrides,
-pins, a one-hour grace period, and protection for active and recovery-held inputs.
-The second stage moves entries older than **7 days**, or oldest entries as needed
-to keep both runtime trash folders together under **20 GiB**, to macOS Trash. A
-failed move keeps the source and is reported. Neither ordinary retention nor the
-low-disk guard permanently deletes files. Moving to macOS Trash does not free disk
-space until it is emptied; macOS owns the 30-day emptying setting. `max_bytes`
-counts the live store only; `usage()` (and Settings > Received artifacts) reports
-retired files separately. Settings live in
-`DATA_DIR/retention.json`, not `.env`, which the menu bar app owns and rewrites.
-This runtime policy is the owner's explicit exception to the developer/project
-`_trash/` and agent cleanup rules; those rules remain unchanged.
 ## `.env` is read live, and the key is checked per request
 
-`.env`, the documented no-UI key source, was not read live: `config.get()`
-snapshotted at import, `providers/credentials.py` held a **second** copy
-refreshed by `reload_env()`, and `api.require_auth` compared an import-time
-`API_KEY` constant — fixing `GATEWAY_API_KEY`. **A rotation is the failure
-that matters**: change the key, restart nothing, the old key still opens the
-door.
+- `config.get()` re-stats `ENV_PATH` and the credential store reads through it; `require_auth` reads `gateway_api_key()` **per request**, so a key rotation works with no restart.
+- In `tests/test_e2e.py` the key lives in the temp `.env`, not the spawned environment, and a wrong key is asserted refused first.
+- `/admin/api/*` is deliberately open from loopback; measure auth on `/v1/...`.
 
-`get()` re-stats `ENV_PATH` and re-reads on change; the credential store reads
-through it, no `reload_env()` to forget; `require_auth` reads
-`gateway_api_key()` per request. `admin.require_admin` already did. In
-`tests/test_e2e.py` the suite key lives in the temp `.env`, not the spawned
-environment, because `get()` prefers `os.environ` and a key passed there would
-shadow the file and make the rotation untestable. It asserts a *wrong* key is
-refused first: a failed `.env` leaves a keyless gateway open.
+History and measurements: [docs/env-and-auth.md](docs/env-and-auth.md).
 
-**`/admin/api/*` is deliberately open from loopback** (`require_admin` trusts
-loopback and demands the token only when bound elsewhere), which is why a `curl`
-against `/admin/api/status` returns 200 with no header. Measure auth on the
-Story surface (`/v1/...`), which needs the key.
 ## Remote final rendering is the owner's per-Mac switch, and two keys must both be turned
 
-Owner decision 2026-10-23: use fleet rendering without formal qualification and fix what breaks. A Mac
-renders for Story only when **the owner switched it on** (`render_optin.json`, absent = off, edited from
-Fleet > a Mac's "…" > Remote Final Rendering…) **and its Studio Hub publishes the evidence** on its
-`video.final_render` worker row: `accepted_unqualified: {provenance: "owner-opt-in-unqualified",
-accepted_by, accepted_at}` (Hub `RenderExecutor.capability`). That row is **production-shaped**
-(`production_enabled`/`production_eligible` true), so the Gateway must never read "production-shaped" as
-"qualified" when the evidence is there: such a row is excluded unless the owner switched it on, and a
-row whose `accepted_unqualified` is present but is not that evidence is excluded outright
-(`render_optin.unqualified_claim`). Hub 0.6.195 never sends the key and is never affected.
+- A Mac renders for Story only when **the owner switched it on** (`render_optin.json`, absent = off; Fleet > a Mac's "…" > Remote Final Rendering…) **and** its Hub's `video.final_render` row carries `accepted_unqualified` with `provenance: "owner-opt-in-unqualified"`. Production-shaped is not qualified; any other claim is excluded (`render_optin.unqualified_claim`).
+- The switch travels via `startup_control.set_node_render_authority` (no SSH). **On** is kept only if the Hub took it (`202 queued` counts); **off** is written here first. The Gateway sends no encode.
+- `fleet.render_candidates` ranks qualified first, then accepted-unqualified, same network first (`render_optin.classify_machine`; Tailscale is never "ours", unknown is never guessed). `RenderService.submit` re-checks the flag against the evidence.
+- Nothing is added to `/v1`: the unqualified label lives in the stored snapshot and `/admin/api/fleet/remote-rendering`. `_trim_worker` copies `accepted_unqualified` only when the Hub sent it.
 
-- The switch travels on the existing controller relay (`startup_control.set_node_render_authority`, route
-  `.../fleet/nodes/{machine}/render-authority`, body `{"accept_unqualified": bool, "requested_by"}`) - no SSH,
-  port or shell. **On** is kept only if the Hub took it (a `202 queued` for a Mac reachable only at its next
-  check-in counts, and the Mac stays unused until its row shows the evidence); **off** is written here first
-  (sending stops at once) and relayed after. The Hub pins one encode (its default h264 medium) unless a body
-  names another; the Gateway sends none, and Story only sends what the capabilities `encode` intersection offers.
-- `fleet.render_candidates` ranks qualified Macs first, then accepted-unqualified ones, **same network first**
-  (`render_optin.classify_machine`: the Mac's own interface list `machine.network` when its Hub sent one, else
-  the address its controller dials, against this Mac's own LAN interfaces; Tailscale 100.64.0.0/10 is never
-  "ours"; a hostname or missing address is `unknown`, never guessed).
-- `RenderService.submit` re-checks that the destination's flag and the snapshot's evidence agree exactly.
-- **Nothing is added to Story's responses.** Story's parsers are closed records, so the unqualified label lives in
-  the stored capability snapshot and the admin page (`/admin/api/fleet/remote-rendering`), not in `/v1`.
-- `_trim_worker` copies `accepted_unqualified` only when the Hub sent it, so a 0.6.195 row and the snapshot made
-  from it are byte-identical to before.
-- A render on such a Mac is `purpose: "production"` to the Hub and the Hub's receipt echoes the row's
-  `qualification_digest`, so `FinalRenderService._hub_job` needed no change.
+History and measurements: [docs/remote-final-rendering.md](docs/remote-final-rendering.md).
 
 ## Ports
 
@@ -545,129 +195,19 @@ row whose `accepted_unqualified` is present but is not that evidence is excluded
   provider's published value always wins.
 ## Locations are providers — but not separate products
 
-A Studio Hub location is a provider: its models are discovered and dispatched
-through the same `studio_hub` adapter. **Standalone and controller both work** —
-the role only displays. Story Studio must never learn a second address: the
-gateway alone knows the locations.
+- A Studio Hub location is a provider through the `studio_hub` adapter, standalone or controller; Story never learns a second address.
+- `fleet.publish_id` collapses locations into one `studio-hub` namespace (namespace by maker; a cloud vendor keeps its id). `catalog_encode` applies it, so the id Story sent is the id it is told back.
+- The gateway chooses the site, never the machine: `fleet.route` ranks by pressure, then a weighted lottery. The weight is per model (`model_supply`, then `capacity.by_operation`, then the site total), `available` breaks ties, and speed is not a routing input. Capacity goes in the weight, never as a rank term. Admission is fit-aware (`Worker._room`); fleet lanes follow published capacity unless the owner types a ceiling, and are not counted against `global`.
+- `can_publish` withholds a model whose `dispatch_state` is present and not `eligible`. A submit `409 MODEL_NOT_READY/PACKAGED` becomes `LOCATION_NOT_READY` and re-routes. A voice (`studio-hub-<controller>::<raw>`) pins the route and is never re-routed.
+- Secrets are in the credential store and the roster in `fleet.json`. Iterate `registry.definitions()`, never `PROVIDERS_BY_ID`. An address is `values.get("base_url") or definition.base_url`.
+- Adding a location discovers its models (they arrive disabled) and says what it found. A credential is checked (`/api/hub/settings`: 200 operator, 403 fleet, 401 wrong). `PUT /api/fleet/controllers/{id}/credential` replaces only the token.
+- **An absent credential stays absent:** `hub_headers(token)` needs the token; the local fallback is only `local=True`, derived from the provider id, and local-only paths use `local_hub_headers()`. `tests/mock_upstream.py` asserts on the wire.
+- A custom provider's kind is checked against `IMPLEMENTED_KINDS`; a skipped one is published as `skipped_custom_providers` and rendered.
+- A location's name is a label (`fleet.rename_controller`); ids derive from the controller id; preserve `local_label`.
+- Test row actions by pressing them (`table_button_titles`), not only through the API.
 
-**But a location is not a product, so its models publish under one namespace.**
-`fleet.publish_id` collapses every location into `studio-hub`, `catalog.rebuild`
-merges the rows, so N locations offering the same model are **one** catalogue
-entry with N possible sites — not N entries sharing one `display_name`.
-Namespace by **maker**; a cloud vendor keeps its id, because two vendors
-offering the same model *are* different products. The old GenStudio agreed, and
-one of its migrations is named `0338_kokoro_names_the_maker_not_the_machines`.
+History and measurements: [docs/locations-are-providers.md](docs/locations-are-providers.md).
 
-Routing follows the split Studio Hub declares in `/api/hub/capabilities`
-(`studio-hub-local`):
-
-`authority: {global: "genstudio", site_local_scheduler: "sqlite",
-global_job_claiming: false}`:
-
-- **The gateway chooses the site, never the machine.** `fleet.route` ranks
-  candidates by pressure (`queue / eligible fitting machines`), then a weighted
-  lottery weighted by that count; which machine has the memory for a model
-  belongs to the controller.
-
-- **The weight is per model, not per site.** The Hub publishes `model_supply`
-  (per model) and `capacity.by_operation` (per operation); `routing_candidates`
-  reads the exact model's eligible machine count first, then the operation's, and
-  falls back to the site-wide total only for a Hub that publishes neither. A site
-  with ten 8 GB image Macs and one 24 GB Mac must not out-weigh a site with two
-  24 GB Macs for a 24 GB model. `available` (ready with a free slot) breaks a
-  pressure tie. Speed is **not** a routing input (the chip proxy and
-  `GATEWAY_PREFER_FASTEST_SITE` were removed in 0.2.121: no gain in simulation);
-  measured speed per model × Mac class is on Analytics, for ETAs and planning.
-- **Admission is fit-aware (D1).** A group takes a job only while
-  `min(operation room, slots(model) − our jobs there whose model fits no more Macs)`
-  is above zero (`Worker._room`), so heavy jobs no longer fill a group's whole voice
-  budget while its 8 GB Macs idle. Fleet lanes (tts/image/music/transcription) are
-  automatic — they follow the fleet's published capacity — unless the owner types a
-  ceiling, and fleet-lane work is not counted against `global` (D3).
-
-- **A controller that cannot serve a model is a site property, not a job
-  failure.** `can_publish` withholds a model whose `dispatch_state` is present and
-  not `eligible` (absence stays unverified), so the picker never offers what the
-  Hub will refuse. When the Hub still answers `409 MODEL_NOT_READY` /
-  `MODEL_NOT_PACKAGED` at submit, the adapter names it `LOCATION_NOT_READY` and
-  the worker re-routes to the next location that offers the same model. A voice is
-  never re-routed — its reference clip lives on one controller.
-
-- **Capacity belongs in the weight, never as a rank term.** Ported from the old
-  `MultiSiteAssignment`: raw size as a rank made a small site unreachable, the
-  same size ignored overloaded the small sites.
-
-- **A voice pins the route.** A voice id names its owner
-  (`studio-hub-<controller>::<raw>`), and a reference clip exists on one Hub, so
-  voice work stays at that location.
-
-- **The id Story Studio sent is the id it is told back.** The job stores the
-  location it was routed to, but `catalog_encode` applies `publish_id` before
-  answering, or a saved preset stops matching its jobs. Asserted end to end in
-  `test_fleet_standalone.py`.
-
-Secrets live in the credential store (`0600`); `fleet.json` holds the roster.
-Lookups of "the providers" must go through `registry.definitions()`, not the
-static `PROVIDERS_BY_ID` map: four bugs came from iterating it.
-
-**A location's address comes from its *definition*, and one strategy forgot
-that.** Every strategy resolves its base as `values.get("base_url") or
-definition.base_url`. `_studio_hub` went from the credential values straight to
-`hub_base_url()`, whose fallback is **this Mac's Hub**. A controller
-declares no `base_url`, so every location discovered the *local* models; only
-when pointed at the mock did the test surface "Studio Hub is not running (no
-hub-ready.json found)" and zero models, which `tests/test_e2e.py`'s section 20
-asserts against.
-
-**Adding a location must also discover its models, and say what it found.**
-Nothing refreshes them on a timer (`fleet.start_refresher` refreshes
-*reachability*, not models), so a location added without a refresh shows none.
-Models arrive **disabled**, as everything remote must, so the Fleet page says
-how many were found and that none are available until enabled.
-
-**A credential is checked, because both credentials work everywhere.**
-`/api/hub/settings` answers 200 to the operator token, 403 to a fleet
-credential, **401 to a wrong or absent one** (measured against Hub 0.5.1 — a
-rejected token must never be reported as the fleet credential).
-`PUT /api/fleet/controllers/{id}/credential` replaces a token without touching
-the name, address or models.
-
-**An absent credential stays absent — the operator token belongs to *this Mac's*
-Hub and to no other address.** `hub_headers(token)` was `token or hub_token()`,
-so a controller with no stored credential had **this Mac's operator token** put
-in `X-Hub-Token` and sent to whatever address the owner typed. That token is
-full operator scope: it can change this Hub's settings and identity, and reach
-its storage. It is the mistake `credential_scope` exists to stop the owner, and
-silent because a remote Hub that accepts it works. `token` is a **required**
-argument and the fallback is reachable through `local=True`, derived by callers
-from the **provider id** (`definition.id == provider_id_for(LOCAL_ID)`), never
-the address, the one part an owner supplies. Local-only paths call
-`local_hub_headers()`, so a future call site cannot inherit a credential by
-omission: it fails with the wrong or absent token rather than with this Mac's.
-`tests/mock_upstream.py` records every `X-Hub-Token` it receives, so the
-assertion is about the **wire**, not a helper's return value.
-
-**A custom provider's kind is checked against `IMPLEMENTED_KINDS` itself, not a
-copy.** `_VALID_KINDS` was a second set, behind (`KIND_XAI` was missing), so
-`"kind": "xai"` in `providers.local.json` was dropped without a word. Being
-skipped is recorded with a reason, logged, and published as
-`skipped_custom_providers` on `/admin/api/providers`, **which the console
-renders** — a field nothing draws is the same defect as a control that does
-nothing.
-
-**A location's name is a label, never an identity, and renaming must stay safe
-at any time.** `fleet.rename_controller` changes only the label — id, address,
-token and enabled state untouched — so renaming can never cost a re-entry of a
-credential. The provider id derives from the **controller id**
-(`studio-hub-<controller-id>`) and the model id from the provider, so never
-derive an id, key or path from a label. `fleet.json` also carries `local_label`,
-which a write that adds or removes a controller must preserve.
-
-Row actions are worth testing in the UI, not just the API: the Fleet page had
-`testController` and `removeController` **wired to nothing** — no button ever
-called them — so Test and Remove were unreachable from the app while the
-endpoints worked. `tests/test_ui.py` now reads the buttons themselves
-(`table_button_titles`); `table_texts` sees static text only.
 ## Voices are stocked, not configured
 
 Moved to [docs/voices-and-reference-clips.md](docs/voices-and-reference-clips.md).
@@ -863,13 +403,12 @@ Moved to [docs/giving-the-app-away.md](docs/giving-the-app-away.md).
   right. Either restart and measure the **running** service first, or say a
   change is built but not yet live. Both sessions lost a day to notes asserting
   behaviour nobody had verified.
-- Prefer the **graphify** graph (`graphify-out/`, gitignored, rebuildable) over
-  grepping for architecture, caller and impact questions, and keep it current
-  with `graphify extract . --update` after structural work. Its docs need an LLM
-  key, so run it as `graphify extract . --update --code-only` unless someone
-  wants to spend a key on the prose. It reports a **syntax error in
-  `menubar/VoicesWindow.swift`** — a parser limitation, not a defect:
-  `swiftc -parse` is clean, so check the compiler before believing it.
+- Prefer the **graphify** graph over grepping for architecture, caller and impact
+  questions: `graphify query "<q>" --graph /build/Developer/_graphs/gateway/graphify-out/graph.json`.
+  It refreshes itself hourly from `main`; nobody runs `graphify update` or
+  `graphify extract` by hand, and unreleased code is checked against the worktree. It reports a **syntax error in
+  `menubar/VoicesWindow.swift`**: a parser limitation, not a defect. `swiftc -parse`
+  is clean, so check the compiler before believing it.
 - **A page must never be able to resize the window.** A page whose content has a
   *required* height propagates it, and AppKit satisfies it by growing the
   `NSWindow` — the Fleet page did that to 1162pt on a 1080pt screen. Such a
