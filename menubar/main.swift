@@ -14,9 +14,9 @@
 //    surfaces its state. Bundling a Python runtime would make the app
 //    self-contained but would also mean shipping a second copy of the
 //    interpreter; the directory path is therefore a setting.
-//  * Launch-at-login uses a LaunchAgent rather than `SMAppService.mainApp`,
-//    because `SMAppService` requires a signed, registered bundle and this app
-//    is unsigned. A LaunchAgent works regardless of signing.
+//  * Launch-at-login uses a LaunchAgent rather than `SMAppService.mainApp`.
+//    It predates the stable signing identity (0.2.239) and works whatever the
+//    signature; it is on by default and switchable off (`LoginDefault`).
 //  * Status is polled from the gateway's own `/health`, so what the menu shows
 //    is what the service actually reports, not what the app hopes is true.
 
@@ -163,6 +163,9 @@ struct AppConfig: Codable {
     /// Optional so an existing config file written before this field existed
     /// still decodes; `nil` is treated as "has not launched before".
     var hasLaunchedBefore: Bool?
+    /// The owner's explicit "off" for launch at login — not a mirror of the plist, which stays
+    /// the one record of whether it is on. `nil` (never chosen) means on (`LoginDefault`).
+    var launchAtLoginOptedOut: Bool?
 
     /// Whether quitting the app leaves the gateway running.
     ///
@@ -1395,6 +1398,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainWindow.shared.show(section: "overview")
         }
         ConfigStore.shared.update { $0.hasLaunchedBefore = true }
+        if LoginDefault.shouldInstall(installed: LaunchAgent.isInstalled,
+                                      optedOut: ConfigStore.shared.config.launchAtLoginOptedOut,
+                                      executable: Bundle.main.executableURL?.resolvingSymlinksInPath().path) {
+            LaunchAgent.install()
+        }
 
         // Editing shortcuts (⌘A/⌘C/⌘V/⌘X/⌘Z) are dispatched through the main
         // menu, so it has to exist even though an accessory app never shows a

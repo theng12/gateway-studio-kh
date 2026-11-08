@@ -2688,6 +2688,8 @@ def health() -> dict[str, Any]:
         # than assumed; the number is here so a rollout can assert it and the kit
         # can state it. It is not a gate — see `adapters.studio_hub`.
         "studio_hub": {"supported_version": SUPPORTED_STUDIO_HUB_VERSION},
+        # HTTP requests being answered, by kind (`RequestsInFlight`). This read is one `status`.
+        "requests_in_flight": requests_in_flight(),
     }
 
 
@@ -5022,9 +5024,62 @@ async def guest_scope(request: Request, call_next):
     return await call_next(request)
 
 
+class RequestsInFlight:
+    """**What this gateway is doing right now, by kind**, published on `/health` as
+    `requests_in_flight` so an upgrade guard can judge real work rather than open sockets
+    (Developer 2026-11-08: a fleet controller is polled every few seconds and never goes quiet).
+
+    A pure ASGI wrapper, so a request counts until its last body byte is sent — a
+    `call_next` middleware returns at the headers and would let a long artifact download read
+    as finished. Every kind is always present, so `0` is a reading, never an absence:
+
+    * `status` — a GET/HEAD/OPTIONS that is not a transfer (polls, check-ins, this read).
+    * `artifact_transfer` — a GET that sends a file (outputs, archives, downloads).
+    * `upload` — a write carrying a multipart body.
+    * `write` — any other POST/PUT/PATCH/DELETE (job admission, settings, actions).
+    """
+
+    KINDS = ("status", "artifact_transfer", "upload", "write")
+    _TRANSFER = re.compile(r"/outputs/[^/]+$|/output$|/download$|/archive$|/archives/[^/]+$")
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    @classmethod
+    def kind(cls, method: str, path: str, content_type: str) -> str:
+        if method in ("GET", "HEAD", "OPTIONS"):
+            return "artifact_transfer" if cls._TRANSFER.search(path) else "status"
+        return "upload" if content_type.startswith("multipart/") else "write"
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get("headers") or [])
+        kind = self.kind(scope["method"], scope["path"],
+                         headers.get(b"content-type", b"").decode("latin-1").lower())
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT_BY_KIND[kind] += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            with _IN_FLIGHT_LOCK:
+                _IN_FLIGHT_BY_KIND[kind] -= 1
+
+
+_IN_FLIGHT_BY_KIND: dict[str, int] = dict.fromkeys(RequestsInFlight.KINDS, 0)
+_IN_FLIGHT_LOCK = threading.Lock()
+
+
+def requests_in_flight() -> dict[str, int]:
+    with _IN_FLIGHT_LOCK:
+        return dict(_IN_FLIGHT_BY_KIND)
+
+
 # Added last, so it is the outermost of the app's own middleware: the body is counted before
 # anything else in this process reads it.
 app.add_middleware(BoundedUploadBody)
+# Outside even that, so an upload counts from its first byte; it reads no body itself.
+app.add_middleware(RequestsInFlight)
 
 
 
