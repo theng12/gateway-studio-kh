@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.239 — 2026-11-08
+
+- Developer app gates have a fixed v1 contract: a gate request, its inventory and its result are checked against one schema before anything is sent or shown.
+- Fleet trusts a Mac's gate facts only when they name that Mac's own controller and node; facts for another Mac are ignored, and gate traffic uses only the Fleet credential, never this Mac's operator key.
+- The app is signed with the shared KH signing identity, inside files first, so its signature stays the same from one build to the next.
+
 ## 0.2.238 — 2026-11-08
 
 - Fleet Locations and Machines follow the page's Sort choice, while a selected Machines column keeps its own order. Unknown values stay last.
