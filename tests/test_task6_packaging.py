@@ -98,6 +98,7 @@ class _BuildFixture:
         self.asset = self.root / "python-asset.tar.gz"
         self.pip_count = self.root / "pip-count"
         self.codesign_log = self.root / "codesign.log"
+        self.codesign_calls = self.root / "codesign-calls.log"
 
         shutil.copy2(BUILD_SCRIPT, self.menubar / "build.sh")
         shutil.copy2(ROOT / "menubar" / "make_icon.py", self.menubar / "make_icon.py")
@@ -194,9 +195,17 @@ if [ "${TASK6_FAIL_CODESIGN:-0}" = "1" ]; then
   echo "fixture codesign failed" >&2
   exit 77
 fi
+printf '%s\\n' "$*" >> "$TASK6_CODESIGN_CALLS"
 if [ "${1:-}" = "--verify" ]; then
   printf 'verified\\n' >> "$TASK6_CODESIGN_LOG"
 fi
+""",
+        )
+        # The real Keychain is never read: the fixture states which identities exist.
+        _write_executable(
+            self.bin / "security",
+            """
+printf '%s\\n' "${TASK6_SECURITY_OUTPUT:-}"
 """,
         )
 
@@ -213,6 +222,8 @@ fi
             "TASK6_ASSET_SOURCE": str(self.asset),
             "TASK6_PIP_COUNT": str(self.pip_count),
             "TASK6_CODESIGN_LOG": str(self.codesign_log),
+            "TASK6_CODESIGN_CALLS": str(self.codesign_calls),
+            "GATEWAY_SIGN_IDENTITY": "",
             "TASK6_VALIDATOR_PYTHON": sys.executable,
             "GATEWAY_PYTHON_URL": "https://fixture.invalid/python.tar.gz",
         }
@@ -585,6 +596,36 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             self.assertNotEqual(result.returncode, 0, output)
             self.assertNotIn("Built:", output)
             self.assertNotIn("Installed:", output)
+
+    def test_missing_named_signing_identity_fails_closed(self) -> None:
+        with _BuildFixture() as fixture:
+            fixture.write_authority(tuple(_authority_files()))
+            result = fixture.run(GATEWAY_SIGN_IDENTITY="KH Missing Fixture Identity")
+            output = result.stdout + result.stderr
+            self.assertNotEqual(result.returncode, 0, output)
+            self.assertIn('signing identity "KH Missing Fixture Identity" is not in the Keychain', output)
+            self.assertNotIn("Built:", output)
+            self.assertFalse(fixture.codesign_calls.exists(), "nothing may be signed ad-hoc instead")
+
+    def test_named_identity_signs_nested_code_then_bundle_without_deep(self) -> None:
+        with _BuildFixture() as fixture:
+            fixture.write_authority(tuple(_authority_files()))
+            name = "KH Fixture Signing"
+            result = fixture.run(
+                GATEWAY_SIGN_IDENTITY=name,
+                TASK6_SECURITY_OUTPUT=f'  1) {"A" * 40} "{name}" (CSSMERR_TP_NOT_TRUSTED)',
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = fixture.codesign_calls.read_text(encoding="utf-8").splitlines()
+            signing = [c for c in calls if not c.startswith("--verify")]
+            self.assertTrue(signing)
+            for call in signing:
+                self.assertNotIn("--deep", call)
+                self.assertIn(f"--sign {name}", call)
+            helper = [c for c in signing if "--identifier kh.gateway.python" in c]
+            self.assertEqual(len(helper), 1, calls)
+            self.assertTrue(helper[0].endswith("Contents/Resources/python/bin/python3"), helper)
+            self.assertTrue(signing[-1].endswith("/gateway-kh.app"), "the bundle is sealed last")
 
     def test_archive_checksum_mismatch_cannot_claim_a_built_bundle(self) -> None:
         with _BuildFixture() as fixture:

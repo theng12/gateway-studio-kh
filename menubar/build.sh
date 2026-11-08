@@ -557,13 +557,28 @@ echo "==> generating icon"
   exit 1
 }
 
-echo "==> ad-hoc signing"
+# The shared KH identity (_orchestra/developer-handoff/SIGNING.md) gives a designated
+# requirement that survives a rebuild, unlike an ad-hoc cdhash. Nested code is signed
+# first, then the bundle; --deep is only ever a verification flag, never a signing one.
+# GATEWAY_SIGN_IDENTITY="" signs ad-hoc; a named identity that is missing fails closed.
+SIGN_ID="${GATEWAY_SIGN_IDENTITY-KH Studio Local Signing}"
+if [ -n "$SIGN_ID" ] && ! security find-identity -p codesigning | grep -qF "\"$SIGN_ID\""; then
+  echo "ERROR: signing identity \"$SIGN_ID\" is not in the Keychain (GATEWAY_SIGN_IDENTITY= signs ad-hoc)" >&2
+  exit 1
+fi
+SIGN="${SIGN_ID:--}"
+echo "==> signing with ${SIGN_ID:-ad-hoc}"
 # Development/import probes may have created bytecode before bundling. These
 # generated files are not shipped; the launcher uses -B to keep the seal intact.
 find "$APP/Contents/Resources" -type d -name "__pycache__" -prune -print | while IFS= read -r CACHE; do preserve_path "$CACHE"; done
-# Unsigned bundles are quarantined by Gatekeeper when copied around. An ad-hoc
-# signature is enough for local use and keeps the LaunchAgent happy.
-codesign --force --deep --sign - "$APP"
+find "$APP/Contents/Resources" -type f \( -name '*.so' -o -name '*.dylib' \) -print0 \
+  | xargs -0 -n 50 codesign --force --timestamp=none --sign "$SIGN"
+# The interpreter is the persistent helper that runs the gateway: a stable identifier,
+# so its requirement does not change when the Python minor version does.
+PY_HELPER="$APP/Contents/Resources/python/bin/python3"
+if [ -L "$PY_HELPER" ]; then PY_HELPER="$(dirname "$PY_HELPER")/$(readlink "$PY_HELPER")"; fi
+codesign --force --timestamp=none --sign "$SIGN" --identifier kh.gateway.python "$PY_HELPER"
+codesign --force --timestamp=none --sign "$SIGN" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 # A DMG belongs beside the app on every build: a stable build is not ready until it can
