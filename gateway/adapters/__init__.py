@@ -25,6 +25,7 @@ from __future__ import annotations
 from .anthropic import AnthropicBackend
 from .base import Artifact, Backend, BackendError, BackendRequest, BackendResult
 from .bfl import BflBackend
+from .chrome_extension import ChromeExtensionBackend
 from .elevenlabs import ElevenLabsBackend
 from .fal import FalBackend
 from .fish import FishBackend
@@ -40,6 +41,7 @@ from ..providers.definitions import (
     IMPLEMENTED_KINDS,
     KIND_POOL,
     KIND_ANTHROPIC,
+    KIND_CHROME_EXTENSION,
     KIND_BFL,
     KIND_ELEVENLABS,
     KIND_FAL,
@@ -117,6 +119,7 @@ _ELEVENLABS = ElevenLabsBackend()
 _STUDIO_HUB = StudioHubBackend()
 _XAI = XaiBackend()
 _POOL = PoolBackend()
+_CHROME_EXTENSION = ChromeExtensionBackend()
 
 _BY_KIND: dict[str, Backend] = {
     KIND_OPENAI_COMPATIBLE: _OPENAI_COMPATIBLE,
@@ -131,6 +134,7 @@ _BY_KIND: dict[str, Backend] = {
     KIND_STUDIO_HUB: _STUDIO_HUB,
     KIND_XAI: _XAI,
     KIND_POOL: _POOL,
+    KIND_CHROME_EXTENSION: _CHROME_EXTENSION,
 }
 
 
@@ -197,6 +201,8 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     # pool that offered another modality would be offering a route that tries
     # chat models for an image request.
     KIND_POOL: frozenset({"chat"}),
+    # Video first; image and audio join when their extensions speak the wire (handoff §6).
+    KIND_CHROME_EXTENSION: frozenset({"video"}),
 }
 
 assert set(_MODALITIES_BY_KIND) == set(_BY_KIND), (

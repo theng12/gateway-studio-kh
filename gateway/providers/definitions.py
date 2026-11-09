@@ -53,6 +53,8 @@ KIND_XAI = "xai"
 #: hands the request to whichever adapter that member belongs to, so a pool can
 #: mix vendors freely and no member needs to know it is in one.
 KIND_POOL = "pool"
+#: A browser extension that polls this Gateway for jobs (`extension_workers`, wire v1).
+KIND_CHROME_EXTENSION = "chrome_extension"
 
 #: Kinds that actually have a generation adapter.
 #:
@@ -77,6 +79,7 @@ IMPLEMENTED_KINDS: frozenset[str] = frozenset(
         KIND_ELEVENLABS,
         KIND_XAI,
         KIND_POOL,
+        KIND_CHROME_EXTENSION,
     }
 )
 

@@ -48,6 +48,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Respon
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import __version__
+from . import extension_workers
 from .build import build_id
 from .gate_transport import SOURCE_CEILING as _GATE_SOURCE_CEILING
 from .adapters import BackendError, BackendRequest, adapter_for
@@ -136,6 +137,7 @@ from .content_packs import MAX_ARCHIVE as _PACK_MAX_ARCHIVE  # noqa: E402 - a co
 #: A Content Pack archive is capped at `content_packs.MAX_ARCHIVE` by the route that reads it;
 #: the door has to allow the archive *and* whatever the request carries beside it.
 _MAX_PACK_BODY = _PACK_MAX_ARCHIVE + (2 * 1024 * 1024)
+_EXTENSION_RESULT_BODY = extension_workers.MAX_RESULT_BYTES + (2 * 1024 * 1024)
 
 #: What a multipart envelope costs around one file: boundaries, part headers, the other fields.
 #: **A declared `Content-Length` is the whole body, never the file**, so a route that compares
@@ -192,6 +194,9 @@ _UPLOAD_CEILINGS: tuple[tuple["re.Pattern[str]", int, str, str], ...] = (
     (re.compile(r"^/v1/chat/completions$"), _CHAT_BODY_CEILING, "a chat turn", "body"),
     (re.compile(r"^/v1/chat/responses$"), _CHAT_BODY_CEILING, "a chat turn", "body"),
     (re.compile(r"^/v1/vision/analyze$"), _VISION_BODY_CEILING, "a vision image", "body"),
+    # A browser worker's finished clip, streamed by its route (`extension_workers`).
+    (re.compile(r"^/api/workers/jobs/[^/]+/result$"), _EXTENSION_RESULT_BODY,
+     "a browser worker's result", "upload"),
 )
 
 #: Any other request with a body: JSON and small forms. Four MiB, because the largest
@@ -370,6 +375,10 @@ def _upload_credentials_ok(scope: Any) -> bool:
         if admin_session.guest_by_key(token) is not None:
             if (scope.get("path") or "") in _GUEST_UPLOAD_PATHS:
                 return True
+        # A browser worker's token opens its result door only, and only while workers are on.
+        if ((scope.get("path") or "").startswith("/api/workers/") and extension_workers.enabled()
+                and extension_workers.worker_for(token) is not None):
+            return True
     cookie_header = (headers.get(b"cookie") or b"").decode("latin-1")
     for part in cookie_header.split(";"):
         name, _, value = part.strip().partition("=")
@@ -4972,6 +4981,7 @@ from .admin import AdminError  # noqa: E402 - mounted after app setup
 from .admin import router as admin_router  # noqa: E402
 
 app.include_router(admin_router)
+extension_workers.install(app)
 
 
 #: What a **guest** session may reach under `/admin`, and nothing more.
