@@ -244,11 +244,11 @@ class LastPushPendingRule(Base):
             t.start()
             time.sleep(0.05)
 
-            # While the lock is held, pending must NOT be marked interrupted.
+            # While its own lock is held, pending must survive untouched and NOT be interrupted.
             state = rp.last_push()
             entry = state.get("locations", {}).get("alpha", {})
-            self.assertTrue(entry.get("pending"),
-                            "pending must stay while the controller lock is held")
+            self.assertIs(entry.get("pending"), True,
+                          "pending must stay while the controller lock is held")
             self.assertNotEqual(entry.get("code"), "CATCHUP_INTERRUPTED")
 
             barrier.set()

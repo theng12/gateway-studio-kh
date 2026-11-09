@@ -867,7 +867,8 @@ def last_push() -> dict[str, Any]:
     # `pending` is only written while that controller's lock is held, so one seen without it is a
     # catch-up the Gateway stopped in the middle of; the next fleet pass tries it again.
     for cid, entry in (state.get("locations") or {}).items():
-        if isinstance(entry, dict) and entry.pop("pending", None) and not _lock_for(cid).locked():
+        if (isinstance(entry, dict) and not _lock_for(cid).locked()
+                and entry.pop("pending", None)):
             entry.update(ok=False, code="CATCHUP_INTERRUPTED",
                          detail="the automatic push was interrupted; it will be tried again")
     return state
