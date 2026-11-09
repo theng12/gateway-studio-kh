@@ -136,6 +136,14 @@ History and measurements: [docs/video-capabilities.md](docs/video-capabilities.m
 
 History and measurements: [docs/discovery-and-availability.md](docs/discovery-and-availability.md).
 
+## Browser-extension workers (`chrome_extension`) poll; they are not servers
+
+- Wire v1 (`/api/workers/*`) is Relay's handoff §4, kept exactly; `gateway/extension_workers.py` serves it and `adapters/chrome_extension.py` hands jobs to it. **Off by default** (`GATEWAY_EXTENSION_WORKERS`, live): off, every route there answers 404. Turning it on for a reachable Gateway is a security change the owner decides.
+- One record per thing: the job is the `JobStore` row (`upstream_job_id = ext:<worker>:<job>`, checkpointed at claim), tokens are sha256 digests in `APP_SUPPORT/extension-workers.json` through `admin_session`'s 0600 writer, and the hand-off is in memory. Never a second job store.
+- Paid credits: unclaimed = withdrawn, unsent; claimed then `ambiguous` (anything but `false`), a silent lease or a restart = `PROVIDER_SUBMISSION_UNCERTAIN` hold, never re-offered. A late result adopts into the held row via `worker.settle_result`.
+- A token opens only `/api/workers/*` for its own worker id and kind; the gateway key is not a worker token. Minting/revoking is `require_local_app`. Credits not reported are `null`.
+- No provider definition ships yet, so nothing reaches Story. A definition must keep the zero-price catalogue shape (contract trap), and `chargeable` stays truthful: true, because Flow spends credits.
+
 ## Sound sources are managed like providers, and are not providers
 
 - A sound source has no entry in `providers/definitions.py`. It is declared once in `sound_sources.SOUND_SOURCE_DEFINITIONS` with one class per kind in `_ADAPTERS`, and the two are checked against each other at import.
