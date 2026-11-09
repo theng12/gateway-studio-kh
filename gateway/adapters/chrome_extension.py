@@ -13,7 +13,7 @@ from __future__ import annotations
 import base64
 import time
 
-from .. import extension_workers as ew
+from .. import extension_workers as ew, video_capabilities
 from .base import BackendError, BackendRequest, BackendResult, staged_bytes, STAGED_INPUT_GONE, staged_path
 
 _POLL_SECONDS = 1.0
@@ -42,17 +42,46 @@ def _references(request: BackendRequest) -> list[dict[str, str]]:
     return out
 
 
+def _refuse(message: str) -> BackendError:
+    return BackendError(message, code="INVALID_REQUEST", status=422, upstream_accepted=False)
+
+
 def _payload(request: BackendRequest, references: list[dict[str, str]]) -> dict:
+    """The §4 job, from the model's `VideoCapability` record. What the record does not publish is
+    refused here, before any worker sees it (the extension would otherwise improvise and spend)."""
     params = request.params
+    record = video_capabilities.for_model(request.provider_id, request.model_id)
+    if record is None:
+        raise _refuse(f"{request.model_id} has no capability record; it is not selectable")
+    text = "text-to-video" in record.modes
     duration = params.get("duration_seconds", params.get("duration"))
+    if duration is None:
+        duration = record.duration_default
+    try:
+        duration = int(duration)
+    except (TypeError, ValueError):
+        raise _refuse(f"duration {duration!r} is not a whole number of seconds") from None
+    if duration not in record.durations():
+        raise _refuse(f"{request.model_id} makes {', '.join(map(str, record.durations()))} s clips; "
+                      f"{duration} s was asked for")
+    aspect = params.get("aspect_ratio") or record.aspect_ratios[0]
+    if aspect not in record.aspect_ratios:
+        raise _refuse(f"{request.model_id} publishes {', '.join(record.aspect_ratios)}; {aspect} was asked for")
+    if text and references:
+        raise _refuse(f"{request.model_id} is text-to-video and takes no picture")
+    if not text and not references:
+        raise _refuse(f"{request.model_id} needs its reference picture")
+    if len(references) > record.max_reference_images:
+        raise _refuse(f"{request.model_id} takes at most {record.max_reference_images} reference "
+                      f"image(s); {len(references)} were named")
     return {
         "kind": request.modality,
-        "videoMode": "image" if references else "text",
+        "videoMode": "text" if text else "image",
         "prompt": str(params.get("prompt") or ""),
         "modelKey": request.model_id,
         "modelLabel": request.display_name or request.model_id,
         "durationSec": duration,
-        "aspectRatio": params.get("aspect_ratio"),
+        "aspectRatio": aspect,
         "flowProjectId": request.values.get("flow_project_id") or None,
         "referenceImages": references,
     }
@@ -71,15 +100,15 @@ class ChromeExtensionBackend:
         if kind not in ew.KINDS:
             raise BackendError(f"browser workers do not serve {kind}", code="INVALID_REQUEST",
                                upstream_accepted=False)
+        payload = _payload(request, _references(request))
         if not ew.broker.online(kind):
             raise BackendError("no browser worker is online for this model", code="WORKER_OFFLINE",
                                retryable=True, upstream_accepted=False)
-        job = ew.broker.offer(kind, _payload(request, _references(request)))
-        try:
-            return self._follow(request, job)
-        finally:
-            if job.state in ("succeeded", "failed"):
-                ew.broker.forget(job)
+        job = ew.broker.offer(kind, payload)
+        result = self._follow(request, job)
+        # Forgotten only once its answer is in hand; a held job stays so a late answer can find it.
+        ew.broker.forget(job)
+        return result
 
     def _follow(self, request: BackendRequest, job: ew.WorkerJob) -> BackendResult:
         offered = time.time()
@@ -105,11 +134,14 @@ class ChromeExtensionBackend:
                                      payload={"worker_id": job.owner})
             if job.state == "failed":
                 if job.ambiguous:
+                    ew.broker.rehold(job)   # a later result for it is adopted, not ignored
                     raise _uncertain(f"the browser worker could not tell whether it was charged: "
                                      f"{job.error}")
+                ew.broker.forget(job)
                 raise BackendError(job.error, code="PROVIDER_FAILED", upstream_accepted=True,
                                    upstream_settled=True)
-            if time.time() - job.last_heard > ew.lease_seconds():
-                ew.broker.hold(job)
+            # `hold` is the one transition that can lose a race with the worker's answer: only a
+            # hold that actually happened raises; otherwise the answer landed, so read it next turn.
+            if time.time() - job.last_heard > ew.lease_seconds() and ew.broker.hold(job):
                 raise _uncertain(f"the browser worker went silent for over {int(ew.lease_seconds())} s "
                                  "with this job; it is held, never sent again")

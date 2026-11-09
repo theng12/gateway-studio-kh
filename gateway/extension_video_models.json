@@ -1,0 +1,36 @@
+{
+  "_note": "Copied by script from Relay's tested Flow catalogue; never hand-edited. Re-copy when Relay's catalogue changes.",
+  "source": "chrome-extensions/story-studio-video-generator/src/lib/video-models.js FALLBACK_VIDEO_MODELS",
+  "source_sha256": "d215b19dcdf47f25888411f7eb0e2b9c278b38b5d2a9f4878205e6cda3ebd78f",
+  "source_date": "2026-11-09",
+  "aspect_ratios": [
+    "16:9"
+  ],
+  "max_reference_images": 1,
+  "models": [
+    {
+      "key": "macaron_cookie_t2v_4s",
+      "label": "Omni 1.2 Flash - 4 seconds",
+      "mode": "text",
+      "duration_seconds": 4
+    },
+    {
+      "key": "abra_t2v_8s",
+      "label": "Omni Flash - 8 seconds",
+      "mode": "text",
+      "duration_seconds": 8
+    },
+    {
+      "key": "macaron_cookie_r2v_3s",
+      "label": "Omni 1.2 Flash - 3 seconds",
+      "mode": "image",
+      "duration_seconds": 3
+    },
+    {
+      "key": "abra_r2v_10s",
+      "label": "Omni Flash - 10 seconds",
+      "mode": "image",
+      "duration_seconds": 10
+    }
+  ]
+}

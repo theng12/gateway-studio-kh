@@ -25,6 +25,7 @@ import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ..config import CUSTOM_PROVIDERS_PATH
@@ -1013,6 +1014,33 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
             {"id": "s1", "display_name": "Fish S1", "modality": "tts"},
         ),
         notes="Free tier (s2.1-pro-free) runs the same S2.1 Pro model as paid, under a Fair Use Policy.",
+    ),
+    ProviderDefinition(
+        id="story-studio-video",
+        display_name="Story Studio Video (browser extension)",
+        category="video",
+        kind=KIND_CHROME_EXTENSION,
+        base_url="",  # workers poll this Gateway; nothing is called out
+        modalities=("video",),
+        discovery=DISCOVERY_STATIC,
+        description="Flow video made by the Story Studio Video Chrome extension, which polls this "
+                    "Gateway for jobs. Spends Flow credits. Needs GATEWAY_EXTENSION_WORKERS on.",
+        docs_url="",
+        credential_fields=(
+            CredentialField(
+                key="flow_project_id", label="Flow project id", env_var="STORY_STUDIO_FLOW_PROJECT_ID",
+                secret=False, required=False,
+                help_text="Optional: the Flow project the extension works in. Blank lets it choose.",
+            ),
+        ),
+        # Copied by script from Relay's tested catalogue; the same file feeds `video_capabilities`.
+        static_models=tuple(
+            {"id": model["key"], "display_name": model["label"], "modality": "video"}
+            for model in json.loads(
+                (Path(__file__).parent.parent / "extension_video_models.json").read_text())["models"]
+        ),
+        default_enabled=False,
+        notes="Off by default. Each run spends Flow credits; balances show on the Providers page.",
     ),
 
     # --------------------------------------------------------------------- local

@@ -29,7 +29,9 @@ than the provider's current schema is stale — re-read it rather than editing f
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 #: Reading a value is one thing; publishing it is another. These are the two provenance words a
 #: record may use, and they are the same words `catalog.LIMIT_SOURCES` publishes for limits.
@@ -195,6 +197,38 @@ VIDEO_CAPABILITIES: tuple[VideoCapability, ...] = (
         reference_kinds=("image",),
     ),
 )
+
+#: The browser-extension worker's Flow models, copied by script from Relay's tested catalogue.
+EXTENSION_PROVIDER_ID = "story-studio-video"
+EXTENSION_MODELS_PATH = Path(__file__).with_name("extension_video_models.json")
+
+
+def _extension_records() -> tuple[VideoCapability, ...]:
+    """One record per Flow key. A text key takes no picture; an image key takes exactly its one
+    reference (without one the extension would generate a picture itself, spending credits
+    nobody asked for — so `chrome_extension` refuses it)."""
+    data = json.loads(EXTENSION_MODELS_PATH.read_text())
+    return tuple(
+        VideoCapability(
+            provider_id=EXTENSION_PROVIDER_ID,
+            model_id=model["key"],
+            modes=("text-to-video",) if model["mode"] == "text" else ("reference-to-video",),
+            aspect_ratios=tuple(data["aspect_ratios"]),
+            duration_min=int(model["duration_seconds"]),
+            duration_max=int(model["duration_seconds"]),
+            duration_default=int(model["duration_seconds"]),
+            reference_field=None if model["mode"] == "text" else "referenceImages",
+            max_reference_images=0 if model["mode"] == "text" else int(data["max_reference_images"]),
+            reference_kinds=() if model["mode"] == "text" else ("image",),
+            source=CURATED,
+            source_date=data["source_date"],
+            source_url=f"{data['source']} sha256:{data['source_sha256']}",
+        )
+        for model in data["models"]
+    )
+
+
+VIDEO_CAPABILITIES = VIDEO_CAPABILITIES + _extension_records()
 
 _BY_MODEL: dict[tuple[str, str], VideoCapability] = {
     (record.provider_id, record.model_id): record for record in VIDEO_CAPABILITIES

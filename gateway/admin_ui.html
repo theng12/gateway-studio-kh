@@ -1121,6 +1121,33 @@
     <div id="sfx-msg" class="msg" role="status" aria-live="polite"></div>
     <div id="sfx-sources"><div class="empty">Reading sound sources…</div></div>
     </div><!-- /provider-pane-sfx -->
+
+    <div class="pane" id="provider-pane-extension-workers" style="display:none">
+    <!-- Browser workers — the Story Studio Video Chrome extension polls this Gateway for jobs
+         (wire v1, `gateway/extension_workers.py`). The route answers 404 while the switch is off,
+         which is drawn as "off", never as an error. Pairing (a token) and unpairing are this Mac's
+         app only; a token is shown once, then dropped. Credits nobody reported read "unknown". -->
+    <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:var(--s8)">
+      <h2 style="margin:0">Browser workers</h2>
+      <button class="sm" type="button" onclick="loadExtensionWorkers()">Refresh</button>
+    </div>
+    <p class="hint" style="margin:0 0 12px;max-width:760px">
+      Chrome extensions that make video in Flow for this Gateway. Each run spends Flow credits, so
+      a job a worker took and then went quiet on is <b>held, never sent again</b>.
+    </p>
+    <div id="ew-pair" class="row" style="display:none;gap:var(--s8);margin-bottom:12px">
+      <label for="ew-worker-id">Worker name</label>
+      <input id="ew-worker-id" type="text" autocomplete="off" placeholder="e.g. chrome-studio">
+      <button class="sm" type="button" id="ew-pair-btn" onclick="ewPair(this)">Pair</button>
+    </div>
+    <div id="ew-token" class="row" style="display:none;gap:var(--s8);margin-bottom:12px">
+      <label for="ew-token-value">Paste this into the extension now; it is not shown again</label>
+      <input id="ew-token-value" type="text" readonly autocomplete="off">
+      <button class="sm" type="button" onclick="ewTokenDone()">Done</button>
+    </div>
+    <div id="ew-msg" class="msg" role="status" aria-live="polite"></div>
+    <div id="ew-workers"><div class="empty">Reading browser workers…</div></div>
+    </div><!-- /provider-pane-extension-workers -->
   </section>
   <!-- CREATE -->
   <section id="view-create" style="display:none">
@@ -1652,6 +1679,7 @@ function setView(view) {
   // `#sfx` is the same trick for the sound sources pane: the quota route's guide points the owner
   // at it, and a link that landed on the Providers list would leave him hunting for the tab.
   else if ((location.hash || '').startsWith('#sfx')) selectProviderTab('sfx');
+  else if ((location.hash || '').startsWith('#extension-workers')) selectProviderTab('extension-workers');
   // **Apply the tab, do not just draw its button.** The strip said "Providers" while the HTML's
   // first pane (Concurrency) was the one on screen: `renderProviderTabs` only paints buttons, and
   // nothing showed the pane `providerTab` names until a tab was clicked. A tab the owner picked in
@@ -3830,6 +3858,7 @@ const PROVIDER_TABS = [
   // the Providers list itself: it offers no model, and a source that appeared there would fail
   // the gateway's own "every provider has a working adapter" gate.
   { key: 'sfx', title: 'SFX', hint: 'Where cue and bed audio comes from, and its key' },
+  { key: 'extension-workers', title: 'Browser workers', hint: 'Chrome extensions that make video for this Gateway' },
   { key: 'capacity', title: 'Concurrency', hint: 'How much work runs at once, per lane' },
   { key: 'queue', title: 'Queue', hint: 'What is waiting, and what is holding each lane' },
   { key: 'measured', title: 'Measured', hint: 'What each model has actually carried' },
@@ -3864,6 +3893,102 @@ function selectProviderTab(key) {
   // of the operator. `loadSfxSources` is called only from here, so a source's quota is never
   // re-read behind a page nobody is looking at.
   if (key === 'sfx') loadSfxSources();
+  if (key === 'extension-workers') loadExtensionWorkers();
+}
+
+// ---------------------------------------------------------------------------
+// Browser workers -- `/admin/api/extension-workers` (404 = switched off).
+function ewAgo(at) {
+  if (at == null) return 'never';
+  const s = Math.max(0, Math.round(Date.now() / 1000 - at));
+  return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : new Date(at * 1000).toLocaleString();
+}
+
+function ewCard(w) {
+  const credits = w.credits
+    ? `${esc(w.credits.value)} Flow credits <span class="hint">(${esc(w.credits.source)}, ${esc(w.credits.observedAt)})</span>`
+    : 'unknown — not reported yet';
+  const job = w.current_job
+    ? `${esc(w.current_job.jobId)} — ${esc(w.current_job.phase || 'claimed')}${w.current_job.message ? ': ' + esc(w.current_job.message) : ''}`
+    : 'none';
+  const held = (w.held_jobs || []).length
+    ? `<div class="hint">Held, outcome unknown: ${w.held_jobs.map(esc).join(', ')}</div>` : '';
+  const key = w.has_live_token ? 'paired' : (w.revoked_at != null ? 'unpaired' : 'no token');
+  const unpair = IN_APP && w.has_live_token
+    ? `<button class="sm" type="button" data-ew-revoke="${esc(w.worker_id)}" onclick="ewRevoke(this.dataset.ewRevoke, this)">Unpair</button>` : '';
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>${esc(w.worker_id)}</b>
+      <span class="badge">${w.online ? 'online' : 'offline'}</span>
+    </div>
+    <div>Last seen: ${ewAgo(w.last_seen_at)} · ${esc(key)} · extension ${esc(w.extension_version || 'version not stated')}</div>
+    <div>Credits: ${credits}</div>
+    <div>Job: ${job} · waiting jobs: ${esc(w.queue_depth ?? 0)}</div>
+    ${held}${unpair}
+  </div>`;
+}
+
+async function loadExtensionWorkers() {
+  const root = document.getElementById('ew-workers');
+  const pair = document.getElementById('ew-pair');
+  if (!root) return;
+  try {
+    const data = await api('/extension-workers');
+    if (pair) pair.style.display = IN_APP ? '' : 'none';
+    const workers = data.workers || [];
+    root.innerHTML = workers.length ? workers.map(ewCard).join('')
+      : `<div class="empty">No browser worker is paired yet.${IN_APP ? ' Pair one above.' : ' Pair one in the Gateway app on this Mac.'}</div>`;
+  } catch (e) {
+    if (pair) pair.style.display = 'none';
+    root.innerHTML = e.status === 404
+      ? '<div class="empty">Browser workers are switched off on this Gateway (GATEWAY_EXTENSION_WORKERS).</div>'
+      : `<div class="empty">Could not read browser workers: ${esc(e.message)}</div>`;
+  }
+}
+
+function ewSay(text, ok = true) {
+  const el = document.getElementById('ew-msg');
+  if (el) { el.textContent = text; el.className = ok ? 'msg ok' : 'msg err'; }
+}
+
+async function ewPair(btn) {
+  const input = document.getElementById('ew-worker-id');
+  const workerId = (input && input.value || '').trim();
+  if (!workerId) { ewSay('Give the worker a name first.', false); return; }
+  btn.disabled = true;
+  try {
+    const r = await api('/extension-workers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ worker_id: workerId, kind: 'video' }),
+    });
+    document.getElementById('ew-token-value').value = r.token;
+    document.getElementById('ew-token').style.display = '';
+    ewSay(`Paired ${workerId}. Any earlier token for it stopped working.`);
+    await loadExtensionWorkers();
+  } catch (e) {
+    // An unknown outcome is said as one: a second Pair would revoke a token that may have been made.
+    ewSay(e.ambiguous ? 'Not known whether pairing happened. Refresh the list before trying again.'
+      : `Could not pair: ${e.message}`, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function ewTokenDone() {
+  document.getElementById('ew-token-value').value = '';
+  document.getElementById('ew-token').style.display = 'none';
+}
+
+async function ewRevoke(workerId, btn) {
+  btn.disabled = true;
+  try {
+    await api(`/extension-workers/${encodeURIComponent(workerId)}`, { method: 'DELETE' });
+    ewSay(`Unpaired ${workerId}: its token no longer works. Pair it again to give it a new one.`);
+    await loadExtensionWorkers();
+  } catch (e) {
+    ewSay(`Could not unpair ${workerId}: ${e.message}`, false);
+    btn.disabled = false;
+  }
 }
 
 // ---------------------------------------------------------------------------

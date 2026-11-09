@@ -23,11 +23,14 @@ kept exactly; every addition is an optional field.
 from __future__ import annotations
 
 import json
+import math
+import re
 import secrets
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
@@ -157,6 +160,35 @@ class WorkerJob:
     changed: threading.Event = field(default_factory=threading.Event)
 
 
+_SOURCE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def valid_credits(credits: Any) -> dict | None:
+    """`{value, source, observedAt}` when the worker stated all three well, else `None` (unknown).
+
+    A finite, non-negative number; a short dotted source name (`flow.nzlxg`); an ISO-8601 time with
+    a zone. Anything else — NaN/Infinity (which JSON-encode to nothing a browser can parse), a bool,
+    a missing source or time — is not a statement, so it changes nothing.
+    """
+    if not isinstance(credits, dict):
+        return None
+    value, source, observed = credits.get("value"), credits.get("source"), credits.get("observedAt")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+            or value < 0:
+        return None
+    if not isinstance(source, str) or not _SOURCE.match(source):
+        return None
+    if not isinstance(observed, str) or len(observed) > 40:
+        return None
+    try:
+        stamp = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        return None
+    return {"value": value, "source": source, "observedAt": observed}
+
+
 class _Broker:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -174,12 +206,10 @@ class _Broker:
             entry = self.workers.setdefault(worker["worker_id"], {"credits": None})
             entry.update(kind=worker["kind"], seen_at=time.time())
             if isinstance(telemetry, dict):
-                credits = telemetry.get("credits")
-                # **Unknown is `None`, never 0**: only a stated number with its source is kept.
-                if isinstance(credits, dict) and isinstance(credits.get("value"), (int, float)) \
-                        and not isinstance(credits.get("value"), bool):
-                    entry["credits"] = {"value": credits["value"], "source": credits.get("source"),
-                                        "observedAt": credits.get("observedAt")}
+                credits = valid_credits(telemetry.get("credits"))
+                # **Unknown is `None`, never 0**: only a well-formed statement replaces the last one.
+                if credits is not None:
+                    entry["credits"] = credits
                 version = telemetry.get("extensionVersion")
                 if isinstance(version, str):
                     entry["extension_version"] = version[:40]
@@ -210,11 +240,53 @@ class _Broker:
             self._jobs.pop(job.job_id, None)
             return True
 
-    def hold(self, job: WorkerJob) -> None:
-        """The adapter gave up waiting on a claimed job; a late answer is still accepted."""
+    def hold(self, job: WorkerJob) -> bool:
+        """Claimed → held, **only if no answer landed first**. `False`: re-read the job's state."""
         with self._lock:
-            if job.state == "claimed":
+            if job.state != "claimed":
+                return False
+            job.state = "held"
+            return True
+
+    def rehold(self, job: WorkerJob) -> None:
+        """An ambiguous failure the adapter has turned into a hold: late answers go to the row."""
+        with self._lock:
+            if job.state == "failed":
                 job.state = "held"
+
+    def touch(self, worker: dict, job_id: str, phase: Any, message: Any) -> bool:
+        """Progress from the job's owner renews its lease; `False` for anyone else's job."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.owner != worker["worker_id"]:
+                return False
+            if job.state == "claimed":
+                job.last_heard = time.time()
+                job.phase = str(phase or "")[:80]
+                job.message = str(message or "")[:300]
+                job.changed.set()
+            return True
+
+    def answer(self, worker: dict, job_id: str, *, state: str, content: bytes | None = None,
+               media_type: str | None = None, error: str = "", ambiguous: bool = False) -> str:
+        """Give a claimed job its one answer. **The first answer wins**, under the lock.
+
+        `live`: the adapter is waiting and takes it. `taken`: an answer already landed, this one is
+        ignored. `late`: the Gateway is no longer waiting here (held, or forgotten by a restart);
+        the caller settles the durable row. `missing`: another worker's job.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None and job.owner != worker["worker_id"]:
+                return "missing"
+            if job is None or job.state == "held":
+                return "late"
+            if job.state != "claimed":
+                return "taken"
+            job.content, job.media_type = content, media_type
+            job.error, job.ambiguous, job.state = error, ambiguous, state
+            job.changed.set()
+            return "live"
 
     def forget(self, job: WorkerJob) -> None:
         with self._lock:
@@ -322,14 +394,22 @@ async def workers_progress(job_id: str, request: Request,
         return worker
     body = await _json(request)
     broker.seen(worker, body.get("telemetry"))
-    job = broker.owned(worker, job_id)
-    if job is None:
+    if not broker.touch(worker, job_id, body.get("phase"), body.get("message")):
         return _refusal(404, "JOB_NOT_FOUND", "no job of this worker has that id")
-    job.last_heard = time.time()
-    job.phase = str(body.get("phase") or "")[:80]
-    job.message = str(body.get("message") or "")[:300]
-    job.changed.set()
     return {"ok": True}
+
+
+def _held_row(worker: dict, job_id: str) -> dict | None:
+    """The durable row whose **current** attempt is this worker's job, or `None`.
+
+    Exact `upstream_job_id` only: an id that merely appears in an older attempt's log is not the
+    job's answer any more, so a newer winner is never overwritten from here.
+    """
+    from . import runtime
+
+    wanted = upstream_id(worker["worker_id"], job_id)
+    rows = runtime.store.jobs_for_upstream_batches([wanted])
+    return next((row for row in rows if row.get("upstream_job_id") == wanted), None)
 
 
 @router.post("/api/workers/jobs/{job_id}/fail")
@@ -339,17 +419,29 @@ async def workers_fail(job_id: str, request: Request,
     if isinstance(worker, JSONResponse):
         return worker
     body = await _json(request)
-    broker.seen(worker)
-    job = broker.owned(worker, job_id)
-    if job is None:
+    broker.seen(worker, body.get("telemetry"))
+    # Only `false` exactly is a definite failure: anything else may have spent credits.
+    ambiguous = body.get("ambiguous") is not False
+    error = str(body.get("error") or "the worker reported a failure")[:500]
+    outcome = broker.answer(worker, job_id, state="failed", error=error, ambiguous=ambiguous)
+    if outcome == "missing":
         return _refusal(404, "JOB_NOT_FOUND", "no job of this worker has that id")
-    if job.state == "claimed":
-        # Only `false` exactly is a definite failure: anything else may have spent credits.
-        job.ambiguous = body.get("ambiguous") is not False
-        job.error = str(body.get("error") or "the worker reported a failure")[:500]
-        job.state = "failed"
-        job.changed.set()
-    return {"ok": True}
+    if outcome != "late":
+        return {"ok": True}
+    row = _held_row(worker, job_id)
+    if row is None:
+        return _refusal(404, "JOB_NOT_FOUND", "no job of this worker has that id")
+    if ambiguous:
+        return {"ok": True, "held": True}   # still unknown: the hold stays, never replayed
+    # The answer the hold was waiting for: nothing was charged. `JobStore.fail` settles a hold
+    # and leaves any other verdict (a success, a cancel, a closed hold) as it was.
+    from . import runtime
+
+    runtime.store.fail(row["id"], code="PROVIDER_FAILED", detail=error, retryable=False)
+    held = broker.get(job_id)
+    if held is not None:
+        broker.forget(held)
+    return {"ok": True, "settled": True}
 
 
 @router.post("/api/workers/jobs/{job_id}/result")
@@ -375,26 +467,27 @@ async def workers_result(job_id: str, mediaType: str = Form(default=""),
         return _refusal(413, "RESULT_TOO_LARGE", f"a result may be at most {MAX_RESULT_BYTES} bytes")
     if not content:
         return _refusal(422, "RESULT_INVALID", "the uploaded file is empty")
-    job = broker.owned(worker, job_id)
-    if job is not None and job.state == "claimed":
-        job.content, job.media_type, job.state = content, media_type, "succeeded"
-        job.changed.set()
+    outcome = broker.answer(worker, job_id, state="succeeded", content=content, media_type=media_type)
+    if outcome == "missing":
+        return _refusal(404, "JOB_NOT_FOUND", "no job of this worker has that id")
+    if outcome != "late":
         return {"ok": True}
     # A late answer for a job the Gateway is holding: adopt it into the held row (first result
     # wins, `worker.settle_result`), so finished paid work is never thrown away.
     from . import runtime, worker as worker_module
     from .adapters.base import BackendError, BackendResult
 
-    rows = runtime.store.jobs_for_upstream_batches([upstream_id(worker["worker_id"], job_id)])
-    if not rows:
+    row = _held_row(worker, job_id)
+    if row is None:
         return _refusal(404, "JOB_NOT_FOUND", "no job of this worker has that id")
     try:
-        worker_module.settle_result(rows[0]["id"], BackendResult(content=content,
-                                                                 media_type=media_type), runtime.store)
+        worker_module.settle_result(row["id"], BackendResult(content=content, media_type=media_type),
+                                    runtime.store)
     except BackendError as exc:   # the same artifact check a live result meets
         return _refusal(422, "RESULT_INVALID", str(exc))
-    if job is not None:
-        broker.forget(job)
+    held = broker.get(job_id)
+    if held is not None:
+        broker.forget(held)
     return {"ok": True, "adopted": True}
 
 
