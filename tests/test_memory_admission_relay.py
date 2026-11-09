@@ -84,6 +84,15 @@ class MemoryAdmissionRelayTests(unittest.TestCase):
         self.assertEqual(old.json()["code"], "HUB_TOO_OLD")
         self.assertEqual(unknown.json()["code"], "UNKNOWN_MODEL")
 
+    def test_hub_228_coded_404_and_node_refused_pass_through(self):
+        coded = {"ok": False, "code": "UNKNOWN_MODEL", "detail": "this Mac does not know that model"}
+        with self.serve(404, coded):
+            answer = self.client.get(self.path, params={"model": "m"})
+        self.assertEqual((answer.status_code, answer.json()["code"]), (404, "UNKNOWN_MODEL"))
+        with self.serve(502, {"ok": False, "code": "NODE_REFUSED", "detail": "uncoded 404"}):
+            answer = self.client.get(self.path, params={"model": "m"})
+        self.assertEqual((answer.status_code, answer.json()["code"]), (502, "NODE_REFUSED"))
+
     def test_bad_machine_refused_before_any_call(self):
         response = self.client.get("/admin/api/fleet/controllers/site/machines/..%2Fx/memory/admission",
                                    params={"model": "m"})
