@@ -181,6 +181,7 @@ class AdapterTests(_Base):
         self.assertEqual(answer.status_code, 200)
         thread.join(5)
         self.assertEqual(box["result"].content, b"MP4BYTES")
+        self.assertIsNone(ew.broker.workers["chrome-a"]["credits"])   # no creditsAfter: still unknown
         self.assertEqual(box["result"].media_type, "video/mp4")
         self.assertEqual(captured, [ew.upstream_id("chrome-a", job["jobId"])])
 
@@ -273,6 +274,14 @@ class ResultDoorTests(_Base):
             answer = self.client.post(f"/api/workers/jobs/{job.job_id}/result", headers=self.auth(),
                                       data=data, files={"file": ("c", b"x")})
             self.assertEqual(answer.status_code, 422)
+
+    def test_credits_after_uses_the_telemetry_shape(self):
+        job = self._claimed()
+        after = {"value": 2, "source": "flow.nzlxg", "observedAt": "2026-11-09T10:00:00Z"}
+        self.client.post(f"/api/workers/jobs/{job.job_id}/result", headers=self.auth(),
+                         data={"mediaType": "video/mp4", "creditsAfter": json.dumps(after)},
+                         files={"file": ("c", b"x")})
+        self.assertEqual(ew.broker.workers["chrome-a"]["credits"], after)
 
     def test_over_the_cap_is_413_never_402(self):
         job = self._claimed()

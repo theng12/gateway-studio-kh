@@ -22,6 +22,7 @@ kept exactly; every addition is an optional field.
 """
 from __future__ import annotations
 
+import json
 import secrets
 import threading
 import time
@@ -342,12 +343,18 @@ async def workers_fail(job_id: str, request: Request,
 
 @router.post("/api/workers/jobs/{job_id}/result")
 async def workers_result(job_id: str, mediaType: str = Form(default=""),
+                         creditsAfter: str = Form(default=""),
                          file: UploadFile | None = File(default=None),
                          authorization: str | None = Header(default=None)):
     worker = _worker(authorization)
     if isinstance(worker, JSONResponse):
         return worker
-    broker.seen(worker)
+    # Optional, the telemetry `credits` shape ({value, source, observedAt}) as a JSON form field.
+    try:
+        credits_after = json.loads(creditsAfter) if creditsAfter else None
+    except ValueError:
+        credits_after = None
+    broker.seen(worker, {"credits": credits_after})
     media_type = mediaType.split(";")[0].strip().lower()
     if file is None or not media_type.startswith(f"{worker['kind']}/"):
         return _refusal(422, "RESULT_INVALID",
