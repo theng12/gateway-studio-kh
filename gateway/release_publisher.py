@@ -807,6 +807,34 @@ def push_delta(
 # The last push, remembered for the page
 # ---------------------------------------------------------------------------
 
+#: Per-controller push locks: two publishes naming disjoint controllers transfer at the same time;
+#: a publish naming a controller already being pushed waits for that controller only. Locks are
+#: taken in sorted order to avoid deadlock. A catch-up never waits — it skips a busy controller.
+_controller_locks: dict[str, threading.Lock] = {}
+_controller_locks_guard = threading.Lock()  # protects the dict itself, not individual locks
+
+
+def _lock_for(cid: str) -> threading.Lock:
+    """Return (or create) the per-controller lock for `cid`."""
+    with _controller_locks_guard:
+        lock = _controller_locks.get(cid)
+        if lock is None:
+            lock = threading.Lock()
+            _controller_locks[cid] = lock
+        return lock
+
+
+def _any_push_in_flight() -> bool:
+    """True when any controller lock is held — used by `last_push` to distinguish a live push
+    from an interrupted one."""
+    with _controller_locks_guard:
+        return any(lock.locked() for lock in _controller_locks.values())
+
+
+#: Short-lived lock for the state file read-modify-write; never held across a transfer.
+_state_lock = threading.Lock()
+
+
 def _read_state() -> dict[str, Any]:
     try:
         parsed = json.loads(_state_path().read_text(encoding="utf-8"))
@@ -819,7 +847,8 @@ def _write_state(state: dict[str, Any]) -> None:
     path = _state_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        config.write_secret(path, json.dumps(state, indent=2, sort_keys=True))
+        with _state_lock:
+            config.write_secret(path, json.dumps(state, indent=2, sort_keys=True))
     except OSError:
         pass
 
@@ -827,7 +856,7 @@ def _write_state(state: dict[str, Any]) -> None:
 def last_push() -> dict[str, Any]:
     """The last publish this gateway made, for the Fleet page."""
     state = _read_state()
-    if not _push_lock.locked():
+    if not _any_push_in_flight():
         # `pending` is only written while a push holds the lock, so one seen without it is a
         # catch-up the Gateway stopped in the middle of; the next fleet pass tries it again.
         for entry in (state.get("locations") or {}).values():
@@ -837,16 +866,37 @@ def last_push() -> dict[str, Any]:
     return state
 
 
-#: One release push at a time, by hand or automatic. A manual publish waits for a catch-up in
-#: flight; a catch-up never waits, it tries again on the next fleet pass.
-_push_lock = threading.Lock()
+def _resolve_controller_ids(controller_ids: list[str] | None) -> list[str]:
+    """Resolve `controller_ids=None` (all) to the actual set, before taking any lock."""
+    rows = [
+        str(row.get("id") or "")
+        for row in fleet._read()  # noqa: SLF001 - the roster
+    ]
+    if controller_ids is not None and fleet.LOCAL_ID in controller_ids:
+        rows.insert(0, fleet.LOCAL_ID)
+    if controller_ids is not None:
+        unknown = sorted(set(controller_ids) - set(rows))
+        if unknown or not controller_ids:
+            raise ReleaseError(f"Unknown controller id(s): {', '.join(unknown) or '(none given)'}.",
+                               400, "RELEASE_UNKNOWN_CONTROLLER")
+        rows = [cid for cid in rows if cid in set(controller_ids)]
+    return sorted(set(rows))  # stable order prevents deadlock
 
 
 def publish(**kwargs: Any) -> dict[str, Any]:
-    """`_publish`, one push at a time (see `_push_lock`)."""
+    """`_publish`, with per-controller locking (see `_controller_locks`)."""
     kwargs["artifact_path"] = resolve_artifact(kwargs["artifact_path"])
-    with _push_lock:
+    cids = _resolve_controller_ids(kwargs.get("controller_ids"))
+    kwargs["controller_ids"] = cids
+    # Acquire per-controller locks in sorted order; release all on exit.
+    locks = [_lock_for(cid) for cid in cids]
+    for lock in locks:
+        lock.acquire()
+    try:
         return _publish(**kwargs)
+    finally:
+        for lock in reversed(locks):
+            lock.release()
 
 
 def _publish(
@@ -1119,9 +1169,11 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
 
     Called after each fleet pass (`fleet.start_refresher`) with that pass's location rows. A
     controller qualifies when it answers, trusts this Gateway's key, and holds an older release or
-    none — never one holding something newer or unorderable. One push at a time (`_push_lock`, shared
-    with the manual publish), a growing per-controller back-off after a failure, and the outcome goes
-    into the last publish's report (`auto`, `at`) so the Fleet page shows it beside the others.
+    none — never one holding something newer or unorderable. Per-controller locking (see
+    `_controller_locks`): a catch-up skips a controller whose lock is held by another publish and
+    tries again on the next fleet pass. A growing per-controller back-off after a failure, and the
+    outcome goes into the last publish's report (`auto`, `at`) so the Fleet page shows it beside
+    the others.
 
     **Only once the release is out**: no rollout may be running (it sends the release itself, one
     controller at a time, and a catch-up push would jump its queue), and the newest release must have
@@ -1145,72 +1197,74 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
         if row.get("reachable")
         and (row.get("release") is None or ((held := _held_key(row)) is not None and held < target))
     ]
-    if not behind or not _push_lock.acquire(blocking=False):
+    if not behind:
         return None
-    started = False
-    try:
-        state = _read_state()
-        path, no_file = _catchup_artifact(state, version)
-        fingerprint = str(state.get("fingerprint") or "")
-        report = state.setdefault("locations", {})
-        now = time.time()
-        chosen: dict[str, Any] | None = None
-        changed = False
-        for row in behind:
-            cid = str(row["id"])
-            reason = no_file or _untrusted(row, fingerprint)
-            if reason:
-                old = report.get(cid) or {}
-                if not (old.get("skipped") and old.get("detail") == reason):
-                    print(f"[release] catch-up {row.get('label') or cid}: not sent, {reason}", flush=True)
-                    report[cid] = {"ok": False, "status": None, "code": "CATCHUP_SKIPPED", "skipped": True,
-                                   "auto": True, "at": int(now), "detail": reason, "release": None,
-                                   "label": row.get("label") or cid}
-                    changed = True
-            elif chosen is None and _catchup_backoff.get(cid, (0, 0.0))[1] <= now:
+    # Pick the first eligible controller whose lock is free; skip busy ones.
+    state = _read_state()
+    path, no_file = _catchup_artifact(state, version)
+    fingerprint = str(state.get("fingerprint") or "")
+    report = state.setdefault("locations", {})
+    now = time.time()
+    chosen: dict[str, Any] | None = None
+    chosen_cid: str | None = None
+    changed = False
+    for row in behind:
+        cid = str(row["id"])
+        reason = no_file or _untrusted(row, fingerprint)
+        if reason:
+            old = report.get(cid) or {}
+            if not (old.get("skipped") and old.get("detail") == reason):
+                print(f"[release] catch-up {row.get('label') or cid}: not sent, {reason}", flush=True)
+                report[cid] = {"ok": False, "status": None, "code": "CATCHUP_SKIPPED", "skipped": True,
+                               "auto": True, "at": int(now), "detail": reason, "release": None,
+                               "label": row.get("label") or cid}
+                changed = True
+        elif chosen is None and _catchup_backoff.get(cid, (0, 0.0))[1] <= now:
+            # Try to acquire this controller's lock without waiting; skip if busy.
+            lock = _lock_for(cid)
+            if lock.acquire(blocking=False):
                 chosen = row
-        if chosen is not None:
-            cid = str(chosen["id"])
-            label = str(chosen.get("label") or cid)
-            report[cid] = {"ok": None, "pending": True, "auto": True, "at": int(now), "status": None,
-                           "code": None, "detail": None, "release": None, "label": label}
-            changed = True
-        if changed:
-            _write_state(state)
-        if chosen is None:
-            return None
-        release = state["release"]
-        print(f"[release] catch-up: sending {version} to {label} (it holds "
-              f"{(chosen.get('release') or {}).get('version') or 'none'})", flush=True)
+                chosen_cid = cid
+            # else: another publish holds it; try the next candidate or skip this pass
+    if chosen is not None:
+        cid = str(chosen["id"])
+        label = str(chosen.get("label") or cid)
+        report[cid] = {"ok": None, "pending": True, "auto": True, "at": int(now), "status": None,
+                       "code": None, "detail": None, "release": None, "label": label}
+        changed = True
+    if changed:
+        _write_state(state)
+    if chosen is None:
+        return None
+    release = state["release"]
+    print(f"[release] catch-up: sending {version} to {label} (it holds "
+          f"{(chosen.get('release') or {}).get('version') or 'none'})", flush=True)
 
-        def run() -> None:
+    def run() -> None:
+        try:
             try:
-                try:
-                    outcome = _publish(
-                        artifact_path=path, version=version, build=str(release.get("build") or ""),
-                        filename=release.get("filename"), controller_ids=[cid], auto=True,
-                        force_full=bool(state.get("force_full")),
-                    )["locations"][cid]
-                except Exception as exc:  # noqa: BLE001 - recorded and backed off, never raised
-                    outcome = {"ok": False, "status": None, "code": getattr(exc, "code", "RELEASE_PUSH_FAILED"), "release": None,
-                               "detail": getattr(exc, "message", None) or f"the push failed: {type(exc).__name__}: {exc}", "label": label,
-                               "auto": True, "at": int(time.time())}
-                    failed = _read_state()
-                    failed.setdefault("locations", {})[cid] = outcome
-                    _write_state(failed)
-                _catchup_settle(cid, label, version, outcome)
-            finally:
-                _push_lock.release()
+                outcome = _publish(
+                    artifact_path=path, version=version, build=str(release.get("build") or ""),
+                    filename=release.get("filename"), controller_ids=[cid], auto=True,
+                    force_full=bool(state.get("force_full")),
+                )["locations"][cid]
+            except Exception as exc:  # noqa: BLE001 - recorded and backed off, never raised
+                outcome = {"ok": False, "status": None, "code": getattr(exc, "code", "RELEASE_PUSH_FAILED"), "release": None,
+                           "detail": getattr(exc, "message", None) or f"the push failed: {type(exc).__name__}: {exc}", "label": label,
+                           "auto": True, "at": int(time.time())}
+                failed = _read_state()
+                failed.setdefault("locations", {})[cid] = outcome
+                _write_state(failed)
+            _catchup_settle(cid, label, version, outcome)
+        finally:
+            _lock_for(cid).release()
 
-        started = True
-        if wait:
-            run()
-        else:
-            threading.Thread(target=run, name="release-catch-up", daemon=True).start()
-        return cid
-    finally:
-        if not started:
-            _push_lock.release()
+    started = True
+    if wait:
+        run()
+    else:
+        threading.Thread(target=run, name="release-catch-up", daemon=True).start()
+    return cid
 
 
 def _catchup_settle(cid: str, label: str, version: str, outcome: dict[str, Any]) -> None:
