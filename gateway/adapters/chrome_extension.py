@@ -133,13 +133,15 @@ class ChromeExtensionBackend:
                 return BackendResult(content=job.content, media_type=job.media_type,
                                      payload={"worker_id": job.owner})
             if job.state == "failed":
-                if job.ambiguous:
-                    ew.broker.rehold(job)   # a later result for it is adopted, not ignored
+                taken = ew.broker.take_failure(job)
+                if taken == "held":   # from here a later result is adopted into the row
                     raise _uncertain(f"the browser worker could not tell whether it was charged: "
                                      f"{job.error}")
-                ew.broker.forget(job)
-                raise BackendError(job.error, code="PROVIDER_FAILED", upstream_accepted=True,
-                                   upstream_settled=True)
+                if taken == "failed":
+                    ew.broker.forget(job)
+                    raise BackendError(job.error, code="PROVIDER_FAILED", upstream_accepted=True,
+                                       upstream_settled=True)
+                continue   # a result replaced the ambiguous failure: read it next turn
             # `hold` is the one transition that can lose a race with the worker's answer: only a
             # hold that actually happened raises; otherwise the answer landed, so read it next turn.
             if time.time() - job.last_heard > ew.lease_seconds() and ew.broker.hold(job):

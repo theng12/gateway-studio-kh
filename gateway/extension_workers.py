@@ -248,11 +248,16 @@ class _Broker:
             job.state = "held"
             return True
 
-    def rehold(self, job: WorkerJob) -> None:
-        """An ambiguous failure the adapter has turned into a hold: late answers go to the row."""
+    def take_failure(self, job: WorkerJob) -> str | None:
+        """The adapter takes a failure, atomically: `held` (ambiguous; later answers go to the
+        checkpointed row), `failed` (definite), or `None` when another answer replaced it first."""
         with self._lock:
-            if job.state == "failed":
+            if job.state != "failed":
+                return None
+            if job.ambiguous:
                 job.state = "held"
+                return "held"
+            return "failed"
 
     def touch(self, worker: dict, job_id: str, phase: Any, message: Any) -> bool:
         """Progress from the job's owner renews its lease; `False` for anyone else's job."""
@@ -271,8 +276,10 @@ class _Broker:
                media_type: str | None = None, error: str = "", ambiguous: bool = False) -> str:
         """Give a claimed job its one answer. **The first answer wins**, under the lock.
 
-        `live`: the adapter is waiting and takes it. `taken`: an answer already landed, this one is
-        ignored. `late`: the Gateway is no longer waiting here (held, or forgotten by a restart);
+        `live`: the adapter is waiting and takes it. `taken`: a definite answer already landed,
+        this one is ignored. An **ambiguous** failure is not definite: until the adapter has taken
+        it (`take_failure`), a result or a definite failure that follows replaces it, so finished
+        paid work is never dropped behind "could not tell". `late`: the Gateway is no longer waiting here (held, or forgotten by a restart);
         the caller settles the durable row. `missing`: another worker's job.
         """
         with self._lock:
@@ -281,7 +288,7 @@ class _Broker:
                 return "missing"
             if job is None or job.state == "held":
                 return "late"
-            if job.state != "claimed":
+            if job.state != "claimed" and not (job.state == "failed" and job.ambiguous):
                 return "taken"
             job.content, job.media_type = content, media_type
             job.error, job.ambiguous, job.state = error, ambiguous, state
@@ -426,6 +433,8 @@ async def workers_fail(job_id: str, request: Request,
     outcome = broker.answer(worker, job_id, state="failed", error=error, ambiguous=ambiguous)
     if outcome == "missing":
         return _refusal(404, "JOB_NOT_FOUND", "no job of this worker has that id")
+    if outcome == "taken":
+        return {"ok": True, "ignored": True}   # a definite answer already settled this job
     if outcome != "late":
         return {"ok": True}
     row = _held_row(worker, job_id)
@@ -470,6 +479,8 @@ async def workers_result(job_id: str, mediaType: str = Form(default=""),
     outcome = broker.answer(worker, job_id, state="succeeded", content=content, media_type=media_type)
     if outcome == "missing":
         return _refusal(404, "JOB_NOT_FOUND", "no job of this worker has that id")
+    if outcome == "taken":
+        return {"ok": True, "ignored": True}   # a definite answer already settled this job
     if outcome != "late":
         return {"ok": True}
     # A late answer for a job the Gateway is holding: adopt it into the held row (first result

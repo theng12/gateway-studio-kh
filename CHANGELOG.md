@@ -14,6 +14,7 @@ every feature title, and they are left as they were written.
 
 - Browser workers: the Story Studio Video Chrome extension can make Flow video for this Gateway. It is off until you switch it on, and the provider is off until you enable it. Pair a worker in the app on this Mac under Providers > Browser workers; the token is shown once.
 - A job a worker took and then went quiet on is held, never sent again, and a late result is still kept. A late "nothing was charged" failure settles the held job; an unsure one stays held.
+- A worker that says "not sure whether it was charged" and then sends the finished video a moment later now has that video kept, wherever the Gateway was in handling the first message.
 - Flow credits show as the worker reports them, or "unknown". A malformed figure is ignored instead of shown.
 - Each Flow model takes exactly what it supports: its one length, 16:9, and for picture models exactly one picture. Anything else is refused before a worker sees it, so the extension never makes a picture you did not ask for.
 

@@ -526,5 +526,136 @@ class DurableHoldTests(_Base):
         self.assertIsNone(ew.broker.get(job["jobId"]))
 
 
+class _Gate(threading.Event):
+    """A job's wake-up event that keeps the adapter asleep until the test opens `gate`."""
+
+    def __init__(self, gate):
+        super().__init__()
+        self.gate = gate
+
+    def wait(self, timeout=None):
+        self.gate.wait(10)
+        return super().wait(0)
+
+
+class AmbiguousThenResultTests(_Base):
+    """Developer's ordering (2026-11-09): an ambiguous fail, then the worker's result. The finished
+    (paid) result must reach the JobStore row whether it lands before the adapter looks, while the
+    adapter is taking the failure, or just after it became a hold. Real worker, real HTTP routes."""
+
+    def start(self, key):
+        from gateway.providers import registry
+        from gateway.worker import Worker
+
+        definition = registry.definition("story-studio-video")
+        model = {"model_id": TEXT.model_id, "modality": "video", "raw": {}}
+        for patcher in (patch.object(registry.models, "enabled_models",
+                                     lambda modality: [(definition, model)] if modality == "video" else []),
+                        patch.object(registry.credentials, "is_enabled", lambda pid: True),
+                        patch.object(registry.credentials, "resolved", lambda pid: {})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        row, _ = runtime.store.submit(modality="video", model_id=TEXT.model_id,
+                                      params={"prompt": "a cat", "duration_seconds": TEXT.duration_min},
+                                      idempotency_key=key, provider_id="story-studio-video")
+        self.claim()
+        thread = threading.Thread(target=Worker(runtime.store, interval_s=10.0, pool_size=0)._run,
+                                  args=(runtime.store.get(row["id"]),), daemon=True)
+        thread.start()
+        self.wait_offered()
+        return row["id"], thread
+
+    def ambiguous_fail(self, job_id):
+        return self.client.post(f"/api/workers/jobs/{job_id}/fail", headers=self.auth(),
+                                json={"error": "timed out", "ambiguous": True})
+
+    def result(self, job_id):
+        return self.client.post(f"/api/workers/jobs/{job_id}/result", headers=self.auth(),
+                                data={"mediaType": "video/mp4"}, files={"file": ("c", MP4)})
+
+    def finish(self, row_id, thread):
+        thread.join(15)
+        self.assertFalse(thread.is_alive())
+        row = runtime.store.get(row_id)
+        self.assertEqual(row["state"], "succeeded", row)
+        with open(row["asset_path"], "rb") as fh:   # the completed bytes were kept
+            self.assertEqual(fh.read(), MP4)
+        self.assertEqual(self.claim().status_code, 204)   # never offered again
+
+    def test_result_right_after_an_ambiguous_fail_before_the_adapter_looks(self):
+        row_id, thread = self.start("amb-result-before")
+        gate = threading.Event()
+        job = next(iter(ew.broker._jobs.values()))
+        job.changed = _Gate(gate)
+        job_id = self.claim().json()["job"]["jobId"]
+        self.assertEqual(self.ambiguous_fail(job_id).json(), {"ok": True})
+        self.assertEqual(self.result(job_id).json(), {"ok": True})   # taken live, not dropped
+        gate.set()
+        self.finish(row_id, thread)
+        self.assertIsNone(ew.broker.get(job_id))
+
+    def test_result_landing_while_the_adapter_takes_the_failure(self):
+        row_id, thread = self.start("amb-result-during")
+        answers, real = [], ew.broker.take_failure
+
+        def racing(job):
+            if not answers:
+                answers.append(self.result(job.job_id).json())   # just before the lock
+            return real(job)
+        with patch.object(ew.broker, "take_failure", racing):
+            job_id = self.claim().json()["job"]["jobId"]
+            self.ambiguous_fail(job_id)
+            self.finish(row_id, thread)
+        self.assertEqual(answers, [{"ok": True}])
+
+    def test_result_landing_just_after_the_failure_became_a_hold(self):
+        row_id, thread = self.start("amb-result-after")
+        answers, real = [], ew.broker.take_failure
+
+        def racing(job):
+            taken = real(job)
+            if not answers:
+                answers.append(self.result(job.job_id).json())   # before the worker writes the hold
+            return taken
+        with patch.object(ew.broker, "take_failure", racing):
+            job_id = self.claim().json()["job"]["jobId"]
+            self.ambiguous_fail(job_id)
+            self.finish(row_id, thread)
+        self.assertEqual(answers, [{"ok": True, "adopted": True}])
+
+    def test_definite_answers_still_win_first(self):
+        self.claim()
+        worker = ew.worker_for(self.token)
+        for first, later in (("failed", "succeeded"), ("succeeded", "failed")):
+            job = ew.broker.offer("video", {"prompt": "x"})
+            self.claim()
+            self.assertEqual(ew.broker.answer(worker, job.job_id, state=first, content=b"1",
+                                              media_type="video/mp4", ambiguous=False), "live")
+            self.assertEqual(ew.broker.answer(worker, job.job_id, state=later, content=b"2",
+                                              media_type="video/mp4", ambiguous=True), "taken")
+            self.assertEqual((job.state, job.content), (first, b"1"))
+            ew.broker.forget(job)
+        # An ambiguous failure is replaced by what follows it, until the adapter has taken it.
+        job = ew.broker.offer("video", {"prompt": "x"})
+        self.claim()
+        ew.broker.answer(worker, job.job_id, state="failed", error="?", ambiguous=True)
+        self.assertEqual(ew.broker.answer(worker, job.job_id, state="failed", error="no",
+                                          ambiguous=False), "live")
+        self.assertEqual(ew.broker.take_failure(job), "failed")
+        self.assertEqual(ew.broker.answer(worker, job.job_id, state="succeeded", content=b"3",
+                                          media_type="video/mp4"), "taken")
+
+    def test_an_ignored_answer_says_so(self):
+        self.claim()
+        job = ew.broker.offer("video", {"prompt": "x"})
+        job_id = self.claim().json()["job"]["jobId"]
+        self.assertEqual(self.result(job_id).json(), {"ok": True})
+        self.assertEqual(self.result(job_id).json(), {"ok": True, "ignored": True})
+        self.assertEqual(self.client.post(f"/api/workers/jobs/{job_id}/fail", headers=self.auth(),
+                                          json={"error": "x", "ambiguous": False}).json(),
+                         {"ok": True, "ignored": True})
+        ew.broker.forget(job)
+
+
 if __name__ == "__main__":
     unittest.main()
