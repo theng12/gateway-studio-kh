@@ -843,14 +843,29 @@ def _read_state() -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _write_state(state: dict[str, Any]) -> None:
+def _raw_write_state(state: dict[str, Any]) -> None:
+    """Write the state file. Caller must hold `_state_lock`."""
     path = _state_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with _state_lock:
-            config.write_secret(path, json.dumps(state, indent=2, sort_keys=True))
+        config.write_secret(path, json.dumps(state, indent=2, sort_keys=True))
     except OSError:
         pass
+
+
+def _update_state(fn: Any) -> dict[str, Any]:
+    """Read-modify-write the state file under `_state_lock`. `fn(state)` mutates in place."""
+    with _state_lock:
+        state = _read_state()
+        fn(state)
+        _raw_write_state(state)
+    return state
+
+
+def _write_state(state: dict[str, Any]) -> None:
+    """Raw writer for callers that already hold `_state_lock` or write a complete snapshot."""
+    with _state_lock:
+        _raw_write_state(state)
 
 
 def last_push() -> dict[str, Any]:
@@ -886,13 +901,16 @@ def _resolve_controller_ids(controller_ids: list[str] | None) -> list[str]:
 def publish(**kwargs: Any) -> dict[str, Any]:
     """`_publish`, with per-controller locking (see `_controller_locks`)."""
     kwargs["artifact_path"] = resolve_artifact(kwargs["artifact_path"])
-    cids = _resolve_controller_ids(kwargs.get("controller_ids"))
-    kwargs["controller_ids"] = cids
+    original_cids = kwargs.get("controller_ids")
+    cids = _resolve_controller_ids(original_cids)
     # Acquire per-controller locks in sorted order; release all on exit.
     locks = [_lock_for(cid) for cid in cids]
     for lock in locks:
         lock.acquire()
     try:
+        # Pass the caller's original controller_ids so _publish's own semantics
+        # (None = every controller + record_all_at_once) are preserved.
+        kwargs["controller_ids"] = original_cids
         return _publish(**kwargs)
     finally:
         for lock in reversed(locks):
@@ -1052,40 +1070,39 @@ def _publish(
     if rollout:
         # One location of a paced rollout: its outcome joins the report of this release (a different
         # release starts a new report), and the record of the file stays for the catch-up.
-        state = _read_state()
-        held = state.get("release") if isinstance(state.get("release"), dict) else {}
-        if (held.get("version"), held.get("build"), held.get("sha256")) != (
-                released.get("version"), released.get("build"), released.get("sha256")):
-            state = {"locations": {}}
-        state.update(updated_at=int(time.time()), fingerprint=fingerprint,
-                     artifact_path=str(path.resolve()), release=released,
-                     force_full=bool(force_full), timings=timings)
-        state.setdefault("locations", {}).update(results)
-        _write_state(state)
+        def _apply_rollout(state: dict[str, Any]) -> None:
+            held = state.get("release") if isinstance(state.get("release"), dict) else {}
+            if (held.get("version"), held.get("build"), held.get("sha256")) != (
+                    released.get("version"), released.get("build"), released.get("sha256")):
+                state.clear()
+                state["locations"] = {}
+            state.update(updated_at=int(time.time()), fingerprint=fingerprint,
+                         artifact_path=str(path.resolve()), release=released,
+                         force_full=bool(force_full), timings=timings)
+            state.setdefault("locations", {}).update(results)
+        state = _update_state(_apply_rollout)
         return state
     if auto:
         # A catch-up completes the owner's last publish: its outcome joins that report, and the
         # release, its time and the other controllers' outcomes stay as they were.
-        state = _read_state()
         at = int(time.time())
-        state.setdefault("locations", {}).update(
-            {cid: {**outcome, "auto": True, "at": at} for cid, outcome in results.items()})
-        _write_state(state)
+        def _apply_auto(state: dict[str, Any]) -> None:
+            state.setdefault("locations", {}).update(
+                {cid: {**outcome, "auto": True, "at": at} for cid, outcome in results.items()})
+        state = _update_state(_apply_auto)
         return state
-    state = {
-        "updated_at": int(time.time()),
-        "fingerprint": fingerprint,
-        # The file itself, so a controller that missed this publish can be sent it later
-        # (`catch_up`); `release.sha256`/`bytes` say whether it is still the same file.
-        "artifact_path": str(path.resolve()),
-        "release": released,
-        # A controller that missed this publish is sent it later (`catch_up`), and it must be sent
-        # the same shape: a delta the controllers refused would be refused again.
-        "force_full": bool(force_full),
-        "locations": results,
-        "timings": timings,
-    }
-    _write_state(state)
+    # Manual publish: merge locations when the stored release matches; replace on a new release.
+    def _apply_manual(state: dict[str, Any]) -> None:
+        held = state.get("release") if isinstance(state.get("release"), dict) else {}
+        if (held.get("version"), held.get("build"), held.get("sha256")) != (
+                released.get("version"), released.get("build"), released.get("sha256")):
+            state.clear()
+            state["locations"] = {}
+        state.update(updated_at=int(time.time()), fingerprint=fingerprint,
+                     artifact_path=str(path.resolve()), release=released,
+                     force_full=bool(force_full), timings=timings)
+        state.setdefault("locations", {}).update(results)
+    state = _update_state(_apply_manual)
     if controller_ids is None:
         # Every controller at once (the emergency path): the rollout is over the moment it was sent.
         from . import release_rollout
@@ -1203,22 +1220,20 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
     state = _read_state()
     path, no_file = _catchup_artifact(state, version)
     fingerprint = str(state.get("fingerprint") or "")
-    report = state.setdefault("locations", {})
     now = time.time()
     chosen: dict[str, Any] | None = None
     chosen_cid: str | None = None
-    changed = False
+    pending_updates: dict[str, dict[str, Any]] = {}
     for row in behind:
         cid = str(row["id"])
         reason = no_file or _untrusted(row, fingerprint)
         if reason:
-            old = report.get(cid) or {}
+            old = (state.get("locations") or {}).get(cid) or {}
             if not (old.get("skipped") and old.get("detail") == reason):
                 print(f"[release] catch-up {row.get('label') or cid}: not sent, {reason}", flush=True)
-                report[cid] = {"ok": False, "status": None, "code": "CATCHUP_SKIPPED", "skipped": True,
-                               "auto": True, "at": int(now), "detail": reason, "release": None,
-                               "label": row.get("label") or cid}
-                changed = True
+                pending_updates[cid] = {"ok": False, "status": None, "code": "CATCHUP_SKIPPED", "skipped": True,
+                                        "auto": True, "at": int(now), "detail": reason, "release": None,
+                                        "label": row.get("label") or cid}
         elif chosen is None and _catchup_backoff.get(cid, (0, 0.0))[1] <= now:
             # Try to acquire this controller's lock without waiting; skip if busy.
             lock = _lock_for(cid)
@@ -1229,11 +1244,12 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
     if chosen is not None:
         cid = str(chosen["id"])
         label = str(chosen.get("label") or cid)
-        report[cid] = {"ok": None, "pending": True, "auto": True, "at": int(now), "status": None,
-                       "code": None, "detail": None, "release": None, "label": label}
-        changed = True
-    if changed:
-        _write_state(state)
+        pending_updates[cid] = {"ok": None, "pending": True, "auto": True, "at": int(now), "status": None,
+                                "code": None, "detail": None, "release": None, "label": label}
+    if pending_updates:
+        def _apply_pending(s: dict[str, Any]) -> None:
+            s.setdefault("locations", {}).update(pending_updates)
+        _update_state(_apply_pending)
     if chosen is None:
         return None
     release = state["release"]
@@ -1252,9 +1268,9 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
                 outcome = {"ok": False, "status": None, "code": getattr(exc, "code", "RELEASE_PUSH_FAILED"), "release": None,
                            "detail": getattr(exc, "message", None) or f"the push failed: {type(exc).__name__}: {exc}", "label": label,
                            "auto": True, "at": int(time.time())}
-                failed = _read_state()
-                failed.setdefault("locations", {})[cid] = outcome
-                _write_state(failed)
+                def _apply_fail(s: dict[str, Any]) -> None:
+                    s.setdefault("locations", {})[cid] = outcome
+                _update_state(_apply_fail)
             _catchup_settle(cid, label, version, outcome)
         finally:
             _lock_for(cid).release()
@@ -1280,11 +1296,11 @@ def _catchup_settle(cid: str, label: str, version: str, outcome: dict[str, Any])
     failures = _catchup_backoff.get(cid, (0, 0.0))[0] + 1
     wait = min(_CATCHUP_BACKOFF_MAX, _CATCHUP_BACKOFF * 2 ** (failures - 1))
     _catchup_backoff[cid] = (failures, now + wait)
-    state = _read_state()
-    entry = (state.get("locations") or {}).get(cid)
-    if isinstance(entry, dict):
-        entry["retry_at"] = int(now + wait)
-        _write_state(state)
+    def _apply_retry(s: dict[str, Any]) -> None:
+        entry = (s.get("locations") or {}).get(cid)
+        if isinstance(entry, dict):
+            entry["retry_at"] = int(now + wait)
+    _update_state(_apply_retry)
     print(f"[release] catch-up {label}: failed ({outcome.get('code')}), try {failures}; "
           f"next try in {int(wait // 60)} min", flush=True)
     if failures == _CATCHUP_KEEPS_FAILING:

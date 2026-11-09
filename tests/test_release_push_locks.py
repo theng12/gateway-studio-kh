@@ -3,6 +3,8 @@
 Proves the locking contract of `release_publisher.publish` and `catch_up` without
 network or real controllers: `_publish` is replaced with a slow fake that records
 which controller is being pushed and when, so concurrency assertions are deterministic.
+The state-write tests exercise the real `_update_state` path (no `_publish` mock)
+so lost-update regressions are caught.
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -96,20 +98,17 @@ class DisjointOverlap(Base):
     """Two publishes naming disjoint controllers run at the same time."""
 
     def test_disjoint_controllers_transfer_concurrently(self) -> None:
-        active: dict[str, float] = {}
-        lock = threading.Lock()
         events: list[tuple[str, str, float]] = []
+        lock = threading.Lock()
 
         def fake_publish(**kwargs):
             cids = kwargs.get("controller_ids") or []
             cid = cids[0] if cids else "unknown"
             with lock:
-                active[cid] = time.monotonic()
                 events.append(("start", cid, time.monotonic()))
             time.sleep(0.15)
             with lock:
                 events.append(("end", cid, time.monotonic()))
-                del active[cid]
             return {"locations": {cid: {"ok": True}}, "release": {"version": "0.0.1"}}
 
         with patch.object(rp, "_publish", side_effect=fake_publish):
@@ -130,7 +129,7 @@ class DisjointOverlap(Base):
         ends = [e for e in events if e[0] == "end"]
         self.assertEqual(len(starts), 2)
         self.assertEqual(len(ends), 2)
-        # Both started before either ended → concurrent.
+        # Both started before either ended -> concurrent.
         first_end = min(e[2] for e in ends)
         last_start = max(e[2] for e in starts)
         self.assertLess(last_start, first_end,
@@ -181,7 +180,6 @@ class CatchUpSkip(Base):
         barrier = threading.Event()
 
         def fake_publish(**kwargs):
-            # Hold the lock until the test signals release.
             barrier.wait(timeout=5)
             cids = kwargs.get("controller_ids") or []
             cid = cids[0] if cids else "x"
@@ -260,7 +258,7 @@ class LastPushPendingRule(Base):
         rp._write_state({
             "locations": {"alpha": {"pending": True, "ok": None}},
         })
-        # No lock held → pending is interrupted.
+        # No lock held -> pending is interrupted.
         state = rp.last_push()
         entry = state.get("locations", {}).get("alpha", {})
         self.assertFalse(entry.get("pending"))
@@ -268,43 +266,70 @@ class LastPushPendingRule(Base):
 
 
 class StateFileSerialisation(Base):
-    """Two publishes finishing together do not lose each other's state writes."""
+    """Two concurrent manual-path state updates for disjoint controllers lose no entries."""
 
     def test_concurrent_state_writes_no_lost_update(self) -> None:
-        writes: list[dict] = []
-        original_write = rp._write_state
+        """Exercise the real _update_state path: two threads write disjoint controller
+        outcomes for the same release simultaneously. Both must survive."""
+        # Seed a release so the manual path merges rather than replaces.
+        rp._write_state({
+            "release": {"version": "0.0.1", "build": "b", "sha256": "ab" * 32},
+            "artifact_path": str(self.artifact),
+            "fingerprint": "ab" * 32,
+            "force_full": False,
+            "locations": {},
+        })
 
-        def recording_write(state):
-            writes.append(dict(state))
-            original_write(state)
+        released = {"version": "0.0.1", "build": "b", "sha256": "ab" * 32}
+        barrier = threading.Barrier(2)
 
-        def fake_publish(**kwargs):
-            cids = kwargs.get("controller_ids") or []
-            cid = cids[0] if cids else "x"
-            time.sleep(0.05)
-            return {"locations": {cid: {"ok": True}}, "release": {"version": "0.0.1"}}
+        def write_location(cid: str) -> None:
+            barrier.wait(timeout=5)
+            outcome = {"ok": True, "mode": "full", "label": cid}
+            def _apply(state: dict) -> None:
+                held = state.get("release") if isinstance(state.get("release"), dict) else {}
+                if (held.get("version"), held.get("build"), held.get("sha256")) != (
+                        released.get("version"), released.get("build"), released.get("sha256")):
+                    state.clear()
+                    state["locations"] = {}
+                state.setdefault("locations", {})[cid] = outcome
+            rp._update_state(_apply)
 
-        with patch.object(rp, "_publish", side_effect=fake_publish), \
-             patch.object(rp, "_write_state", side_effect=recording_write):
-            t1 = threading.Thread(target=rp.publish, kwargs={
-                "artifact_path": str(self.artifact), "version": "0.0.1", "build": "b",
-                "controller_ids": ["alpha"],
-            })
-            t2 = threading.Thread(target=rp.publish, kwargs={
-                "artifact_path": str(self.artifact), "version": "0.0.1", "build": "b",
-                "controller_ids": ["bravo"],
-            })
-            t1.start()
-            t2.start()
-            t1.join(timeout=5)
-            t2.join(timeout=5)
+        t1 = threading.Thread(target=write_location, args=("alpha",))
+        t2 = threading.Thread(target=write_location, args=("bravo",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
 
-        # Both writes landed.
-        self.assertGreaterEqual(len(writes), 2)
         final = rp._read_state()
         locs = final.get("locations", {})
-        self.assertIn("alpha", locs)
-        self.assertIn("bravo", locs)
+        self.assertIn("alpha", locs, "alpha's entry was lost in concurrent write")
+        self.assertIn("bravo", locs, "bravo's entry was lost in concurrent write")
+        self.assertTrue(locs["alpha"].get("ok"))
+        self.assertTrue(locs["bravo"].get("ok"))
+
+
+class AllAtOnceRegression(Base):
+    """publish(controller_ids=None) still passes None to _publish so record_all_at_once fires."""
+
+    def test_none_controller_ids_reaches_publish_unchanged(self) -> None:
+        received: list = []
+
+        def fake_publish(**kwargs):
+            received.append(kwargs.get("controller_ids"))
+            return {"locations": {}, "release": {"version": "0.0.1"}}
+
+        mock_rollout = MagicMock()
+        with patch.object(rp, "_publish", side_effect=fake_publish), \
+             patch.dict("sys.modules", {"gateway.release_rollout": mock_rollout}):
+            rp.publish(
+                artifact_path=str(self.artifact), version="0.0.1", build="b",
+                controller_ids=None,
+            )
+
+        self.assertEqual(received, [None],
+                         "controller_ids=None must reach _publish unchanged")
 
 
 if __name__ == "__main__":
