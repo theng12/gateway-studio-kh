@@ -5248,6 +5248,31 @@ def fleet_machine_work_policy(controller_id: str, machine_id: str) -> Any:
         return JSONResponse(status_code=error.status, content=error.body)
 
 
+@router.get(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/memory/admission",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_memory_admission(controller_id: str, machine_id: str, model: str, mode: str | None = None) -> Any:
+    """Read one model's effective RAM admission on one Mac, with its revision."""
+    try:
+        return startup_control.get_node_memory_admission(controller_id, machine_id, model, mode)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.put(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/memory/admission",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_machine_set_memory_admission(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Change or reset one model's RAM limits on one Mac; the Hub validates and checks the revision."""
+    try:
+        answered = startup_control.set_node_memory_admission(controller_id, machine_id, payload)
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+    return JSONResponse(status_code=202 if answered.get("outcome") == "pending" else 200, content=answered)
+
+
 @router.post(
     "/api/fleet/controllers/{controller_id}/machines/{machine_id}/work-policy",
     dependencies=[Depends(require_admin)],

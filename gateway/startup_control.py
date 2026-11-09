@@ -413,6 +413,44 @@ def set_node_work_policy(controller_id: str, machine_id: str, priority_order: ob
     return policy if isinstance(policy, dict) and answered.get("queued") is not True else answered
 
 
+MEMORY_ADMISSION_TOO_OLD = ("This controller's Studio Hub cannot read or change a Mac's memory limits yet. "
+                            "It needs Studio Hub 0.6.226: update it first (Fleet > Release).")
+
+
+def get_node_memory_admission(controller_id: str, machine_id: str, model: str, mode: str | None = None, *,
+                              client: httpx.Client | None = None) -> dict[str, Any]:
+    """Read one model's effective RAM admission on one Mac, with the revision a change must name."""
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    params = {"model": model, **({"mode": mode} if mode else {})}
+    return _node_post(
+        controller_id, machine_id, "memory/admission", None, method="GET", event="memory_admission",
+        too_old=MEMORY_ADMISSION_TOO_OLD,
+        refused="The controller refused this gateway's credential for reading memory limits.",
+        audit_fields={}, client=client, send={"params": params},
+    )
+
+
+def set_node_memory_admission(controller_id: str, machine_id: str, body: object, *,
+                              client: httpx.Client | None = None) -> dict[str, Any]:
+    """Change or reset one model's RAM limits on one Mac, once, exactly as sent.
+
+    The Hub validates every field and owns the revision check: a 409 REVISION_CONFLICT (with the
+    current revision) and a 202 `outcome: pending` relay are passed through, never retried here.
+    """
+    if not isinstance(body, dict):
+        raise StartupError(400, {"ok": False, "code": "BAD_VALUE", "detail": "send a JSON object"})
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    return _node_post(
+        controller_id, machine_id, "memory/admission", body, method="PUT", event="memory_admission",
+        too_old=MEMORY_ADMISSION_TOO_OLD,
+        refused="The controller refused this gateway's credential for changing memory limits.",
+        audit_fields={"model": body.get("model"), "mode": body.get("mode"),
+                      "expected_revision": body.get("expected_revision")}, client=client,
+    )
+
+
 def set_node_preferred_work(controller_id: str, machine_id: str, preferred_work: object, *,
                             client: httpx.Client | None = None) -> dict[str, Any]:
     """Set the preference through the controller; the Mac validates its own choices."""
@@ -724,7 +762,10 @@ def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, 
     # credential may send work ..."): the token was accepted, the Hub is simply older than the route.
     older = (response.status_code == 403
              and "the fleet credential may send work" in str(answered.get("detail") or ""))
-    if (response.status_code in (404, 405) or older) and "code" not in answered:
+    if response.status_code == 404 and answered.get("detail") == "unknown model" and "code" not in answered:
+        # The Hub knows the route but not the model (memory admission): that is not an old Hub.
+        answered = {"ok": False, "code": "UNKNOWN_MODEL", "detail": "this Mac does not know that model"}
+    elif (response.status_code in (404, 405) or older) and "code" not in answered:
         answered = {"ok": False, "code": "HUB_TOO_OLD", "detail": too_old}
     elif response.status_code in (401, 403) and "code" not in answered:
         answered = {"ok": False, "code": "CONTROLLER_REFUSED", "detail": refused}
