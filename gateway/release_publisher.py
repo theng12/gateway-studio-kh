@@ -824,13 +824,6 @@ def _lock_for(cid: str) -> threading.Lock:
         return lock
 
 
-def _any_push_in_flight() -> bool:
-    """True when any controller lock is held — used by `last_push` to distinguish a live push
-    from an interrupted one."""
-    with _controller_locks_guard:
-        return any(lock.locked() for lock in _controller_locks.values())
-
-
 #: Short-lived lock for the state file read-modify-write; never held across a transfer.
 _state_lock = threading.Lock()
 
@@ -871,13 +864,12 @@ def _write_state(state: dict[str, Any]) -> None:
 def last_push() -> dict[str, Any]:
     """The last publish this gateway made, for the Fleet page."""
     state = _read_state()
-    if not _any_push_in_flight():
-        # `pending` is only written while a push holds the lock, so one seen without it is a
-        # catch-up the Gateway stopped in the middle of; the next fleet pass tries it again.
-        for entry in (state.get("locations") or {}).values():
-            if isinstance(entry, dict) and entry.pop("pending", None):
-                entry.update(ok=False, code="CATCHUP_INTERRUPTED",
-                             detail="the automatic push was interrupted; it will be tried again")
+    # `pending` is only written while that controller's lock is held, so one seen without it is a
+    # catch-up the Gateway stopped in the middle of; the next fleet pass tries it again.
+    for cid, entry in (state.get("locations") or {}).items():
+        if isinstance(entry, dict) and entry.pop("pending", None) and not _lock_for(cid).locked():
+            entry.update(ok=False, code="CATCHUP_INTERRUPTED",
+                         detail="the automatic push was interrupted; it will be tried again")
     return state
 
 
@@ -1241,45 +1233,54 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
                 chosen = row
                 chosen_cid = cid
             # else: another publish holds it; try the next candidate or skip this pass
-    if chosen is not None:
-        cid = str(chosen["id"])
-        label = str(chosen.get("label") or cid)
-        pending_updates[cid] = {"ok": None, "pending": True, "auto": True, "at": int(now), "status": None,
-                                "code": None, "detail": None, "release": None, "label": label}
-    if pending_updates:
-        def _apply_pending(s: dict[str, Any]) -> None:
-            s.setdefault("locations", {}).update(pending_updates)
-        _update_state(_apply_pending)
-    if chosen is None:
-        return None
-    release = state["release"]
-    print(f"[release] catch-up: sending {version} to {label} (it holds "
-          f"{(chosen.get('release') or {}).get('version') or 'none'})", flush=True)
+    started = False
+    try:
+        if chosen is not None:
+            cid = str(chosen["id"])
+            label = str(chosen.get("label") or cid)
+            pending_updates[cid] = {"ok": None, "pending": True, "auto": True, "at": int(now), "status": None,
+                                    "code": None, "detail": None, "release": None, "label": label}
+        if pending_updates:
+            def _apply_pending(s: dict[str, Any]) -> None:
+                s.setdefault("locations", {}).update(pending_updates)
+            _update_state(_apply_pending)
+        if chosen is None:
+            return None
+        release = state["release"]
+        print(f"[release] catch-up: sending {version} to {label} (it holds "
+              f"{(chosen.get('release') or {}).get('version') or 'none'})", flush=True)
 
-    def run() -> None:
-        try:
+        def run() -> None:
             try:
-                outcome = _publish(
-                    artifact_path=path, version=version, build=str(release.get("build") or ""),
-                    filename=release.get("filename"), controller_ids=[cid], auto=True,
-                    force_full=bool(state.get("force_full")),
-                )["locations"][cid]
-            except Exception as exc:  # noqa: BLE001 - recorded and backed off, never raised
-                outcome = {"ok": False, "status": None, "code": getattr(exc, "code", "RELEASE_PUSH_FAILED"), "release": None,
-                           "detail": getattr(exc, "message", None) or f"the push failed: {type(exc).__name__}: {exc}", "label": label,
-                           "auto": True, "at": int(time.time())}
-                def _apply_fail(s: dict[str, Any]) -> None:
-                    s.setdefault("locations", {})[cid] = outcome
-                _update_state(_apply_fail)
-            _catchup_settle(cid, label, version, outcome)
-        finally:
-            _lock_for(cid).release()
+                try:
+                    outcome = _publish(
+                        artifact_path=path, version=version, build=str(release.get("build") or ""),
+                        filename=release.get("filename"), controller_ids=[cid], auto=True,
+                        force_full=bool(state.get("force_full")),
+                    )["locations"][cid]
+                except Exception as exc:  # noqa: BLE001 - recorded and backed off, never raised
+                    outcome = {"ok": False, "status": None, "code": getattr(exc, "code", "RELEASE_PUSH_FAILED"), "release": None,
+                               "detail": getattr(exc, "message", None) or f"the push failed: {type(exc).__name__}: {exc}", "label": label,
+                               "auto": True, "at": int(time.time())}
+                    def _apply_fail(s: dict[str, Any]) -> None:
+                        s.setdefault("locations", {})[cid] = outcome
+                    _update_state(_apply_fail)
+                _catchup_settle(cid, label, version, outcome)
+            finally:
+                _lock_for(cid).release()
 
-    started = True
-    if wait:
-        run()
-    else:
-        threading.Thread(target=run, name="release-catch-up", daemon=True).start()
+        if wait:
+            started = True  # run() releases the lock itself
+            run()
+        else:
+            threading.Thread(target=run, name="release-catch-up", daemon=True).start()
+            started = True
+    except BaseException:
+        # The lock was taken and the push never started: never leak it, or every later
+        # publish to this controller blocks forever.
+        if chosen_cid is not None and not started:
+            _lock_for(chosen_cid).release()
+        raise
     return cid
 
 

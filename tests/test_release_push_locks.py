@@ -254,6 +254,21 @@ class LastPushPendingRule(Base):
             barrier.set()
             t.join(timeout=5)
 
+    def test_pending_interrupted_while_another_controller_is_pushing(self) -> None:
+        """Per-controller rule: A's pending entry is interrupted even while B holds its lock."""
+        rp._write_state({
+            "locations": {"alpha": {"pending": True, "ok": None}},
+        })
+        bravo = rp._lock_for("bravo")
+        bravo.acquire()
+        try:
+            state = rp.last_push()
+            entry = state.get("locations", {}).get("alpha", {})
+            self.assertEqual(entry.get("code"), "CATCHUP_INTERRUPTED",
+                             "A's pending must not be skipped because B is pushing")
+        finally:
+            bravo.release()
+
     def test_pending_marked_interrupted_when_no_lock(self) -> None:
         rp._write_state({
             "locations": {"alpha": {"pending": True, "ok": None}},
@@ -263,6 +278,38 @@ class LastPushPendingRule(Base):
         entry = state.get("locations", {}).get("alpha", {})
         self.assertFalse(entry.get("pending"))
         self.assertEqual(entry.get("code"), "CATCHUP_INTERRUPTED")
+
+
+class CatchUpLockRelease(Base):
+    """A failure between acquiring the controller's lock and starting the push releases it."""
+
+    def test_state_write_failure_releases_controller_lock(self) -> None:
+        rp._write_state({
+            "release": {"version": "0.0.2", "build": "b", "sha256": "ab" * 32},
+            "artifact_path": str(self.artifact),
+            "fingerprint": "ab" * 32,
+            "force_full": False,
+            "locations": {},
+        })
+        rows = [
+            {"id": "alpha", "label": "Alpha", "url": "http://a.invalid", "local": False,
+             "reachable": True, "trusted_publisher": {"reported": True, "fingerprint": "ab" * 32},
+             "release": None, "hub_latest": {"version": "0.0.2"}},
+        ]
+
+        def boom(_fn):
+            raise RuntimeError("state write failed")
+
+        with patch.object(rp, "_update_state", side_effect=boom), \
+             patch.object(rp, "_catchup_artifact", return_value=(self.artifact, None)), \
+             patch("gateway.release_publisher.release_rollout") as rr:
+            rr.active.return_value = False
+            rr.finished.return_value = True
+            with self.assertRaises(RuntimeError):
+                rp.catch_up(rows, wait=True)
+
+        self.assertFalse(rp._lock_for("alpha").locked(),
+                         "the controller lock leaked when the push never started")
 
 
 class StateFileSerialisation(Base):
