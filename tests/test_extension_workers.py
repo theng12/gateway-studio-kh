@@ -176,6 +176,9 @@ class AdapterTests(_Base):
                          ("text", "a cat", 4, []))
         self.client.post(f"/api/workers/jobs/{job['jobId']}/progress", headers=self.auth(),
                          json={"phase": "generating", "message": "…"})
+        local = TestClient(api.app, client=("127.0.0.1", 40001))
+        current = local.get("/admin/api/extension-workers").json()["workers"][0]["current_job"]
+        self.assertEqual((current["jobId"], current["phase"]), (job["jobId"], "generating"))
         answer = self.client.post(f"/api/workers/jobs/{job['jobId']}/result", headers=self.auth(),
                                   data={"mediaType": "video/mp4"}, files={"file": ("c.mp4", b"MP4BYTES")})
         self.assertEqual(answer.status_code, 200)
@@ -243,6 +246,11 @@ class AdapterTests(_Base):
         other = ew.mint("chrome-b", "video")
         self.assertEqual(self.claim(token=other, worker="chrome-b").status_code, 204)
         self.assertEqual(ew.broker.get(job["jobId"]).state, "held")
+        local = TestClient(api.app, client=("127.0.0.1", 40001))
+        rows = {r["worker_id"]: r for r in local.get("/admin/api/extension-workers").json()["workers"]}
+        self.assertEqual((rows["chrome-a"]["current_job"], rows["chrome-a"]["held_jobs"]), (None, [job["jobId"]]))
+        self.assertIsNotNone(rows["chrome-a"]["created_at"])
+        self.assertIsNone(rows["chrome-a"]["revoked_at"])
 
     def test_unclaimed_job_is_withdrawn_unsent(self):
         self.claim()

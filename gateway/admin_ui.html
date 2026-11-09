@@ -1383,6 +1383,7 @@ async function api(path, opts) {
     const message = apiErrorMessage(body?.detail, res.status);
     if (res.status === 401 || res.status === 403) showTokenPrompt(message);
     const error = new Error(message);
+    error.status = res.status;   // a page that reads "switched off" from a 404 needs the code
     error.ambiguous = String(options.method || 'GET').toUpperCase() !== 'GET' && (res.status >= 500 || res.status === 408);
     throw error;
   }

@@ -146,6 +146,7 @@ class WorkerJob:
     state: str = "pending"            # pending | claimed | succeeded | failed | held | withdrawn
     owner: str | None = None
     created_at: float = field(default_factory=time.time)
+    claimed_at: float | None = None
     last_heard: float = 0.0
     phase: str = ""
     message: str = ""
@@ -228,7 +229,8 @@ class _Broker:
                     return job
             for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
                 if job.state == "pending" and job.kind == worker["kind"]:
-                    job.state, job.owner, job.last_heard = "claimed", worker["worker_id"], time.time()
+                    job.state, job.owner = "claimed", worker["worker_id"]
+                    job.last_heard = job.claimed_at = time.time()
                     job.changed.set()
                     return job
         return None
@@ -237,6 +239,15 @@ class _Broker:
         with self._lock:
             job = self._jobs.get(job_id)
             return job if job is not None and job.owner == worker["worker_id"] else None
+
+    def jobs_of(self, worker_id: str) -> tuple[dict | None, list[str]]:
+        """`(current_job, held_job_ids)` for the status page; what the Gateway still holds in memory."""
+        with self._lock:
+            mine = [j for j in self._jobs.values() if j.owner == worker_id]
+            current = next(({"jobId": j.job_id, "phase": j.phase or None, "message": j.message or None,
+                             "claimed_at": j.claimed_at, "last_heard_at": j.last_heard}
+                            for j in mine if j.state == "claimed"), None)
+            return current, sorted(j.job_id for j in mine if j.state == "held")
 
     def depth(self, kind: str) -> int:
         with self._lock:
@@ -402,11 +413,13 @@ def _admin_routes() -> None:
             return _NOT_FOUND
         cutoff = time.time() - online_seconds()
         known: dict[str, dict[str, Any]] = {}
-        for row in _rows().values():
+        for row in sorted(_rows().values(), key=lambda r: r.get("created_at") or 0):
             entry = known.setdefault(row.get("worker_id"), {"worker_id": row.get("worker_id"),
                                                             "kind": row.get("kind"),
                                                             "has_live_token": False})
             entry["has_live_token"] = entry["has_live_token"] or not row.get("revoked_at")
+            # The newest token's dates: when this worker's key was made, and revoked (null = live).
+            entry["created_at"], entry["revoked_at"] = row.get("created_at"), row.get("revoked_at")
         for worker_id, seen in list(broker.workers.items()):
             entry = known.setdefault(worker_id, {"worker_id": worker_id, "kind": seen.get("kind"),
                                                  "has_live_token": False})
@@ -417,6 +430,9 @@ def _admin_routes() -> None:
             entry.setdefault("credits", None)   # not reported yet: unknown, never 0
             entry["online"] = (entry["last_seen_at"] or 0) >= cutoff
             entry["queue_depth"] = broker.depth(entry.get("kind") or "")
+            entry.setdefault("created_at", None)
+            entry.setdefault("revoked_at", None)
+            entry["current_job"], entry["held_jobs"] = broker.jobs_of(str(entry["worker_id"]))
         return {"enabled": True, "lease_seconds": lease_seconds(),
                 "online_seconds": online_seconds(), "max_result_bytes": MAX_RESULT_BYTES,
                 "workers": sorted(known.values(), key=lambda e: str(e["worker_id"]))}
