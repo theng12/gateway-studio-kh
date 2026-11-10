@@ -169,6 +169,35 @@ class VideoReplayIdentityTests(unittest.TestCase):
             stage.assert_not_called()
             submit.assert_not_called()
 
+    def test_shared_native_submit_checks_video_replay_before_routing(self):
+        original = {"prompt": "a scene", "duration_seconds": 4, "output_count": 1}
+        job = {"id": "native-video", "modality": "video", "params": original}
+        with patch.object(api.store, "find_by_idempotency_key", return_value=job), \
+                patch.object(api.catalog, "resolve") as resolve, patch.object(api.store, "submit") as submit:
+            self.assertEqual(api._submit("video", TEXT.model_id, dict(original), "native-fixture",
+                                         requested_by={"role": "owner"}), (job, False))
+            for params in ({**original, "output_count": 2}, {**original, "duration_seconds": 8}):
+                with self.subTest(params=params), self.assertRaises(api.GatewayError):
+                    api._submit("video", TEXT.model_id, params, "native-fixture",
+                                requested_by={"role": "owner"})
+            resolve.assert_not_called()
+            submit.assert_not_called()
+
+    def test_atomic_submit_race_also_checks_the_returned_video(self):
+        original = {"prompt": "a scene", "duration_seconds": 4, "output_count": 1}
+        job = {"id": "raced-video", "modality": "video", "params": original}
+        definition = PROVIDERS_BY_ID["story-studio-video"]
+        with patch.object(api.store, "find_by_idempotency_key", return_value=None), \
+                patch.object(api.catalog, "resolve", return_value=(definition, {"model_id": TEXT.model_id})), \
+                patch.object(api, "_refuse_when_the_queue_is_full"), \
+                patch.object(api, "_refuse_when_the_disk_is_low"), \
+                patch.object(api.store, "submit", return_value=(job, False)):
+            self.assertEqual(api._submit("video", TEXT.model_id, dict(original), "race-fixture",
+                                         requested_by={"role": "owner"}), (job, False))
+            with self.assertRaises(api.GatewayError):
+                api._submit("video", TEXT.model_id, {**original, "output_count": 2}, "race-fixture",
+                            requested_by={"role": "owner"})
+
     def test_explicit_null_control_is_not_an_omitted_default(self):
         for field in ("duration", "durationSec", "aspectRatio", "videoMode", "output_count", "outputCount", "n"):
             for before, after in (({}, {field: None}), ({field: None}, {})):

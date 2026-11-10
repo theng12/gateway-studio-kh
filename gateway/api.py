@@ -2191,6 +2191,8 @@ def _submit(
                 )
             if modality == "image":
                 _refuse_changed_image_target(already, params)
+            if modality == "video":
+                _refuse_changed_video_request(already, params)
             return already, False
     _refuse_when_the_queue_is_full(priority == BACKGROUND)
     _refuse_when_the_disk_is_low()
@@ -2290,7 +2292,7 @@ def _submit(
                 f"A key identifies one request; use a new one for this {modality} request.",
                 "IDEMPOTENCY_KEY_REUSED",
             )
-    return store.submit(
+    job, created = store.submit(
         modality=modality,
         model_id=model["model_id"],
         provider_id=definition.id,
@@ -2301,6 +2303,9 @@ def _submit(
         job_group=job_group,
         priority=priority,
     )
+    if modality == "video" and not created:
+        _refuse_changed_video_request(job, params)
+    return job, created
 
 
 def _refuse_an_unspoken_language(compound_id: str, model: dict[str, Any], params: Any) -> None:
