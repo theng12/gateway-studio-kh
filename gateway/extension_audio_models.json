@@ -1,0 +1,79 @@
+{
+  "_note": "Copied by script from Relay's tested TTS catalogue; never hand-edited. Re-copy when Relay's catalogue changes.",
+  "source": "chrome-extensions/story-studio-audio-generator/src/lib/providers.js FISH_FALLBACK_MODELS + ELEVEN_FALLBACK_MODELS",
+  "source_sha256": "d978b5cf7cb9fd94d669fa710f4f67a3c0f2fc49d53751fe29e4abab2f2aade3",
+  "source_date": "2026-11-09",
+  "providers": {
+    "fish": {
+      "display_name": "fish.audio",
+      "max_chars": 15000,
+      "speed_range": {
+        "min": 0.5,
+        "max": 2.0
+      },
+      "settings": {
+        "auto_tag": true,
+        "provider_settings": []
+      },
+      "models": [
+        {
+          "key": "s2.1-pro",
+          "label": "Fish Audio S2.1 Pro - Free, newest"
+        },
+        {
+          "key": "s2-pro",
+          "label": "Fish Audio S2 Pro - Legacy"
+        },
+        {
+          "key": "s1",
+          "label": "Fish Audio S1 - Legacy"
+        }
+      ]
+    },
+    "elevenlabs_web": {
+      "display_name": "ElevenLabs",
+      "max_chars": 5000,
+      "speed_range": {
+        "min": 0.7,
+        "max": 1.2
+      },
+      "settings": {
+        "auto_tag": false,
+        "provider_settings": [
+          "stability",
+          "similarity",
+          "speaker_boost"
+        ]
+      },
+      "models": [
+        {
+          "key": "eleven_multilingual_v2",
+          "label": "Multilingual v2 - lifelike quality",
+          "max_chars": 4500,
+          "style": true,
+          "speaker_boost": true,
+          "speed": true,
+          "stability": "slider"
+        },
+        {
+          "key": "eleven_flash_v2_5",
+          "label": "Flash v2.5 - fast and affordable",
+          "max_chars": 4500,
+          "style": true,
+          "speaker_boost": true,
+          "speed": true,
+          "stability": "slider"
+        },
+        {
+          "key": "eleven_v3",
+          "label": "v3 - expressive",
+          "max_chars": 4500,
+          "style": false,
+          "speaker_boost": true,
+          "speed": false,
+          "stability": "discrete"
+        }
+      ]
+    }
+  }
+}

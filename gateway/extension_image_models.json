@@ -1,0 +1,27 @@
+{
+  "_note": "Copied by script from Relay's tested Flow catalogue; never hand-edited. Re-copy when Relay's catalogue changes.",
+  "source": "chrome-extensions/story-studio-image-generator/src/lib/providers.js FLOW_FALLBACK_MODELS",
+  "source_sha256": "88e599aa284229b3d7ff8258586822a39ece811e54208ada555c2ee1a62c1bbf",
+  "source_date": "2026-11-09",
+  "aspect_ratios": [
+    "16:9"
+  ],
+  "max_reference_images": 4,
+  "models": [
+    {
+      "key": "NARWHAL",
+      "label": "Nano Banana 2",
+      "provider": "flow"
+    },
+    {
+      "key": "HARBOR_SEAL",
+      "label": "Nano Banana 2 Lite",
+      "provider": "flow"
+    },
+    {
+      "key": "GEM_PIX_2",
+      "label": "Nano Banana Pro",
+      "provider": "flow"
+    }
+  ]
+}

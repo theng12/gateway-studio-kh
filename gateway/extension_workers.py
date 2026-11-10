@@ -40,8 +40,9 @@ from . import admin_session
 from .config import APP_SUPPORT, get as config_get
 
 SWITCH = "GATEWAY_EXTENSION_WORKERS"
-#: The kinds a worker may serve. Video first (owner/Relay brief, 2026-11-09).
-KINDS = frozenset({"video"})
+#: The kinds a worker may serve. Video first (owner/Relay brief, 2026-11-09); image and audio added
+#: alongside (same wire, same credit rules, per-kind token scoping).
+KINDS = frozenset({"video", "image", "audio"})
 #: The largest finished file a worker may upload (Flow clips run to 256 MB, handoff §8).
 MAX_RESULT_BYTES = 256 * 1024 * 1024
 TOKEN_PREFIX = "ekw_"

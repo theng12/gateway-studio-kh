@@ -1042,6 +1042,55 @@ PROVIDER_DEFINITIONS: tuple[ProviderDefinition, ...] = (
         default_enabled=False,
         notes="Off by default. Each run spends Flow credits; balances show on the Providers page.",
     ),
+    ProviderDefinition(
+        id="story-studio-image",
+        display_name="Story Studio Image (browser extension)",
+        category="image",
+        kind=KIND_CHROME_EXTENSION,
+        base_url="",  # workers poll this Gateway; nothing is called out
+        modalities=("image",),
+        discovery=DISCOVERY_STATIC,
+        description="Flow images made by the Story Studio Image Chrome extension, which polls this "
+                    "Gateway for jobs. Spends Flow credits. Needs GATEWAY_EXTENSION_WORKERS on.",
+        docs_url="",
+        credential_fields=(
+            CredentialField(
+                key="flow_project_id", label="Flow project id", env_var="STORY_STUDIO_FLOW_PROJECT_ID",
+                secret=False, required=False,
+                help_text="Optional: the Flow project the extension works in. Blank lets it choose.",
+            ),
+        ),
+        static_models=tuple(
+            {"id": model["key"], "display_name": model["label"], "modality": "image"}
+            for model in json.loads(
+                (Path(__file__).parent.parent / "extension_image_models.json").read_text())["models"]
+        ),
+        default_enabled=False,
+        notes="Off by default. Each run spends Flow credits; balances show on the Providers page.",
+    ),
+    ProviderDefinition(
+        id="story-studio-audio",
+        display_name="Story Studio Audio (browser extension)",
+        category="tts",
+        kind=KIND_CHROME_EXTENSION,
+        base_url="",  # workers poll this Gateway; nothing is called out
+        modalities=("tts",),
+        discovery=DISCOVERY_STATIC,
+        description="TTS audio made by the Story Studio Audio Chrome extension, which polls this "
+                    "Gateway for jobs. Uses your fish.audio or ElevenLabs web session. Needs GATEWAY_EXTENSION_WORKERS on.",
+        docs_url="",
+        credential_fields=(),
+        static_models=tuple(
+            {"id": model["key"], "display_name": model["label"], "modality": "tts"}
+            for pdata in json.loads(
+                (Path(__file__).parent.parent / "extension_audio_models.json").read_text())["providers"].values()
+            for model in pdata["models"]
+            # Literal template IDs are invalid; real public model IDs remain published.
+            if "{{" not in str(model["key"]) and "}}" not in str(model["key"])
+        ),
+        default_enabled=False,
+        notes="Off by default. Uses your logged-in fish.audio or ElevenLabs web session quota.",
+    ),
 
     # --------------------------------------------------------------------- local
     ProviderDefinition(
