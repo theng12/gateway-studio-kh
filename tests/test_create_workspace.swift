@@ -420,6 +420,61 @@ struct CreateWorkspaceCheck {
         assert(sentMessages?.map { $0["role"] ?? "" } == ["user", "assistant", "user"], "the follow-up did not carry the conversation")
         assert(sentMessages?.last?["content"] == "second question")
 
+        // Video controls come from the selected row; absent resolution is no override.
+        let video = CreateLanes.all[4]
+        GatewayAPI.laneRows["video"] = [[
+            "id": "bounded-video", "model_id": "bounded-video", "provider_name": "Mock",
+            "display_name": "Bounded", "modes": ["text-to-video"],
+            "duration_seconds": ["min": 4, "max": 4, "step": 1, "default": 4],
+            "aspect_ratios": ["16:9"], "resolutions": [], "output_counts": [1],
+            "support_status": "bounded", "resolution_status": "update_required",
+            "pricing_status": "unknown",
+        ]]
+        let videoLane = CreateLane(key: "video-controls", title: video.title, symbol: video.symbol,
+                                   modality: video.modality, blurb: video.blurb, fields: video.fields,
+                                   previewTitle: video.previewTitle)
+        let videoWorkspace = CreateWorkspace(lane: videoLane)
+        videoWorkspace.refreshModels()
+        let videoViews = descendants(videoWorkspace)
+        let videoGenerate = videoViews.compactMap { $0 as? NSButton }.first { $0.title == "Generate" }!
+        let videoPickers = videoViews.compactMap { $0 as? NSPopUpButton }
+        let resolution = videoPickers.first { $0.identifier?.rawValue == "resolution" }!
+        assert(!resolution.isEnabled, "uncaptured resolution advertised as selectable")
+        assert(videoGenerate.isEnabled, "known bounded video was blocked")
+        assert(labels(videoWorkspace).contains { $0.contains("Price: unknown") })
+        GatewayAPI.nextJobID = "video-controls-1"
+        GatewayAPI.statusJobID = "video-controls-1"
+        GatewayAPI.outputs = []
+        GatewayAPI.outputText = ""
+        videoWorkspace.perform(NSSelectorFromString("generate"))
+        let videoParams = GatewayAPI.submittedBodies.last?["params"] as? [String: Any]
+        assert(videoParams?["duration_seconds"] as? Int == 4)
+        assert(videoParams?["output_count"] as? Int == 1)
+        assert(videoParams?["operation"] as? String == "text-to-video")
+        assert(videoParams?["aspect_ratio"] as? String == "16:9")
+        assert(videoParams?["resolution"] == nil, "unknown resolution became a purchase parameter")
+        let restoredVideo = CreateWorkspace(lane: videoLane)
+        restoredVideo.refreshModels()
+        let restoredDuration = descendants(restoredVideo).compactMap { $0 as? NSPopUpButton }
+            .first { $0.identifier?.rawValue == "duration_seconds" }!
+        assert(restoredDuration.selectedItem?.representedObject as? String == "4")
+        // A vanished saved duration must stay unavailable until explicitly corrected.
+        GatewayAPI.laneRows["video"]?[0]["duration_seconds"] = ["min": 8, "max": 8, "step": 1, "default": 8]
+        restoredVideo.refreshModels()
+        let restoredGenerate = descendants(restoredVideo).compactMap { $0 as? NSButton }
+            .first { $0.title == "Generate" }!
+        assert(!restoredGenerate.isEnabled, "a model refresh silently replaced the scene duration")
+        assert(restoredDuration.selectedItem?.representedObject as? String == "4")
+        restoredDuration.selectItem(at: 0)
+        restoredVideo.perform(NSSelectorFromString("videoControlChanged"))
+        assert(restoredGenerate.isEnabled, "choosing the supported duration did not unblock generation")
+        GatewayAPI.laneRows["video"]?[0]["support_status"] = "update_required"
+        restoredVideo.refreshModels()
+        assert(!restoredGenerate.isEnabled, "a listed model without transport mapping was admitted")
+        let beforeUnknown = GatewayAPI.submitted
+        restoredVideo.perform(NSSelectorFromString("generate"))
+        assert(GatewayAPI.submitted == beforeUnknown, "unknown video mapping submitted work")
+
         // Nothing above reached the owner's real Create state.
         assert(realKeys.map { realSuite?.data(forKey: $0) } == realBefore, "a test wrote to the real Create suite")
         print("PASS: Create persistence, model/voice safety, capabilities, ambiguous retry, cancellation, authenticated output preview, unknown-job cleanup, subtitle model states, chat conversation, real state untouched")

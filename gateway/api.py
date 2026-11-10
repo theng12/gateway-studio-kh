@@ -4160,6 +4160,7 @@ def _stage_video_reference(payload: dict[str, Any]) -> dict[str, Any]:
 _VIDEO_REQUEST_FIELDS: tuple[str, ...] = (
     "model_id", "model", "mode", "operation", "prompt", "duration_seconds", "resolution",
     "aspect_ratio", "audio", "reference_asset_id", "end_image_asset_id", "reference_asset_ids",
+    "duration", "durationSec", "aspectRatio", "videoMode", "output_count", "outputCount", "n",
 )
 
 
@@ -4174,7 +4175,9 @@ def _refuse_changed_video_request(job: dict[str, Any], payload: dict[str, Any]) 
     if not isinstance(stored, dict):
         return
     for field in _VIDEO_REQUEST_FIELDS:
-        if stored.get(field) != payload.get(field):
+        if ((field in stored) != (field in payload)
+                or type(stored.get(field)) is not type(payload.get(field))
+                or stored.get(field) != payload.get(field)):
             raise GatewayError(
                 409,
                 f"That Idempotency-Key was already used for a different video request ({field} "

@@ -741,6 +741,12 @@ def _video_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         "aspect_ratios": [],
         "generates_audio": stated_audio if isinstance(stated_audio, bool) else None,
         "variants": [],
+        **({
+            "support_status": "update_required",
+            "support_reason": "Model listed; no verified video transport mapping. Update required.",
+            "resolutions": [], "duration_seconds": None, "output_counts": [],
+            "resolution_status": "unknown", "pricing_status": "unknown",
+        } if definition.id == video_capabilities.EXTENSION_PROVIDER_ID else {}),
     }
 
 
@@ -759,8 +765,8 @@ def _capability_video_row(record: "video_capabilities.VideoCapability",
             "operation": mode,
             "duration_seconds": seconds,
             "resolution": resolution,
-            "credits_per_video": 0,
-            "minimum_credits": 0,
+            "credits_per_video": None if record.provider_id == video_capabilities.EXTENSION_PROVIDER_ID else 0,
+            "minimum_credits": None if record.provider_id == video_capabilities.EXTENSION_PROVIDER_ID else 0,
             "price_version": PRICE_VERSION,
         }
         for mode in record.modes
@@ -793,6 +799,14 @@ def _capability_video_row(record: "video_capabilities.VideoCapability",
         "capability_source": record.source,
         "capability_as_of": record.source_date or None,
     }
+    if record.provider_id == video_capabilities.EXTENSION_PROVIDER_ID:
+        row.update({
+            "output_counts": list(record.output_counts),
+            "support_status": "bounded",
+            "support_reason": "Only the published model-key duration, aspect ratio and output count are verified.",
+            "resolution_status": "supported" if record.resolutions else "update_required",
+            "pricing_status": "unknown",
+        })
     controls = video_capabilities.audio_switch(record)
     if controls:
         row["controls"] = controls
@@ -2744,6 +2758,9 @@ class Catalog:
         builder = _ROW_BUILDERS.get(modality)
         if builder is not None:
             row.update(builder(model["model_id"], definition, model))
+        if row.get("support_status") == "update_required":
+            locked, lock_reason = True, str(row["support_reason"])
+            _publish_lock(row, locked, lock_reason)
 
         # **Why this row cannot be used right now, in the gateway's own words.**
         #

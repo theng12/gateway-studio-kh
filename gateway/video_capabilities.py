@@ -56,6 +56,8 @@ class VideoCapability:
     aspect_ratios: tuple[str, ...] = ()
     #: The resolution tiers it accepts.
     resolutions: tuple[str, ...] = ()
+    #: Output counts whose transport is verified; empty means no count override is published.
+    output_counts: tuple[int, ...] = ()
     #: The whole seconds it accepts, as a closed range with a step — one shape for a slider and for
     #: the enumerated variants Story Studio reads today (`duration_min..duration_max` by step).
     duration_min: int = 0
@@ -214,6 +216,7 @@ def _extension_records() -> tuple[VideoCapability, ...]:
             model_id=model["key"],
             modes=("text-to-video",) if model["mode"] == "text" else ("reference-to-video",),
             aspect_ratios=tuple(data["aspect_ratios"]),
+            output_counts=(1,),  # Existing single-request path; no multi-output binding is captured.
             duration_min=int(model["duration_seconds"]),
             duration_max=int(model["duration_seconds"]),
             duration_default=int(model["duration_seconds"]),

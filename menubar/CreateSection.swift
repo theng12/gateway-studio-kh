@@ -10,7 +10,7 @@ import CryptoKit
 /// shared body "so the three workspace pages cannot drift apart one fix at a
 /// time"; six copies here would drift the same way, faster.
 struct CreateField {
-    enum Kind { case script, text, number, voice }
+    enum Kind { case script, text, number, voice, choice }
     let key: String
     let label: String
     let kind: Kind
@@ -175,6 +175,12 @@ enum CreateLanes {
             fields: [
                 CreateField(key: "prompt", label: "Prompt", kind: .script,
                             placeholder: "Describe the shot…"),
+                CreateField(key: "operation", label: "Mode", kind: .choice),
+                CreateField(key: "duration_seconds", label: "Duration (seconds)", kind: .choice,
+                            hint: "Only this model’s supported lengths. A scene is never shortened automatically."),
+                CreateField(key: "aspect_ratio", label: "Aspect ratio", kind: .choice),
+                CreateField(key: "resolution", label: "Resolution", kind: .choice),
+                CreateField(key: "output_count", label: "Outputs", kind: .choice),
             ],
             previewTitle: "Preview", emptyTitle: "Your video will appear here",
             emptyDetail: "Describe the shot and generate it. Video can take a few minutes; it plays here when it is ready."
@@ -258,6 +264,8 @@ final class CreateWorkspace: NSView {
     private let lane: CreateLane
     private var state: CreateWorkspaceState
     private var fields: [String: NSView] = [:]
+    private var videoControlProblem: String?
+    private var editingEnabled = true
     private var modelPopup: NSPopUpButton?
     private var voiceComboBox: NSComboBox?
     private var advancedVoiceField: NSTextField?
@@ -517,6 +525,13 @@ final class CreateWorkspace: NSView {
             // A count is a short number; it should not stretch across the column.
             if field.kind == .number { entry.widthAnchor.constraint(equalToConstant: 90).isActive = true }
             return entry
+        case .choice:
+            let popup = NSPopUpButton()
+            popup.identifier = NSUserInterfaceItemIdentifier(field.key)
+            popup.setAccessibilityLabel(field.label)
+            popup.target = self
+            popup.action = #selector(videoControlChanged)
+            return popup
         case .voice:
             let combo = NSComboBox()
             combo.isEditable = true
@@ -622,6 +637,9 @@ final class CreateWorkspace: NSView {
            let text = scroll.documentView as? NSTextView {
             return text.string
         }
+        if let popup = fields[key] as? NSPopUpButton {
+            return popup.selectedItem?.representedObject as? String ?? ""
+        }
         return (fields[key] as? NSTextField)?.stringValue ?? ""
     }
 
@@ -635,6 +653,10 @@ final class CreateWorkspace: NSView {
             text.string = value
         } else if let entry = fields[key] as? NSTextField {
             entry.stringValue = value
+        } else if let popup = fields[key] as? NSPopUpButton {
+            popup.removeAllItems()
+            popup.addItem(withTitle: value)
+            popup.lastItem?.representedObject = value
         }
     }
 
@@ -817,7 +839,70 @@ final class CreateWorkspace: NSView {
         return value == "unknown" ? "source unknown" : value
     }
 
+    @objc private func videoControlChanged() {
+        persistState()
+        updateCapabilities()
+        updateGenerateEnabled()
+    }
+
+    private func updateVideoControls() {
+        guard lane.modality == "video" else { return }
+        let row = selectedModelRow() ?? [:]
+        videoControlProblem = row["support_status"] as? String == "update_required"
+            ? "This model is listed, but its controls need an update before generation." : nil
+        var durations: [String] = []
+        if let bounds = row["duration_seconds"] as? [String: Any],
+           let low = bounds["min"] as? Int, let high = bounds["max"] as? Int,
+           let step = bounds["step"] as? Int, low > 0, high >= low, step > 0 {
+            durations = stride(from: low, through: high, by: step).map { String($0) }
+            if bounds["auto"] as? Bool == true { durations.append("auto") }
+        }
+        let choices: [String: [String]] = [
+            "operation": row["modes"] as? [String] ?? [],
+            "duration_seconds": durations,
+            "aspect_ratio": row["aspect_ratios"] as? [String] ?? [],
+            "resolution": row["resolutions"] as? [String] ?? [],
+            "output_count": (row["output_counts"] as? [Int] ?? []).map { String($0) },
+        ]
+        for field in lane.fields where field.kind == .choice {
+            guard let popup = fields[field.key] as? NSPopUpButton else { continue }
+            let remembered = (popup.selectedItem?.representedObject as? String)
+                ?? state.draft.values[field.key] ?? ""
+            let values = choices[field.key] ?? []
+            let durationDefault = (row["duration_seconds"] as? [String: Any])?["default"] as? Int
+            let initial = field.key == "duration_seconds" ? durationDefault.map { String($0) } : nil
+            let selected = remembered.isEmpty ? (initial ?? values.first ?? "") : remembered
+            popup.removeAllItems()
+            if values.isEmpty {
+                popup.addItem(withTitle: "Unknown — no override")
+                popup.lastItem?.representedObject = ""
+            } else {
+                for value in values {
+                    popup.addItem(withTitle: value.replacingOccurrences(of: "-", with: " "))
+                    popup.lastItem?.representedObject = value
+                }
+            }
+            if !selected.isEmpty && !values.contains(selected) {
+                popup.addItem(withTitle: "Unavailable: \(selected)")
+                popup.lastItem?.representedObject = selected
+                videoControlProblem = "\(field.label) \(selected) is unavailable for this model. Choose a supported value."
+            }
+            if let index = popup.itemArray.firstIndex(where: { ($0.representedObject as? String) == selected }) {
+                popup.selectItem(at: index)
+            }
+            popup.isEnabled = editingEnabled && (!values.isEmpty || !selected.isEmpty)
+            if row["support_status"] as? String == "bounded", field.key != "resolution", values.isEmpty {
+                videoControlProblem = "Verified controls are unavailable. Refresh models or update before generation."
+            }
+        }
+        if value(of: "operation") != "text-to-video",
+           row["supports_reference_images"] as? Bool == true || row["supports_start_frame"] as? Bool == true {
+            videoControlProblem = "This model needs a scene image. Submit it from Story with its reference image."
+        }
+    }
+
     private func updateCapabilities() {
+        updateVideoControls()
         guard let label = capabilityLabel else { return }
         guard let row = selectedModelRow() else {
             label.stringValue = "Capabilities: unknown"
@@ -837,6 +922,14 @@ final class CreateWorkspace: NSView {
             // A transcription lane takes a recording, not a prompt: "Prompt characters: unknown" would be noise.
             lines.append("Prompt characters: \(unknown(row["max_prompt_characters"])) (\(source(row, "max_prompt_characters_source")))")
         }
+        if lane.modality == "video" {
+            if let reason = row["support_reason"] as? String { lines.append(reason) }
+            if row["resolution_status"] as? String == "update_required" {
+                lines.append("Resolution override: unknown — update required.")
+            }
+            if row["pricing_status"] as? String == "unknown" { lines.append("Price: unknown") }
+            if let problem = videoControlProblem { lines.append(problem) }
+        }
         label.stringValue = lines.count == 1 ? "No capability limits stated for this model." : lines.joined(separator: "\n")
     }
 
@@ -847,6 +940,7 @@ final class CreateWorkspace: NSView {
             && pendingJobID == nil
             && ambiguousAttempt == nil
             && fileProblem == nil
+            && videoControlProblem == nil
     }
 
     private func selectedModelID() -> String? {
@@ -892,6 +986,9 @@ final class CreateWorkspace: NSView {
         if let entry = fields[key] as? NSTextField {
             return entry.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        if let popup = fields[key] as? NSPopUpButton {
+            return popup.selectedItem?.representedObject as? String ?? ""
+        }
         return ""
     }
 
@@ -906,6 +1003,7 @@ final class CreateWorkspace: NSView {
     // MARK: generate
 
     private func setEditingEnabled(_ enabled: Bool) {
+        editingEnabled = enabled
         for view in fields.values {
             setEditingEnabled(enabled, in: view)
         }
@@ -915,6 +1013,7 @@ final class CreateWorkspace: NSView {
         if enabled {
             retryAttemptButton?.isHidden = true
             newDraftButton?.isHidden = true
+            updateCapabilities()
         }
         updateGenerateEnabled()
     }
@@ -976,12 +1075,31 @@ final class CreateWorkspace: NSView {
     }
 
     private func makeAttempt(modelID: String) -> CreateAttempt? {
+        if lane.modality == "video" {
+            updateVideoControls()
+            if let problem = videoControlProblem {
+                statusLabel.stringValue = problem
+                return nil
+            }
+        }
         let key = UUID().uuidString
         var params: [String: Any] = [:]
         for field in lane.fields {
             let raw = value(of: field.key)
             if raw.isEmpty { continue }
-            params[field.key] = field.kind == .number ? (Int(raw) ?? 1) : raw
+            if lane.modality == "video", field.key == "duration_seconds" || field.key == "output_count" {
+                if raw == "auto", field.key == "duration_seconds" {
+                    params[field.key] = raw
+                } else {
+                    guard let integer = Int(raw), integer > 0 else {
+                        statusLabel.stringValue = "\(field.label) must be a supported whole integer."
+                        return nil
+                    }
+                    params[field.key] = integer
+                }
+            } else {
+                params[field.key] = field.kind == .number ? (Int(raw) ?? 1) : raw
+            }
         }
         if lane.modality == "chat" {
             // The whole conversation so far, so the model answers in context.

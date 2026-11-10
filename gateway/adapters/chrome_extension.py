@@ -105,27 +105,57 @@ def _unavailable(message: str) -> BackendError:
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
+def _video_control(params: dict, names: tuple[str, ...], default=None):
+    stated = [params[name] for name in names if name in params]
+    if not stated:
+        return default
+    if any(type(value) is not type(stated[0]) or value != stated[0] for value in stated[1:]):
+        raise _refuse(f"conflicting video controls: {', '.join(names)}")
+    return stated[0]
+
+
+def _video_integer(value, label: str) -> int:
+    # bool and fractional JSON numbers must never become a different purchase via int().
+    if type(value) is int:
+        return value
+    if type(value) is float and math.isfinite(value) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    raise _refuse(f"{label} {value!r} must be a whole integer")
+
+
 def _payload(request: BackendRequest, references: list[dict[str, str]]) -> dict:
     """The §4 job, from the model's `VideoCapability` record. What the record does not publish is
     refused here, before any worker sees it (the extension would otherwise improvise and spend)."""
     params = request.params
     record = video_capabilities.for_model(request.provider_id, request.model_id)
     if record is None:
-        raise _refuse(f"{request.model_id} has no capability record; it is not selectable")
+        raise _refuse(f"{request.model_id} has no verified transport mapping; update required")
     text = "text-to-video" in record.modes
-    duration = params.get("duration_seconds", params.get("duration"))
-    if duration is None:
-        duration = record.duration_default
-    try:
-        duration = int(duration)
-    except (TypeError, ValueError):
-        raise _refuse(f"duration {duration!r} is not a whole number of seconds") from None
+    allowed_modes = ("text", "text-to-video") if text else ("image", "image-to-video", "reference-to-video")
+    for field in ("mode", "operation", "videoMode"):
+        if field in params and params[field] not in allowed_modes:
+            raise _refuse(f"{request.model_id} does not support {field}={params[field]!r}; "
+                          f"it publishes {', '.join(record.modes)}")
+    duration = _video_integer(_video_control(
+        params, ("duration_seconds", "duration", "durationSec"), record.duration_default), "duration")
     if duration not in record.durations():
         raise _refuse(f"{request.model_id} makes {', '.join(map(str, record.durations()))} s clips; "
-                      f"{duration} s was asked for")
-    aspect = params.get("aspect_ratio") or record.aspect_ratios[0]
+                      f"{duration} s was asked for. Choose a supported model/duration; no scene is truncated.")
+    aspect = _video_control(params, ("aspect_ratio", "aspectRatio"),
+                            record.aspect_ratios[0] if record.aspect_ratios else None)
     if aspect not in record.aspect_ratios:
         raise _refuse(f"{request.model_id} publishes {', '.join(record.aspect_ratios)}; {aspect} was asked for")
+    resolution = params.get("resolution")
+    if resolution is not None and resolution not in record.resolutions:
+        raise _refuse(f"{request.model_id} has no verified mapping for resolution {resolution!r}; update required")
+    count = _video_integer(_video_control(params, ("output_count", "outputCount", "n"), 1), "output count")
+    if count not in record.output_counts:
+        raise _refuse(f"{request.model_id} supports output counts {list(record.output_counts)}; {count} was asked for")
     if text and references:
         raise _refuse(f"{request.model_id} is text-to-video and takes no picture")
     if not text and not references:
@@ -141,6 +171,8 @@ def _payload(request: BackendRequest, references: list[dict[str, str]]) -> dict:
         "modelLabel": request.display_name or request.model_id,
         "durationSec": duration,
         "aspectRatio": aspect,
+        "outputCount": count,
+        **({"resolution": resolution} if resolution is not None else {}),
         "flowProjectId": request.values.get("flow_project_id") or None,
         "referenceImages": references,
     }
