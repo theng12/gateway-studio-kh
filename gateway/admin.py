@@ -80,6 +80,14 @@ def _key_matches(candidate: str) -> bool:
     return bool(expected) and hmac.compare_digest(candidate.encode(), expected.encode())
 
 
+def _refuse_worker_key(authorization: str | None) -> None:
+    # A scoped worker/manager credential must never inherit this Mac's ambient admin trust.
+    text = (authorization or "").strip()
+    if text.lower().startswith("bearer ") and text[7:].strip().startswith("ekw_"):
+        raise AdminError(403, "Worker and manager tokens only authorize their scoped worker routes.",
+                         "WORKER_SCOPE_REFUSED")
+
+
 def require_admin(
     request: Request, authorization: str | None = Header(default=None)
 ) -> None:
@@ -100,6 +108,7 @@ def require_admin(
     holds; letting it through because the process happens to run here would make the key
     owner-level on the owner's own Mac.
     """
+    _refuse_worker_key(authorization)
     if bearer_guest(request) is not None:
         raise AdminError(403, "A guest account may only use the Create page.",
                          "GUEST_NOT_ALLOWED")
@@ -223,6 +232,7 @@ def require_local_app(
 
     Used for the browser password itself, so a signed-in browser cannot change it.
     """
+    _refuse_worker_key(authorization)
     if bearer_guest(request) is not None:
         raise AdminError(403, "A guest account may only use the Create page.",
                          "GUEST_NOT_ALLOWED")

@@ -36,6 +36,8 @@ class _Base(unittest.TestCase):
         self.addCleanup(env.stop)
         ew.reset_for_tests()
         self.addCleanup(ew.reset_for_tests)
+        from tests.extension_account_fixture import fixture_offers
+        fixture_offers(self)
         self.client = TestClient(api.app, client=("100.64.0.9", 40000))  # not loopback
         self.token = ew.mint("chrome-a", "video")
 
@@ -43,8 +45,8 @@ class _Base(unittest.TestCase):
         return {"Authorization": f"Bearer {token or self.token}"}
 
     def claim(self, token=None, worker="chrome-a", **extra):
-        return self.client.post("/api/workers/claim", headers=self.auth(token),
-                                json={"workerId": worker, "kind": "video", **extra})
+        from tests.extension_account_fixture import claim_with_observed_account
+        return claim_with_observed_account(self.client, token or self.token, worker, "video", extra)
 
     def request(self, record=TEXT, **params):
         captured = []
@@ -139,13 +141,14 @@ class ClaimTests(_Base):
         self.claim(telemetry={"credits": {"value": None}})   # not known now: the last stated stays
         self.assertEqual(local.get("/admin/api/extension-workers").json()["workers"][0]["credits"]["value"], 11)
 
-    def test_one_job_per_worker_and_claim_is_idempotent(self):
+    def test_one_job_per_worker_and_claim_never_reauthorizes_execution(self):
         self.claim()
         ew.broker.offer("video", {"prompt": "one"})
         ew.broker.offer("video", {"prompt": "two"})
         first = self.claim().json()["job"]
-        again = self.claim().json()["job"]
-        self.assertEqual(first["jobId"], again["jobId"])
+        again = self.claim()
+        self.assertEqual(again.status_code, 409)
+        self.assertNotIn("job", again.json())
         other = ew.mint("chrome-b", "video")
         second = self.claim(token=other, worker="chrome-b").json()["job"]
         self.assertNotEqual(second["jobId"], first["jobId"])

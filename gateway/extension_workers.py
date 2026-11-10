@@ -36,7 +36,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from . import admin_session
+from . import admin_session, extension_accounts
 from .config import APP_SUPPORT, get as config_get
 
 SWITCH = "GATEWAY_EXTENSION_WORKERS"
@@ -126,23 +126,36 @@ def _rows() -> dict[str, dict]:
     return raw if isinstance(raw, dict) else {}
 
 
-def mint(worker_id: str, kind: str) -> str:
+def mint(worker_id: str, kind: str, *, worker_ids: list[str] | None = None) -> str:
     """A new token for this worker, **returned once** and stored only as its digest.
 
     Minting again for the same worker revokes its earlier token, so one worker has one key.
     """
     worker_id = str(worker_id or "").strip()
-    if not worker_id or len(worker_id) > 120 or kind not in KINDS:
+    if not worker_id or len(worker_id) > 120 or kind not in KINDS | {"manager"}:
         raise ValueError("a worker needs an id (at most 120 characters) and a known kind")
+    if kind == "manager" and (not isinstance(worker_ids, list) or not worker_ids
+            or len(worker_ids) > 128 or any(not isinstance(w, str) or not w or len(w) > 120 for w in worker_ids)):
+        raise ValueError("a manager needs its explicit worker_ids scope (at most 128)")
     token = TOKEN_PREFIX + secrets.token_urlsafe(32)
     now = time.time()
     with admin_session._lock:
         rows = _rows()
+        if any(row.get("worker_id") == worker_id and ((row.get("kind") == "manager") != (kind == "manager"))
+               for row in rows.values()):
+            raise ValueError("manager and execution-worker identities must be distinct")
+        if kind == "manager":
+            paired = {row["worker_id"] for row in rows.values()
+                      if row.get("kind") in KINDS and not row.get("revoked_at")}
+            if not set(worker_ids).issubset(paired):
+                raise ValueError("manager scope must name already paired workers")
         for row in rows.values():
             if row.get("worker_id") == worker_id and not row.get("revoked_at"):
                 row["revoked_at"] = now
         rows[admin_session._digest(token)] = {"worker_id": worker_id, "kind": kind,
-                                              "created_at": now, "revoked_at": None}
+                                              "created_at": now, "revoked_at": None,
+                                              "dispatch_enabled": False,
+                                              **({"worker_ids": sorted(set(worker_ids))} if kind == "manager" else {})}
         admin_session._write(_tokens_path(), {"workers": rows})
         broker.clear_inventory(worker_id)
     return token
@@ -196,6 +209,10 @@ class WorkerJob:
     payload: dict[str, Any]
     state: str = "pending"            # pending | claimed | succeeded | failed | held | withdrawn
     owner: str | None = None
+    owner_token_id: str | None = None
+    gateway_job_id: str = ""
+    account_binding: dict | None = None
+    reservation: dict | None = None
     created_at: float = field(default_factory=time.time)
     claimed_at: float | None = None
     last_heard: float = 0.0
@@ -314,8 +331,9 @@ class _Broker:
                                "model_count": len(data["models"]), "voice_count": len(data["voices"])}
                     for provider, data in entry.get("audio_inventory", {}).items()}
 
-    def offer(self, kind: str, payload: dict[str, Any]) -> WorkerJob:
-        job = WorkerJob(job_id=f"job_{uuid.uuid4().hex}", kind=kind, payload=payload)
+    def offer(self, kind: str, payload: dict[str, Any], *, gateway_job_id: str = "") -> WorkerJob:
+        job = WorkerJob(job_id=f"job_{uuid.uuid4().hex}", kind=kind, payload=payload,
+                        gateway_job_id=gateway_job_id)
         job.payload["jobId"] = job.job_id
         with self._lock:
             self._jobs[job.job_id] = job
@@ -339,6 +357,7 @@ class _Broker:
         with self._lock:
             if job.state != "claimed":
                 return False
+            _settle_account(job.owner, job.owner_token_id, job.job_id, "held")
             job.state = "held"
             return True
 
@@ -349,6 +368,7 @@ class _Broker:
             if job.state != "failed":
                 return None
             if job.ambiguous:
+                _settle_account(job.owner, job.owner_token_id, job.job_id, "held")
                 job.state = "held"
                 return "held"
             return "failed"
@@ -357,7 +377,7 @@ class _Broker:
         """Progress from the job's owner renews its lease; `False` for anyone else's job."""
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is None or job.owner != worker["worker_id"] or job.kind != worker["kind"]:
+            if job is None or job.owner != worker["worker_id"] or job.kind != worker["kind"] or job.owner_token_id != worker["_token_id"]:
                 return False
             if job.state == "claimed":
                 job.last_heard = time.time()
@@ -378,12 +398,14 @@ class _Broker:
         """
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is not None and (job.owner != worker["worker_id"] or job.kind != worker["kind"]):
+            if job is not None and (job.owner != worker["worker_id"] or job.kind != worker["kind"] or job.owner_token_id != worker["_token_id"]):
                 return "missing"
             if job is None or job.state == "held":
                 return "late"
             if job.state != "claimed" and not (job.state == "failed" and job.ambiguous):
                 return "taken"
+            _settle_account(worker["worker_id"], worker["_token_id"], job_id,
+                            "held" if ambiguous else state)
             job.content, job.media_type = content, media_type
             job.error, job.ambiguous, job.state = error, ambiguous, state
             job.changed.set()
@@ -393,34 +415,112 @@ class _Broker:
         with self._lock:
             self._jobs.pop(job.job_id, None)
 
-    def claim(self, worker: dict, inventory: dict | None = None) -> WorkerJob | None:
-        """One job per worker; discovery expiry never abandons already claimed work."""
+    def report(self, worker: dict, body: dict) -> None:
+        telemetry = body.get("telemetry")
+        state = telemetry.get("state") if isinstance(telemetry, dict) else None
+        normalized = extension_accounts.worker_state(state, now=time.time()) if state is not None else None
+        if "account" in body:
+            observation = extension_accounts.account(body["account"], now=time.time())
+            if normalized is not None and any(observation.get(key) != value for key, value in normalized.items()):
+                raise ValueError("account and telemetry.state must report the same worker state")
+            self.observe_account(worker, body["account"])
+        self.seen(worker, telemetry)
+        if normalized is not None:
+            with admin_session._lock, self._lock:
+                if not _current_worker(worker, _rows()):
+                    raise PermissionError("worker token revoked")
+                entry = self._entry(worker)
+                previous = entry.get("state")
+                if previous is None or normalized["observed_at"] > previous["observed_at"]:
+                    entry["state"], entry["state_received_at"] = normalized, time.time()
+
+    def observe_account(self, worker: dict, value: Any) -> None:
+        from . import runtime
+
+        now = time.time()
+        observation = extension_accounts.account(value, now=now)
         with admin_session._lock, self._lock:
             if not _current_worker(worker, _rows()):
+                raise PermissionError("this worker token was revoked before observation")
+            runtime.store.extension_account_observe(worker["worker_id"], worker["_token_id"],
+                                                    observation, now=now)
+            entry = self._entry(worker)
+            previous_account, previous_state = entry.get("account"), entry.get("state")
+            if previous_account is None or observation["observed_at"] > previous_account["observed_at"]:
+                entry["account"] = observation
+            if previous_state is None or observation["observed_at"] > previous_state["observed_at"]:
+                entry["state"], entry["state_received_at"] = observation, now
+
+    def claim(self, worker: dict, inventory: dict | None = None, quote: dict | None = None) -> WorkerJob | None:
+        """A paid handoff is durable and account-reserved before the worker can execute it."""
+        from . import runtime
+
+        with admin_session._lock, self._lock:
+            rows = _rows()
+            if not _current_worker(worker, rows):
                 raise PermissionError("this worker token was revoked before assignment")
             entry = self._entry(worker)
+            entry.pop("quote_required", None)
             if worker["kind"] == "audio":
                 entry["audio_inventory"] = inventory or {}
             for job in self._jobs.values():
                 if job.owner == worker["worker_id"] and job.state == "claimed":
                     if job.kind != worker["kind"]:
                         return None
-                    job.last_heard = time.time()
-                    return job
+                    # Polling never re-authorizes execution, even on the same token.
+                    raise ValueError("WORKER_BUSY: this worker already has an active job; report progress or its result")
+            if rows[worker["_token_id"]].get("dispatch_enabled") is not True:
+                return None
+            account = entry.get("account")
+            if not account:
+                return None
+            now = time.time()
+            state = entry.get("state", account)
+            revision = rows[worker["_token_id"]].get("control_revision")
+            if revision is not None and state.get("control_revision") != revision:
+                return None
+            if (state["connection"] != "connected" or state["sign_in"] != "signed_in"
+                    or state["readiness"] != "ready" or not state["enabled"] or state["paused"]
+                    or state["activity"] not in ("idle", "waiting")
+                    or not 0 <= now - state["observed_at"] < online_seconds()
+                    or state["next_eligible_at"] is None or state["next_eligible_at"] > now):
+                return None
             for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
-                if job.state == "pending" and job.kind == worker["kind"]:
-                    if job.kind == "audio" and not self._audio_member(entry, job.payload, time.time()):
-                        continue
-                    job.state, job.owner = "claimed", worker["worker_id"]
-                    job.last_heard = job.claimed_at = time.time()
-                    job.changed.set()
-                    return job
+                if job.state != "pending" or job.kind != worker["kind"]:
+                    continue
+                if job.kind == "audio" and not self._audio_member(entry, job.payload, now):
+                    continue
+                provider = job.payload.get("provider", "flow" if job.kind in ("video", "image") else None)
+                if account["provider"] != provider or not job.gateway_job_id:
+                    continue
+                digest = extension_accounts.payload_sha256(job.payload)
+                if quote is None:
+                    entry["quote_required"] = {"job": job.payload, "payloadSha256": digest,
+                                               "executionAuthorized": False}
+                    return None
+                if (quote["payload_sha256"] != digest or quote["provider"] != account["provider"]
+                        or quote["account_id"] != account["account_id"]):
+                    continue
+                reservation = runtime.store.extension_account_reserve(
+                    worker["worker_id"], worker["_token_id"], job_id=job.gateway_job_id,
+                    worker_job_id=job.job_id, payload_sha256=digest, quote=quote,
+                    now=now, max_age=online_seconds())
+                if reservation is None:
+                    return None
+                job.account_binding = {"provider": account["provider"], "accountId": account["account_id"]}
+                job.reservation = {"payloadSha256": digest, "value": quote["value"], "unit": quote["unit"]}
+                job.state, job.owner = "claimed", worker["worker_id"]
+                job.owner_token_id = worker["_token_id"]
+                job.last_heard = job.claimed_at = now
+                job.changed.set()
+                return job
         return None
 
     def owned(self, worker: dict, job_id: str) -> WorkerJob | None:
         with self._lock:
             job = self._jobs.get(job_id)
-            return job if job is not None and job.owner == worker["worker_id"] and job.kind == worker["kind"] else None
+            return job if (job is not None and job.owner == worker["worker_id"]
+                           and job.kind == worker["kind"] and job.owner_token_id == worker["_token_id"]) else None
 
     def jobs_of(self, worker_id: str) -> tuple[dict | None, list[str]]:
         """`(current_job, held_job_ids)` for the status page; what the Gateway still holds in memory."""
@@ -458,7 +558,7 @@ def _worker(authorization: str | None) -> dict | JSONResponse:
     if not enabled():
         return _NOT_FOUND
     worker = bearer_worker(authorization)
-    if worker is None:
+    if worker is None or worker.get("kind") not in KINDS:
         return _refusal(401, "WORKER_TOKEN_REFUSED", "this worker token is not recognised")
     return worker
 
@@ -471,6 +571,157 @@ async def _json(request: Request) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+def _settle_account(worker_id: str | None, token_id: str | None, job_id: str, outcome: str) -> None:
+    from . import runtime
+
+    if worker_id and token_id:
+        runtime.store.extension_account_settle(worker_id, token_id, job_id,
+                                               outcome=outcome, now=time.time())
+
+
+def worker_control(worker: dict) -> dict:
+    row = _rows().get(worker["_token_id"], {})
+    return {"dispatchEnabled": row.get("dispatch_enabled") is True,
+            "closeRequested": row.get("close_requested") is True,
+            "revision": row.get("control_revision"), "requestedAt": row.get("control_requested_at"),
+            "pacing": row.get("pacing", {"minSeconds": 5, "maxSeconds": 15})}
+
+
+async def _account_body(request: Request) -> dict:
+    limit, raw = audio_inventory_max_bytes(), bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > limit:
+            raise OverflowError(f"the complete worker claim/telemetry exceeds the {limit} byte limit")
+        raw.extend(chunk)
+    try:
+        body = json.loads(raw)
+    except (ValueError, RecursionError):
+        raise ValueError("invalid worker JSON") from None
+    if not isinstance(body, dict):
+        raise ValueError("worker body must be an object")
+    return body
+
+
+def _manager(authorization: str | None) -> dict | JSONResponse:
+    if not enabled():
+        return _NOT_FOUND
+    identity = bearer_worker(authorization)
+    if identity is None or identity.get("kind") != "manager":
+        return _refusal(401, "MANAGER_TOKEN_REFUSED", "a paired scoped manager token is required")
+    return identity
+
+
+def manager_view(worker_ids: list[str]) -> dict:
+    from . import runtime
+
+    now, scope = time.time(), set(worker_ids)
+    accounts = []
+    for observed in runtime.store.extension_account_status(now=now, max_age=online_seconds()):
+        if not scope.intersection(observed["workers"]):
+            continue
+        accounts.append({**{key: value for key, value in observed.items() if key != "bindings"},
+                         "workers": sorted(scope.intersection(observed["workers"]))})
+    workers = []
+    with admin_session._lock, broker._lock:
+        rows = _rows()
+        for worker_id in sorted(scope):
+            row = next((r for r in reversed(list(rows.values())) if r["worker_id"] == worker_id
+                        and r["kind"] in KINDS and not r.get("revoked_at")), None)
+            entry = broker.workers.get(worker_id, {})
+            current_entry = row is not None and _current_worker(entry, rows)
+            state = entry.get("state") if current_entry else None
+            received = entry.get("state_received_at") if current_entry else None
+            fresh = bool(state and received is not None
+                         and 0 <= now - state["observed_at"] < online_seconds()
+                         and 0 <= now - received < online_seconds())
+            control = {"dispatchEnabled": bool(row and row.get("dispatch_enabled") is True),
+                       "closeRequested": bool(row and row.get("close_requested") is True),
+                       "revision": row.get("control_revision") if row else None,
+                       "requestedAt": row.get("control_requested_at") if row else None,
+                       "pacing": row.get("pacing", {"minSeconds": 5, "maxSeconds": 15}) if row else None}
+            mine = [j for j in broker._jobs.values() if j.owner == worker_id]
+            active = next(({"jobId": j.job_id, "phase": j.phase or None,
+                            "claimed_at": j.claimed_at, "last_heard_at": j.last_heard}
+                           for j in mine if j.state == "claimed"), None)
+            held = sorted(j.job_id for j in mine if j.state == "held" or (j.state == "failed" and j.ambiguous))
+            durable_busy = runtime.store.extension_account_worker_busy(worker_id)
+            observed_account = entry.get("account") if current_entry else None
+            workers.append({"worker_id": worker_id, "kind": row.get("kind") if row else None,
+                            "has_live_token": row is not None, "control": control,
+                            "state": state, "receivedAt": received, "fresh": fresh,
+                            "current_job": active, "held_jobs": held, "durableBusy": durable_busy,
+                            "safeToClose": bool(fresh and not control["dispatchEnabled"]
+                                and control["revision"] and state["paused"]
+                                and state["activity"] in ("idle", "cooling", "resting", "waiting")
+                                and state["control_revision"] == control["revision"]
+                                and active is None and not held and not durable_busy),
+                            "accountBinding": {"provider": observed_account["provider"],
+                                               "accountId": observed_account["account_id"]} if observed_account else None})
+    return {"schema": 1, "receivedAt": now, "maxAgeSeconds": online_seconds(),
+            "workers": workers, "accounts": accounts}
+
+
+@router.get("/api/workers/manager")
+def workers_manager(authorization: str | None = Header(default=None)):
+    manager = _manager(authorization)
+    if isinstance(manager, JSONResponse):
+        return manager
+    return manager_view(manager["worker_ids"])
+
+
+@router.post("/api/workers/manager/control")
+async def workers_manager_control(request: Request, authorization: str | None = Header(default=None)):
+    manager = _manager(authorization)
+    if isinstance(manager, JSONResponse):
+        return manager
+    try:
+        body = await _account_body(request)
+        worker_ids = body.get("worker_ids")
+        if (not isinstance(worker_ids, list) or not worker_ids or len(worker_ids) > 128
+                or any(not isinstance(w, str) or w not in manager["worker_ids"] for w in worker_ids)):
+            return _refusal(403, "MANAGER_SCOPE_REFUSED", "control only the exact paired worker scope")
+        dispatch, close = body.get("dispatchEnabled"), body.get("closeRequested", False)
+        if type(dispatch) is not bool or type(close) is not bool or (close and dispatch):
+            raise ValueError("control needs dispatchEnabled boolean; close requires dispatch disabled")
+        selected_pacing = extension_accounts.pacing(body["pacing"]) if "pacing" in body else None
+        with admin_session._lock:
+            rows = _rows()
+            if not _current_worker(manager, rows):
+                return _refusal(401, "MANAGER_TOKEN_REFUSED", "this manager token was revoked")
+            revision, requested = uuid.uuid4().hex, time.time()
+            for row in rows.values():
+                if row["worker_id"] in worker_ids and row["kind"] in KINDS and not row.get("revoked_at"):
+                    row.update(dispatch_enabled=dispatch, close_requested=close,
+                               control_revision=revision, control_requested_at=requested)
+                    if selected_pacing is not None:
+                        row["pacing"] = selected_pacing
+            admin_session._write(_tokens_path(), {"workers": rows})
+    except ValueError as exc:
+        return _refusal(422, "MANAGER_CONTROL_INVALID", str(exc))
+    except OverflowError as exc:
+        return _refusal(413, "MANAGER_CONTROL_INVALID", str(exc))
+    return manager_view(manager["worker_ids"])
+
+
+@router.post("/api/workers/telemetry")
+async def workers_telemetry(request: Request, authorization: str | None = Header(default=None)):
+    worker = _worker(authorization)
+    if isinstance(worker, JSONResponse):
+        return worker
+    try:
+        body = await _account_body(request)
+        if body.get("workerId") != worker["worker_id"] or body.get("kind") != worker["kind"]:
+            return _refusal(403, "WORKER_MISMATCH", "this token belongs to another worker or kind")
+        broker.report(worker, body)
+    except ValueError as exc:
+        return _refusal(422, "ACCOUNT_OBSERVATION_INVALID", str(exc))
+    except OverflowError as exc:
+        return _refusal(413, "ACCOUNT_OBSERVATION_INVALID", str(exc))
+    except PermissionError:
+        return _refusal(401, "WORKER_TOKEN_REFUSED", "this worker token was revoked")
+    return {"ok": True, "receivedAt": time.time(), "control": worker_control(worker)}
+
+
 @router.get("/api/workers/health")
 def workers_health(authorization: str | None = Header(default=None)):
     worker = _worker(authorization)
@@ -481,7 +732,9 @@ def workers_health(authorization: str | None = Header(default=None)):
     return {"ok": True, "workerId": worker["worker_id"], "kind": worker["kind"],
             "maxResultBytes": MAX_RESULT_BYTES, "leaseSeconds": lease_seconds(),
             "onlineSeconds": age, "audioInventoryMaxAgeSeconds": age,
-            "audioInventoryMaxBytes": audio_inventory_max_bytes()}
+            "audioInventoryMaxBytes": audio_inventory_max_bytes(),
+            "accountSchema": 1, "accountMaxAgeSeconds": age,
+            "claimMaxBytes": audio_inventory_max_bytes(), "control": worker_control(worker)}
 
 
 @router.post("/api/workers/claim")
@@ -492,37 +745,35 @@ async def workers_claim(request: Request, authorization: str | None = Header(def
     inventory = None
     if worker["kind"] == "audio":
         broker.clear_inventory(worker["worker_id"], worker["_token_id"])
-        limit, raw = audio_inventory_max_bytes(), bytearray()
-        async for chunk in request.stream():
-            if len(raw) + len(chunk) > limit:
-                return _refusal(413, "WORKER_INVENTORY_INVALID",
-                                f"the complete audio claim exceeds the {limit} byte limit")
-            raw.extend(chunk)
-        try:
-            body = json.loads(raw)
-        except (ValueError, RecursionError):
-            return _refusal(422, "WORKER_INVENTORY_INVALID", "invalid audio claim JSON")
-        if not isinstance(body, dict):
-            return _refusal(422, "WORKER_INVENTORY_INVALID", "an audio claim must be an object")
-        try:
-            inventory = audio_inventory(body.get("audioInventory", {"schema": 1, "providers": {}}),
-                                        time.time())
-        except ValueError as exc:
-            return _refusal(422, "WORKER_INVENTORY_INVALID", str(exc))
-    else:
-        body = await _json(request)
-        if "audioInventory" in body:
-            return _refusal(422, "WORKER_INVENTORY_INVALID", "audioInventory requires an audio token")
+    try:
+        body = await _account_body(request)
+        if worker["kind"] == "audio":
+            inventory = audio_inventory(body.get("audioInventory", {"schema": 1, "providers": {}}), time.time())
+        elif "audioInventory" in body:
+            raise ValueError("audioInventory requires an audio token")
+    except ValueError as exc:
+        return _refusal(422, "WORKER_INVENTORY_INVALID", str(exc))
+    except OverflowError as exc:
+        return _refusal(413, "WORKER_INVENTORY_INVALID", str(exc))
     if str(body.get("workerId") or "") != worker["worker_id"] or body.get("kind") != worker["kind"]:
         return _refusal(403, "WORKER_MISMATCH", "this token belongs to another worker or kind")
-    broker.seen(worker, body.get("telemetry"))
     try:
-        job = broker.claim(worker, inventory)
+        broker.report(worker, body)
+        selected_quote = extension_accounts.quote(body.get("quote"), now=time.time())
+        if selected_quote is not None and "account" not in body:
+            raise ValueError("an executable claim needs its actual account observation in the same request")
+        job = broker.claim(worker, inventory, selected_quote)
     except PermissionError:
         return _refusal(401, "WORKER_TOKEN_REFUSED", "this worker token was revoked before assignment")
+    except ValueError as exc:
+        return _refusal(409, "ACCOUNT_CLAIM_REFUSED", str(exc))
     if job is None:
+        preview = broker.workers.get(worker["worker_id"], {}).get("quote_required")
+        if preview:
+            return {"job": None, "quoteRequired": preview, "control": worker_control(worker)}
         return Response(status_code=204)
-    return {"job": job.payload}
+    return {"job": job.payload, "accountBinding": job.account_binding,
+            "reservation": job.reservation, "control": worker_control(worker)}
 
 
 @router.post("/api/workers/jobs/{job_id}/progress")
@@ -531,8 +782,15 @@ async def workers_progress(job_id: str, request: Request,
     worker = _worker(authorization)
     if isinstance(worker, JSONResponse):
         return worker
-    body = await _json(request)
-    broker.seen(worker, body.get("telemetry"))
+    try:
+        body = await _account_body(request)
+        broker.report(worker, body)
+    except ValueError as exc:
+        return _refusal(422, "ACCOUNT_OBSERVATION_INVALID", str(exc))
+    except OverflowError as exc:
+        return _refusal(413, "ACCOUNT_OBSERVATION_INVALID", str(exc))
+    except PermissionError:
+        return _refusal(401, "WORKER_TOKEN_REFUSED", "this worker token was revoked")
     if not broker.touch(worker, job_id, body.get("phase"), body.get("message")):
         return _refusal(404, "JOB_NOT_FOUND", "no job of this worker has that id")
     return {"ok": True}
@@ -546,6 +804,9 @@ def _held_row(worker: dict, job_id: str) -> dict | None:
     """
     from . import runtime
 
+    if (runtime.store.extension_account_has_reservation(worker["worker_id"], job_id)
+            and runtime.store.extension_account_reservation(worker["worker_id"], worker["_token_id"], job_id) is None):
+        return None
     wanted = upstream_id(worker["worker_id"], job_id)
     rows = runtime.store.jobs_for_upstream_batches([wanted])
     modality = "tts" if worker["kind"] == "audio" else worker["kind"]
@@ -559,8 +820,15 @@ async def workers_fail(job_id: str, request: Request,
     worker = _worker(authorization)
     if isinstance(worker, JSONResponse):
         return worker
-    body = await _json(request)
-    broker.seen(worker, body.get("telemetry"))
+    try:
+        body = await _account_body(request)
+        broker.report(worker, body)
+    except ValueError as exc:
+        return _refusal(422, "ACCOUNT_OBSERVATION_INVALID", str(exc))
+    except OverflowError as exc:
+        return _refusal(413, "ACCOUNT_OBSERVATION_INVALID", str(exc))
+    except PermissionError:
+        return _refusal(401, "WORKER_TOKEN_REFUSED", "this worker token was revoked")
     # Only `false` exactly is a definite failure: anything else may have spent credits.
     ambiguous = body.get("ambiguous") is not False
     error = str(body.get("error") or "the worker reported a failure")[:500]
@@ -581,6 +849,7 @@ async def workers_fail(job_id: str, request: Request,
     from . import runtime
 
     runtime.store.fail(row["id"], code="PROVIDER_FAILED", detail=error, retryable=False)
+    _settle_account(worker["worker_id"], worker["_token_id"], job_id, "failed")
     held = broker.get(job_id)
     if held is not None:
         broker.forget(held)
@@ -630,6 +899,7 @@ async def workers_result(job_id: str, mediaType: str = Form(default=""),
                                     runtime.store)
     except BackendError as exc:   # the same artifact check a live result meets
         return _refusal(422, "RESULT_INVALID", str(exc))
+    _settle_account(worker["worker_id"], worker["_token_id"], job_id, "succeeded")
     held = broker.get(job_id)
     if held is not None:
         broker.forget(held)
@@ -652,6 +922,8 @@ def _admin_routes() -> None:
         cutoff = time.time() - online_seconds()
         known: dict[str, dict[str, Any]] = {}
         for row in sorted(_rows().values(), key=lambda r: r.get("created_at") or 0):
+            if row.get("kind") == "manager":
+                continue
             entry = known.setdefault(row.get("worker_id"), {"worker_id": row.get("worker_id"),
                                                             "kind": row.get("kind"),
                                                             "has_live_token": False})
@@ -676,9 +948,51 @@ def _admin_routes() -> None:
                 entry["audio_inventory"] = broker.inventory_status(str(entry["worker_id"]))
                 entry["audio_admission_ready"] = False
                 entry["audio_admission_reason"] = "Discovery does not establish compatible model/voice pairs or required provider limits"
+        view = manager_view(list(known))
+        controls = {entry["worker_id"]: entry for entry in view["workers"]}
         return {"enabled": True, "lease_seconds": lease_seconds(),
                 "online_seconds": online_seconds(), "max_result_bytes": MAX_RESULT_BYTES,
-                "workers": sorted(known.values(), key=lambda e: str(e["worker_id"]))}
+                "accounts": view["accounts"],
+                "workers": [{**entry, **controls.get(entry["worker_id"], {})}
+                            for entry in sorted(known.values(), key=lambda e: str(e["worker_id"]))]}
+
+    @router.post("/admin/api/extension-workers/manager", dependencies=[Depends(require_local_app)])
+    async def extension_manager_mint(request: Request):
+        if not enabled():
+            return _NOT_FOUND
+        body = await _json(request)
+        try:
+            manager_id = str(body.get("manager_id") or "")
+            token = mint(manager_id, "manager", worker_ids=body.get("worker_ids"))
+        except ValueError as exc:
+            return _refusal(422, "MANAGER_INVALID", str(exc))
+        return {"ok": True, "manager_id": manager_id, "token": token}
+
+    @router.put("/admin/api/extension-workers/accounts/enabled", dependencies=[Depends(require_local_app)])
+    async def extension_account_enabled(request: Request):
+        if not enabled():
+            return _NOT_FOUND
+        from . import runtime
+
+        body = await _json(request)
+        if type(body.get("enabled")) is not bool:
+            return _refusal(422, "ACCOUNT_CONTROL_INVALID", "enabled must be an explicit boolean")
+        try:
+            changed = runtime.store.extension_account_set_enabled(body.get("provider"), body.get("account_id"), body["enabled"])
+        except ValueError as exc:
+            return _refusal(422, "ACCOUNT_CONTROL_INVALID", str(exc))
+        if not changed:
+            return _refusal(404, "ACCOUNT_NOT_FOUND", "observe the actual account before enabling it")
+        return {"ok": True, "enabled": body["enabled"]}
+
+    @router.get("/admin/api/extension-workers/accounts/history", dependencies=[Depends(require_admin)])
+    def extension_account_history(provider: str, account_id: str):
+        if not enabled():
+            return _NOT_FOUND
+        from . import runtime
+
+        return {"history": runtime.store.extension_account_history(provider, account_id),
+                "jobs": runtime.store.extension_account_reservations(provider=provider, account_id=account_id)}
 
     @router.post("/admin/api/extension-workers", dependencies=[Depends(require_local_app)])
     async def extension_workers_mint(request: Request):

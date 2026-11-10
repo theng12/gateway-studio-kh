@@ -39,14 +39,16 @@ class _Base(unittest.TestCase):
         self.addCleanup(env.stop)
         ew.reset_for_tests()
         self.addCleanup(ew.reset_for_tests)
+        from tests.extension_account_fixture import fixture_offers
+        fixture_offers(self)
         self.client = TestClient(api.app, client=("100.64.0.9", 40000))
 
     def auth(self, token):
         return {"Authorization": f"Bearer {token}"}
 
     def claim(self, token, worker, kind, **extra):
-        return self.client.post("/api/workers/claim", headers=self.auth(token),
-                                json={"workerId": worker, "kind": kind, **extra})
+        from tests.extension_account_fixture import claim_with_observed_account
+        return claim_with_observed_account(self.client, token, worker, kind, extra)
 
 
 class ImageKindRegistrationTests(unittest.TestCase):

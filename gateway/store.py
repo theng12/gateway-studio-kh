@@ -78,6 +78,34 @@ class RenderJournalNotFound(RenderJournalConflict):
 class RenderJournalCancelled(RenderJournalConflict):
     """Cancellation was recorded before the first send marker could win."""
 
+
+class ExtensionAccountRefused(ValueError):
+    """An account observation, reservation or settlement the ledger refuses.
+
+    A `ValueError` so callers already treating a refusal as one keep working; `code` is the stable
+    machine name and `detail` is the sentence a route may show.
+    """
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+        self.detail = detail
+
+
+#: Reservation states that still count against an account's available balance.
+ACCOUNT_LIVE_STATES = ("reserved", "held", "debited")
+#: Reservation states that block a binding change and a new claim on the same worker/account.
+ACCOUNT_UNSETTLED_STATES = ("reserved", "held")
+ACCOUNT_OUTCOMES = frozenset({"succeeded", "failed", "held"})
+ACCOUNT_ACTIVITY_ELIGIBLE = frozenset({"idle", "waiting"})
+#: Observation keys the ledger models as columns; every other key is retained as an extra
+#: snapshot field (observed pacing, control revision, ...) without changing the schema.
+ACCOUNT_OBSERVATION_KEYS = frozenset({
+    "provider", "account_id", "source", "observed_at", "connection", "sign_in", "readiness",
+    "activity", "attention", "paused", "enabled", "next_eligible_at", "plan", "credit_buckets",
+    "balance", "reset_at", "gateway_enabled",
+})
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id               TEXT PRIMARY KEY,
@@ -267,6 +295,113 @@ CREATE TABLE IF NOT EXISTS render_cancel_fences (
     gateway_job_id TEXT,
     PRIMARY KEY(owner_scope, dispatch_key)
 );
+-- One row per provider account, shared by every image/video worker bound to it, so two workers
+-- observing the same signed-in account cannot double-count its credits. `gateway_enabled` is the
+-- owner's dispatch switch (default off) and is never written by an observation; `profile_enabled`
+-- is the worker's own local switch and stays separate.
+CREATE TABLE IF NOT EXISTS extension_accounts (
+    provider              TEXT NOT NULL,
+    account_id            TEXT NOT NULL,
+    source                TEXT,
+    observed_at           REAL,
+    received_at           REAL NOT NULL,
+    updated_at            REAL NOT NULL,
+    connection            TEXT,
+    sign_in               TEXT,
+    readiness             TEXT,
+    activity              TEXT,
+    attention             INTEGER,
+    paused                INTEGER NOT NULL DEFAULT 1,
+    profile_enabled       INTEGER,
+    gateway_enabled       INTEGER NOT NULL DEFAULT 0,
+    next_eligible_at      REAL,
+    plan                  TEXT,
+    credit_buckets_json   TEXT,
+    extra_json            TEXT,
+    balance_value         REAL,
+    balance_unit          TEXT,
+    balance_source        TEXT,
+    balance_observed_at   REAL,
+    balance_received_at   REAL,
+    reset_at              REAL,
+    PRIMARY KEY (provider, account_id)
+);
+-- What each worker last observed, kept as history. `observed_at` is the provider's clock and is
+-- unique per account, so a repeated poll of the same observation is recorded once.
+CREATE TABLE IF NOT EXISTS extension_account_history (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider              TEXT NOT NULL,
+    account_id            TEXT NOT NULL,
+    source                TEXT,
+    observed_at           REAL NOT NULL,
+    received_at           REAL NOT NULL,
+    connection            TEXT,
+    sign_in               TEXT,
+    readiness             TEXT,
+    activity              TEXT,
+    attention             INTEGER,
+    paused                INTEGER NOT NULL DEFAULT 1,
+    profile_enabled       INTEGER,
+    next_eligible_at      REAL,
+    plan                  TEXT,
+    credit_buckets_json   TEXT,
+    extra_json            TEXT,
+    balance_value         REAL,
+    balance_unit          TEXT,
+    balance_source        TEXT,
+    balance_observed_at   REAL,
+    balance_received_at   REAL,
+    reset_at              REAL,
+    UNIQUE(provider, account_id, observed_at)
+);
+CREATE INDEX IF NOT EXISTS extension_account_history_recent
+    ON extension_account_history(provider, account_id, received_at);
+-- A worker is bound to one account, and the binding names the token generation that made it. A
+-- reservation records that generation, so a revoked/older token can never settle a newer one.
+CREATE TABLE IF NOT EXISTS extension_account_bindings (
+    worker_id   TEXT PRIMARY KEY,
+    provider    TEXT NOT NULL,
+    account_id  TEXT NOT NULL,
+    token_id    TEXT NOT NULL,
+    bound_at    REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS extension_account_bindings_account
+    ON extension_account_bindings(provider, account_id);
+-- One durable credit reservation per job. `reserved` and `held` are active; a known outcome moves
+-- to `debited` and keeps counting until a balance observation newer than `terminal_at` reconciles
+-- it to `reconciled`. A failed job proves nothing about the charge, so it is never refunded here.
+CREATE TABLE IF NOT EXISTS extension_account_reservations (
+    id                        TEXT PRIMARY KEY,
+    worker_id                 TEXT NOT NULL,
+    token_id                  TEXT NOT NULL,
+    provider                  TEXT NOT NULL,
+    account_id                TEXT NOT NULL,
+    job_id                    TEXT NOT NULL UNIQUE,
+    worker_job_id             TEXT NOT NULL,
+    payload_sha256            TEXT NOT NULL,
+    quote_value               REAL NOT NULL,
+    quote_unit                TEXT NOT NULL,
+    quote_source              TEXT NOT NULL,
+    quote_observed_at         REAL NOT NULL,
+    quote_payload_sha256      TEXT NOT NULL,
+    reserved_at               REAL NOT NULL,
+    state                     TEXT NOT NULL
+        CHECK (state IN ('reserved', 'held', 'debited', 'reconciled')),
+    outcome                   TEXT CHECK (outcome IN ('succeeded', 'failed') OR outcome IS NULL),
+    held_at                   REAL,
+    settled_at                REAL,
+    terminal_at               REAL,
+    reconciled_at             REAL,
+    reconciliation_value      REAL,
+    reconciliation_observed_at REAL,
+    updated_at                REAL NOT NULL,
+    UNIQUE(worker_id, worker_job_id)
+);
+CREATE INDEX IF NOT EXISTS extension_account_reservations_worker
+    ON extension_account_reservations(worker_id, state);
+CREATE INDEX IF NOT EXISTS extension_account_reservations_account
+    ON extension_account_reservations(provider, account_id, state);
 """
 REVIEW_LOCATOR_FIELDS = ("provider_id", "batch_id", "item_index", "receipt_sha256", "pcm_bytes",
                          "pcm_sha256")
@@ -613,6 +748,10 @@ class JobStore:
         self._ensure_columns()
         if self._claim_queue():
             self._recover_interrupted()
+            # Only the process that owns the queue may rewrite live reservations. A secondary
+            # opener (a test import, a failed spawn) must never turn another process's active
+            # reservations into holds.
+            self._recover_account_reservations()
         self._settle_late_successes()
         self._relabel_never_sent_pool_failures()
         self._conn.commit()
@@ -879,6 +1018,23 @@ class JobStore:
                 self._write_restart_hold(job_id, str(row["upstream_job_id"] or ""), time.time())
                 self._conn.commit()
 
+    def _recover_account_reservations(self) -> int:
+        """A restart makes live reservations ambiguous, so hold them — never release them.
+
+        The worker may have spent credits before the Gateway died; an unknown outcome is a
+        reconciliation, not a refund. `held` keeps counting against the account and blocks another
+        claim until `extension_account_settle` records a known outcome.
+        """
+        now = time.time()
+        result = self._conn.execute(
+            "UPDATE extension_account_reservations SET state = 'held', "
+            "held_at = COALESCE(held_at, ?), updated_at = ? WHERE state = 'reserved'",
+            (now, now),
+        )
+        if result.rowcount:
+            log.warning("held %d extension account reservation(s) after restart", result.rowcount)
+        return result.rowcount
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
@@ -887,6 +1043,881 @@ class JobStore:
                 # and reopened is a restart, and its `running` jobs are the ones the sweep is for.
                 os.close(self._owner_fd)
                 self._owner_fd = None
+
+    # -- extension account credit ledger ----------------------------------
+    #: The text an extension job checkpoints: who owns it and the worker's own job id.
+    @staticmethod
+    def _extension_upstream_id(worker_id: str, worker_job_id: str) -> str:
+        return f"ext:{worker_id}:{worker_job_id}"
+
+    @staticmethod
+    def _acc_text(name: str, value: Any, *, limit: int = 200, required: bool = False) -> str | None:
+        if value is None:
+            if required:
+                raise ExtensionAccountRefused("ACCOUNT_INVALID", f"{name} is required")
+            return None
+        if not isinstance(value, str):
+            raise ExtensionAccountRefused("ACCOUNT_INVALID", f"{name} must be text")
+        value = value.strip()
+        if not value:
+            if required:
+                raise ExtensionAccountRefused("ACCOUNT_INVALID", f"{name} is required")
+            return None
+        if len(value) > limit:
+            raise ExtensionAccountRefused("ACCOUNT_INVALID",
+                                          f"{name} must be at most {limit} characters")
+        return value
+
+    @staticmethod
+    def _acc_seconds(name: str, value: Any, *, positive: bool = False) -> float:
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0 or (positive and value == 0)):
+            raise ExtensionAccountRefused(
+                "ACCOUNT_INVALID",
+                f"{name} must be a {'positive' if positive else 'non-negative'} finite number",
+            )
+        return float(value)
+
+    @classmethod
+    def _acc_epoch(cls, name: str, value: Any, *, now: float, required: bool = True,
+                   allow_future: bool = False, code: str = "ACCOUNT_INVALID") -> float | None:
+        if value is None:
+            if required:
+                raise ExtensionAccountRefused(code, f"{name} is required")
+            return None
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0):
+            raise ExtensionAccountRefused(code, f"{name} must be a finite non-negative number")
+        value = float(value)
+        if not allow_future and value > now:
+            raise ExtensionAccountRefused(code, f"{name} is in the future")
+        return value
+
+    @staticmethod
+    def _acc_bool(name: str, value: Any, *, default: int | None = None) -> int | None:
+        if value is None:
+            return default
+        if type(value) is not bool:
+            raise ExtensionAccountRefused("ACCOUNT_INVALID", f"{name} must be true or false")
+        return int(value)
+
+    @staticmethod
+    def _acc_digest(name: str, value: Any) -> str:
+        if not isinstance(value, str) or not value.strip() or len(value.strip()) > 200:
+            raise ExtensionAccountRefused("ACCOUNT_INVALID", f"{name} is required")
+        return value.strip()
+
+    @staticmethod
+    def _acc_json(value: str | None) -> Any:
+        if not value:
+            return None
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _acc_extra(cls, value: str | None) -> dict[str, Any]:
+        extra = cls._acc_json(value)
+        if not isinstance(extra, dict):
+            return {}
+        # Never let a retained observation field shadow a Gateway-owned output field.
+        return {key: item for key, item in extra.items()
+                if key not in ACCOUNT_OBSERVATION_KEYS and key not in {"fresh", "reserved",
+                    "available", "reservation_states", "needs_reconciliation", "bindings",
+                    "workers", "stale", "token_id", "_token_id"}}
+
+    @classmethod
+    def _acc_balance(cls, value: Any, *, now: float) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ExtensionAccountRefused("ACCOUNT_INVALID", "balance must be an object")
+        amount = value.get("value")
+        if (isinstance(amount, bool) or not isinstance(amount, (int, float))
+                or not math.isfinite(amount) or amount < 0):
+            raise ExtensionAccountRefused("ACCOUNT_INVALID",
+                                          "balance value must be a non-negative number")
+        return {
+            "value": float(amount),
+            "unit": cls._acc_text("balance unit", value.get("unit"), limit=64, required=True),
+            "source": cls._acc_text("balance source", value.get("source"), limit=64,
+                                    required=True),
+            "observed_at": cls._acc_epoch("balance observed_at", value.get("observed_at"),
+                                          now=now),
+        }
+
+    @classmethod
+    def _acc_observation(cls, account: Any, *, now: float) -> dict[str, Any]:
+        if not isinstance(account, dict):
+            raise ExtensionAccountRefused("ACCOUNT_INVALID", "account must be an object")
+        buckets = account.get("credit_buckets")
+        buckets_json = None
+        if buckets is not None:
+            if not isinstance(buckets, list) or len(buckets) > 1000:
+                raise ExtensionAccountRefused("ACCOUNT_INVALID",
+                                              "credit_buckets must be a list of at most 1000 rows")
+            try:
+                buckets_json = json.dumps(buckets, allow_nan=False)
+            except (TypeError, ValueError):
+                raise ExtensionAccountRefused("ACCOUNT_INVALID",
+                                              "credit_buckets must be valid JSON") from None
+            if len(buckets_json) > 65536:
+                raise ExtensionAccountRefused("ACCOUNT_INVALID",
+                                              "credit_buckets exceed the 64 KiB observation limit")
+        extra = {key: value for key, value in account.items()
+                 if key not in ACCOUNT_OBSERVATION_KEYS}
+        extra_json = None
+        if extra:
+            try:
+                extra_json = json.dumps(extra, allow_nan=False)
+            except (TypeError, ValueError):
+                raise ExtensionAccountRefused("ACCOUNT_INVALID",
+                                              "extra observation fields must be valid JSON") from None
+            if len(extra_json) > 16384:
+                raise ExtensionAccountRefused(
+                    "ACCOUNT_INVALID", "extra observation fields exceed the 16 KiB limit")
+        return {
+            "provider": cls._acc_text("provider", account.get("provider"), limit=120,
+                                      required=True),
+            "account_id": cls._acc_text("account_id", account.get("account_id"), limit=200,
+                                        required=True),
+            "source": cls._acc_text("source", account.get("source"), limit=64, required=True),
+            "observed_at": cls._acc_epoch("observed_at", account.get("observed_at"), now=now),
+            "connection": cls._acc_text("connection", account.get("connection"), limit=40),
+            "sign_in": cls._acc_text("sign_in", account.get("sign_in"), limit=40),
+            "readiness": cls._acc_text("readiness", account.get("readiness"), limit=40),
+            "activity": cls._acc_text("activity", account.get("activity"), limit=40),
+            "attention": cls._acc_bool("attention", account.get("attention")),
+            "paused": cls._acc_bool("paused", account.get("paused"), default=1),
+            "profile_enabled": cls._acc_bool("enabled", account.get("enabled")),
+            "next_eligible_at": cls._acc_epoch("next_eligible_at",
+                                               account.get("next_eligible_at"),
+                                               now=now, required=False, allow_future=True),
+            "plan": cls._acc_text("plan", account.get("plan"), limit=120),
+            "credit_buckets_json": buckets_json,
+            "balance": cls._acc_balance(account.get("balance"), now=now),
+            "reset_at": cls._acc_epoch("reset_at", account.get("reset_at"), now=now,
+                                       required=False, allow_future=True),
+            "extra_json": extra_json,
+        }
+
+    @classmethod
+    def _acc_quote(cls, quote: Any, *, payload_sha256: str, now: float,
+                   max_age: float) -> dict[str, Any]:
+        if not isinstance(quote, dict):
+            raise ExtensionAccountRefused("QUOTE_INVALID", "quote must be an object")
+        amount = quote.get("value")
+        if (isinstance(amount, bool) or not isinstance(amount, (int, float))
+                or not math.isfinite(amount) or amount < 0):
+            raise ExtensionAccountRefused("QUOTE_INVALID",
+                                          "quote value must be a non-negative number")
+        fingerprint = cls._acc_digest("quote payload_sha256", quote.get("payload_sha256"))
+        if fingerprint != payload_sha256:
+            raise ExtensionAccountRefused("QUOTE_MISMATCH",
+                                          "the quote is for a different payload")
+        observed_at = cls._acc_epoch("quote observed_at", quote.get("observed_at"), now=now,
+                                     code="QUOTE_INVALID")
+        if now - observed_at > max_age:
+            raise ExtensionAccountRefused("QUOTE_STALE", "the quote is older than max_age")
+        return {
+            "value": float(amount),
+            "unit": cls._acc_text("quote unit", quote.get("unit"), limit=64, required=True),
+            "source": cls._acc_text("quote source", quote.get("source"), limit=64,
+                                    required=True),
+            "observed_at": observed_at,
+            "payload_sha256": fingerprint,
+            "provider": cls._acc_text("quote provider", quote.get("provider"), limit=120),
+            "account_id": cls._acc_text("quote account_id", quote.get("account_id"), limit=200),
+        }
+
+    @classmethod
+    def _account_row(cls, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        balance = None
+        if data.get("balance_value") is not None:
+            balance = {
+                "value": data["balance_value"],
+                "unit": data["balance_unit"],
+                "source": data["balance_source"],
+                "observed_at": data["balance_observed_at"],
+                "received_at": data["balance_received_at"],
+            }
+        return {
+            "provider": data["provider"],
+            "account_id": data["account_id"],
+            "source": data["source"],
+            "observed_at": data["observed_at"],
+            "received_at": data["received_at"],
+            "connection": data["connection"],
+            "sign_in": data["sign_in"],
+            "readiness": data["readiness"],
+            "activity": data["activity"],
+            "attention": None if data["attention"] is None else bool(data["attention"]),
+            "paused": bool(data["paused"]),
+            "enabled": None if data["profile_enabled"] is None else bool(data["profile_enabled"]),
+            "gateway_enabled": bool(data["gateway_enabled"]),
+            "next_eligible_at": data["next_eligible_at"],
+            "plan": data["plan"],
+            "credit_buckets": cls._acc_json(data.get("credit_buckets_json")),
+            "balance": balance,
+            "reset_at": data["reset_at"],
+            **cls._acc_extra(data.get("extra_json")),
+        }
+
+    @classmethod
+    def _account_history_row(cls, row: sqlite3.Row) -> dict[str, Any]:
+        data = dict(row)
+        balance = None
+        if data.get("balance_value") is not None:
+            balance = {
+                "value": data["balance_value"],
+                "unit": data["balance_unit"],
+                "source": data["balance_source"],
+                "observed_at": data["balance_observed_at"],
+                "received_at": data["balance_received_at"],
+            }
+        return {
+            "provider": data["provider"],
+            "account_id": data["account_id"],
+            "source": data["source"],
+            "observed_at": data["observed_at"],
+            "received_at": data["received_at"],
+            "connection": data["connection"],
+            "sign_in": data["sign_in"],
+            "readiness": data["readiness"],
+            "activity": data["activity"],
+            "attention": None if data["attention"] is None else bool(data["attention"]),
+            "paused": bool(data["paused"]),
+            "enabled": None if data["profile_enabled"] is None else bool(data["profile_enabled"]),
+            "next_eligible_at": data["next_eligible_at"],
+            "plan": data["plan"],
+            "credit_buckets": cls._acc_json(data.get("credit_buckets_json")),
+            "balance": balance,
+            "reset_at": data["reset_at"],
+            **cls._acc_extra(data.get("extra_json")),
+        }
+
+    @staticmethod
+    def _acc_fresh(observed_at: float | None, received_at: float | None, *,
+                   now: float, max_age: float) -> bool:
+        return (observed_at is not None and received_at is not None
+                and observed_at <= now and received_at <= now
+                and now - observed_at <= max_age and now - received_at <= max_age)
+
+    @staticmethod
+    def _acc_limit(limit: Any) -> int:
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ExtensionAccountRefused("ACCOUNT_INVALID", "limit must be an integer")
+        return max(1, min(limit, 1000))
+
+    def extension_account_observe(self, worker_id: str, token_id: str, account: dict[str, Any],
+                                  *, now: float) -> dict[str, Any]:
+        """Record one worker's account observation, bound to that worker and token generation."""
+        now = self._acc_seconds("now", now)
+        worker_id = self._acc_text("worker_id", worker_id, limit=120, required=True)
+        token_id = self._acc_text("token_id", token_id, limit=200, required=True)
+        seen = self._acc_observation(account, now=now)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                binding = self._conn.execute(
+                    "SELECT * FROM extension_account_bindings WHERE worker_id = ?", (worker_id,)
+                ).fetchone()
+                if binding is None:
+                    self._conn.execute(
+                        "INSERT INTO extension_account_bindings "
+                        "(worker_id, provider, account_id, token_id, bound_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (worker_id, seen["provider"], seen["account_id"], token_id, now, now),
+                    )
+                elif (binding["provider"], binding["account_id"]) != (seen["provider"],
+                                                                       seen["account_id"]):
+                    unsettled = self._conn.execute(
+                        "SELECT 1 FROM extension_account_reservations WHERE worker_id = ? "
+                        "AND provider = ? AND account_id = ? AND state IN ('reserved','held') "
+                        "LIMIT 1",
+                        (worker_id, binding["provider"], binding["account_id"]),
+                    ).fetchone()
+                    if unsettled is not None:
+                        raise ExtensionAccountRefused(
+                            "ACCOUNT_BINDING_HELD",
+                            "this worker's previous account still has an unsettled reservation",
+                        )
+                    self._conn.execute(
+                        "UPDATE extension_account_bindings SET provider = ?, account_id = ?, "
+                        "token_id = ?, updated_at = ? WHERE worker_id = ?",
+                        (seen["provider"], seen["account_id"], token_id, now, worker_id),
+                    )
+                elif binding["token_id"] != token_id:
+                    self._conn.execute(
+                        "UPDATE extension_account_bindings SET token_id = ?, updated_at = ? "
+                        "WHERE worker_id = ?",
+                        (token_id, now, worker_id),
+                    )
+                current = self._conn.execute(
+                    "SELECT * FROM extension_accounts WHERE provider = ? AND account_id = ?",
+                    (seen["provider"], seen["account_id"]),
+                ).fetchone()
+                applied = (current is None or current["observed_at"] is None
+                           or seen["observed_at"] > current["observed_at"])
+                balance_applied = False
+                if current is None:
+                    balance = seen["balance"] or {}
+                    self._conn.execute(
+                        "INSERT INTO extension_accounts "
+                        "(provider, account_id, source, observed_at, received_at, updated_at, "
+                        " connection, sign_in, readiness, activity, attention, paused, "
+                        " profile_enabled, next_eligible_at, plan, credit_buckets_json, "
+                        " extra_json, balance_value, balance_unit, balance_source, "
+                        " balance_observed_at, balance_received_at, reset_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            seen["provider"], seen["account_id"], seen["source"],
+                            seen["observed_at"], now, now, seen["connection"], seen["sign_in"],
+                            seen["readiness"], seen["activity"], seen["attention"], seen["paused"],
+                            seen["profile_enabled"], seen["next_eligible_at"], seen["plan"],
+                            seen["credit_buckets_json"], seen["extra_json"],
+                            balance.get("value"), balance.get("unit"), balance.get("source"),
+                            balance.get("observed_at"), now if balance else None,
+                            seen["reset_at"],
+                        ),
+                    )
+                elif applied:
+                    self._conn.execute(
+                        "UPDATE extension_accounts SET source = ?, observed_at = ?, "
+                        "received_at = ?, updated_at = ?, connection = ?, sign_in = ?, "
+                        "readiness = ?, activity = ?, attention = ?, paused = ?, "
+                        "profile_enabled = ?, next_eligible_at = ?, plan = ?, "
+                        "credit_buckets_json = ?, extra_json = ?, reset_at = ? "
+                        "WHERE provider = ? AND account_id = ?",
+                        (
+                            seen["source"], seen["observed_at"], now, now, seen["connection"],
+                            seen["sign_in"], seen["readiness"], seen["activity"],
+                            seen["attention"], seen["paused"], seen["profile_enabled"],
+                            seen["next_eligible_at"], seen["plan"], seen["credit_buckets_json"],
+                            seen["extra_json"], seen["reset_at"], seen["provider"],
+                            seen["account_id"],
+                        ),
+                    )
+                    balance = seen["balance"]
+                    if balance is not None and (
+                            current["balance_observed_at"] is None
+                            or balance["observed_at"] > current["balance_observed_at"]):
+                        self._conn.execute(
+                            "UPDATE extension_accounts SET balance_value = ?, balance_unit = ?, "
+                            "balance_source = ?, balance_observed_at = ?, "
+                            "balance_received_at = ? WHERE provider = ? AND account_id = ?",
+                            (balance["value"], balance["unit"], balance["source"],
+                             balance["observed_at"], now, seen["provider"], seen["account_id"]),
+                        )
+                        balance_applied = True
+                balance = seen["balance"] or {}
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO extension_account_history "
+                    "(provider, account_id, source, observed_at, received_at, connection, "
+                    " sign_in, readiness, activity, attention, paused, profile_enabled, "
+                    " next_eligible_at, plan, credit_buckets_json, extra_json, balance_value, "
+                    " balance_unit, balance_source, balance_observed_at, balance_received_at, "
+                    " reset_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        seen["provider"], seen["account_id"], seen["source"], seen["observed_at"],
+                        now, seen["connection"], seen["sign_in"], seen["readiness"],
+                        seen["activity"], seen["attention"], seen["paused"],
+                        seen["profile_enabled"], seen["next_eligible_at"], seen["plan"],
+                        seen["credit_buckets_json"], seen["extra_json"], balance.get("value"),
+                        balance.get("unit"), balance.get("source"), balance.get("observed_at"),
+                        now if balance else None, seen["reset_at"],
+                    ),
+                )
+                # A newer balance after a known outcome is what reconciles the retained debit.
+                # A held (unknown) outcome is never released by a balance alone.
+                if applied and balance_applied:
+                    self._conn.execute(
+                        "UPDATE extension_account_reservations SET state = 'reconciled', "
+                        "reconciled_at = ?, reconciliation_value = ?, "
+                        "reconciliation_observed_at = ?, updated_at = ? "
+                        "WHERE provider = ? AND account_id = ? AND state = 'debited' "
+                        "AND terminal_at IS NOT NULL AND terminal_at < ? AND quote_unit = ?",
+                        (now, balance["value"], balance["observed_at"], now, seen["provider"],
+                         seen["account_id"], balance["observed_at"], balance["unit"]),
+                    )
+                row = self._conn.execute(
+                    "SELECT * FROM extension_accounts WHERE provider = ? AND account_id = ?",
+                    (seen["provider"], seen["account_id"]),
+                ).fetchone()
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        result = self._account_row(row)
+        result["stale"] = not applied
+        return result
+
+    def extension_account_set_enabled(self, provider: str, account_id: str, enabled: bool) -> bool:
+        """Change the Gateway's dispatch switch on an already observed account.
+
+        Only an observation creates an account identity. A switch set before any observation would
+        be a Gateway-invented identity, so it is refused (`False`) and the default OFF stays.
+        Observations can never turn it on.
+        """
+        provider = self._acc_text("provider", provider, limit=120, required=True)
+        account_id = self._acc_text("account_id", account_id, limit=200, required=True)
+        if type(enabled) is not bool:
+            raise ExtensionAccountRefused("ACCOUNT_INVALID", "enabled must be true or false")
+        now = time.time()
+        with self._lock:
+            result = self._conn.execute(
+                "UPDATE extension_accounts SET gateway_enabled = ?, updated_at = ? "
+                "WHERE provider = ? AND account_id = ? AND observed_at IS NOT NULL",
+                (int(enabled), now, provider, account_id),
+            )
+            self._conn.commit()
+        return result.rowcount == 1
+
+    @staticmethod
+    def _reservation_matches(row: sqlite3.Row, *, token_id: str, provider: str, account_id: str,
+                             job_id: str, worker_job_id: str, payload_sha256: str,
+                             quote: dict[str, Any]) -> bool:
+        return (
+            row["token_id"] == token_id
+            and row["provider"] == provider
+            and row["account_id"] == account_id
+            and row["job_id"] == job_id
+            and row["worker_job_id"] == worker_job_id
+            and row["payload_sha256"] == payload_sha256
+            and float(row["quote_value"]) == quote["value"]
+            and row["quote_unit"] == quote["unit"]
+            and row["quote_source"] == quote["source"]
+            and float(row["quote_observed_at"]) == quote["observed_at"]
+            and row["quote_payload_sha256"] == quote["payload_sha256"]
+        )
+
+    def _acc_token_allowed(self, worker_id: str, supplied: str, recorded: str) -> bool:
+        """The issuance token, or the binding's current generation, may act on a reservation."""
+        if supplied == recorded:
+            return True
+        binding = self._conn.execute(
+            "SELECT token_id FROM extension_account_bindings WHERE worker_id = ?", (worker_id,)
+        ).fetchone()
+        return bool(binding is not None and binding["token_id"] == supplied)
+
+    def extension_account_reserve(self, worker_id: str, token_id: str, *, job_id: str,
+                                  worker_job_id: str, payload_sha256: str, quote: dict[str, Any],
+                                  now: float, max_age: float) -> dict[str, Any]:
+        """Reserve one job's quoted credits against the worker's bound account.
+
+        Atomic across connections: the reservation row and the job's canonical
+        `upstream_job_id` are committed together, before the claim can be returned, so a crash
+        cannot leave a claimed job with no durable credit record.
+        """
+        now = self._acc_seconds("now", now)
+        max_age = self._acc_seconds("max_age", max_age, positive=True)
+        worker_id = self._acc_text("worker_id", worker_id, limit=120, required=True)
+        token_id = self._acc_text("token_id", token_id, limit=200, required=True)
+        job_id = self._acc_text("job_id", job_id, limit=200, required=True)
+        worker_job_id = self._acc_text("worker_job_id", worker_job_id, limit=200, required=True)
+        if ":" in worker_job_id:
+            # The canonical checkpoint is `ext:<worker id>:<worker job id>` and worker ids may
+            # themselves contain ':'. A colon-free worker job id keeps the ownership prefix exact.
+            raise ExtensionAccountRefused("ACCOUNT_INVALID",
+                                          "worker_job_id must not contain a colon")
+        payload_sha256 = self._acc_digest("payload_sha256", payload_sha256)
+        quote = self._acc_quote(quote, payload_sha256=payload_sha256, now=now, max_age=max_age)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                existing = self._conn.execute(
+                    "SELECT * FROM extension_account_reservations "
+                    "WHERE worker_id = ? AND worker_job_id = ?",
+                    (worker_id, worker_job_id),
+                ).fetchone()
+                if existing is not None:
+                    if (quote["provider"] not in (None, existing["provider"])
+                            or quote["account_id"] not in (None, existing["account_id"])
+                            or not self._reservation_matches(
+                                existing, token_id=token_id, provider=existing["provider"],
+                                account_id=existing["account_id"], job_id=job_id,
+                                worker_job_id=worker_job_id, payload_sha256=payload_sha256,
+                                quote=quote)):
+                        raise ExtensionAccountRefused(
+                            "RESERVATION_MISMATCH",
+                            "a different reservation already exists for this worker job",
+                        )
+                    self._conn.commit()
+                    result = self._reservation_row(existing)
+                    result["upstream_job_id"] = self._extension_upstream_id(worker_id,
+                                                                            worker_job_id)
+                    return result
+                binding = self._conn.execute(
+                    "SELECT * FROM extension_account_bindings WHERE worker_id = ?", (worker_id,)
+                ).fetchone()
+                if binding is None:
+                    raise ExtensionAccountRefused("ACCOUNT_UNBOUND",
+                                                  "this worker has not observed an account")
+                if binding["token_id"] != token_id:
+                    raise ExtensionAccountRefused("TOKEN_MISMATCH",
+                                                  "the token is not the worker's current generation")
+                provider, account_id = binding["provider"], binding["account_id"]
+                if quote["provider"] is not None and quote["provider"] != provider:
+                    raise ExtensionAccountRefused("QUOTE_MISMATCH",
+                                                  "the quote names a different provider")
+                if quote["account_id"] is not None and quote["account_id"] != account_id:
+                    raise ExtensionAccountRefused("QUOTE_MISMATCH",
+                                                  "the quote names a different account")
+                account = self._conn.execute(
+                    "SELECT * FROM extension_accounts WHERE provider = ? AND account_id = ?",
+                    (provider, account_id),
+                ).fetchone()
+                if account is None:
+                    raise ExtensionAccountRefused("ACCOUNT_UNKNOWN",
+                                                  "the worker's account has not been observed")
+                if not self._acc_fresh(account["observed_at"], account["received_at"],
+                                       now=now, max_age=max_age):
+                    raise ExtensionAccountRefused("ACCOUNT_STALE",
+                                                  "the account observation is older than max_age")
+                if account["connection"] != "connected":
+                    raise ExtensionAccountRefused("ACCOUNT_NOT_CONNECTED",
+                                                  "the account is not connected")
+                if account["sign_in"] != "signed_in":
+                    raise ExtensionAccountRefused("ACCOUNT_NOT_SIGNED_IN",
+                                                  "the account is not signed in")
+                if account["readiness"] != "ready":
+                    raise ExtensionAccountRefused("ACCOUNT_NOT_READY",
+                                                  "the account is not ready")
+                if bool(account["paused"]):
+                    raise ExtensionAccountRefused("ACCOUNT_PAUSED", "the account is paused")
+                if account["profile_enabled"] != 1:
+                    raise ExtensionAccountRefused("ACCOUNT_DISABLED",
+                                                  "the worker's local profile switch is off")
+                if account["gateway_enabled"] != 1:
+                    raise ExtensionAccountRefused("ACCOUNT_GATEWAY_DISABLED",
+                                                  "Gateway dispatch is off for this account")
+                if account["activity"] not in ACCOUNT_ACTIVITY_ELIGIBLE:
+                    raise ExtensionAccountRefused("ACCOUNT_ACTIVITY",
+                                                  "the account is not idle or waiting")
+                if account["next_eligible_at"] is None:
+                    raise ExtensionAccountRefused("ACCOUNT_ELIGIBLE_UNKNOWN",
+                                                  "the account did not state when it is next eligible")
+                if now < account["next_eligible_at"]:
+                    raise ExtensionAccountRefused("ACCOUNT_NOT_ELIGIBLE_YET",
+                                                  "the account is not eligible for paid work yet")
+                if account["balance_value"] is None:
+                    raise ExtensionAccountRefused("ACCOUNT_BALANCE_UNKNOWN",
+                                                  "the account has not reported a balance")
+                if not self._acc_fresh(account["balance_observed_at"],
+                                       account["balance_received_at"], now=now, max_age=max_age):
+                    raise ExtensionAccountRefused("ACCOUNT_BALANCE_STALE",
+                                                  "the balance is older than max_age")
+                if account["balance_unit"] != quote["unit"]:
+                    raise ExtensionAccountRefused("ACCOUNT_BALANCE_UNIT",
+                                                  "the quote unit does not match the balance unit")
+                held = self._conn.execute(
+                    "SELECT 1 FROM extension_account_reservations WHERE state = 'held' "
+                    "AND (worker_id = ? OR (provider = ? AND account_id = ?)) LIMIT 1",
+                    (worker_id, provider, account_id),
+                ).fetchone()
+                if held is not None:
+                    raise ExtensionAccountRefused(
+                        "ACCOUNT_HELD",
+                        "an earlier reservation on this worker or account has an unknown outcome",
+                    )
+                job = self._conn.execute(
+                    "SELECT id, state, upstream_job_id, cancel_requested_at FROM jobs "
+                    "WHERE id = ?", (job_id,),
+                ).fetchone()
+                if job is None:
+                    raise ExtensionAccountRefused("JOB_NOT_FOUND",
+                                                  "the job has no durable Gateway row")
+                if job["state"] not in {"accepted", "running"} or job["cancel_requested_at"] is not None:
+                    raise ExtensionAccountRefused("JOB_NOT_CLAIMABLE",
+                                                  "the job is cancelled or already settled")
+                canonical = self._extension_upstream_id(worker_id, worker_job_id)
+                if job["upstream_job_id"] not in (None, "", canonical):
+                    raise ExtensionAccountRefused("JOB_ALREADY_BOUND",
+                                                  "the job already carries another upstream id")
+                other = self._conn.execute(
+                    "SELECT worker_job_id FROM extension_account_reservations WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+                if other is not None:
+                    raise ExtensionAccountRefused(
+                        "JOB_ALREADY_BOUND",
+                        "the job already has a different credit reservation",
+                    )
+                live_rows = self._conn.execute(
+                    "SELECT quote_unit, SUM(quote_value) AS total "
+                    "FROM extension_account_reservations "
+                    "WHERE provider = ? AND account_id = ? "
+                    "AND state IN ('reserved','held','debited') GROUP BY quote_unit",
+                    (provider, account_id),
+                ).fetchall()
+                # A provider can change the balance unit while old reservations are still live.
+                # Never add incomparable units and never authorize spend from such a mix.
+                if any(row["quote_unit"] != quote["unit"] for row in live_rows):
+                    raise ExtensionAccountRefused(
+                        "ACCOUNT_BALANCE_UNIT",
+                        "a live reservation on this account uses a different credit unit",
+                    )
+                available = float(account["balance_value"]) - sum(
+                    float(row["total"] or 0) for row in live_rows)
+                if quote["value"] > available + 1e-9:
+                    raise ExtensionAccountRefused(
+                        "ACCOUNT_CREDITS",
+                        f"the quote {quote['value']:g} exceeds the available {available:g}",
+                    )
+                reservation_id = uuid.uuid4().hex
+                self._conn.execute(
+                    "INSERT INTO extension_account_reservations "
+                    "(id, worker_id, token_id, provider, account_id, job_id, worker_job_id, "
+                    " payload_sha256, quote_value, quote_unit, quote_source, quote_observed_at, "
+                    " quote_payload_sha256, reserved_at, state, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?)",
+                    (
+                        reservation_id, worker_id, token_id, provider, account_id, job_id,
+                        worker_job_id, payload_sha256, quote["value"], quote["unit"],
+                        quote["source"], quote["observed_at"], quote["payload_sha256"], now, now,
+                    ),
+                )
+                updated = self._conn.execute(
+                    "UPDATE jobs SET upstream_job_id = ?, updated_at = ? WHERE id = ? "
+                    "AND state IN ('accepted','running') AND cancel_requested_at IS NULL "
+                    "AND (upstream_job_id IS NULL OR upstream_job_id = '' OR upstream_job_id = ?)",
+                    (canonical, now, job_id, canonical),
+                )
+                if updated.rowcount != 1:
+                    raise ExtensionAccountRefused("JOB_NOT_CLAIMABLE",
+                                                  "the job changed before the reservation")
+                row = self._conn.execute(
+                    "SELECT * FROM extension_account_reservations WHERE id = ?",
+                    (reservation_id,),
+                ).fetchone()
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        result = self._reservation_row(row)
+        result["available_after"] = available - quote["value"]
+        result["upstream_job_id"] = canonical
+        return result
+
+    @staticmethod
+    def _reservation_row(row: sqlite3.Row) -> dict[str, Any]:
+        """A reservation without its token digest: the ledger never republishes a secret hash."""
+        data = dict(row)
+        data.pop("token_id", None)
+        return data
+
+    def extension_account_settle(self, worker_id: str, token_id: str, worker_job_id: str,
+                                 *, outcome: str, now: float) -> bool:
+        """Record the first known outcome; a held (unknown) outcome is never released here."""
+        now = self._acc_seconds("now", now)
+        worker_id = self._acc_text("worker_id", worker_id, limit=120, required=True)
+        token_id = self._acc_text("token_id", token_id, limit=200, required=True)
+        worker_job_id = self._acc_text("worker_job_id", worker_job_id, limit=200, required=True)
+        if outcome not in ACCOUNT_OUTCOMES:
+            raise ExtensionAccountRefused("OUTCOME_INVALID",
+                                          "outcome must be succeeded, failed or held")
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT * FROM extension_account_reservations "
+                    "WHERE worker_id = ? AND worker_job_id = ?",
+                    (worker_id, worker_job_id),
+                ).fetchone()
+                if row is None or not self._acc_token_allowed(worker_id, token_id,
+                                                              row["token_id"]):
+                    self._conn.rollback()
+                    return False
+                if row["state"] in {"debited", "reconciled"}:
+                    self._conn.commit()
+                    return True   # a known outcome already won
+                if row["state"] == "held" and outcome == "held":
+                    self._conn.commit()
+                    return True
+                if outcome == "held":
+                    self._conn.execute(
+                        "UPDATE extension_account_reservations SET state = 'held', "
+                        "held_at = COALESCE(held_at, ?), updated_at = ? "
+                        "WHERE worker_id = ? AND worker_job_id = ?",
+                        (now, now, worker_id, worker_job_id),
+                    )
+                else:
+                    self._conn.execute(
+                        "UPDATE extension_account_reservations SET state = 'debited', "
+                        "outcome = ?, settled_at = ?, terminal_at = ?, updated_at = ? "
+                        "WHERE worker_id = ? AND worker_job_id = ?",
+                        (outcome, now, now, now, worker_id, worker_job_id),
+                    )
+                self._conn.commit()
+                return True
+            except BaseException:
+                self._conn.rollback()
+                raise
+
+    def extension_account_reservation(self, worker_id: str, token_id: str,
+                                      worker_job_id: str) -> dict[str, Any] | None:
+        """Exact durable ownership of a worker job, or None when the token cannot claim it."""
+        worker_id = self._acc_text("worker_id", worker_id, limit=120, required=True)
+        token_id = self._acc_text("token_id", token_id, limit=200, required=True)
+        worker_job_id = self._acc_text("worker_job_id", worker_job_id, limit=200, required=True)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM extension_account_reservations "
+                "WHERE worker_id = ? AND worker_job_id = ?",
+                (worker_id, worker_job_id),
+            ).fetchone()
+            if row is None or not self._acc_token_allowed(worker_id, token_id, row["token_id"]):
+                return None
+        return self._reservation_row(row)
+
+    def extension_account_has_reservation(self, worker_id: str, worker_job_id: str) -> bool:
+        """Whether any durable reservation exists for this worker job, regardless of token.
+
+        `_held_row` needs the distinction: a job checkpointed before the ledger existed has no
+        reservation and keeps its old late-settlement path, while a ledged job handed to a token
+        that does not own it must be refused rather than settled under the wrong issuance.
+        """
+        worker_id = self._acc_text("worker_id", worker_id, limit=120, required=True)
+        worker_job_id = self._acc_text("worker_job_id", worker_job_id, limit=200, required=True)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM extension_account_reservations "
+                "WHERE worker_id = ? AND worker_job_id = ? LIMIT 1",
+                (worker_id, worker_job_id),
+            ).fetchone()
+        return row is not None
+
+    def extension_account_reservations(self, worker_id: str | None = None, *,
+                                       provider: str | None = None, account_id: str | None = None,
+                                       limit: int = 100) -> list[dict[str, Any]]:
+        """The durable reservation ledger, per worker or per account, without token digests."""
+        limit = self._acc_limit(limit)
+        with self._lock:
+            if worker_id is not None:
+                worker_id = self._acc_text("worker_id", worker_id, limit=120, required=True)
+                rows = self._conn.execute(
+                    "SELECT * FROM extension_account_reservations WHERE worker_id = ? "
+                    "ORDER BY reserved_at DESC LIMIT ?",
+                    (worker_id, limit),
+                ).fetchall()
+            else:
+                provider = self._acc_text("provider", provider, limit=120, required=True)
+                account_id = self._acc_text("account_id", account_id, limit=200, required=True)
+                rows = self._conn.execute(
+                    "SELECT * FROM extension_account_reservations "
+                    "WHERE provider = ? AND account_id = ? ORDER BY reserved_at DESC LIMIT ?",
+                    (provider, account_id, limit),
+                ).fetchall()
+        return [self._reservation_row(row) for row in rows]
+
+    def extension_account_worker_busy(self, worker_id: str) -> bool:
+        """Whether this worker still owns live work, including pre-ledger `ext:` checkpoints.
+
+        Safe-close must not depend on the latest ledger rows: a job checkpointed before the ledger
+        existed still names this worker in `jobs.upstream_job_id`. The prefix is compared with
+        `substr`, so a worker id containing `%`, `_` or `:` is exact rather than a LIKE pattern,
+        and the remainder must be colon-free (a worker job id never contains one), so worker `a`
+        does not claim worker `a:b`'s job.
+        """
+        worker_id = self._acc_text("worker_id", worker_id, limit=120, required=True)
+        prefix = self._extension_upstream_id(worker_id, "")
+        with self._lock:
+            held = self._conn.execute(
+                "SELECT 1 FROM extension_account_reservations WHERE worker_id = ? "
+                "AND state IN ('reserved','held') LIMIT 1",
+                (worker_id,),
+            ).fetchone()
+            if held is not None:
+                return True
+            job = self._conn.execute(
+                "SELECT 1 FROM jobs WHERE substr(upstream_job_id, 1, ?) = ? "
+                "AND instr(substr(upstream_job_id, ?), ':') = 0 "
+                "AND (state IN ('running','accepted') OR recovery_state = ? OR error_code = ?) "
+                "LIMIT 1",
+                (len(prefix), prefix, len(prefix) + 1, RECOVERY_UNKNOWN, HOLD_CLOSED),
+            ).fetchone()
+        return job is not None
+
+    def extension_account_status(self, *, now: float, max_age: float) -> list[dict[str, Any]]:
+        """Current account snapshots plus balance/reservation aggregates; quotes are never balances."""
+        now = self._acc_seconds("now", now)
+        max_age = self._acc_seconds("max_age", max_age, positive=True)
+        with self._lock:
+            accounts = self._conn.execute(
+                "SELECT * FROM extension_accounts ORDER BY provider, account_id"
+            ).fetchall()
+            bindings = self._conn.execute(
+                "SELECT * FROM extension_account_bindings ORDER BY worker_id"
+            ).fetchall()
+            grouped = self._conn.execute(
+                "SELECT provider, account_id, state, COUNT(*) AS n, SUM(quote_value) AS total, "
+                "MIN(quote_unit) AS low_unit, MAX(quote_unit) AS high_unit "
+                "FROM extension_account_reservations "
+                "GROUP BY provider, account_id, state"
+            ).fetchall()
+        by_account: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in grouped:
+            key = (row["provider"], row["account_id"])
+            entry = by_account.setdefault(key, {"counts": {}, "reserved": 0.0, "units": set()})
+            entry["counts"][row["state"]] = int(row["n"])
+            if row["state"] in ACCOUNT_LIVE_STATES:
+                entry["reserved"] += float(row["total"] or 0)
+                entry["units"].add(row["low_unit"])
+                entry["units"].add(row["high_unit"])
+        bound: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in bindings:
+            bound.setdefault((row["provider"], row["account_id"]), []).append({
+                "worker_id": row["worker_id"],
+                "token_id": row["token_id"],
+                "bound_at": row["bound_at"],
+                "updated_at": row["updated_at"],
+            })
+        out = []
+        for row in accounts:
+            account = self._account_row(row)
+            key = (row["provider"], row["account_id"])
+            entry = by_account.get(key, {"counts": {}, "reserved": 0.0, "units": set()})
+            active_units = {unit for unit in entry["units"] if unit is not None}
+            # A sum across different units is not a known amount: publish null, not a number.
+            reserved = (None if len(active_units) > 1 else float(entry["reserved"]))
+            balance = account["balance"]
+            available = None
+            if (balance is not None and balance["value"] is not None and reserved is not None
+                    and (not active_units or active_units == {balance["unit"]})):
+                available = float(balance["value"]) - reserved
+            account["fresh"] = self._acc_fresh(account["observed_at"],
+                                               account["received_at"], now=now, max_age=max_age)
+            if balance is not None:
+                balance["fresh"] = self._acc_fresh(balance["observed_at"],
+                                                   balance["received_at"],
+                                                   now=now, max_age=max_age)
+            account["reserved"] = reserved
+            account["available"] = available
+            account["reservation_states"] = {
+                state: int(entry["counts"].get(state, 0))
+                for state in ("reserved", "held", "debited", "reconciled")
+            }
+            account["needs_reconciliation"] = bool(entry["counts"].get("held", 0))
+            account["bindings"] = bound.get(key, [])
+            account["workers"] = sorted(b["worker_id"] for b in account["bindings"])
+            out.append(account)
+        return out
+
+    def extension_account_history(self, provider: str, account_id: str, *,
+                                  limit: int = 100) -> list[dict[str, Any]]:
+        provider = self._acc_text("provider", provider, limit=120, required=True)
+        account_id = self._acc_text("account_id", account_id, limit=200, required=True)
+        limit = self._acc_limit(limit)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM extension_account_history WHERE provider = ? AND account_id = ? "
+                "ORDER BY received_at DESC, observed_at DESC LIMIT ?",
+                (provider, account_id, limit),
+            ).fetchall()
+        return [self._account_history_row(row) for row in rows]
 
     # -- render journal ---------------------------------------------------
     def render_installation(self) -> dict[str, Any]:

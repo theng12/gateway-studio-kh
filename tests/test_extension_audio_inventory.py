@@ -26,6 +26,8 @@ class AudioInventoryTests(unittest.TestCase):
         self.addCleanup(env.stop)
         ew.reset_for_tests()
         self.addCleanup(ew.reset_for_tests)
+        from tests.extension_account_fixture import fixture_offers
+        fixture_offers(self)
         app = FastAPI()
         app.include_router(ew.router)
         self.client = TestClient(app)
@@ -45,7 +47,9 @@ class AudioInventoryTests(unittest.TestCase):
         body = {"workerId": worker, "kind": kind, **extra}
         if inventory is not None:
             body["audioInventory"] = inventory
-        return self.client.post("/api/workers/claim", headers=self.auth(token), json=body)
+        from tests.extension_account_fixture import claim_with_observed_account
+        return claim_with_observed_account(self.client, token or self.token, worker, kind,
+                                           {key: value for key, value in body.items() if key not in ("workerId", "kind")})
 
     def test_health_advertises_live_finite_limits(self):
         with patch.dict(os.environ, {"GATEWAY_EXTENSION_WORKER_ONLINE_SECONDS": "12",
@@ -138,7 +142,10 @@ class AudioInventoryTests(unittest.TestCase):
         snapshot = self.inventory()
         job = ew.broker.offer("audio", dict(self.payload))
         self.assertEqual(self.claim(snapshot).status_code, 200)
-        self.assertEqual(self.claim().json()["job"]["jobId"], job.job_id)
+        repeated = self.claim()
+        self.assertEqual(repeated.status_code, 409)
+        self.assertNotIn("job", repeated.json())
+        self.assertEqual(job.state, "claimed")
         self.assertFalse(ew.broker.audio_member(self.payload))
         ew.broker.hold(job)
         self.assertEqual(self.claim().status_code, 204)
@@ -181,7 +188,9 @@ class AudioInventoryTests(unittest.TestCase):
         self.assertEqual(self.claim(self.inventory()).status_code, 200)
         video = ew.mint("audio-a", "video")
         other = ew.broker.offer("video", {"prompt": "other"})
-        self.assertEqual(self.claim(token=video, kind="video").status_code, 204)
+        response = self.client.post("/api/workers/claim", headers=self.auth(video),
+                                    json={"workerId": "audio-a", "kind": "video"})
+        self.assertEqual(response.status_code, 204)
         worker = ew.worker_for(video)
         self.assertIsNone(ew.broker.owned(worker, job.job_id))
         self.assertFalse(ew.broker.touch(worker, job.job_id, "wrong", ""))

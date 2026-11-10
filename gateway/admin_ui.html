@@ -1138,15 +1138,29 @@
     <div id="ew-pair" class="row" style="display:none;gap:var(--s8);margin-bottom:12px">
       <label for="ew-worker-id">Worker name</label>
       <input id="ew-worker-id" type="text" autocomplete="off" placeholder="e.g. chrome-studio">
+      <label for="ew-kind">Kind</label>
+      <select id="ew-kind">
+        <option value="video">video</option>
+        <option value="image">image</option>
+        <option value="audio">audio</option>
+      </select>
       <button class="sm" type="button" id="ew-pair-btn" onclick="ewPair(this)">Pair</button>
     </div>
+    <div id="ew-manager" class="row" style="display:none;gap:var(--s8);margin-bottom:12px">
+      <label for="ew-manager-id">Manager name</label>
+      <input id="ew-manager-id" type="text" autocomplete="off" placeholder="e.g. relay">
+      <span class="hint">Scope: tick paired workers below. A manager cannot enable account spending or pair workers.</span>
+      <button class="sm" type="button" id="ew-manager-btn" onclick="ewMintManager(this)">Mint manager token</button>
+    </div>
     <div id="ew-token" class="row" style="display:none;gap:var(--s8);margin-bottom:12px">
-      <label for="ew-token-value">Paste this into the extension now; it is not shown again</label>
+      <label for="ew-token-value" id="ew-token-label">Paste this into the extension now; it is not shown again</label>
       <input id="ew-token-value" type="text" readonly autocomplete="off">
       <button class="sm" type="button" onclick="ewTokenDone()">Done</button>
     </div>
     <div id="ew-msg" class="msg" role="status" aria-live="polite"></div>
     <div id="ew-workers"><div class="empty">Reading browser workers…</div></div>
+    <h3 style="margin:16px 0 8px">Observed accounts</h3>
+    <div id="ew-accounts"><div class="empty">Reading observed accounts…</div></div>
     </div><!-- /provider-pane-extension-workers -->
   </section>
   <!-- CREATE -->
@@ -3904,6 +3918,54 @@ function ewAgo(at) {
   return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : new Date(at * 1000).toLocaleString();
 }
 
+function ewAt(at) {
+  return at == null ? 'unknown' : new Date(at * 1000).toLocaleString();
+}
+
+function ewBalance(balance) {
+  if (!balance) return 'unknown — not observed';
+  return `${esc(balance.value)} ${esc(balance.unit)}${balance.fresh === true ? '' : ' (stale)'}`;
+}
+
+function ewReset(account) {
+  if (account.reset_at == null) return 'unknown';
+  return `${ewAt(account.reset_at)}${account.fresh === true ? '' : ' (stale)'}`;
+}
+
+function ewAccountCard(a) {
+  const off = a.gateway_enabled ? 'ON' : 'OFF';
+  const toggle = IN_APP
+    ? `<button class="sm" type="button" data-ew-provider="${esc(a.provider)}" data-ew-account="${esc(a.account_id)}" data-ew-enabled="${a.gateway_enabled ? '1' : '0'}" onclick="ewAccountToggle(this.dataset.ewProvider, this.dataset.ewAccount, this.dataset.ewEnabled === '1', this)">${a.gateway_enabled ? 'Disable spending' : 'Enable spending'}</button>`
+    : '';
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between">
+      <b>${esc(a.provider)} · ${esc(a.account_id)}</b>
+      <span><span class="badge">spending ${off}</span> <span class="badge">${a.fresh === true ? 'fresh' : 'stale'}</span></span>
+    </div>
+    <div>Source: ${esc(a.source)} · observed ${ewAgo(a.observed_at)}</div>
+    <div>Connection: ${esc(a.connection)} · sign-in: ${esc(a.sign_in)}</div>
+    <div>Readiness: ${esc(a.readiness)} · activity: ${esc(a.activity)}</div>
+    <div>Balance: ${ewBalance(a.balance)} · reset: ${ewReset(a)}</div>
+    ${a.plan ? `<div>Plan: ${esc(a.plan)}</div>` : ''}
+    ${toggle}
+  </div>`;
+}
+
+function ewPacing(pacing) {
+  return pacing ? `${esc(pacing.minSeconds)}–${esc(pacing.maxSeconds)} s` : 'unknown';
+}
+
+function ewWorkerState(w) {
+  const s = w.state;
+  const desired = ewPacing(w.control && w.control.pacing);
+  if (!s) return `<div>State: unknown — not reported yet · pacing ${desired} desired</div>`;
+  const fresh = w.fresh === true ? 'fresh' : 'stale';
+  const profile = s.paused === true ? 'paused' : (s.enabled === true ? 'enabled' : 'not enabled');
+  return `<div>State (${fresh}, observed ${ewAgo(s.observed_at)}, received ${ewAgo(w.receivedAt)}): connection ${esc(s.connection)} · sign-in ${esc(s.sign_in)}</div>
+    <div>Readiness: ${esc(s.readiness)} · activity: ${esc(s.activity)} · profile: ${profile}${s.attention ? ' · needs attention' : ''}</div>
+    <div>Pacing: ${ewPacing(s.pacing)} actual · ${desired} desired · next eligible: ${s.next_eligible_at == null ? 'unknown' : ewAt(s.next_eligible_at)}</div>`;
+}
+
 function ewCard(w) {
   const credits = w.credits
     ? `${esc(w.credits.value)} Flow credits <span class="hint">(${esc(w.credits.source)}, ${esc(w.credits.observedAt)})</span>`
@@ -3916,30 +3978,48 @@ function ewCard(w) {
   const key = w.has_live_token ? 'paired' : (w.revoked_at != null ? 'unpaired' : 'no token');
   const unpair = IN_APP && w.has_live_token
     ? `<button class="sm" type="button" data-ew-revoke="${esc(w.worker_id)}" onclick="ewRevoke(this.dataset.ewRevoke, this)">Unpair</button>` : '';
+  const scope = IN_APP && w.has_live_token
+    ? `<label class="hint"><input type="checkbox" data-ew-scope="${esc(w.worker_id)}"> manager scope</label>` : '';
   return `<div class="card">
     <div class="row" style="justify-content:space-between">
       <b>${esc(w.worker_id)}</b>
       <span class="badge">${w.online ? 'online' : 'offline'}</span>
     </div>
     <div>Last seen: ${ewAgo(w.last_seen_at)} · ${esc(key)} · extension ${esc(w.extension_version || 'version not stated')}</div>
+    ${ewWorkerState(w)}
     <div>Credits: ${credits}</div>
     <div>Job: ${job} · waiting jobs: ${esc(w.queue_depth ?? 0)}</div>
-    ${held}${unpair}
+    ${held}${scope}${unpair}
   </div>`;
 }
 
 async function loadExtensionWorkers() {
   const root = document.getElementById('ew-workers');
+  const accounts = document.getElementById('ew-accounts');
   const pair = document.getElementById('ew-pair');
+  const manager = document.getElementById('ew-manager');
   if (!root) return;
   try {
     const data = await api('/extension-workers');
     if (pair) pair.style.display = IN_APP ? '' : 'none';
+    if (manager) manager.style.display = IN_APP ? '' : 'none';
     const workers = data.workers || [];
     root.innerHTML = workers.length ? workers.map(ewCard).join('')
       : `<div class="empty">No browser worker is paired yet.${IN_APP ? ' Pair one above.' : ' Pair one in the Gateway app on this Mac.'}</div>`;
+    if (accounts) {
+      // The backend already dedupes by (provider, account_id); keep it so if a view ever repeats one.
+      const seen = new Set();
+      const rows = (data.accounts || []).filter(a => {
+        const key = `${a.provider}\u0000${a.account_id}`;
+        return seen.has(key) ? false : (seen.add(key), true);
+      });
+      accounts.innerHTML = rows.length ? rows.map(ewAccountCard).join('')
+        : '<div class="empty">No shared account has been observed yet. New accounts start OFF.</div>';
+    }
   } catch (e) {
     if (pair) pair.style.display = 'none';
+    if (manager) manager.style.display = 'none';
+    if (accounts) accounts.innerHTML = '';
     root.innerHTML = e.status === 404
       ? '<div class="empty">Browser workers are switched off on this Gateway (GATEWAY_EXTENSION_WORKERS).</div>'
       : `<div class="empty">Could not read browser workers: ${esc(e.message)}</div>`;
@@ -3955,12 +4035,16 @@ async function ewPair(btn) {
   const input = document.getElementById('ew-worker-id');
   const workerId = (input && input.value || '').trim();
   if (!workerId) { ewSay('Give the worker a name first.', false); return; }
+  const kindEl = document.getElementById('ew-kind');
+  const kind = (kindEl && kindEl.value) || 'video';
   btn.disabled = true;
   try {
     const r = await api('/extension-workers', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ worker_id: workerId, kind: 'video' }),
+      body: JSON.stringify({ worker_id: workerId, kind }),
     });
+    document.getElementById('ew-token-label').textContent =
+      'Paste this into the extension now; it is not shown again';
     document.getElementById('ew-token-value').value = r.token;
     document.getElementById('ew-token').style.display = '';
     ewSay(`Paired ${workerId}. Any earlier token for it stopped working.`);
@@ -3970,6 +4054,51 @@ async function ewPair(btn) {
     ewSay(e.ambiguous ? 'Not known whether pairing happened. Refresh the list before trying again.'
       : `Could not pair: ${e.message}`, false);
   } finally {
+    btn.disabled = false;
+  }
+}
+
+async function ewMintManager(btn) {
+  const input = document.getElementById('ew-manager-id');
+  const managerId = (input && input.value || '').trim();
+  const scope = Array.from(document.querySelectorAll('[data-ew-scope]:checked'))
+    .map(node => node.dataset.ewScope);
+  if (!managerId) { ewSay('Give the manager a name first.', false); return; }
+  if (!scope.length) { ewSay('Tick at least one paired worker for the manager scope.', false); return; }
+  btn.disabled = true;
+  try {
+    const r = await api('/extension-workers/manager', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ manager_id: managerId, worker_ids: scope }),
+    });
+    document.getElementById('ew-token-label').textContent =
+      'Paste this into Relay now; it is shown once and cannot enable account spending or pair workers';
+    document.getElementById('ew-token-value').value = r.token;
+    document.getElementById('ew-token').style.display = '';
+    ewSay(`Minted a manager token for ${managerId}, scoped to ${scope.length} worker${scope.length === 1 ? '' : 's'}.`);
+    await loadExtensionWorkers();
+  } catch (e) {
+    // A retried mint revokes the earlier manager token, so an unknown outcome is not retried blindly.
+    ewSay(e.ambiguous ? 'Not known whether the manager token was minted. Refresh the list before trying again.'
+      : `Could not mint the manager token: ${e.message}`, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function ewAccountToggle(provider, accountId, enabled, btn) {
+  btn.disabled = true;
+  try {
+    await api('/extension-workers/accounts/enabled', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, account_id: accountId, enabled: !enabled }),
+    });
+    ewSay(enabled
+      ? 'Spending disabled for this account. Queued jobs cannot spend it until you enable it again.'
+      : 'Spending enabled for this account. Queued jobs still need an enabled ready worker and an observed quote.');
+    await loadExtensionWorkers();
+  } catch (e) {
+    ewSay(`Could not change ${accountId}: ${e.message}`, false);
     btn.disabled = false;
   }
 }

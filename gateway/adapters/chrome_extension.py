@@ -360,7 +360,7 @@ class ChromeExtensionBackend:
         if not ew.broker.online(kind):
             raise BackendError("no browser worker is online for this model", code="WORKER_OFFLINE",
                                retryable=True, upstream_accepted=False)
-        job = ew.broker.offer(kind, payload)
+        job = ew.broker.offer(kind, payload, gateway_job_id=str(request.params.get("_job_id") or ""))
         result = self._follow(request, job)
         # Forgotten only once its answer is in hand; a held job stays so a late answer can find it.
         ew.broker.forget(job)
