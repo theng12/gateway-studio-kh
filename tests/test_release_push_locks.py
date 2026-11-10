@@ -448,6 +448,26 @@ class _Transport(Base):
                  "hub_latest": {"version": version}}]
 
 
+class StaleOutcomeStorage(Base):
+    def test_failed_retention_reports_the_error_without_touching_the_newer_report(self) -> None:
+        state = {"release": {"version": "0.0.2"}, "epoch": 2,
+                 "locations": {"bravo": {"ok": True}}}
+        rp._write_state(state)
+        before = rp._state_path().read_bytes()
+        outcome = {"kind": "manual", "release": {"version": "0.0.1"},
+                   "locations": {"alpha": {"ok": True}}}
+        with patch.object(rp.os, "open", side_effect=OSError("fixture storage unavailable")), \
+             patch("builtins.print") as logged:
+            result = rp._retain_stale(state, outcome)
+        self.assertTrue(result["stale"])
+        self.assertEqual(result["locations"], outcome["locations"])
+        self.assertIn("fixture storage unavailable", result["retention_error"])
+        self.assertEqual(rp._state_path().read_bytes(), before)
+        self.assertEqual(state, rp._read_state())
+        self.assertEqual(rp.stale_outcomes(), [])
+        logged.assert_called_once_with(f"[release] ERROR: {result['retention_error']}", flush=True)
+
+
 class StaleOwnerPublishFence(_Transport):
     """A publish of release X that finishes after a later-started publish of Y never touches Y's
     report; its own outcome is kept apart and returned to its caller."""

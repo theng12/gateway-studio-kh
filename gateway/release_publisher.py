@@ -890,8 +890,10 @@ def _retain_stale(state: dict[str, Any], record: dict[str, Any]) -> dict[str, An
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, sort_keys=True) + "\n")
-    except OSError:
-        pass
+    except OSError as exc:
+        record["retention_error"] = f"The stale release outcome could not be saved: {exc}"
+        print(f"[release] ERROR: {record['retention_error']}", flush=True)
+        return record
     print(f"[release] stale outcome kept apart: {record.get('kind')} of "
           f"{(record.get('release') or {}).get('version')} finished after a newer release", flush=True)
     return record
