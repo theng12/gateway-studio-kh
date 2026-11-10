@@ -165,13 +165,14 @@ def main(argv: list[str]) -> int:
     try:
         requested_key = _version(args.version, "--version")
 
-        candidate = Path(args.candidate)
+        # Keep symlinks visible to the shared helper's refusal checks.
+        candidate = Path(args.candidate).absolute()
         if not candidate.is_file():
             _refuse(f"candidate is not a regular file: {candidate}")
         if candidate.suffix != ".dmg":
             _refuse(f"candidate must be a .dmg: {candidate}")
 
-        installed = Path(args.installed_app)
+        installed = Path(args.installed_app).absolute()
         if not installed.is_dir():
             _refuse(f"acceptance must follow install; app not present: {installed}")
         installed_version, installed_build = _installed_identity(installed)
@@ -186,7 +187,7 @@ def main(argv: list[str]) -> int:
                 f" got {candidate.name!r}"
             )
 
-        evidence = Path(args.evidence)
+        evidence = Path(args.evidence).absolute()
         try:
             present = evidence.is_file() and evidence.stat().st_size > 0
         except OSError as exc:
@@ -194,10 +195,10 @@ def main(argv: list[str]) -> int:
         if not present:
             _refuse(f"acceptance evidence is missing or empty: {evidence}")
 
-        project = Path(args.project)
+        project = Path(args.project).absolute()
         if not project.is_dir():
             _refuse(f"canonical project is not a directory: {project}")
-        helper = Path(args.helper)
+        helper = Path(args.helper).absolute()
         if not helper.is_file():
             _refuse(f"shared release-dist helper is missing: {helper}")
 
@@ -249,7 +250,7 @@ def main(argv: list[str]) -> int:
                 "source": str(candidate),
                 "sha256": sha,
                 "bytes": size,
-                "evidence": args.evidence,
+                "evidence": str(evidence),
             }
         ]
         document = {

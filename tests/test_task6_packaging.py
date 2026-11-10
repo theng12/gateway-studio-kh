@@ -749,7 +749,7 @@ class AcceptanceHelper(unittest.TestCase):
             text=True, capture_output=True, check=False,
         )
 
-    def run_accept(self, project, candidate, version, installed, evidence, helper=None):
+    def run_accept(self, project, candidate, version, installed, evidence, helper=None, *, cwd=None):
         command = [
             sys.executable,
             str(ACCEPT_SCRIPT),
@@ -760,7 +760,57 @@ class AcceptanceHelper(unittest.TestCase):
             "--project", str(project),
             "--helper", str(helper or RELEASE_DIST_HELPER),
         ]
-        return subprocess.run(command, text=True, capture_output=True, check=False)
+        return subprocess.run(command, text=True, capture_output=True, check=False, cwd=cwd)
+
+    @unittest.skipUnless(RELEASE_DIST_HELPER.is_file(), "shared release-dist helper is not present")
+    def test_documented_relative_candidate_works_with_the_actual_helper(self) -> None:
+        with tempfile.TemporaryDirectory(dir=RUN_ROOT) as temporary:
+            root = Path(temporary)
+            project, installed, evidence = self.base(root)
+            staged = project / "dist" / ".candidates" / "fixture"
+            staged.mkdir(parents=True)
+            candidate = self.candidate(staged, "0.2.242")
+            result = self.run_accept(
+                project, candidate.relative_to(project), "0.2.242",
+                Path(os.path.relpath(installed, project)),
+                Path(os.path.relpath(evidence, project)),
+                Path(os.path.relpath(RELEASE_DIST_HELPER, project)), cwd=project,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            name = "Gateway Studio KH-0.2.242.dmg"
+            self.assertEqual((project / "dist" / name).read_bytes(), b"new accepted bytes")
+            ledger = json.loads((project / "dist" / ".release-dist.json").read_text())
+            recorded = Path(ledger["apps"]["Gateway Studio KH"]["files"][name]["evidence"])
+            self.assertTrue(recorded.is_absolute())
+            self.assertTrue(recorded.samefile(evidence))
+
+    @unittest.skipUnless(RELEASE_DIST_HELPER.is_file(), "shared release-dist helper is not present")
+    def test_relative_symlinks_remain_visible_to_the_actual_helper(self) -> None:
+        for linked in ("candidate", "project"):
+            with self.subTest(linked=linked), tempfile.TemporaryDirectory(dir=RUN_ROOT) as temporary:
+                root = Path(temporary)
+                project, installed, evidence = self.base(root)
+                candidate = self.candidate(root, "0.2.242")
+                project_arg = Path(".")
+                if linked == "candidate":
+                    alias = project / "dist" / ".candidates" / candidate.name
+                    alias.parent.mkdir()
+                    alias.symlink_to(candidate)
+                    candidate = alias
+                else:
+                    alias = root / "repository-link"
+                    alias.symlink_to(project, target_is_directory=True)
+                    project_arg = Path(os.path.relpath(alias, project))
+                result = self.run_accept(
+                    project_arg, Path(os.path.relpath(candidate, project)), "0.2.242",
+                    Path(os.path.relpath(installed, project)),
+                    Path(os.path.relpath(evidence, project)),
+                    Path(os.path.relpath(RELEASE_DIST_HELPER, project)), cwd=project,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("must not be a symlink", result.stderr)
+                self.assertFalse((project / "dist" / "Gateway Studio KH-0.2.242.dmg").exists())
+                self.assertEqual(candidate.read_bytes(), b"new accepted bytes")
 
     @unittest.skipUnless(RELEASE_DIST_HELPER.is_file(), "shared release-dist helper is not present")
     def test_accepted_candidate_is_promoted_and_prior_release_is_kept(self) -> None:
