@@ -861,6 +861,59 @@ def _write_state(state: dict[str, Any]) -> None:
         _raw_write_state(state)
 
 
+def _release_key(release: Any) -> tuple[Any, Any, Any]:
+    """What makes two release records the same release."""
+    held = release if isinstance(release, dict) else {}
+    return held.get("version"), held.get("build"), held.get("sha256")
+
+
+def _claim_epoch() -> int:
+    """The next publish epoch, persisted so a Gateway restart keeps counting up. Start order:
+    a publish of another release that started earlier never replaces the report of a later one."""
+    def bump(state: dict[str, Any]) -> None:
+        state["epoch_seq"] = int(state.get("epoch_seq") or 0) + 1
+    return int(_update_state(bump)["epoch_seq"])
+
+
+def _stale_path() -> Path:
+    return _state_path().with_name("release-stale-outcomes.jsonl")
+
+
+def _retain_stale(state: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    """Keep the outcome of a transfer that finished after a newer release took the report, beside
+    it rather than in it. Caller holds `_state_lock`; `state` is the report it must not touch."""
+    record = {**record, "stale": True, "at": int(time.time()),
+              "superseded_by": {"release": state.get("release"), "epoch": state.get("epoch")}}
+    path = _stale_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        pass
+    print(f"[release] stale outcome kept apart: {record.get('kind')} of "
+          f"{(record.get('release') or {}).get('version')} finished after a newer release", flush=True)
+    return record
+
+
+def stale_outcomes() -> list[dict[str, Any]]:
+    """Outcomes kept apart by `_retain_stale`, oldest first."""
+    try:
+        lines = _stale_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            out.append(parsed)
+    return out
+
+
 def last_push() -> dict[str, Any]:
     """The last publish this gateway made, for the Fleet page."""
     state = _read_state()
@@ -951,6 +1004,9 @@ def _publish(
     path = resolve_artifact(artifact_path)
     if not path.is_file():
         raise ReleaseError(f"No artifact at {path}.", 400, "RELEASE_ARTIFACT_MISSING")
+    # Claimed while `publish` holds this push's controller locks, so per controller it follows
+    # transfer order. A catch-up (`auto`) claims none: it completes the release already reported.
+    epoch = 0 if auto else _claim_epoch()
     clock = time.monotonic()
     timings: dict[str, float] = {}
 
@@ -1060,42 +1116,49 @@ def _publish(
                     "files_sha256", "files_count", "files_bytes")
         if key in shown
     }
-    if rollout:
-        # One location of a paced rollout: its outcome joins the report of this release (a different
-        # release starts a new report), and the record of the file stays for the catch-up.
-        def _apply_rollout(state: dict[str, Any]) -> None:
-            held = state.get("release") if isinstance(state.get("release"), dict) else {}
-            if (held.get("version"), held.get("build"), held.get("sha256")) != (
-                    released.get("version"), released.get("build"), released.get("sha256")):
-                state.clear()
-                state["locations"] = {}
-            state.update(updated_at=int(time.time()), fingerprint=fingerprint,
-                         artifact_path=str(path.resolve()), release=released,
-                         force_full=bool(force_full), timings=timings)
-            state.setdefault("locations", {}).update(results)
-        state = _update_state(_apply_rollout)
-        return state
+    # Every write below is fenced to this transfer's release (and, for the owner's publishes, its
+    # epoch): a transfer that finishes after a newer release took the report never replaces or
+    # joins it. Its outcome is kept apart (`stale_outcomes`) and returned to its own caller.
+    stale: dict[str, Any] | None = None
     if auto:
         # A catch-up completes the owner's last publish: its outcome joins that report, and the
         # release, its time and the other controllers' outcomes stay as they were.
         at = int(time.time())
         def _apply_auto(state: dict[str, Any]) -> None:
+            nonlocal stale
+            if _release_key(state.get("release")) != _release_key(released):
+                stale = _retain_stale(state, {"kind": "catch-up", "release": released, "locations": results})
+                return
             state.setdefault("locations", {}).update(
                 {cid: {**outcome, "auto": True, "at": at} for cid, outcome in results.items()})
         state = _update_state(_apply_auto)
-        return state
-    # Manual publish: merge locations when the stored release matches; replace on a new release.
-    def _apply_manual(state: dict[str, Any]) -> None:
-        held = state.get("release") if isinstance(state.get("release"), dict) else {}
-        if (held.get("version"), held.get("build"), held.get("sha256")) != (
-                released.get("version"), released.get("build"), released.get("sha256")):
+        return stale or state
+
+    # A paced rollout's location or a manual publish: its outcome joins the report of the same
+    # release; a different release starts a new report only if it started later (`epoch`).
+    def _apply_report(state: dict[str, Any]) -> None:
+        nonlocal stale
+        held_epoch = int(state.get("epoch") or 0)
+        if _release_key(state.get("release")) != _release_key(released):
+            if epoch < held_epoch:
+                stale = _retain_stale(state, {"kind": "rollout" if rollout else "manual", "epoch": epoch,
+                                              "release": released, "locations": results})
+                return
+            seq = state.get("epoch_seq")
             state.clear()
-            state["locations"] = {}
-        state.update(updated_at=int(time.time()), fingerprint=fingerprint,
-                     artifact_path=str(path.resolve()), release=released,
-                     force_full=bool(force_full), timings=timings)
+            state.update(locations={}, epoch_seq=seq)
+        if epoch >= held_epoch:
+            # The record of the file stays for the catch-up.
+            state.update(updated_at=int(time.time()), fingerprint=fingerprint,
+                         artifact_path=str(path.resolve()), release=released,
+                         force_full=bool(force_full), timings=timings, epoch=epoch)
         state.setdefault("locations", {}).update(results)
-    state = _update_state(_apply_manual)
+    state = _update_state(_apply_report)
+    if stale is not None:
+        # Not the expected release any more: no all-at-once record or message would describe it.
+        return stale
+    if rollout:
+        return state
     if controller_ids is None:
         # Every controller at once (the emergency path): the rollout is over the moment it was sent.
         from . import release_rollout
@@ -1234,6 +1297,9 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
                 chosen = row
                 chosen_cid = cid
             # else: another publish holds it; try the next candidate or skip this pass
+    # Every write of this catch-up is fenced to the release read above: one published meanwhile
+    # (to other controllers, which these locks do not cover) owns the report from then on.
+    expected = _release_key(state.get("release"))
     started = False
     try:
         if chosen is not None:
@@ -1241,11 +1307,20 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
             label = str(chosen.get("label") or cid)
             pending_updates[cid] = {"ok": None, "pending": True, "auto": True, "at": int(now), "status": None,
                                     "code": None, "detail": None, "release": None, "label": label}
+        superseded = False
         if pending_updates:
             def _apply_pending(s: dict[str, Any]) -> None:
-                s.setdefault("locations", {}).update(pending_updates)
+                nonlocal superseded
+                superseded = _release_key(s.get("release")) != expected
+                if not superseded:
+                    s.setdefault("locations", {}).update(pending_updates)
             _update_state(_apply_pending)
         if chosen is None:
+            return None
+        if superseded:
+            # Nothing was sent yet, so nothing is kept apart: the next fleet pass judges the new release.
+            print(f"[release] catch-up: {version} is no longer the release reported; not sent", flush=True)
+            _lock_for(cid).release()
             return None
         release = state["release"]
         print(f"[release] catch-up: sending {version} to {label} (it holds "
@@ -1264,9 +1339,12 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
                                "detail": getattr(exc, "message", None) or f"the push failed: {type(exc).__name__}: {exc}", "label": label,
                                "auto": True, "at": int(time.time())}
                     def _apply_fail(s: dict[str, Any]) -> None:
-                        s.setdefault("locations", {})[cid] = outcome
+                        if _release_key(s.get("release")) != expected:
+                            _retain_stale(s, {"kind": "catch-up", "release": release, "locations": {cid: outcome}})
+                        else:
+                            s.setdefault("locations", {})[cid] = outcome
                     _update_state(_apply_fail)
-                _catchup_settle(cid, label, version, outcome)
+                _catchup_settle(cid, label, version, outcome, expected)
             finally:
                 _lock_for(cid).release()
 
@@ -1285,8 +1363,10 @@ def catch_up(rows: list[dict[str, Any]], *, wait: bool = False) -> str | None:
     return cid
 
 
-def _catchup_settle(cid: str, label: str, version: str, outcome: dict[str, Any]) -> None:
-    """Back off after a failure, and tell the owner about a success or a streak of failures."""
+def _catchup_settle(cid: str, label: str, version: str, outcome: dict[str, Any],
+                    expected: tuple[Any, Any, Any]) -> None:
+    """Back off after a failure, and tell the owner about a success or a streak of failures.
+    The retry time is written only into the report of `expected`, the release that was sent."""
     from . import notifier
 
     now = time.time()
@@ -1300,7 +1380,7 @@ def _catchup_settle(cid: str, label: str, version: str, outcome: dict[str, Any])
     _catchup_backoff[cid] = (failures, now + wait)
     def _apply_retry(s: dict[str, Any]) -> None:
         entry = (s.get("locations") or {}).get(cid)
-        if isinstance(entry, dict):
+        if isinstance(entry, dict) and _release_key(s.get("release")) == expected:
             entry["retry_at"] = int(now + wait)
     _update_state(_apply_retry)
     print(f"[release] catch-up {label}: failed ({outcome.get('code')}), try {failures}; "

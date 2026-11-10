@@ -275,28 +275,32 @@ class Decisions(Base):
     def test_one_push_in_flight_and_the_page_says_catching_up(self) -> None:
         release = threading.Event()
         original = self._fake_publish
+        serial = threading.Lock()  # the fake's own read-modify-write is not locked
 
         def slow(**kwargs) -> dict:
             release.wait(5)
-            return original(**kwargs)
+            with serial:
+                return original(**kwargs)
 
         rows = self.stamp([row("a", "0.6.132"), row("b", "0.6.132"), row("c", "0.6.132"),
                            row("m", None), row("n", None)])
         with patch.object(rp, "_publish", slow):
             self.assertEqual(rp.catch_up(rows), "m")
             self.assertTrue(self.outcome("m")["pending"])
-            self.assertIsNone(rp.catch_up(rows), "a second push while the first is in flight")
+            # Per-controller locks: the busy controller is skipped, the next one is sent meanwhile.
+            self.assertEqual(rp.catch_up(rows), "n", "a busy controller is skipped, not waited for")
+            self.assertTrue(self.outcome("n")["pending"])
             release.set()
             for _ in range(100):
-                if not rp._push_lock.locked():
+                if not (rp._lock_for("m").locked() or rp._lock_for("n").locked()):
                     break
                 threading.Event().wait(0.05)
-        self.assertEqual([p["controller_ids"] for p in self.pushes], [["m"]])
+        self.assertEqual(sorted(p["controller_ids"] for p in self.pushes), [["m"], ["n"]])
         self.assertTrue(self.outcome("m")["ok"])
-        self.assertEqual(rp.catch_up(rows, wait=True), "n")
+        self.assertTrue(self.outcome("n")["ok"])
 
-    def test_a_manual_publish_in_flight_holds_catch_up_off(self) -> None:
-        with rp._push_lock:
+    def test_a_manual_publish_in_flight_holds_catch_up_off_that_controller(self) -> None:
+        with rp._lock_for("n"):
             self.assertIsNone(rp.catch_up(self.fleet_rows(row("n", None)), wait=True))
         self.assertEqual(self.pushes, [])
 

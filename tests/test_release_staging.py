@@ -55,7 +55,8 @@ class ReleaseStaging(unittest.TestCase):
         with patch.object(Path, "resolve", side_effect=AssertionError("protected metadata read")), \
              patch.object(rp, "_hash_file") as hash_file, \
              patch.object(rp, "_node_request") as signer, \
-             patch.object(rp, "_push_lock") as lock, \
+             patch.object(rp, "_lock_for") as lock, \
+             patch.object(rp, "_claim_epoch") as epoch, \
              patch.object(release_rollout, "_write") as write_rollout:
             for call in calls:
                 with self.subTest(call=call), self.assertRaises(rp.ReleaseError) as raised:
@@ -65,7 +66,8 @@ class ReleaseStaging(unittest.TestCase):
                 self.assertIn(str(self.data / "releases"), raised.exception.message)
             hash_file.assert_not_called()
             signer.assert_not_called()
-            lock.__enter__.assert_not_called()
+            lock.assert_not_called()
+            epoch.assert_not_called()
             write_rollout.assert_not_called()
 
     def test_differently_cased_downloads_refuses_before_metadata(self) -> None:

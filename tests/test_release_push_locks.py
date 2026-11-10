@@ -8,6 +8,7 @@ so lost-update regressions are caught.
 """
 from __future__ import annotations
 
+import contextlib
 import sys
 import tempfile
 import threading
@@ -23,7 +24,7 @@ from tests._isolation import sandbox_env  # noqa: E402
 
 _SANDBOX = sandbox_env()
 
-from gateway import fleet, release_publisher as rp  # noqa: E402
+from gateway import fleet, notifier, release_publisher as rp, release_rollout  # noqa: E402
 
 
 class _FakeFleet:
@@ -203,9 +204,8 @@ class CatchUpSkip(Base):
 
         with patch.object(rp, "_publish", side_effect=fake_publish), \
              patch.object(rp, "_catchup_artifact", return_value=(self.artifact, None)), \
-             patch("gateway.release_publisher.release_rollout") as rr:
-            rr.active.return_value = False
-            rr.finished.return_value = True
+             patch.object(release_rollout, "active", return_value=False), \
+             patch.object(release_rollout, "finished", return_value=True):
 
             # Start a manual publish that holds alpha's lock.
             t = threading.Thread(target=rp.publish, kwargs={
@@ -302,9 +302,8 @@ class CatchUpLockRelease(Base):
 
         with patch.object(rp, "_update_state", side_effect=boom), \
              patch.object(rp, "_catchup_artifact", return_value=(self.artifact, None)), \
-             patch("gateway.release_publisher.release_rollout") as rr:
-            rr.active.return_value = False
-            rr.finished.return_value = True
+             patch.object(release_rollout, "active", return_value=False), \
+             patch.object(release_rollout, "finished", return_value=True):
             with self.assertRaises(RuntimeError):
                 rp.catch_up(rows, wait=True)
 
@@ -377,6 +376,205 @@ class AllAtOnceRegression(Base):
 
         self.assertEqual(received, [None],
                          "controller_ids=None must reach _publish unchanged")
+
+
+class _Transport(Base):
+    """The real `_publish` and catch-up, with only the network stubbed. `push` waits on a gate
+    for the controller named in `self.hold`, so a test can finish a newer release meanwhile."""
+
+    SHA = "ab" * 32
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.gate = threading.Event()
+        self.entered = threading.Event()
+        self.hold: str | None = None
+        self.answer = {"ok": True, "status": 200, "code": None, "detail": None}
+        self.sent: list[str] = []
+
+        @contextlib.contextmanager
+        def mounted(_path):
+            yield self.root
+
+        def no_manifest(_root):
+            raise rp.ReleaseError("no manifest", 400, "RELEASE_NO_MANIFEST")
+
+        def push(url, token, descriptor, path):
+            if self.hold and url.startswith(f"http://{self.hold}."):
+                self.entered.set()
+                self.gate.wait(5)
+            return {**self.answer, "release": {"version": descriptor["version"]}}
+
+        for started in (
+            patch.object(rp, "_probe", lambda url, token: (None, False)),
+            patch.object(rp, "_mounted", mounted),
+            patch.object(rp, "load_manifest", no_manifest),
+            patch.object(rp, "push", push),
+            patch.object(rp, "_catchup_backoff", {}),
+            patch.object(notifier, "notify", lambda kind, text: self.sent.append(text)),
+            patch.object(notifier, "release_message", lambda state: "release message"),
+            patch.object(rp, "_catchup_artifact", lambda state, version: (self.artifact, None)),
+            patch.object(release_rollout, "active", return_value=False),
+            patch.object(release_rollout, "finished", return_value=True),
+        ):
+            started.start()
+            self.addCleanup(started.stop)
+
+    def publish(self, version: str, cid: str, **kw) -> dict:
+        return rp.publish(artifact_path=str(self.artifact), version=version, build="b",
+                          controller_ids=[cid], **kw)
+
+    def in_background(self, fn, *args, **kw) -> tuple[threading.Thread, list]:
+        out: list = []
+        t = threading.Thread(target=lambda: out.append(fn(*args, **kw)))
+        t.start()
+        self.assertTrue(self.entered.wait(5), "the held transfer never started")
+        return t, out
+
+    def finish(self, t: threading.Thread) -> None:
+        self.gate.set()
+        t.join(5)
+        self.assertFalse(t.is_alive())
+
+    def seed(self, version: str) -> None:
+        rp._write_state({"release": {"version": version, "build": "b", "sha256": self.SHA},
+                         "artifact_path": str(self.artifact), "fingerprint": self.SHA,
+                         "force_full": False, "locations": {}})
+
+    def rows(self, version: str) -> list[dict]:
+        trust = {"reported": True, "fingerprint": self.SHA}
+        return [{"id": "alpha", "label": "Alpha", "url": "http://alpha.invalid", "local": False,
+                 "reachable": True, "trusted_publisher": trust, "release": None,
+                 "hub_latest": {"version": version}}]
+
+
+class StaleOwnerPublishFence(_Transport):
+    """A publish of release X that finishes after a later-started publish of Y never touches Y's
+    report; its own outcome is kept apart and returned to its caller."""
+
+    def check_kept_apart(self, out: list, kind: str, ok: bool) -> None:
+        report = rp.last_push()
+        self.assertEqual(report["release"]["version"], "0.0.2", "the newer release lost the report")
+        self.assertEqual(set(report["locations"]), {"bravo"}, "the stale outcome joined the newer report")
+        (kept,) = rp.stale_outcomes()
+        self.assertEqual((kept["kind"], kept["release"]["version"], kept["stale"]), (kind, "0.0.1", True))
+        self.assertEqual(kept["superseded_by"]["release"]["version"], "0.0.2")
+        self.assertIs(kept["locations"]["alpha"]["ok"], ok)
+        (result,) = out
+        self.assertTrue(result["stale"])
+        self.assertEqual(result["locations"]["alpha"]["ok"], ok,
+                         "the caller must read its own outcome, not the newer report's")
+
+    def test_stale_success_keeps_the_newer_report(self) -> None:
+        self.hold = "alpha"
+        t, out = self.in_background(self.publish, "0.0.1", "alpha")
+        self.publish("0.0.2", "bravo")
+        self.finish(t)
+        self.check_kept_apart(out, "manual", True)
+        self.assertEqual(len(self.sent), 1, "only the expected release tells the owner")
+
+    def test_stale_rollout_failure_keeps_the_newer_report(self) -> None:
+        self.hold = "alpha"
+        self.answer = {"ok": False, "status": 503, "code": "HUB_BUSY", "detail": "busy"}
+        t, out = self.in_background(self.publish, "0.0.1", "alpha", rollout=True)
+        self.answer = {"ok": True, "status": 200, "code": None, "detail": None}
+        self.publish("0.0.2", "bravo")
+        self.answer = {"ok": False, "status": 503, "code": "HUB_BUSY", "detail": "busy"}
+        self.finish(t)
+        self.check_kept_apart(out, "rollout", False)
+        # release_rollout._push reads exactly this: the step's own failure.
+        self.assertEqual(out[0]["locations"]["alpha"]["code"], "HUB_BUSY")
+
+    def test_same_release_overlap_merges_and_keeps_the_later_epoch(self) -> None:
+        self.hold = "alpha"
+        t, _ = self.in_background(self.publish, "0.0.1", "alpha")
+        self.publish("0.0.1", "bravo")
+        later = rp._read_state()["epoch"]
+        self.finish(t)
+        report = rp.last_push()
+        self.assertEqual(set(report["locations"]), {"alpha", "bravo"})
+        self.assertEqual(report["epoch"], later, "the earlier-started push rewound the epoch")
+        self.assertEqual(rp.stale_outcomes(), [])
+
+    def test_epoch_counts_up_across_a_new_report_and_legacy_state(self) -> None:
+        self.seed("0.0.1")  # written before epochs existed: epoch 0
+        self.publish("0.0.2", "alpha")
+        first = rp._read_state()
+        self.publish("0.0.3", "bravo")
+        second = rp._read_state()
+        self.assertEqual(first["epoch"], first["epoch_seq"])
+        self.assertGreater(second["epoch"], first["epoch"], "clearing the report reset the counter")
+        self.assertEqual(set(second["locations"]), {"bravo"})
+
+
+class StaleCatchUpFence(_Transport):
+    """A catch-up binds every write (pending, outcome, failure, retry) to the release it read."""
+
+    def test_stale_catch_up_success_keeps_the_newer_report(self) -> None:
+        self.seed("0.0.1")
+        self.hold = "alpha"
+        t, out = self.in_background(rp.catch_up, self.rows("0.0.1"), wait=True)
+        self.publish("0.0.2", "bravo")
+        self.finish(t)
+        self.assertEqual(out, ["alpha"])
+        report = rp.last_push()
+        self.assertEqual(report["release"]["version"], "0.0.2")
+        self.assertNotIn("alpha", report["locations"], "the old pending or outcome reached the newer report")
+        (kept,) = rp.stale_outcomes()
+        self.assertEqual((kept["kind"], kept["release"]["version"]), ("catch-up", "0.0.1"))
+        self.assertTrue(kept["locations"]["alpha"]["ok"])
+        self.assertFalse(rp._lock_for("alpha").locked())
+
+    def test_stale_catch_up_failure_and_retry_stay_out_of_the_newer_report(self) -> None:
+        self.seed("0.0.1")
+        entered, gate = threading.Event(), threading.Event()
+
+        def failing(**kwargs):
+            entered.set()
+            gate.wait(5)
+            raise rp.ReleaseError("the file is gone", 400, "RELEASE_ARTIFACT_MISSING")
+
+        with patch.object(rp, "_publish", failing):
+            t = threading.Thread(target=rp.catch_up, args=(self.rows("0.0.1"),), kwargs={"wait": True})
+            t.start()
+            self.assertTrue(entered.wait(5))
+            # A newer release reported meanwhile (to other controllers), with an entry for alpha.
+            rp._update_state(lambda s: (s.clear(), s.update(
+                release={"version": "0.0.2", "build": "b", "sha256": self.SHA}, epoch=9,
+                locations={"alpha": {"ok": True, "label": "Alpha"}})))
+            gate.set()
+            t.join(5)
+        report = rp.last_push()
+        self.assertEqual(report["locations"]["alpha"], {"ok": True, "label": "Alpha"},
+                         "the old failure or its retry_at overwrote the newer outcome")
+        (kept,) = rp.stale_outcomes()
+        self.assertEqual(kept["locations"]["alpha"]["code"], "RELEASE_ARTIFACT_MISSING")
+        self.assertEqual(rp._catchup_backoff["alpha"][0], 1, "the controller still backs off")
+        self.assertFalse(rp._lock_for("alpha").locked())
+
+    def test_retry_time_is_written_only_into_the_release_that_was_sent(self) -> None:
+        rp._write_state({"release": {"version": "0.0.2", "build": "b", "sha256": self.SHA},
+                         "locations": {"alpha": {"ok": False}}})
+        rp._catchup_settle("alpha", "Alpha", "0.0.1", {"ok": False, "code": "X"}, ("0.0.1", "b", self.SHA))
+        self.assertNotIn("retry_at", rp._read_state()["locations"]["alpha"])
+        rp._catchup_settle("alpha", "Alpha", "0.0.2", {"ok": False, "code": "X"}, ("0.0.2", "b", self.SHA))
+        self.assertIn("retry_at", rp._read_state()["locations"]["alpha"])
+
+    def test_release_replaced_before_pending_sends_nothing(self) -> None:
+        self.seed("0.0.1")
+        calls: list = []
+
+        def replaced_meanwhile(state, version):
+            # Runs after catch_up read the state, before its pending write.
+            rp._update_state(lambda s: s.update(release={"version": "0.0.2", "build": "b", "sha256": self.SHA}))
+            return self.artifact, None
+
+        with patch.object(rp, "_catchup_artifact", replaced_meanwhile), \
+             patch.object(rp, "_publish", lambda **kw: calls.append(kw)):
+            self.assertIsNone(rp.catch_up(self.rows("0.0.1"), wait=True))
+        self.assertEqual(calls, [], "a superseded catch-up must not transfer")
+        self.assertNotIn("alpha", rp.last_push().get("locations") or {})
+        self.assertFalse(rp._lock_for("alpha").locked())
 
 
 if __name__ == "__main__":
