@@ -56,7 +56,7 @@ def enabled() -> bool:
 def _seconds(key: str, default: float) -> float:
     try:
         value = float(config_get(key, "") or default)
-        return value if value > 0 else default
+        return value if math.isfinite(value) and value > 0 else default
     except ValueError:
         return default
 
@@ -74,6 +74,44 @@ def online_seconds() -> float:
 def claim_wait_seconds() -> float:
     """How long a job may wait to be claimed before it is withdrawn, unsent, and refused."""
     return _seconds("GATEWAY_EXTENSION_WORKER_CLAIM_WAIT_SECONDS", 180)
+
+
+def audio_inventory_max_bytes() -> int:
+    """Bound the entire audio claim body, including its authenticated discovery snapshot."""
+    try:
+        value = int(config_get("GATEWAY_EXTENSION_WORKER_INVENTORY_MAX_BYTES", "") or 1048576)
+        return value if 0 < value <= 2**53 - 1 else 1048576
+    except ValueError:
+        return 1048576
+
+
+def audio_inventory(value: Any, now: float) -> dict:
+    """Schema 1 proves current membership only; it states no compatible pairs or provider limits."""
+    if not isinstance(value, dict) or type(value.get("schema")) is not int or value["schema"] != 1:
+        raise ValueError("audioInventory must use schema 1")
+    providers = value.get("providers")
+    if not isinstance(providers, dict) or set(providers) - {"fish", "elevenlabs_web"}:
+        raise ValueError("audioInventory needs known providers")
+    clean = {}
+    for provider, data in providers.items():
+        if not isinstance(data, dict) or data.get("source") != "live" or data.get("complete") is not True:
+            raise ValueError("audio inventory must be a complete live observation")
+        fetched = data.get("fetchedAt")
+        if type(fetched) is not int or not 0 < fetched <= 2**53 - 1:
+            raise ValueError("inventory fetchedAt must be a positive safe integer in milliseconds")
+        if fetched > now * 1000 or now * 1000 - fetched >= online_seconds() * 1000:
+            raise ValueError(f"inventory must be within the {online_seconds():g} second age limit, without a future timestamp")
+        ids = {}
+        for field_name in ("models", "voices"):
+            rows = data.get(field_name)
+            if not isinstance(rows, list) or not rows or any(
+                not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"].strip()
+                for row in rows
+            ):
+                raise ValueError(f"inventory {field_name} must contain exact nonempty IDs")
+            ids[field_name] = frozenset(row["id"] for row in rows)
+        clean[provider] = {**ids, "fetched_at": fetched / 1000}
+    return clean
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +144,7 @@ def mint(worker_id: str, kind: str) -> str:
         rows[admin_session._digest(token)] = {"worker_id": worker_id, "kind": kind,
                                               "created_at": now, "revoked_at": None}
         admin_session._write(_tokens_path(), {"workers": rows})
+        broker.clear_inventory(worker_id)
     return token
 
 
@@ -120,6 +159,7 @@ def revoke(worker_id: str) -> int:
                 count += 1
         if count:
             admin_session._write(_tokens_path(), {"workers": rows})
+        broker.clear_inventory(worker_id)
     return count
 
 
@@ -128,8 +168,15 @@ def worker_for(token: str) -> dict | None:
     token = str(token or "").strip()
     if not token.startswith(TOKEN_PREFIX):
         return None
-    row = _rows().get(admin_session._digest(token))
-    return dict(row) if row and not row.get("revoked_at") else None
+    token_id = admin_session._digest(token)
+    row = _rows().get(token_id)
+    return {**row, "_token_id": token_id} if row and not row.get("revoked_at") else None
+
+
+def _current_worker(worker: dict, rows: dict) -> bool:
+    row = rows.get(worker.get("_token_id"))
+    return bool(row and not row.get("revoked_at") and row.get("worker_id") == worker.get("worker_id")
+                and row.get("kind") == worker.get("kind"))
 
 
 def bearer_worker(authorization: str | bytes | None) -> dict | None:
@@ -202,10 +249,20 @@ class _Broker:
             self._jobs.clear()
             self.workers.clear()
 
+    def _entry(self, worker: dict) -> dict:
+        entry = self.workers.get(worker["worker_id"])
+        if entry is None or entry.get("_token_id") != worker["_token_id"]:
+            entry = {"worker_id": worker["worker_id"], "kind": worker["kind"],
+                     "_token_id": worker["_token_id"], "credits": None}
+            self.workers[worker["worker_id"]] = entry
+        return entry
+
     def seen(self, worker: dict, telemetry: Any = None) -> None:
-        with self._lock:
-            entry = self.workers.setdefault(worker["worker_id"], {"credits": None})
-            entry.update(kind=worker["kind"], seen_at=time.time())
+        with admin_session._lock, self._lock:
+            if not _current_worker(worker, _rows()):
+                return
+            entry = self._entry(worker)
+            entry["seen_at"] = time.time()
             if isinstance(telemetry, dict):
                 credits = valid_credits(telemetry.get("credits"))
                 # **Unknown is `None`, never 0**: only a well-formed statement replaces the last one.
@@ -215,11 +272,47 @@ class _Broker:
                 if isinstance(version, str):
                     entry["extension_version"] = version[:40]
 
+    def clear_inventory(self, worker_id: str, token_id: str | None = None) -> None:
+        with self._lock:
+            entry = self.workers.get(worker_id)
+            if entry is not None and (token_id is None or entry.get("_token_id") == token_id):
+                entry.pop("audio_inventory", None)
+
     def online(self, kind: str) -> bool:
         cutoff = time.time() - online_seconds()
-        with self._lock:
+        with admin_session._lock, self._lock:
+            rows = _rows()
             return any(w.get("kind") == kind and w.get("seen_at", 0) >= cutoff
-                       for w in self.workers.values())
+                       and _current_worker(w, rows) for w in self.workers.values())
+
+    @staticmethod
+    def _audio_member(entry: dict, payload: dict, now: float) -> bool:
+        data = entry.get("audio_inventory", {}).get(payload.get("provider"), {})
+        observed = data.get("fetched_at", 0)
+        return (0 <= now - observed < online_seconds()
+                and payload.get("model") in data.get("models", ())
+                and payload.get("voice") in data.get("voices", ()))
+
+    def audio_member(self, payload: dict) -> bool:
+        """Discovery preflight only, never proof that the model/voice pair can be generated."""
+        with admin_session._lock, self._lock:
+            rows, now = _rows(), time.time()
+            return any(_current_worker(entry, rows)
+                       and entry.get("kind") == "audio"
+                       and now - entry.get("seen_at", 0) < online_seconds()
+                       and self._audio_member(entry, payload, now)
+                       for entry in self.workers.values())
+
+    def inventory_status(self, worker_id: str) -> dict:
+        with admin_session._lock, self._lock:
+            entry = self.workers.get(worker_id, {})
+            if not _current_worker(entry, _rows()):
+                return {}
+            now = time.time()
+            return {provider: {"observed_at": data["fetched_at"],
+                               "fresh": 0 <= now - data["fetched_at"] < online_seconds(),
+                               "model_count": len(data["models"]), "voice_count": len(data["voices"])}
+                    for provider, data in entry.get("audio_inventory", {}).items()}
 
     def offer(self, kind: str, payload: dict[str, Any]) -> WorkerJob:
         job = WorkerJob(job_id=f"job_{uuid.uuid4().hex}", kind=kind, payload=payload)
@@ -264,7 +357,7 @@ class _Broker:
         """Progress from the job's owner renews its lease; `False` for anyone else's job."""
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is None or job.owner != worker["worker_id"]:
+            if job is None or job.owner != worker["worker_id"] or job.kind != worker["kind"]:
                 return False
             if job.state == "claimed":
                 job.last_heard = time.time()
@@ -285,7 +378,7 @@ class _Broker:
         """
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is not None and job.owner != worker["worker_id"]:
+            if job is not None and (job.owner != worker["worker_id"] or job.kind != worker["kind"]):
                 return "missing"
             if job is None or job.state == "held":
                 return "late"
@@ -300,15 +393,24 @@ class _Broker:
         with self._lock:
             self._jobs.pop(job.job_id, None)
 
-    def claim(self, worker: dict) -> WorkerJob | None:
-        """**One job per worker**: an unfinished one of its own comes back again, never a second."""
-        with self._lock:
+    def claim(self, worker: dict, inventory: dict | None = None) -> WorkerJob | None:
+        """One job per worker; discovery expiry never abandons already claimed work."""
+        with admin_session._lock, self._lock:
+            if not _current_worker(worker, _rows()):
+                raise PermissionError("this worker token was revoked before assignment")
+            entry = self._entry(worker)
+            if worker["kind"] == "audio":
+                entry["audio_inventory"] = inventory or {}
             for job in self._jobs.values():
                 if job.owner == worker["worker_id"] and job.state == "claimed":
+                    if job.kind != worker["kind"]:
+                        return None
                     job.last_heard = time.time()
                     return job
             for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
                 if job.state == "pending" and job.kind == worker["kind"]:
+                    if job.kind == "audio" and not self._audio_member(entry, job.payload, time.time()):
+                        continue
                     job.state, job.owner = "claimed", worker["worker_id"]
                     job.last_heard = job.claimed_at = time.time()
                     job.changed.set()
@@ -318,7 +420,7 @@ class _Broker:
     def owned(self, worker: dict, job_id: str) -> WorkerJob | None:
         with self._lock:
             job = self._jobs.get(job_id)
-            return job if job is not None and job.owner == worker["worker_id"] else None
+            return job if job is not None and job.owner == worker["worker_id"] and job.kind == worker["kind"] else None
 
     def jobs_of(self, worker_id: str) -> tuple[dict | None, list[str]]:
         """`(current_job, held_job_ids)` for the status page; what the Gateway still holds in memory."""
@@ -375,8 +477,11 @@ def workers_health(authorization: str | None = Header(default=None)):
     if isinstance(worker, JSONResponse):
         return worker
     broker.seen(worker)
+    age = online_seconds()
     return {"ok": True, "workerId": worker["worker_id"], "kind": worker["kind"],
-            "maxResultBytes": MAX_RESULT_BYTES, "leaseSeconds": lease_seconds()}
+            "maxResultBytes": MAX_RESULT_BYTES, "leaseSeconds": lease_seconds(),
+            "onlineSeconds": age, "audioInventoryMaxAgeSeconds": age,
+            "audioInventoryMaxBytes": audio_inventory_max_bytes()}
 
 
 @router.post("/api/workers/claim")
@@ -384,11 +489,37 @@ async def workers_claim(request: Request, authorization: str | None = Header(def
     worker = _worker(authorization)
     if isinstance(worker, JSONResponse):
         return worker
-    body = await _json(request)
+    inventory = None
+    if worker["kind"] == "audio":
+        broker.clear_inventory(worker["worker_id"], worker["_token_id"])
+        limit, raw = audio_inventory_max_bytes(), bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > limit:
+                return _refusal(413, "WORKER_INVENTORY_INVALID",
+                                f"the complete audio claim exceeds the {limit} byte limit")
+            raw.extend(chunk)
+        try:
+            body = json.loads(raw)
+        except (ValueError, RecursionError):
+            return _refusal(422, "WORKER_INVENTORY_INVALID", "invalid audio claim JSON")
+        if not isinstance(body, dict):
+            return _refusal(422, "WORKER_INVENTORY_INVALID", "an audio claim must be an object")
+        try:
+            inventory = audio_inventory(body.get("audioInventory", {"schema": 1, "providers": {}}),
+                                        time.time())
+        except ValueError as exc:
+            return _refusal(422, "WORKER_INVENTORY_INVALID", str(exc))
+    else:
+        body = await _json(request)
+        if "audioInventory" in body:
+            return _refusal(422, "WORKER_INVENTORY_INVALID", "audioInventory requires an audio token")
     if str(body.get("workerId") or "") != worker["worker_id"] or body.get("kind") != worker["kind"]:
         return _refusal(403, "WORKER_MISMATCH", "this token belongs to another worker or kind")
     broker.seen(worker, body.get("telemetry"))
-    job = broker.claim(worker)
+    try:
+        job = broker.claim(worker, inventory)
+    except PermissionError:
+        return _refusal(401, "WORKER_TOKEN_REFUSED", "this worker token was revoked before assignment")
     if job is None:
         return Response(status_code=204)
     return {"job": job.payload}
@@ -417,7 +548,9 @@ def _held_row(worker: dict, job_id: str) -> dict | None:
 
     wanted = upstream_id(worker["worker_id"], job_id)
     rows = runtime.store.jobs_for_upstream_batches([wanted])
-    return next((row for row in rows if row.get("upstream_job_id") == wanted), None)
+    modality = "tts" if worker["kind"] == "audio" else worker["kind"]
+    return next((row for row in rows if row.get("upstream_job_id") == wanted
+                 and row.get("modality") == modality), None)
 
 
 @router.post("/api/workers/jobs/{job_id}/fail")
@@ -525,6 +658,7 @@ def _admin_routes() -> None:
             entry["has_live_token"] = entry["has_live_token"] or not row.get("revoked_at")
             # The newest token's dates: when this worker's key was made, and revoked (null = live).
             entry["created_at"], entry["revoked_at"] = row.get("created_at"), row.get("revoked_at")
+            entry["kind"] = row.get("kind")
         for worker_id, seen in list(broker.workers.items()):
             entry = known.setdefault(worker_id, {"worker_id": worker_id, "kind": seen.get("kind"),
                                                  "has_live_token": False})
@@ -538,6 +672,10 @@ def _admin_routes() -> None:
             entry.setdefault("created_at", None)
             entry.setdefault("revoked_at", None)
             entry["current_job"], entry["held_jobs"] = broker.jobs_of(str(entry["worker_id"]))
+            if entry["kind"] == "audio":
+                entry["audio_inventory"] = broker.inventory_status(str(entry["worker_id"]))
+                entry["audio_admission_ready"] = False
+                entry["audio_admission_reason"] = "Discovery does not establish compatible model/voice pairs or required provider limits"
         return {"enabled": True, "lease_seconds": lease_seconds(),
                 "online_seconds": online_seconds(), "max_result_bytes": MAX_RESULT_BYTES,
                 "workers": sorted(known.values(), key=lambda e: str(e["worker_id"]))}

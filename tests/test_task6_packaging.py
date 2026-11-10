@@ -446,7 +446,7 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             version = info["CFBundleShortVersionString"]
             self.assertFalse((fixture.root / "dist" / f"Gateway Studio KH-{version}.dmg").exists())
             candidates = list(
-                (fixture.root / "dist" / ".candidates").glob(f"Gateway Studio KH-{version}-*.dmg")
+                (fixture.root / "dist" / ".candidates").rglob(f"Gateway Studio KH-{version}-*.dmg")
             )
             self.assertEqual(len(candidates), 1, candidates)
             shipped = json.loads(
@@ -665,6 +665,7 @@ class CandidateStaging(unittest.TestCase):
             previous = dist / "Gateway Studio KH-0.2.240.dmg"
             current.write_bytes(b"accepted current")
             previous.write_bytes(b"accepted previous")
+            _write_executable(fixture.bin / "date", "printf '202611101200\\n'\n")
 
             failed = fixture.run(TASK6_FAIL_ICON="1")
             self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
@@ -675,7 +676,7 @@ class CandidateStaging(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(current.read_bytes(), b"accepted current")
             self.assertEqual(previous.read_bytes(), b"accepted previous")
-            candidates = list((dist / ".candidates").glob("Gateway Studio KH-0.2.241-*.dmg"))
+            candidates = list((dist / ".candidates").rglob("Gateway Studio KH-0.2.241-*.dmg"))
             self.assertEqual(len(candidates), 1, candidates)
             self.assertIn(f"Candidate DMG: {candidates[0]}", result.stdout)
             # The staged name must be exactly what acceptance reads back from the
@@ -686,6 +687,14 @@ class CandidateStaging(unittest.TestCase):
                 candidates[0].name,
                 f"Gateway Studio KH-{info['CFBundleShortVersionString']}-{info['GatewayBuild']}.dmg",
             )
+            first = candidates[0]
+            first.write_bytes(b"active candidate under verification")
+            again = fixture.run()
+            self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+            self.assertEqual(first.read_bytes(), b"active candidate under verification")
+            self.assertEqual(len(list((dist / ".candidates").rglob(first.name))), 2)
+            self.assertEqual(current.read_bytes(), b"accepted current")
+            self.assertEqual(previous.read_bytes(), b"accepted previous")
 
 
 class AcceptanceHelper(unittest.TestCase):

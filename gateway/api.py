@@ -525,6 +525,19 @@ class BoundedUploadBody:
             await self.app(scope, receive, send)
             return
         path = scope.get("path") or ""
+        if path == "/api/workers/claim":
+            from . import extension_workers
+            headers = dict(scope.get("headers") or [])
+            worker = extension_workers.bearer_worker(headers.get(b"authorization")) if extension_workers.enabled() else None
+            if worker is not None and worker["kind"] == "audio":
+                # Clear discovery before the outer reader can reject; use the advertised bound,
+                # retaining the existing stalled-stream protection for authenticated JSON bodies.
+                extension_workers.broker.clear_inventory(worker["worker_id"], worker["_token_id"])
+                limit = extension_workers.audio_inventory_max_bytes()
+                host = ((scope.get("client") or ("?", 0))[0]) or "?"
+                await self._bounded_stream(scope, receive, send, limit,
+                                           f"an audio discovery claim ({limit} bytes)", host, False)
+                return
         resolved = body_ceiling_for(path)
         if resolved is None:
             await self.app(scope, receive, send)

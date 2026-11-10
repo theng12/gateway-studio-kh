@@ -9,9 +9,9 @@ managed DMGs. `menubar/build.sh` stages candidates outside the canonical names.
 
 The candidate must be build.sh's exact staged file for the build actually
 installed: `Gateway Studio KH-<version>-<GatewayBuild>.dmg`. The version and
-build are read from the installed app's Info.plist, so a pin cannot claim a
-candidate that was not the verified install. Evidence must be an existing,
-non-empty acceptance receipt.
+build are read from the installed app's Info.plist to check the candidate name.
+The trusted release caller must establish that these bytes produced the verified
+install. Evidence must be an existing, non-empty acceptance receipt.
 
 The prior accepted release is carried forward from the helper's own
 `.release-dist.json` ledger, never invented here. A requested version lower than
@@ -20,7 +20,7 @@ the candidate is byte-identical to the managed file (an idempotent re-run).
 
 Example (run by the Gateway release lead after install/launch verification):
     scripts/accept_release.py \
-        --candidate "dist/.candidates/Gateway Studio KH-0.2.242-<build>.dmg" \
+        --candidate "dist/.candidates/<candidate>/Gateway Studio KH-0.2.242-<build>.dmg" \
         --version 0.2.242 \
         --installed-app /Applications/gateway-kh.app \
         --evidence <release-acceptance-receipt.json>

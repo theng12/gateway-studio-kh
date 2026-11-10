@@ -125,6 +125,9 @@ _SELF_BOUNDED = {
     "/admin/api/content-shelf/unretire": 4 * MB,
     # The exact-version door uses the same validated admin JSON ceiling as its siblings.
     "/admin/api/content-library/retire-version": 4 * MB,
+    # Audio tokens use their authenticated, live-configured stream bound (default 1 MiB);
+    # other kinds retain the outer 4 MiB JSON ceiling. Mock regressions cover both paths.
+    "/api/workers/claim": 4 * MB,
 }
 
 

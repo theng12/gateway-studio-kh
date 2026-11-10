@@ -75,12 +75,13 @@ class _Base(unittest.TestCase):
 
 
 class RegistrationTests(unittest.TestCase):
-    def test_kind_is_registered_video_only(self):
+    def test_kind_serves_video_and_image_but_audio_discovery_is_not_admission(self):
         self.assertIn(KIND_CHROME_EXTENSION, IMPLEMENTED_KINDS)
         definition = type("D", (), {"kind": KIND_CHROME_EXTENSION})()
         self.assertIsInstance(adapter_for(definition), ChromeExtensionBackend)
         self.assertTrue(serves(definition, "video"))
-        self.assertFalse(serves(definition, "image"))
+        self.assertTrue(serves(definition, "image"))
+        self.assertFalse(serves(definition, "tts"))
 
 
 class SwitchAndAuthTests(_Base):

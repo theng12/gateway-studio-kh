@@ -143,6 +143,7 @@ History and measurements: [docs/discovery-and-availability.md](docs/discovery-an
 - Paid credits: unclaimed = withdrawn, unsent; claimed then `ambiguous` (anything but `false`), a silent lease or a restart = `PROVIDER_SUBMISSION_UNCERTAIN` hold, never re-offered. A late result adopts into the held row via `worker.settle_result`.
 - A token opens only `/api/workers/*` for its own worker id and kind; the gateway key is not a worker token. Minting/revoking is `require_local_app`. Credits not reported are `null`.
 - Provider `story-studio-video` ships **disabled** (`default_enabled=False`). Its models and their `VideoCapability` records both come from `gateway/extension_video_models.json`, copied by script from Relay's catalogue (never hand-edit; re-copy and update `source_sha256`). The adapter refuses anything a record does not publish before offering, including an image key with no reference picture: the extension would make one itself and spend credits. The zero-price catalogue shape stays (contract trap), and `chargeable` stays truthful: true, because Flow spends credits.
+- Audio discovery uses optional authenticated `audioInventory` on claim (schema 1); health advertises live age/body limits. Snapshots are token-issuance bound, replaced on each audio claim and invalidated on remint/revoke/restart. Actual pending assignment rechecks exact membership under the broker lock; expiry never abandons claimed/held work. Discovery does **not** establish compatible pairs or required limits, so browser TTS remains withheld and generation refuses before offer. See `docs/extension-audio-inventory.md`. Image now joins video in the adapter modality table; all provider/worker switches remain off by default.
 - A late `fail` with `ambiguous: false` settles the held row through `JobStore.fail`; an ambiguous one stays held. Late answers reach only the row whose **current** `upstream_job_id` matches exactly. `broker.hold` returns whether claimed→held happened; the adapter raises only when it did. An ambiguous fail is not a first answer: until the adapter takes it (`broker.take_failure`, one locked step that makes it `held`), a following result or definite fail replaces it, so a finished result is never dropped as `taken`; `taken` (answered `ignored`) is only ever behind a definite answer. Telemetry/`creditsAfter` credits are kept only as a finite non-negative number with a `source` slug and a timezone-qualified ISO `observedAt`; anything else stays unknown.
 
 ## Sound sources are managed like providers, and are not providers
@@ -377,16 +378,17 @@ Moved to [docs/giving-the-app-away.md](docs/giving-the-app-away.md).
   thing that is not a file is a Git branch or remote ref — record its name and SHA in
   a note under `_trash/` before deleting it, and never rewrite published history.
   `_trash/` is outside Git and nothing in it is read by the app, tests or build.
-- **Every change is merged, committed, pushed, and built into a DMG — and the previous DMG moves
-  to `_trash/dist/` automatically.** The owner's rule, 2026-09-26, and it is **the whole cycle every
-  time**, not only for something you would call a release: a fix, a doc, a test, a one-line constant.
-  Land it in `main`, push it, and leave an installable artefact in `dist/` so it can be handed to
-  another Mac with no further steps. **Do not call work stable, done or shipped while any of those
-  is missing.** `menubar/build.sh` moves the previous DMG aside itself — that line used to be
-  `rm -f "$DMG"`, so a rebuild destroyed the previous artefact of the same version — which means
-  `dist/` holds exactly the build you just made and `_trash/dist/` holds the history, with no
-  tidy-up step for anyone to remember. Keep `dist/` out of Git. A project that ships a Mac app but
-  has no DMG step gains one rather than being exempt.
+- **Every change finishes through qualified main integration, push, DMG, release and intended-machine verification.**
+  Do not call source checkpoints or builds stable, done or shipped. Owner, 2026-11-10: canonical
+  `dist/` keeps the latest **two verified released** DMGs, named `Gateway Studio KH-<version>.dmg`.
+  `menubar/build.sh` stages an exact candidate under `dist/.candidates/`, including its build stamp;
+  a failed or same-version rebuild never moves the accepted pair. After install/launch verification
+  and quiet/active-job/dependency checks, the release lead calls `scripts/accept_release.py` with
+  the exact candidate, installed identity and real acceptance receipt. It invokes the canonical
+  shared `release-dist.py` helper to promote verified bytes and retire only obsolete managed DMGs
+  recoverably to `_trash/dist/`. Adopt an existing verified pair using trusted exact pins before
+  the first promotion. Preserve working rollback/installers and active release inputs until proof.
+  `dist/` and the helper's root `.release-dist.lock` stay outside Git.
 - **Version bumps are patch-only for now: `0.2.1`, `0.2.2`, … up to `0.2.1000`.** The owner asked for this (2026-09-22). `VERSION` at the repo root is the one place to bump; `menubar/build.sh` reads it for `CFBundleShortVersionString` and the DMG name, and the sidebar shows it beside the build stamp. Increment the **third** number by one per shipped change — do not roll to `0.3.x` or `1.0.0` until the owner says so.
 - **Test narrowly, and off the owner's screen. The full `tests/test_ui.py` is a
   release gate, not a routine check.** It walks every section, forces the window

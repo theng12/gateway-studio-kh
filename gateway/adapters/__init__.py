@@ -201,8 +201,8 @@ _MODALITIES_BY_KIND: dict[str, frozenset[str]] = {
     # pool that offered another modality would be offering a route that tries
     # chat models for an image request.
     KIND_POOL: frozenset({"chat"}),
-    # Video first; image and audio join when their extensions speak the wire (handoff §6).
-    KIND_CHROME_EXTENSION: frozenset({"video"}),
+    # Audio discovery exists, but compatible model/voice pairs and required limits are unverified.
+    KIND_CHROME_EXTENSION: frozenset({"video", "image"}),
 }
 
 assert set(_MODALITIES_BY_KIND) == set(_BY_KIND), (

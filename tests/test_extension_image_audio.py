@@ -44,9 +44,9 @@ class _Base(unittest.TestCase):
     def auth(self, token):
         return {"Authorization": f"Bearer {token}"}
 
-    def claim(self, token, worker, kind):
+    def claim(self, token, worker, kind, **extra):
         return self.client.post("/api/workers/claim", headers=self.auth(token),
-                                json={"workerId": worker, "kind": kind})
+                                json={"workerId": worker, "kind": kind, **extra})
 
 
 class ImageKindRegistrationTests(unittest.TestCase):
@@ -414,20 +414,28 @@ class ImageResultMediaTypeTests(_Base):
 
 
 class AudioResultMediaTypeTests(_Base):
-    def test_audio_result_requires_audio_media_type(self):
+    def claimed_audio(self):
+        import time
         token = ew.mint("aud-w", "audio")
-        self.claim(token, "aud-w", "audio")
-        job = ew.broker.offer("audio", {"text": "x"})
-        self.claim(token, "aud-w", "audio")
+        # Synthetic offer exercises the upload door; discovery alone cannot authorize generation.
+        job = ew.broker.offer("audio", {"text": "x", "provider": "fish", "model": "s2.1-pro",
+                                        "voice": "fixture-voice"})
+        inventory = {"schema": 1, "providers": {"fish": {
+            "source": "live", "complete": True, "fetchedAt": int(time.time() * 1000),
+            "models": [{"id": "s2.1-pro"}], "voices": [{"id": "fixture-voice"}]}}}
+        response = self.claim(token, "aud-w", "audio", audioInventory=inventory)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["job"]["jobId"], job.job_id)
+        return token, job
+
+    def test_audio_result_requires_audio_media_type(self):
+        token, job = self.claimed_audio()
         answer = self.client.post(f"/api/workers/jobs/{job.job_id}/result", headers=self.auth(token),
                                   data={"mediaType": "image/png"}, files={"file": ("c", b"x")})
         self.assertEqual(answer.status_code, 422)
 
     def test_audio_result_accepts_audio_media_type(self):
-        token = ew.mint("aud-w", "audio")
-        self.claim(token, "aud-w", "audio")
-        job = ew.broker.offer("audio", {"text": "x"})
-        self.claim(token, "aud-w", "audio")
+        token, job = self.claimed_audio()
         answer = self.client.post(f"/api/workers/jobs/{job.job_id}/result", headers=self.auth(token),
                                   data={"mediaType": "audio/mpeg"}, files={"file": ("c", b"A")})
         self.assertEqual(answer.status_code, 200)

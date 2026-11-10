@@ -222,15 +222,11 @@ def _first_stated(*values):
 
 
 def _audio_payload(request: BackendRequest) -> dict:
-    """The §4 audio/TTS job — **not offered until an authenticated inventory transport exists.**
+    """Validate audio against the copied policy and authenticated worker discovery.
 
-    The model is the request's resolved `model_id` and the voice is `voice_id` (or `voice`), never
-    an arbitrary `params["model"]`. Both must be confirmed against the **worker's own
-    authenticated** inventory, which the caller cannot supply: request `params` are caller input,
-    so trusting a `_worker_inventory` there would let any client authorize its own voice. Wire v1
-    carries no inventory transport, so no audio job can be confirmed and every one fails closed
-    (`WORKER_INVENTORY_UNAVAILABLE`). The checks below still run first so an invalid request is
-    told precisely what is wrong; the fail-closed is unconditional, not gated on any parameter.
+    Schema 1 claim inventories establish exact live membership, not compatible pairs or required
+    provider limits. Until those are established, no audio job is offered. Caller params never
+    supply discovery authority or bypass the missing compatibility evidence.
     """
     params = request.params
     provider = str(params.get("provider") or "").strip()
@@ -262,8 +258,8 @@ def _audio_payload(request: BackendRequest) -> dict:
     if max_chars is not None:
         max_chars = int(max_chars)
         if len(text) > max_chars:
-            raise _refuse(f"{provider}/{model_key} accepts at most {max_chars} characters; "
-                          f"{len(text)} were given")
+            raise _refuse(f"Gateway's copied Relay catalogue policy allows at most {max_chars} "
+                          f"characters for {provider}/{model_key}; {len(text)} were given")
     speed = params.get("speed")
     if speed is not None:
         try:
@@ -301,13 +297,13 @@ def _audio_payload(request: BackendRequest) -> dict:
         if unknown:
             raise _refuse(f"{provider} does not support providerSettings "
                           f"{', '.join(sorted(unknown))}")
-    # **Unconditionally unavailable:** the model/voice must be confirmed against the worker's own
-    # authenticated inventory, and no such transport exists. Nothing the caller sends can bypass
-    # this — request params are never trusted as inventory. A real contract must deliver the
-    # inventory out of band (agreed with Relay), not from this payload.
+    if not ew.broker.audio_member({"provider": provider, "model": model_key, "voice": voice}):
+        raise _unavailable(
+            f"{provider} audio needs fresh authenticated worker discovery for {model_key!r}/{voice!r}; "
+            "no audio job is offered")
     raise _unavailable(
-        f"{provider} audio needs the worker's authenticated model and voice inventory to confirm "
-        f"{model_key!r}/{voice!r}; the wire has no such transport yet, so no audio job is offered")
+        f"{provider} discovery confirms model and voice membership, but compatible pairs and required "
+        "provider limits are not established; no audio job is offered")
 
 
 class ChromeExtensionBackend:

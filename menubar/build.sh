@@ -594,12 +594,14 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 # needs the right-click Open — the same step the other projects' DMGs need.
 DIST="$ROOT/dist"
 CANDIDATES="$DIST/.candidates"
-CANDIDATE="$CANDIDATES/Gateway Studio KH-${MARKETING_VERSION}-${BUILD_ID}.dmg"
 mkdir -p "$CANDIDATES"
-DMG_STAGE="$(mktemp -d)"
+# Two builds can share the minute-based stamp; never overwrite a candidate under verification.
+CANDIDATE_DIR="$(mktemp -d "$CANDIDATES/${BUILD_ID}.XXXXXX")"
+CANDIDATE="$CANDIDATE_DIR/Gateway Studio KH-${MARKETING_VERSION}-${BUILD_ID}.dmg"
+DMG_STAGE="$(mktemp -d "$CANDIDATE_DIR/stage.XXXXXX")"
 cp -R "$APP" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create -volname "Gateway Studio KH" -srcfolder "$DMG_STAGE" -ov -format UDZO "$CANDIDATE" >/dev/null
+hdiutil create -volname "Gateway Studio KH" -srcfolder "$DMG_STAGE" -format UDZO "$CANDIDATE" >/dev/null
 preserve_path "$DMG_STAGE"
 echo "Candidate DMG: $CANDIDATE"
 echo "     (canonical dist/ is untouched until this build is accepted)"
