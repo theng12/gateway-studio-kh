@@ -678,9 +678,68 @@ class CandidateStaging(unittest.TestCase):
             candidates = list((dist / ".candidates").glob("Gateway Studio KH-0.2.241-*.dmg"))
             self.assertEqual(len(candidates), 1, candidates)
             self.assertIn(f"Candidate DMG: {candidates[0]}", result.stdout)
+            # The staged name must be exactly what acceptance reads back from the
+            # installed bundle, or a verified candidate could never be promoted.
+            built = fixture.root / "menubar/build/gateway-kh.app/Contents/Info.plist"
+            info = plistlib.loads(built.read_bytes())
+            self.assertEqual(
+                candidates[0].name,
+                f"Gateway Studio KH-{info['CFBundleShortVersionString']}-{info['GatewayBuild']}.dmg",
+            )
 
 
 class AcceptanceHelper(unittest.TestCase):
+    BUILD = "abc1234-202611101200"
+
+    def install(self, root: Path, version: str, build: str = BUILD) -> Path:
+        app = root / "gateway-kh.app"
+        (app / "Contents").mkdir(parents=True)
+        with (app / "Contents" / "Info.plist").open("wb") as handle:
+            plistlib.dump(
+                {
+                    "CFBundleShortVersionString": version,
+                    "CFBundleVersion": build,
+                    "GatewayBuild": build,
+                },
+                handle,
+            )
+        return app
+
+    def candidate(self, root: Path, version: str, build: str = BUILD,
+                  data: bytes = b"new accepted bytes") -> Path:
+        path = root / f"Gateway Studio KH-{version}-{build}.dmg"
+        path.write_bytes(data)
+        return path
+
+    def base(self, root: Path, version: str = "0.2.242"):
+        project = root / "repository"
+        (project / "dist").mkdir(parents=True)
+        evidence = root / "acceptance.json"
+        evidence.write_text("{}", encoding="utf-8")
+        return project, self.install(root, version), evidence
+
+    def adopt(self, project: Path, root: Path, version: str, data: bytes,
+              evidence: Path) -> subprocess.CompletedProcess[str]:
+        """One trusted adoption through the shared helper, as the release lead does."""
+        source = root / f"adopt-{version}.dmg"
+        source.write_bytes(data)
+        pins = root / f"pins-{version}.json"
+        pins.write_text(json.dumps({"schema": 1, "apps": [{
+            "app": "Gateway Studio KH",
+            "project": str(project),
+            "releases": [{
+                "version": version,
+                "source": str(source),
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "bytes": len(data),
+                "evidence": str(evidence),
+            }],
+        }]}), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(RELEASE_DIST_HELPER), str(pins)],
+            text=True, capture_output=True, check=False,
+        )
+
     def run_accept(self, project, candidate, version, installed, evidence, helper=None):
         command = [
             sys.executable,
@@ -698,76 +757,143 @@ class AcceptanceHelper(unittest.TestCase):
     def test_accepted_candidate_is_promoted_and_prior_release_is_kept(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            project = root / "repository"
+            project, installed, evidence = self.base(root, "0.2.242")
             dist = project / "dist"
-            dist.mkdir(parents=True)
-            installed = root / "gateway-kh.app"
-            installed.mkdir()
-            evidence = root / "acceptance.json"
-            evidence.write_text("{}", encoding="utf-8")
-
-            # One trusted adoption through the shared helper, as the release lead does.
-            prior = root / "prior.dmg"
-            prior.write_bytes(b"prior accepted bytes")
-            pins = root / "pins.json"
-            pins.write_text(json.dumps({"schema": 1, "apps": [{
-                "app": "Gateway Studio KH",
-                "project": str(project),
-                "releases": [{
-                    "version": "0.2.241",
-                    "source": str(prior),
-                    "sha256": hashlib.sha256(prior.read_bytes()).hexdigest(),
-                    "bytes": prior.stat().st_size,
-                    "evidence": str(evidence),
-                }],
-            }]}), encoding="utf-8")
-            adopted = subprocess.run(
-                [sys.executable, str(RELEASE_DIST_HELPER), str(pins)],
-                text=True, capture_output=True, check=False,
-            )
+            adopted = self.adopt(project, root, "0.2.241", b"prior accepted bytes", evidence)
             self.assertEqual(adopted.returncode, 0, adopted.stderr)
 
-            candidate = root / "candidate.dmg"
-            candidate.write_bytes(b"new accepted bytes")
-            result = self.run_accept(project, candidate, "0.2.242", installed, evidence)
+            result = self.run_accept(
+                project, self.candidate(root, "0.2.242"), "0.2.242", installed, evidence
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((dist / "Gateway Studio KH-0.2.242.dmg").read_bytes(),
                              b"new accepted bytes")
             self.assertEqual((dist / "Gateway Studio KH-0.2.241.dmg").read_bytes(),
                              b"prior accepted bytes")
             self.assertTrue((project / ".release-dist.lock").is_file())
+            self.assertEqual(
+                [p.name for p in project.iterdir() if p.name.startswith("accept-release-")],
+                [], "scratch pins must not survive the run",
+            )
+
+    @unittest.skipUnless(RELEASE_DIST_HELPER.is_file(), "shared release-dist helper is not present")
+    def test_repeating_the_same_version_is_allowed_only_when_bytes_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project, installed, evidence = self.base(root, "0.2.242")
+            dist = project / "dist"
+            self.assertEqual(self.adopt(project, root, "0.2.242", b"managed bytes",
+                                        evidence).returncode, 0)
+
+            again = self.run_accept(
+                project, self.candidate(root, "0.2.242", data=b"managed bytes"),
+                "0.2.242", installed, evidence,
+            )
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertEqual((dist / "Gateway Studio KH-0.2.242.dmg").read_bytes(),
+                             b"managed bytes")
+
+            changed = self.run_accept(
+                project, self.candidate(root, "0.2.242", data=b"changed bytes"),
+                "0.2.242", installed, evidence,
+            )
+            self.assertNotEqual(changed.returncode, 0)
+            self.assertIn("byte-identical", changed.stderr)
+            self.assertEqual((dist / "Gateway Studio KH-0.2.242.dmg").read_bytes(),
+                             b"managed bytes")
+
+    @unittest.skipUnless(RELEASE_DIST_HELPER.is_file(), "shared release-dist helper is not present")
+    def test_a_version_below_the_managed_pair_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project, installed, evidence = self.base(root, "0.2.241")
+            dist = project / "dist"
+            self.assertEqual(self.adopt(project, root, "0.2.242", b"current rollback",
+                                        evidence).returncode, 0)
+
+            result = self.run_accept(
+                project, self.candidate(root, "0.2.241", data=b"older build"),
+                "0.2.241", installed, evidence,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("lower than managed", result.stderr)
+            self.assertEqual((dist / "Gateway Studio KH-0.2.242.dmg").read_bytes(),
+                             b"current rollback")
+
+    def test_candidate_must_be_the_exact_staged_name_of_the_installed_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project, installed, evidence = self.base(root, "0.2.242")
+            stray = root / "Gateway Studio KH-0.2.242-otherbuild.dmg"
+            stray.write_bytes(b"arbitrary dmg bytes")
+
+            result = self.run_accept(project, stray, "0.2.242", installed, evidence)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("exact candidate", result.stderr)
+            self.assertFalse((project / "dist" / "Gateway Studio KH-0.2.242.dmg").exists())
+
+    def test_installed_version_must_match_the_requested_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project, installed, evidence = self.base(root, "0.2.241")
+            result = self.run_accept(
+                project, self.candidate(root, "0.2.242"), "0.2.242", installed, evidence
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("installed version", result.stderr)
+
+    def test_acceptance_evidence_must_be_a_present_non_empty_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project, installed, _ = self.base(root, "0.2.242")
+            candidate = self.candidate(root, "0.2.242")
+            empty = root / "empty-receipt.json"
+            empty.write_text("", encoding="utf-8")
+            for bad in (empty, root / "no-such-receipt.json"):
+                result = self.run_accept(
+                    project, candidate, "0.2.242", installed, bad
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("acceptance evidence is missing or empty", result.stderr)
+
+    def test_malformed_ledger_is_refused_without_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project, installed, evidence = self.base(root, "0.2.242")
+            (project / "dist" / ".release-dist.json").write_text(
+                '{"schema": 1, "apps": []}', encoding="utf-8"
+            )
+            result = self.run_accept(
+                project, self.candidate(root, "0.2.242"), "0.2.242", installed, evidence
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("schema 1 record", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
 
     def test_helper_failure_is_reported_and_canonical_is_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            project = root / "repository"
-            dist = project / "dist"
-            dist.mkdir(parents=True)
-            installed = root / "gateway-kh.app"
-            installed.mkdir()
-            candidate = root / "candidate.dmg"
-            candidate.write_bytes(b"new bytes")
-            evidence = root / "acceptance.json"
-            evidence.write_text("{}", encoding="utf-8")
+            project, installed, evidence = self.base(root, "0.2.242")
             helper = root / "failing_helper.py"
             helper.write_text("import sys\nsys.exit(7)\n", encoding="utf-8")
 
-            result = self.run_accept(project, candidate, "0.2.242", installed, evidence, helper)
+            result = self.run_accept(
+                project, self.candidate(root, "0.2.242"), "0.2.242", installed, evidence, helper
+            )
             self.assertEqual(result.returncode, 7, result.stderr)
-            self.assertFalse((dist / "Gateway Studio KH-0.2.242.dmg").exists())
+            self.assertFalse((project / "dist" / "Gateway Studio KH-0.2.242.dmg").exists())
 
     def test_refuses_before_the_helper_when_install_is_absent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             project = root / "repository"
             (project / "dist").mkdir(parents=True)
-            candidate = root / "candidate.dmg"
-            candidate.write_bytes(b"new bytes")
             evidence = root / "acceptance.json"
             evidence.write_text("{}", encoding="utf-8")
 
             result = self.run_accept(
-                project, candidate, "0.2.242", root / "missing.app", evidence
+                project, self.candidate(root, "0.2.242"), "0.2.242",
+                root / "missing.app", evidence,
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("acceptance must follow install", result.stderr)

@@ -7,16 +7,23 @@ launches or decides acceptance: it records the caller's evidence and invokes the
 shared release-dist.py helper, which validates hashes and retains the latest two
 managed DMGs. `menubar/build.sh` stages candidates outside the canonical names.
 
-The exact candidate path and version are required, so a publisher never falls
-back to "newest file in dist". The prior accepted release is carried forward from
-the helper's own `.release-dist.json` ledger, never invented here.
+The candidate must be build.sh's exact staged file for the build actually
+installed: `Gateway Studio KH-<version>-<GatewayBuild>.dmg`. The version and
+build are read from the installed app's Info.plist, so a pin cannot claim a
+candidate that was not the verified install. Evidence must be an existing,
+non-empty acceptance receipt.
+
+The prior accepted release is carried forward from the helper's own
+`.release-dist.json` ledger, never invented here. A requested version lower than
+the highest managed release is refused; the same version is allowed only when
+the candidate is byte-identical to the managed file (an idempotent re-run).
 
 Example (run by the Gateway release lead after install/launch verification):
     scripts/accept_release.py \
         --candidate "dist/.candidates/Gateway Studio KH-0.2.242-<build>.dmg" \
         --version 0.2.242 \
         --installed-app /Applications/gateway-kh.app \
-        --evidence <release-evidence.json|plain-words receipt>
+        --evidence <release-acceptance-receipt.json>
 """
 
 from __future__ import annotations
@@ -25,6 +32,8 @@ import argparse
 import hashlib
 import json
 import os
+import plistlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,6 +44,8 @@ DEFAULT_PROJECT = "/build/Developer/My Own Apps/gateway-kh/repository"
 DEFAULT_HELPER = "/build/Developer/Shared Tools/portfolio/tools/release-dist.py"
 MANIFEST = ".release-dist.json"
 CHUNK = 1 << 20
+VERSION_RE = re.compile(r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$")
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class Refused(Exception):
@@ -45,14 +56,26 @@ def _refuse(message: str) -> None:
     raise Refused(message)
 
 
-def _version_key(value: str) -> tuple[int, ...]:
+def _version(value: object, field: str) -> tuple[int, ...]:
+    if not isinstance(value, str) or not VERSION_RE.match(value):
+        _refuse(f"{field} must be MAJOR.MINOR.PATCH: {value!r}")
+    return tuple(int(part) for part in value.split("."))
+
+
+def _installed_identity(installed: Path) -> tuple[str, str]:
+    plist = installed / "Contents" / "Info.plist"
     try:
-        parts = tuple(int(part) for part in value.split("."))
-    except ValueError:
-        _refuse(f"version must be MAJOR.MINOR.PATCH: {value!r}")
-    if len(parts) != 3:
-        _refuse(f"version must be MAJOR.MINOR.PATCH: {value!r}")
-    return parts
+        with plist.open("rb") as handle:
+            info = plistlib.load(handle)
+    except (OSError, plistlib.InvalidFileException, ValueError) as exc:
+        _refuse(f"cannot read installed Info.plist {plist}: {exc}")
+    version = info.get("CFBundleShortVersionString")
+    build = info.get("GatewayBuild")
+    if not isinstance(version, str) or not VERSION_RE.match(version):
+        _refuse(f"{plist} has no valid CFBundleShortVersionString")
+    if not isinstance(build, str) or not build.strip() or "/" in build or "\\" in build:
+        _refuse(f"{plist} has no usable GatewayBuild")
+    return version, build
 
 
 def _sha256(path: Path) -> tuple[str, int]:
@@ -66,48 +89,66 @@ def _sha256(path: Path) -> tuple[str, int]:
 
 
 def _managed(dist: Path) -> dict[str, dict]:
+    """The helper's ledger, validated enough to read before handing it back."""
     path = dist / MANIFEST
-    if not path.is_file():
+    if not path.exists():
         return {}
+    if path.is_symlink() or not path.is_file():
+        _refuse(f"{path} must be a regular file")
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         _refuse(f"cannot read {path}: {exc}")
-    files = ((document.get("apps") or {}).get(APP) or {}).get("files")
-    if files is None:
+    if (
+        not isinstance(document, dict)
+        or document.get("schema") != 1
+        or not isinstance(document.get("apps"), dict)
+    ):
+        _refuse(f"{path} is not a schema 1 record")
+    entry = document["apps"].get(APP)
+    if entry is None:
         return {}
-    if not isinstance(files, dict):
+    if not isinstance(entry, dict) or not isinstance(entry.get("files"), dict):
         _refuse(f"{path} has a malformed entry for {APP}")
-    return files
+    return entry["files"]
 
 
-def _previous_release(dist: Path, managed: dict[str, dict], version: str) -> list[dict]:
-    """The highest managed release other than this one, so the pair stays two."""
-    releases = []
-    for name, meta in managed.items():
-        try:
-            version_key = _version_key(str(meta["version"]))
-            record = {
-                "version": meta["version"],
-                "source": str(dist / name),
-                "sha256": meta["sha256"],
-                "bytes": meta["bytes"],
-                "evidence": meta["evidence"],
-            }
-        except (KeyError, TypeError):
-            _refuse(f"{MANIFEST} has a malformed entry for {name}")
-        if record["version"] == version or not (dist / name).is_file():
-            continue
-        releases.append((version_key, record))
-    releases.sort(key=lambda item: item[0])
-    return [releases[-1][1]] if releases else []
+def _managed_release(dist: Path, name: object, meta: object) -> dict:
+    if (
+        not isinstance(name, str)
+        or os.path.basename(name) != name
+        or "/" in name
+        or "\\" in name
+    ):
+        _refuse(f"{MANIFEST} has an unsafe file name: {name!r}")
+    if not isinstance(meta, dict):
+        _refuse(f"{MANIFEST} has a malformed entry for {name}")
+    version, sha = meta.get("version"), meta.get("sha256")
+    size, evidence = meta.get("bytes"), meta.get("evidence")
+    if not isinstance(version, str) or not VERSION_RE.match(version):
+        _refuse(f"{MANIFEST}:{name} has an invalid version")
+    if not isinstance(sha, str) or not SHA_RE.match(sha):
+        _refuse(f"{MANIFEST}:{name} has an invalid sha256")
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        _refuse(f"{MANIFEST}:{name} has an invalid byte count")
+    if not isinstance(evidence, str) or not evidence.strip():
+        _refuse(f"{MANIFEST}:{name} has no evidence")
+    return {
+        "version": version,
+        "source": str(dist / name),
+        "sha256": sha,
+        "bytes": size,
+        "evidence": evidence,
+    }
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--candidate", required=True, help="exact staged DMG to accept")
     parser.add_argument("--version", required=True, help="exact version in the candidate")
-    parser.add_argument("--evidence", required=True, help="acceptance receipt or path")
+    parser.add_argument(
+        "--evidence", required=True, help="existing non-empty acceptance receipt"
+    )
     parser.add_argument("--installed-app", required=True, help="installed app that was verified")
     parser.add_argument(
         "--project",
@@ -122,17 +163,37 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     try:
-        _version_key(args.version)
+        requested_key = _version(args.version, "--version")
+
         candidate = Path(args.candidate)
         if not candidate.is_file():
             _refuse(f"candidate is not a regular file: {candidate}")
         if candidate.suffix != ".dmg":
             _refuse(f"candidate must be a .dmg: {candidate}")
-        if not args.evidence.strip():
-            _refuse("--evidence must name the real acceptance evidence")
+
         installed = Path(args.installed_app)
         if not installed.is_dir():
-            _refuse(f"installed app is not present: {installed} (acceptance must follow install)")
+            _refuse(f"acceptance must follow install; app not present: {installed}")
+        installed_version, installed_build = _installed_identity(installed)
+        if installed_version != args.version:
+            _refuse(
+                f"installed version {installed_version} is not the requested {args.version}"
+            )
+        expected = f"{APP}-{args.version}-{installed_build}.dmg"
+        if candidate.name != expected:
+            _refuse(
+                f"candidate must be build.sh's exact candidate {expected!r},"
+                f" got {candidate.name!r}"
+            )
+
+        evidence = Path(args.evidence)
+        try:
+            present = evidence.is_file() and evidence.stat().st_size > 0
+        except OSError as exc:
+            _refuse(f"cannot read acceptance evidence {evidence}: {exc}")
+        if not present:
+            _refuse(f"acceptance evidence is missing or empty: {evidence}")
+
         project = Path(args.project)
         if not project.is_dir():
             _refuse(f"canonical project is not a directory: {project}")
@@ -142,6 +203,10 @@ def main(argv: list[str]) -> int:
 
         dist = project / "dist"
         managed = _managed(dist)
+        records = {}
+        for name, meta in managed.items():
+            record = _managed_release(dist, name, meta)
+            records[record["version"]] = record
         unmanaged = sorted(
             path.name
             for path in (dist.glob(f"{APP}-*.dmg") if dist.is_dir() else [])
@@ -154,9 +219,31 @@ def main(argv: list[str]) -> int:
                 + "); adopt them with a trusted pins document before accepting a new release"
             )
 
+        if records:
+            highest = max(records, key=lambda value: _version(value, "managed version"))
+            if requested_key < _version(highest, "managed version"):
+                _refuse(
+                    f"requested version {args.version} is lower than managed {highest};"
+                    " refusing to retire the current rollback"
+                )
+
         sha, size = _sha256(candidate)
-        releases = _previous_release(dist, managed, args.version)
-        releases.append(
+        if records:
+            if requested_key == _version(highest, "managed version"):
+                record = records.get(args.version) or records[highest]
+                if sha != record["sha256"] or size != record["bytes"]:
+                    _refuse(
+                        f"same-version candidate differs from managed {highest} bytes;"
+                        " an idempotent re-run must be byte-identical (bump VERSION for a change)"
+                    )
+
+        prior = [
+            record
+            for value, record in records.items()
+            if _version(value, "managed version") != requested_key
+        ]
+        prior.sort(key=lambda record: _version(record["version"], "managed version"))
+        releases = prior[-1:] + [
             {
                 "version": args.version,
                 "source": str(candidate),
@@ -164,26 +251,27 @@ def main(argv: list[str]) -> int:
                 "bytes": size,
                 "evidence": args.evidence,
             }
-        )
+        ]
         document = {
             "schema": 1,
             "apps": [{"app": APP, "project": str(project), "releases": releases}],
         }
-        handle, pins = tempfile.mkstemp(prefix="gateway-accept-", suffix=".json")
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as out:
-                json.dump(document, out, indent=2)
-                out.write("\n")
+        # Scratch pins live inside the named project and are removed by the same
+        # kind of ephemeral-temp cleanup the shared helper uses for its own stage.
+        with tempfile.TemporaryDirectory(prefix="accept-release-", dir=project) as scratch:
+            pins = Path(scratch) / "pins.json"
+            pins.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
             result = subprocess.run(
-                [sys.executable, str(helper), pins],
+                [sys.executable, str(helper), str(pins)],
                 text=True,
                 capture_output=True,
                 check=False,
             )
-        finally:
-            os.unlink(pins)
     except Refused as exc:
         print(f"accept-release: refused: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"accept-release: error: {exc}", file=sys.stderr)
         return 1
 
     if result.returncode != 0:
