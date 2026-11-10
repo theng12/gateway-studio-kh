@@ -581,34 +581,28 @@ codesign --force --timestamp=none --sign "$SIGN" --identifier kh.gateway.python 
 codesign --force --timestamp=none --sign "$SIGN" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
-# A DMG belongs beside the app on every build: a stable build is not ready until it can
-# be handed to another Mac, so it lands in dist/ named by **version alone**
-# (`Gateway Studio KH-0.2.3.dmg`). The exact build stamp still lives inside the app
-# (`CFBundleVersion` / `GatewayBuild`, which Check Gateway reads); only the file name
-# is shortened, so the latest is obvious at a glance. `hdiutil` ships with macOS, so
-# this needs nothing installed. The app is ad-hoc signed and the image is not
-# notarised, so a Mac that did not build it still needs the right-click Open — the
-# same step the other projects' DMGs need.
+# Each build is a **candidate**, not an accepted release: it lands outside the
+# canonical accepted names (`dist/Gateway Studio KH-<version>.dmg`), because a
+# same-version rebuild that fails must not cost either of the two verified DMGs
+# kept in canonical dist/. `scripts/accept_release.py` promotes the exact
+# candidate after install, launch and acceptance through the shared
+# release-dist helper. The build stamp still lives inside the app
+# (`CFBundleVersion` / `GatewayBuild`, which Check Gateway reads) and in the
+# candidate's name, so the accepted source can always be named exactly.
+# `hdiutil` ships with macOS, so this needs nothing installed. The app is ad-hoc
+# signed and the image is not notarised, so a Mac that did not build it still
+# needs the right-click Open — the same step the other projects' DMGs need.
 DIST="$ROOT/dist"
-DMG="$DIST/Gateway Studio KH-${MARKETING_VERSION}.dmg"
-mkdir -p "$DIST"
-# **The owner's rule, 2026-09-26: an old DMG moves to `_trash/dist/`; it is never `rm`d.**
-# This line was `rm -f "$DMG"`, which destroyed the previous artefact of the same version on a
-# rebuild. Everything moves aside now — including the same-version file about to be rewritten —
-# so `_trash/dist/` is the complete history and a rebuild costs nothing.
-# Owner, 2026-11-10: dist/ keeps the latest TWO verified released DMGs, so a build moves aside only
-# the same-version file it rewrites. Older versions are retired by the release rotation, after the
-# new release is verified, never here: an unverified build must not cost the working rollback.
-TRASH_DIST="$ROOT/_trash/dist"
-mkdir -p "$TRASH_DIST"
-preserve_path "$DMG" "$TRASH_DIST"
+CANDIDATES="$DIST/.candidates"
+CANDIDATE="$CANDIDATES/Gateway Studio KH-${MARKETING_VERSION}-${BUILD_ID}.dmg"
+mkdir -p "$CANDIDATES"
 DMG_STAGE="$(mktemp -d)"
 cp -R "$APP" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
-hdiutil create -volname "Gateway Studio KH" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "Gateway Studio KH" -srcfolder "$DMG_STAGE" -ov -format UDZO "$CANDIDATE" >/dev/null
 preserve_path "$DMG_STAGE"
-echo "DMG: $DMG"
-echo "     (the previous DMG(s) moved to _trash/dist/)"
+echo "Candidate DMG: $CANDIDATE"
+echo "     (canonical dist/ is untouched until this build is accepted)"
 
 if [ "$INSTALL" = "1" ]; then
   # Prefer the system /Applications folder. `~/Applications` is hidden by

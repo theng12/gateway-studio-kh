@@ -32,3 +32,5 @@ graphify-out/
 .DS_Store
 .serena/
 dist/
+# Shared release-dist helper's per-project lock (project root, outside dist/).
+.release-dist.lock

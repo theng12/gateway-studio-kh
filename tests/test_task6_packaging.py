@@ -26,6 +26,10 @@ RUN_ROOT = Path(tempfile.mkdtemp(prefix="run-", dir=ARTIFACT_ROOT))
 PY_VERSION = "3.11.16"
 PY_TAG = "20260901"
 PY_ARCH = "aarch64"
+ACCEPT_SCRIPT = ROOT / "scripts" / "accept_release.py"
+RELEASE_DIST_HELPER = Path(
+    "/build/Developer/Shared Tools/portfolio/tools/release-dist.py"
+)
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -206,6 +210,15 @@ fi
             self.bin / "security",
             """
 printf '%s\\n' "${TASK6_SECURITY_OUTPUT:-}"
+""",
+        )
+        # hdiutil is a native tool; the fixture writes the named image instead.
+        _write_executable(
+            self.bin / "hdiutil",
+            """
+for arg in "$@"; do output="$arg"; done
+mkdir -p "$(dirname "$output")"
+printf 'fixture dmg\\n' > "$output"
 """,
         )
 
@@ -430,7 +443,12 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             self.assertEqual(info["CFBundleDisplayName"], "Gateway Studio KH")
             self.assertEqual(info["CFBundleIdentifier"], "kh.gateway.menubar")
             self.assertEqual(info["CFBundleExecutable"], "GatewayKH")
-            self.assertTrue((fixture.root / "dist" / f"Gateway Studio KH-{info['CFBundleShortVersionString']}.dmg").is_file())
+            version = info["CFBundleShortVersionString"]
+            self.assertFalse((fixture.root / "dist" / f"Gateway Studio KH-{version}.dmg").exists())
+            candidates = list(
+                (fixture.root / "dist" / ".candidates").glob(f"Gateway Studio KH-{version}-*.dmg")
+            )
+            self.assertEqual(len(candidates), 1, candidates)
             shipped = json.loads(
                 (app / "Contents" / "Resources" / "gateway" / "data" / "voices.json")
                 .read_text(encoding="utf-8")
@@ -634,6 +652,125 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             self.assertNotEqual(result.returncode, 0, output)
             self.assertIn("downloaded Python archive checksum", output)
             self.assertNotIn("Built:", output)
+
+
+class CandidateStaging(unittest.TestCase):
+    def test_same_version_candidate_leaves_canonical_pair_untouched(self) -> None:
+        with _BuildFixture() as fixture:
+            fixture.write_authority(tuple(_authority_files()))
+            (fixture.root / "VERSION").write_text("0.2.241\n", encoding="utf-8")
+            dist = fixture.root / "dist"
+            dist.mkdir()
+            current = dist / "Gateway Studio KH-0.2.241.dmg"
+            previous = dist / "Gateway Studio KH-0.2.240.dmg"
+            current.write_bytes(b"accepted current")
+            previous.write_bytes(b"accepted previous")
+
+            failed = fixture.run(TASK6_FAIL_ICON="1")
+            self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+            self.assertEqual(current.read_bytes(), b"accepted current")
+            self.assertEqual(previous.read_bytes(), b"accepted previous")
+
+            result = fixture.run()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(current.read_bytes(), b"accepted current")
+            self.assertEqual(previous.read_bytes(), b"accepted previous")
+            candidates = list((dist / ".candidates").glob("Gateway Studio KH-0.2.241-*.dmg"))
+            self.assertEqual(len(candidates), 1, candidates)
+            self.assertIn(f"Candidate DMG: {candidates[0]}", result.stdout)
+
+
+class AcceptanceHelper(unittest.TestCase):
+    def run_accept(self, project, candidate, version, installed, evidence, helper=None):
+        command = [
+            sys.executable,
+            str(ACCEPT_SCRIPT),
+            "--candidate", str(candidate),
+            "--version", version,
+            "--installed-app", str(installed),
+            "--evidence", str(evidence),
+            "--project", str(project),
+            "--helper", str(helper or RELEASE_DIST_HELPER),
+        ]
+        return subprocess.run(command, text=True, capture_output=True, check=False)
+
+    @unittest.skipUnless(RELEASE_DIST_HELPER.is_file(), "shared release-dist helper is not present")
+    def test_accepted_candidate_is_promoted_and_prior_release_is_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "repository"
+            dist = project / "dist"
+            dist.mkdir(parents=True)
+            installed = root / "gateway-kh.app"
+            installed.mkdir()
+            evidence = root / "acceptance.json"
+            evidence.write_text("{}", encoding="utf-8")
+
+            # One trusted adoption through the shared helper, as the release lead does.
+            prior = root / "prior.dmg"
+            prior.write_bytes(b"prior accepted bytes")
+            pins = root / "pins.json"
+            pins.write_text(json.dumps({"schema": 1, "apps": [{
+                "app": "Gateway Studio KH",
+                "project": str(project),
+                "releases": [{
+                    "version": "0.2.241",
+                    "source": str(prior),
+                    "sha256": hashlib.sha256(prior.read_bytes()).hexdigest(),
+                    "bytes": prior.stat().st_size,
+                    "evidence": str(evidence),
+                }],
+            }]}), encoding="utf-8")
+            adopted = subprocess.run(
+                [sys.executable, str(RELEASE_DIST_HELPER), str(pins)],
+                text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(adopted.returncode, 0, adopted.stderr)
+
+            candidate = root / "candidate.dmg"
+            candidate.write_bytes(b"new accepted bytes")
+            result = self.run_accept(project, candidate, "0.2.242", installed, evidence)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((dist / "Gateway Studio KH-0.2.242.dmg").read_bytes(),
+                             b"new accepted bytes")
+            self.assertEqual((dist / "Gateway Studio KH-0.2.241.dmg").read_bytes(),
+                             b"prior accepted bytes")
+            self.assertTrue((project / ".release-dist.lock").is_file())
+
+    def test_helper_failure_is_reported_and_canonical_is_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "repository"
+            dist = project / "dist"
+            dist.mkdir(parents=True)
+            installed = root / "gateway-kh.app"
+            installed.mkdir()
+            candidate = root / "candidate.dmg"
+            candidate.write_bytes(b"new bytes")
+            evidence = root / "acceptance.json"
+            evidence.write_text("{}", encoding="utf-8")
+            helper = root / "failing_helper.py"
+            helper.write_text("import sys\nsys.exit(7)\n", encoding="utf-8")
+
+            result = self.run_accept(project, candidate, "0.2.242", installed, evidence, helper)
+            self.assertEqual(result.returncode, 7, result.stderr)
+            self.assertFalse((dist / "Gateway Studio KH-0.2.242.dmg").exists())
+
+    def test_refuses_before_the_helper_when_install_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "repository"
+            (project / "dist").mkdir(parents=True)
+            candidate = root / "candidate.dmg"
+            candidate.write_bytes(b"new bytes")
+            evidence = root / "acceptance.json"
+            evidence.write_text("{}", encoding="utf-8")
+
+            result = self.run_accept(
+                project, candidate, "0.2.242", root / "missing.app", evidence
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("acceptance must follow install", result.stderr)
 
 
 if __name__ == "__main__":
