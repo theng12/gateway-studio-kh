@@ -622,6 +622,108 @@ class AccountRestartTests(_Base):
             now=row["held_at"], max_age=60)[0]["needs_reconciliation"])
 
 
+class AccountRestartReconciliationTests(_Base):
+    def _restart(self) -> None:
+        old = self.store
+        self.drop_store(old)
+        self.store = self.open_store()
+
+    def test_restart_reconciles_a_known_success_without_a_settle(self) -> None:
+        self.eligible()
+        job = self.job(state="running")
+        self.reserve(job)
+        # The canonical job reaches its durable answer, then the process dies before the ledger
+        # settles. The exact `ext:` row is a known outcome, so restart must debit it, not hold it.
+        self.store.succeed(job["id"], result={"payload": "fixture"})
+
+        self._restart()
+
+        row = self.reservation()
+        self.assertEqual(row["state"], "debited")
+        self.assertEqual(row["outcome"], "succeeded")
+        self.assertGreater(row["terminal_at"], 0)
+        status = self.store.extension_account_status(now=row["terminal_at"], max_age=60)[0]
+        self.assertFalse(status["needs_reconciliation"])
+        self.assertEqual(status["reserved"], 2.0)
+
+        # The debit stays until a newer observation of the same credit unit.
+        later = row["terminal_at"] + 1.0
+        self.observe(now=later, balance=10.0, balance_observed_at=later)
+        self.assertEqual(self.reservation()["state"], "reconciled")
+
+    def test_restart_reconciles_a_definite_provider_failure(self) -> None:
+        self.eligible()
+        job = self.job(state="running")
+        self.reserve(job)
+        self.store.fail(job["id"], code="PROVIDER_FAILED", detail="provider rejected",
+                        retryable=False)
+
+        self._restart()
+
+        row = self.reservation()
+        self.assertEqual(row["state"], "debited")
+        self.assertEqual(row["outcome"], "failed")
+
+    def test_restart_requires_the_reserved_canonical_job_even_with_a_shared_upstream(self) -> None:
+        self.eligible()
+        other = self.job(state="running")
+        self.store.succeed(other["id"], result={"payload": "other job"})
+        reserved = self.job(state="running")
+        self.reserve(reserved)
+        # Upstream IDs are not unique in jobs; another job's success is not this charge's proof.
+        with self.store._conn:
+            self.store._conn.execute(
+                "UPDATE jobs SET upstream_job_id = ? WHERE id = ?",
+                (self.store._extension_upstream_id("chrome-a", "wj-1"), other["id"]),
+            )
+
+        self._restart()
+
+        self.assertEqual(self.reservation()["state"], "held")
+        self.assertIsNone(self.reservation()["outcome"])
+
+    def test_restart_keeps_unknown_closed_cancelled_and_newer_attempts_held(self) -> None:
+        self.eligible()
+        unknown = self.job(state="running")
+        self.reserve(unknown)
+        self.store.fail(unknown["id"], code="PROVIDER_FAILED", detail="lost",
+                        recovery_state=RECOVERY_UNKNOWN)
+
+        self.eligible(worker="chrome-b", token="token-b")
+        closed = self.job(state="running")
+        self.reserve(closed, worker="chrome-b", token="token-b", worker_job_id="wj-b")
+        self.store.fail(closed["id"], code="PROVIDER_FAILED", detail="lost",
+                        recovery_state=RECOVERY_UNKNOWN)
+        self.store.close_recovery_hold(closed["id"], code=HOLD_CLOSED,
+                                       detail="owner closed the hold")
+
+        self.eligible(worker="chrome-c", token="token-c")
+        cancelled = self.job(state="running")
+        self.reserve(cancelled, worker="chrome-c", token="token-c", worker_job_id="wj-c")
+        self.store.cancel(cancelled["id"])
+        self.store.fail(cancelled["id"], code="PROVIDER_FAILED", detail="failed after cancel",
+                        retryable=False)
+
+        # The canonical id now names a newer attempt: this reservation's own attempt is unknown.
+        self.eligible(worker="chrome-d", token="token-d")
+        newer = self.job(state="running")
+        self.reserve(newer, worker="chrome-d", token="token-d", worker_job_id="wj-d")
+        self.store.succeed(newer["id"], result={"payload": "later"})
+        self.store._conn.execute(
+            "UPDATE jobs SET upstream_job_id = ? WHERE id = ?",
+            ("ext:chrome-d:wj-d-newer", newer["id"]),
+        )
+        self.store._conn.commit()
+
+        self._restart()
+
+        for worker, worker_job_id in (("chrome-a", "wj-1"), ("chrome-b", "wj-b"),
+                                      ("chrome-c", "wj-c"), ("chrome-d", "wj-d")):
+            row = self.reservation(worker, worker_job_id)
+            self.assertEqual(row["state"], "held", worker)
+            self.assertIsNone(row["outcome"], worker)
+
+
 class AccountConcurrencyTests(_Base):
     def test_two_connections_cannot_over_reserve_one_balance(self) -> None:
         self.eligible(balance=10.0)

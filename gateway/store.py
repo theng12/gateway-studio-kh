@@ -746,13 +746,17 @@ class JobStore:
             (str(uuid.uuid4()), str(uuid.uuid4()), time.time()),
         )
         self._ensure_columns()
-        if self._claim_queue():
+        owner = self._claim_queue()
+        if owner:
             self._recover_interrupted()
+        # A late canonical result may still be a `failed / UNKNOWN_OUTCOME` hold on the job
+        # (`_settle_late_successes`), so repair that before the ledger reads the job's outcome.
+        self._settle_late_successes()
+        if owner:
             # Only the process that owns the queue may rewrite live reservations. A secondary
             # opener (a test import, a failed spawn) must never turn another process's active
             # reservations into holds.
             self._recover_account_reservations()
-        self._settle_late_successes()
         self._relabel_never_sent_pool_failures()
         self._conn.commit()
 
@@ -1019,21 +1023,64 @@ class JobStore:
                 self._conn.commit()
 
     def _recover_account_reservations(self) -> int:
-        """A restart makes live reservations ambiguous, so hold them — never release them.
+        """Reconcile live reservations from the canonical job, never from a balance.
 
-        The worker may have spent credits before the Gateway died; an unknown outcome is a
-        reconciliation, not a refund. `held` keeps counting against the account and blocks another
-        claim until `extension_account_settle` records a known outcome.
+        A crash can land between the canonical job reaching a durable known outcome and
+        `_settle_account` writing it to the ledger, leaving a known result `held` forever. The
+        exact `ext:<worker>:<job>` row is the only safe witness: `succeeded`, or a definite
+        non-retryable provider failure with no cancellation and no recovery hold. Everything
+        else — unknown, `HOLD_CLOSED`, cancelled, a newer attempt — stays held. Held credits are
+        never released; an observed balance never proves a charge.
         """
         now = time.time()
-        result = self._conn.execute(
-            "UPDATE extension_account_reservations SET state = 'held', "
-            "held_at = COALESCE(held_at, ?), updated_at = ? WHERE state = 'reserved'",
-            (now, now),
-        )
-        if result.rowcount:
-            log.warning("held %d extension account reservation(s) after restart", result.rowcount)
-        return result.rowcount
+        rows = self._conn.execute(
+            "SELECT id, job_id, worker_id, worker_job_id, state FROM extension_account_reservations "
+            "WHERE state IN ('reserved', 'held')"
+        ).fetchall()
+        debited = 0
+        held = 0
+        for row in rows:
+            job = self._conn.execute(
+                "SELECT state, error_code, recovery_state, cancel_requested_at, finished_at, "
+                "updated_at FROM jobs WHERE id = ? AND upstream_job_id = ?",
+                (row["job_id"], self._extension_upstream_id(row["worker_id"], row["worker_job_id"])),
+            ).fetchone()
+            outcome = None
+            if job is not None:
+                if job["state"] == "succeeded":
+                    outcome = "succeeded"
+                elif (
+                    job["state"] == "failed"
+                    and job["error_code"] == "PROVIDER_FAILED"
+                    and job["recovery_state"] is None
+                    and job["cancel_requested_at"] is None
+                ):
+                    outcome = "failed"
+            if outcome is not None:
+                terminal_at = job["finished_at"]
+                if terminal_at is None:
+                    terminal_at = job["updated_at"]
+                self._conn.execute(
+                    "UPDATE extension_account_reservations SET state = 'debited', outcome = ?, "
+                    "settled_at = COALESCE(settled_at, ?), terminal_at = COALESCE(terminal_at, ?), "
+                    "updated_at = ? WHERE id = ? AND state IN ('reserved', 'held')",
+                    (outcome, now, terminal_at, now, row["id"]),
+                )
+                debited += 1
+            elif row["state"] == "reserved":
+                self._conn.execute(
+                    "UPDATE extension_account_reservations SET state = 'held', "
+                    "held_at = COALESCE(held_at, ?), updated_at = ? "
+                    "WHERE id = ? AND state = 'reserved'",
+                    (now, now, row["id"]),
+                )
+                held += 1
+        if debited:
+            log.warning("reconciled %d extension account reservation(s) from canonical jobs",
+                        debited)
+        if held:
+            log.warning("held %d extension account reservation(s) after restart", held)
+        return debited + held
 
     def close(self) -> None:
         with self._lock:
