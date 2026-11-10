@@ -25,6 +25,7 @@ Gateway's own app uses existing `require_local_app` authentication to mint token
     "kind": "video",
     "has_live_token": true,
     "control": {
+      "credentialGeneration": "opaque-credential-generation",
       "dispatchEnabled": false,
       "closeRequested": true,
       "revision": "opaque-revision",
@@ -122,3 +123,42 @@ Next claim supplies `quote:{provider,accountId,payloadSha256,value,unit,source,o
 These JSON examples abbreviate the existing model/control/reference payload; the actual payload stays intact. Relay must verify its actual signed-in account still matches accountBinding before action. Binding changes cannot move reservations, credits, active jobs or results to another account. A repeated claim while busy refuses rather than authorizing a second execution; report progress/result instead. A response lost after reservation remains an unknown outcome, held without re-offer/replay.
 
 Legacy `credits`/multipart `creditsAfter` remain display-only telemetry: they lack account binding and never fund reservations. Known outcomes settle the recorded account reservation once; cost remains conservatively debited until a newer observed account balance reconciles it. An ambiguous failure, silent worker or restart holds its reservation; even a fresh balance alone does not prove that unknown job's outcome. Late valid results can still settle their exact original job/account through the existing ownership/integrity checks. Administratively closing a canonical job's recovery hold is not provider-outcome or charge evidence and does not release its credit hold. If actual outcome evidence cannot be recovered, that account remains blocked from new paid claims; neither a fresh balance nor a profile replacement clears it. No 402 is introduced.
+
+## Native manager counterpart: version, identity and close barrier
+
+The existing worker wire remains unchanged except for the explicitly documented account-schema additions. There is no new version header or URL version. Require `schema:1` on manager readback; execution workers advertise `accountSchema:1` on authenticated worker health. Credential-free Gateway `/health` is only service liveness. A manager credential does not authorize `/api/workers/health`, and service liveness does not prove pairing, readiness or admission. A 404 manager route is unavailable/off/unsupported, never an empty successful worker list.
+
+Pair only through the Gateway app's deliberate app-only mint action above. A remote Gateway WKWebView, its browser session and Relay's credential-free native health request gain no app-only mint authority. Relay receives only the intentionally issued manager token and keeps it in its normal native secret storage for the saved Gateway origin. No cookie, web-view credential, raw Gateway key or token digest belongs in this exchange.
+
+`control.credentialGeneration` is an opaque non-secret identifier independent of the token and its digest. It is minted with the credential, persisted in the existing token file and returned by worker health/control and manager readback. It survives broker/process restart and changes on re-pair; revoke/absent worker returns null. Older token records without this value return null and cannot produce `safeToClose:true`; they require a deliberate app-approved re-pair before generation-bound close, never an automatic re-pair that clears a charge hold. Existing valid credentials remain usable for their other scoped requests.
+
+Relay owns the stable local `profile_id` and its explicit mapping to saved Gateway origin, each `worker_id`, kind and expected credential generation. Gateway does not accept or invent a physical `profile_id`. Bind actual provider account identity separately from that mapping; image/video on the same `(provider,account_id)` share one credit authority, while one account may occur in several physical profiles. A missing or changed generation, worker kind, origin or profile mapping keeps close pending until the binding is reconciled. Re-pair does not inherit old telemetry, revision acknowledgment or dispatch enablement. It cannot move old jobs/holds to the replacement credential/account.
+
+For a close, send one control request naming **every** bound worker and `dispatchEnabled:false,closeRequested:true`. The token-file write and executable claim both hold `admin_session._lock`: whichever wins is authoritative. If pause wins, the later claim returns no executable job and creates no reservation; if a claim wins first, pause prevents further claims and readback retains that active job. It never kills or cancels it. Wait for its actual finish/drain, or retain a clear unknown/held state.
+
+The returned `control.revision` acknowledges persisted desired state, not native/browser application. Each selected live worker gets the same new revision. Relay must keep close pending until a fresh authenticated observation echoes that revision with `paused:true`, the generation/profile mapping still matches, and **every** mapped worker has `safeToClose:true`. Check `has_live_token`, `current_job`, `held_jobs` and `durableBusy`; an empty in-memory list after restart is insufficient. Durable unknown work may be represented by `durableBusy:true` even when `held_jobs` is empty. A later authorized control changes the revision and invalidates the old acknowledgment; Relay serializes its own resume/open/close lifecycle and never closes from a cached earlier acknowledgment.
+
+Bulk control is one persisted write for the selected live credentials. The response includes the manager's entire scope, including unselected workers. A revoked/absent selected worker is not changed: its `has_live_token:false`, null generation/revision and `safeToClose:false` expose partial application. HTTP 200 is not all-workers-drained success. An out-of-scope ID rejects the whole request before any write. Missing scope, missing rows, stale observations, failed reads, invalid JSON/schema, network failure and non-200 responses all leave the local close pending. No Resting label or OS process-liveness shortcut overrides that barrier.
+
+Top-level manager `receivedAt` is the response snapshot time. Per-worker `receivedAt` is the authenticated observation receive time; `state.observed_at` is source observation time. `fresh` checks both against live `maxAgeSeconds`. Credit balance/bucket/reset provenance and freshness follow the separate account fields above. Account, worker and provider admission switches/eligibility stay separate; there is no invented aggregate `admitted` field, daily-free allowance or successful audio-admission promise.
+
+## Exact manager errors and revocation
+
+Manager requests use `Authorization: Bearer <intentionally paired manager token>`; control sends an object JSON body (`Content-Type: application/json`). There are no credential URL/query parameters. Standard manager refusals are `{ok:false,code,detail}`:
+
+| Route/condition | Status | Code/result |
+| --- | --- | --- |
+| Either manager route, worker switch off | 404 | `{detail:"Not Found"}` |
+| Either manager route, missing/wrong/revoked manager token | 401 | `MANAGER_TOKEN_REFUSED` |
+| Control empty/invalid/out-of-scope worker list | 403 | `MANAGER_SCOPE_REFUSED`; no write |
+| Control invalid JSON/object/booleans/pacing or close+dispatch together | 422 | `MANAGER_CONTROL_INVALID`; no write |
+| Control body exceeds live configured byte limit | 413 | `MANAGER_CONTROL_INVALID`; no write |
+| Manager token on execution-worker routes | 401 | `WORKER_TOKEN_REFUSED` |
+| Presented worker/manager token on app-only/admin routes, including loopback | 403 | `WORKER_SCOPE_REFUSED` |
+| Non-loopback client attempts manager mint or credential revoke | 403 | Existing `require_local_app` refusal |
+| App-authorized mint with invalid manager/scope | 422 | `MANAGER_INVALID` |
+| Internal read/write failure | 5xx | No successful acknowledgment; body may be framework text |
+
+The Gateway app revokes a manager with `DELETE /admin/api/extension-workers/{manager_id}` using existing app-only authority. It returns `{ok:true,revoked:<count>}`; execution workers use the same route with their own worker ID. Manager/execution identities are distinct. Re-minting a manager ID revokes the old token and replaces its exact scope. No TTL is inferred: tokens are persisted and remain valid until revoked/replaced. Authentication reads the token file per request; control revalidates the manager under the write lock. Revocation stops subsequent requests, does not cancel active work and does not clear credit commitments.
+
+On restart, persisted tokens, desired pause/OFF, pacing and control revisions remain. In-memory state disappears, so close is unsafe until new authenticated, current-generation observations arrive. Only the real queue owner recovers reservations; exact canonical job plus current upstream identity can recover a known outcome as a debit. Unknown/closed/cancelled/superseded attempts remain held. Late-result integrity, ownership, first-result rules and the 256 MiB artifact cap remain in force.

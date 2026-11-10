@@ -2,7 +2,9 @@
 import json
 import os
 import time
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from tests._isolation import sandbox_env
@@ -239,6 +241,142 @@ class AccountWorkersTests(unittest.TestCase):
         deficit = self.status()["accounts"][0]
         self.assertEqual(deficit["reserved"], 60)
         self.assertEqual(deficit["available"], -50)
+
+    def test_credential_generation_persists_and_remint_invalidates_close_readback(self):
+        response = self.control(dispatchEnabled=False, closeRequested=True)
+        control = response.json()["workers"][0]["control"]
+        generation = control["credentialGeneration"]
+        self.assertEqual(len(generation), 32)
+        self.assertEqual(self.client.get("/api/workers/health", headers=self.auth()).json()["control"]["credentialGeneration"], generation)
+        self.report(observed_account(paused=True, controlRevision=control["revision"]))
+        self.assertTrue(self.status()["workers"][0]["safeToClose"])
+        ew.broker.reset()
+        self.assertEqual(self.status()["workers"][0]["control"]["credentialGeneration"], generation)
+        self.report(observed_account(paused=True, controlRevision=control["revision"]))
+        self.assertTrue(self.status()["workers"][0]["safeToClose"])
+        replacement = ew.mint("account-video", "video")
+        row = self.status()["workers"][0]
+        self.assertNotEqual(row["control"]["credentialGeneration"], generation)
+        self.assertFalse(row["control"]["dispatchEnabled"])
+        self.assertIsNone(row["control"]["revision"])
+        self.assertFalse(row["safeToClose"])
+        self.assertIsNone(row["state"])
+        self.assertIsNone(row["accountBinding"])
+        self.assertEqual(self.report().status_code, 401)
+        health = self.client.get("/api/workers/health", headers=self.auth(replacement))
+        self.assertEqual(health.json()["control"]["credentialGeneration"], row["control"]["credentialGeneration"])
+
+    def test_missing_legacy_generation_cannot_acknowledge_safe_close(self):
+        revision = self.control(dispatchEnabled=False, closeRequested=True).json()["workers"][0]["control"]["revision"]
+        self.report(observed_account(paused=True, controlRevision=revision))
+        with ew.admin_session._lock:
+            rows = ew._rows()
+            rows[ew.admin_session._digest(self.token)].pop("credential_generation")
+            ew.admin_session._write(ew._tokens_path(), {"workers": rows})
+        row = self.status()["workers"][0]
+        self.assertIsNone(row["control"]["credentialGeneration"])
+        self.assertFalse(row["safeToClose"])
+
+    def test_bulk_pause_keeps_a_revoked_member_explicitly_unsafe(self):
+        ew.mint("account-image", "image")
+        manager = ew.mint("bulk-manager", "manager", worker_ids=["account-video", "account-image"])
+        ew.revoke("account-image")
+        response = self.client.post("/api/workers/manager/control", headers=self.auth(manager), json={
+            "worker_ids": ["account-video", "account-image"], "dispatchEnabled": False, "closeRequested": True})
+        self.assertEqual(response.status_code, 200)
+        rows = {row["worker_id"]: row for row in response.json()["workers"]}
+        self.assertTrue(rows["account-video"]["control"]["revision"])
+        self.assertFalse(rows["account-image"]["has_live_token"])
+        self.assertIsNone(rows["account-image"]["control"]["credentialGeneration"])
+        self.assertIsNone(rows["account-image"]["control"]["revision"])
+        revision = rows["account-video"]["control"]["revision"]
+        self.report(observed_account(paused=True, controlRevision=revision))
+        rows = self.client.get("/api/workers/manager", headers=self.auth(manager)).json()["workers"]
+        self.assertTrue(next(row for row in rows if row["worker_id"] == "account-video")["safeToClose"])
+        self.assertFalse(all(row["safeToClose"] for row in rows))
+
+    def test_unavailable_failed_and_invalid_readback_never_grants_close(self):
+        self.assertEqual(self.client.get("/api/workers/manager").status_code, 401)
+        with patch.dict(os.environ, {ew.SWITCH: "0"}):
+            self.assertEqual(self.client.get("/api/workers/manager", headers=self.auth(self.manager)).status_code, 404)
+        revision = self.control(dispatchEnabled=False, closeRequested=True).json()["workers"][0]["control"]["revision"]
+        invalid = self.control(dispatchEnabled=True, closeRequested=True)
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(invalid.json()["code"], "MANAGER_CONTROL_INVALID")
+        self.assertEqual(self.status()["workers"][0]["control"]["revision"], revision)
+        with patch.dict(os.environ, {"GATEWAY_EXTENSION_WORKER_INVENTORY_MAX_BYTES": "64"}):
+            oversized = self.client.post("/api/workers/manager/control", headers=self.auth(self.manager), content=b" " * 65)
+        self.assertEqual(oversized.status_code, 413)
+        failed_client = TestClient(api.app, client=("100.64.0.9", 40102), raise_server_exceptions=False)
+        with patch.object(runtime.store, "extension_account_worker_busy", side_effect=OSError("fixture readback failure")):
+            failed = failed_client.get("/api/workers/manager", headers=self.auth(self.manager))
+        self.assertEqual(failed.status_code, 500)
+        self.assertNotIn("safeToClose", failed.text)
+
+    def test_claim_wins_pause_race_and_remains_authoritatively_busy(self):
+        self.ready()
+        job = ew.broker.offer("video", {"prompt": "scene"})
+        entered, release, pause_parsed = threading.Event(), threading.Event(), threading.Event()
+        reserve, parse = runtime.store.extension_account_reserve, ew._account_body
+
+        def blocked_reserve(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("fixture reservation barrier timed out")
+            return reserve(*args, **kwargs)
+
+        async def parsed_body(request):
+            body = await parse(request)
+            if request.url.path == "/api/workers/manager/control":
+                pause_parsed.set()
+            return body
+
+        with patch.object(runtime.store, "extension_account_reserve", blocked_reserve), patch.object(ew, "_account_body", parsed_body):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                claim = pool.submit(self.claim, self.quote(job))
+                try:
+                    self.assertTrue(entered.wait(5))
+                    pause = pool.submit(self.control, dispatchEnabled=False, closeRequested=True)
+                    self.assertTrue(pause_parsed.wait(5))
+                finally:
+                    release.set()
+                self.assertEqual(claim.result(timeout=5).status_code, 200)
+                response = pause.result(timeout=5)
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["workers"][0]
+        self.assertFalse(row["control"]["dispatchEnabled"])
+        self.assertEqual(row["current_job"]["jobId"], job.job_id)
+        self.assertTrue(row["durableBusy"])
+        self.assertFalse(row["safeToClose"])
+
+    def test_pause_wins_claim_race_without_reservation_or_execution(self):
+        self.ready()
+        job = ew.broker.offer("video", {"prompt": "scene"})
+        entered, release = threading.Event(), threading.Event()
+        claim_original = ew.broker.claim
+
+        def blocked_claim(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("fixture claim barrier timed out")
+            return claim_original(*args, **kwargs)
+
+        with patch.object(ew.broker, "claim", blocked_claim):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                claim = pool.submit(self.claim, self.quote(job))
+                try:
+                    self.assertTrue(entered.wait(5))
+                    response = self.control(dispatchEnabled=False, closeRequested=True)
+                    self.assertEqual(response.status_code, 200)
+                finally:
+                    release.set()
+                self.assertEqual(claim.result(timeout=5).status_code, 204)
+        self.assertEqual(job.state, "pending")
+        self.assertIsNone(runtime.store.get(job.gateway_job_id)["upstream_job_id"])
+        self.assertFalse(self.status()["workers"][0]["durableBusy"])
+        revision = response.json()["workers"][0]["control"]["revision"]
+        self.report(observed_account(paused=True, controlRevision=revision))
+        self.assertTrue(self.status()["workers"][0]["safeToClose"])
 
     def test_future_observation_and_unbounded_bodies_fail_before_assignment(self):
         self.assertEqual(self.report(observed_account(observedAt=iso(time.time() + 1000))).status_code, 422)

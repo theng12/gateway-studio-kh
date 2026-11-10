@@ -155,6 +155,7 @@ def mint(worker_id: str, kind: str, *, worker_ids: list[str] | None = None) -> s
         rows[admin_session._digest(token)] = {"worker_id": worker_id, "kind": kind,
                                               "created_at": now, "revoked_at": None,
                                               "dispatch_enabled": False,
+                                              "credential_generation": uuid.uuid4().hex,
                                               **({"worker_ids": sorted(set(worker_ids))} if kind == "manager" else {})}
         admin_session._write(_tokens_path(), {"workers": rows})
         broker.clear_inventory(worker_id)
@@ -581,7 +582,8 @@ def _settle_account(worker_id: str | None, token_id: str | None, job_id: str, ou
 
 def worker_control(worker: dict) -> dict:
     row = _rows().get(worker["_token_id"], {})
-    return {"dispatchEnabled": row.get("dispatch_enabled") is True,
+    return {"credentialGeneration": row.get("credential_generation"),
+            "dispatchEnabled": row.get("dispatch_enabled") is True,
             "closeRequested": row.get("close_requested") is True,
             "revision": row.get("control_revision"), "requestedAt": row.get("control_requested_at"),
             "pacing": row.get("pacing", {"minSeconds": 5, "maxSeconds": 15})}
@@ -634,7 +636,8 @@ def manager_view(worker_ids: list[str]) -> dict:
             fresh = bool(state and received is not None
                          and 0 <= now - state["observed_at"] < online_seconds()
                          and 0 <= now - received < online_seconds())
-            control = {"dispatchEnabled": bool(row and row.get("dispatch_enabled") is True),
+            control = {"credentialGeneration": row.get("credential_generation") if row else None,
+                       "dispatchEnabled": bool(row and row.get("dispatch_enabled") is True),
                        "closeRequested": bool(row and row.get("close_requested") is True),
                        "revision": row.get("control_revision") if row else None,
                        "requestedAt": row.get("control_requested_at") if row else None,
@@ -650,7 +653,8 @@ def manager_view(worker_ids: list[str]) -> dict:
                             "has_live_token": row is not None, "control": control,
                             "state": state, "receivedAt": received, "fresh": fresh,
                             "current_job": active, "held_jobs": held, "durableBusy": durable_busy,
-                            "safeToClose": bool(fresh and not control["dispatchEnabled"]
+                            "safeToClose": bool(fresh and control["credentialGeneration"]
+                                and not control["dispatchEnabled"]
                                 and control["revision"] and state["paused"]
                                 and state["activity"] in ("idle", "cooling", "resting", "waiting")
                                 and state["control_revision"] == control["revision"]
