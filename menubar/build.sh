@@ -595,14 +595,13 @@ mkdir -p "$DIST"
 # **The owner's rule, 2026-09-26: an old DMG moves to `_trash/dist/`; it is never `rm`d.**
 # This line was `rm -f "$DMG"`, which destroyed the previous artefact of the same version on a
 # rebuild. Everything moves aside now — including the same-version file about to be rewritten —
-# so `_trash/dist/` is the complete history and a rebuild costs nothing. It is also what stops
-# `dist/` accumulating one file per release: it held four (0.2.47 through 0.2.50) before this.
+# so `_trash/dist/` is the complete history and a rebuild costs nothing.
+# Owner, 2026-11-10: dist/ keeps the latest TWO verified released DMGs, so a build moves aside only
+# the same-version file it rewrites. Older versions are retired by the release rotation, after the
+# new release is verified, never here: an unverified build must not cost the working rollback.
 TRASH_DIST="$ROOT/_trash/dist"
 mkdir -p "$TRASH_DIST"
-for OLD_DMG in "$DIST"/gateway-kh-*.dmg "$DIST"/"Gateway Studio KH-"*.dmg; do
-  [ -e "$OLD_DMG" ] || continue
-  preserve_path "$OLD_DMG" "$TRASH_DIST"
-done
+preserve_path "$DMG" "$TRASH_DIST"
 DMG_STAGE="$(mktemp -d)"
 cp -R "$APP" "$DMG_STAGE/"
 ln -s /Applications "$DMG_STAGE/Applications"
