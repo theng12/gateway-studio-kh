@@ -21,7 +21,7 @@ import sys
 import time
 
 
-APP_PROCESS = "GatewayKH"
+APP_PROCESS = "Gateway Studio KH"
 MAIN_WINDOW = '(first window whose subrole is "AXStandardWindow")'
 
 

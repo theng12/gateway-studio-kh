@@ -319,7 +319,7 @@ installing at a quiet point. **"It builds" is not "it works."**
 survives a rebuild.** The gateway outlives the app, so the app **adopts** whatever
 answers `/health`.
 
-  * `pkill -f "GatewayKH"` **kills the shell running it** — its own command line
+  * `pkill -f "Gateway Studio KH"` **kills the shell running it** — its own command line
     holds the pattern — so the command never finishes and the next `open` adopts it.
     Measured: a gateway from 21:47 still served at 23:33 through four "rebuild and
     restart" cycles.

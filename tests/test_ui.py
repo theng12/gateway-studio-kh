@@ -28,7 +28,7 @@ import sys
 import time
 import urllib.request
 
-APP_PROCESS = "GatewayKH"
+APP_PROCESS = "Gateway Studio KH"
 
 #: Sidebar rows in order, with the window title each section should produce.
 #: Studio Hub KH groups its sidebar, and this app was asked to match it, so the
@@ -1233,7 +1233,7 @@ def main() -> int:
         for _ in range(12):
             time.sleep(1.0)
             closed = osa(wrap('''
-                tell application "System Events" to tell process "GatewayKH"
+                tell application "System Events" to tell process "Gateway Studio KH"
                     set hit to "no"
                     repeat with w in windows
                         try

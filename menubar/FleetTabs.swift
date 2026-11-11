@@ -654,10 +654,10 @@ final class FleetLocationsTab: FleetTabView {
             + "Who it is for: the person who owns that Mac, using that Mac.\n"
             + "What it does: change settings, install or remove models, delete output, "
             + "manage shared voices.\n"
-            + "Never send it to GatewayKH unless GatewayKH will manage shared voices on "
+            + "Never send it to Gateway Studio KH unless Gateway Studio KH will manage shared voices on "
             + "that Mac. Anyone who holds it can do everything on that Mac.\n\n"
             + "Fleet token — the work badge for the group.\n"
-            + "Who it is for: GatewayKH, and every Mac that joins a controller.\n"
+            + "Who it is for: Gateway Studio KH, and every Mac that joins a controller.\n"
             + "What it allows: send work, follow the job, download the result, "
             + "acknowledge it, cancel it or discard an uncertain one, and read the model "
             + "and fleet lists.\n"
@@ -666,11 +666,11 @@ final class FleetLocationsTab: FleetTabView {
             + "This is the token to enter here."
         ))
         // Joining is the Mac's own act, on the Mac itself. Nothing on this side can
-        // enlist or dismiss a machine, and saying so here stops "why can't GatewayKH
+        // enlist or dismiss a machine, and saying so here stops "why can't Gateway Studio KH
         // just add it?" from becoming a support question.
         page.addArrangedSubview(PageKit.help(
             "Joining is that Mac's own decision, made from its own app with the "
-            + "controller's Fleet token. GatewayKH cannot join or unjoin a Mac."
+            + "controller's Fleet token. Gateway Studio KH cannot join or unjoin a Mac."
         ))
 
         labelField.placeholderString = "Name (e.g. Blue Room)"

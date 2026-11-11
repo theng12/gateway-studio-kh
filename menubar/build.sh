@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build gateway-kh.app — a native macOS menu bar application.
+# Build Gateway Studio KH (installed as gateway-kh.app) — a native macOS menu bar application.
 #
 # Produces a real .app bundle in /Applications, so the gateway can be run,
 # stopped and configured without ever opening a terminal.
@@ -13,7 +13,7 @@ set -eu
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ROOT="$(dirname -- "$HERE")"
 BUILD="$HERE/build"
-APP_NAME="GatewayKH"
+APP_NAME="Gateway Studio KH"
 APP="$BUILD/gateway-kh.app"
 
 INSTALL=1
@@ -532,10 +532,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>gateway-kh</string>
+    <key>CFBundleName</key><string>Gateway Studio KH</string>
     <key>CFBundleDisplayName</key><string>Gateway Studio KH</string>
     <key>CFBundleIdentifier</key><string>kh.gateway.menubar</string>
-    <key>CFBundleExecutable</key><string>GatewayKH</string>
+    <key>CFBundleExecutable</key><string>Gateway Studio KH</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$MARKETING_VERSION</string>
     <key>CFBundleVersion</key><string>$BUILD_ID</string>
@@ -557,6 +557,39 @@ echo "==> generating icon"
   exit 1
 }
 
+# A proper helper bundle carries the gateway service, so macOS names and icons it
+# instead of showing a bare "Python". The bundle identifier is the helper's; the
+# executable keeps `kh.gateway.python`, the stable requirement it already had.
+echo "==> building the Gateway Studio KH Helper"
+PY_HELPER="$APP/Contents/Resources/python/bin/python3"
+if [ -L "$PY_HELPER" ]; then PY_HELPER="$(dirname "$PY_HELPER")/$(readlink "$PY_HELPER")"; fi
+HELPER="$APP/Contents/Helpers/Gateway Studio KH Helper.app"
+HELPER_EXECUTABLE="$HELPER/Contents/MacOS/Gateway Studio KH Helper"
+mkdir -p "$HELPER/Contents/MacOS" "$HELPER/Contents/Resources"
+cp "$PY_HELPER" "$HELPER_EXECUTABLE"
+chmod 755 "$HELPER_EXECUTABLE"
+cp "$APP/Contents/Resources/AppIcon.icns" "$HELPER/Contents/Resources/AppIcon.icns"
+cat > "$HELPER/Contents/Info.plist" <<HELPER_PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Gateway Studio KH Helper</string>
+    <key>CFBundleDisplayName</key><string>Gateway Studio KH Helper</string>
+    <key>CFBundleIdentifier</key><string>kh.gateway.helper</string>
+    <key>CFBundleExecutable</key><string>Gateway Studio KH Helper</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>$MARKETING_VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD_ID</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key><string>$MACOS_MIN</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <!-- A background service: no Dock icon, no menu, no window. -->
+    <key>LSUIElement</key><true/>
+</dict>
+</plist>
+HELPER_PLIST
+
 # The shared KH identity (_orchestra/developer-handoff/SIGNING.md) gives a designated
 # requirement that survives a rebuild, unlike an ad-hoc cdhash. Nested code is signed
 # first, then the bundle; --deep is only ever a verification flag, never a signing one.
@@ -573,11 +606,11 @@ echo "==> signing with ${SIGN_ID:-ad-hoc}"
 find "$APP/Contents/Resources" -type d -name "__pycache__" -prune -print | while IFS= read -r CACHE; do preserve_path "$CACHE"; done
 find "$APP/Contents/Resources" -type f \( -name '*.so' -o -name '*.dylib' \) -print0 \
   | xargs -0 -n 50 codesign --force --timestamp=none --sign "$SIGN"
-# The interpreter is the persistent helper that runs the gateway: a stable identifier,
-# so its requirement does not change when the Python minor version does.
-PY_HELPER="$APP/Contents/Resources/python/bin/python3"
-if [ -L "$PY_HELPER" ]; then PY_HELPER="$(dirname "$PY_HELPER")/$(readlink "$PY_HELPER")"; fi
+# The runtime copy keeps the stable identifier it always had. The helper bundle is
+# signed as a bundle: that seals its executable under the helper's identifier, so
+# signing the executable alone would be undone. Nested code first, then the app.
 codesign --force --timestamp=none --sign "$SIGN" --identifier kh.gateway.python "$PY_HELPER"
+codesign --force --timestamp=none --sign "$SIGN" "$HELPER"
 codesign --force --timestamp=none --sign "$SIGN" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 

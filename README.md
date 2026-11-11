@@ -236,9 +236,9 @@ I quit** in Settings only when you want Story Studio to keep using that process 
 ### Headless helpers
 
 ```bash
-GatewayKH --status                  # print the app's current view as JSON
-GatewayKH --install-login-item      # equivalent to the Settings checkbox
-GatewayKH --uninstall-login-item
+"/Applications/gateway-kh.app/Contents/MacOS/Gateway Studio KH" --status   # the app's current view as JSON
+"/Applications/gateway-kh.app/Contents/MacOS/Gateway Studio KH" --install-login-item
+"/Applications/gateway-kh.app/Contents/MacOS/Gateway Studio KH" --uninstall-login-item
 ```
 
 `--status` reads `~/Library/Application Support/gateway-kh/menubar-state.json`, which the app keeps

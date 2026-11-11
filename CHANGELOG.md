@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.243 — 2026-11-12
+
+- Every background name now says **Gateway Studio KH**. The gateway service runs inside `Gateway Studio KH Helper.app`, so Activity Monitor and App Background Activity show that name with the app icon instead of "Python"; the app itself shows as "Gateway Studio KH" instead of "GatewayKH", and its background item no longer reads "gateway-kh". Launch at login keeps working: an older login item is repaired in place, with the same switch and no second job.
+
 ## 0.2.242 — 2026-11-11
 
 - Browser workers can pair image, video and audio credentials separately. Optional browser providers stay off until deliberately enabled; audio still needs confirmed compatible provider limits before it can take work.

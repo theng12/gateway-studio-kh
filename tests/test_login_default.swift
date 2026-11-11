@@ -21,7 +21,7 @@ enum LoginDefaultCheck {
         check(!LoginDefault.shouldInstall(installed: true, optedOut: nil, executable: app),
               "already installed: nothing to do")
         check(!LoginDefault.shouldInstall(installed: false, optedOut: nil,
-                                          executable: "/tmp/build/gateway-kh.app/Contents/MacOS/GatewayKH"),
+                                          executable: "/tmp/build/gateway-kh.app/Contents/MacOS/Gateway Studio KH"),
               "a build outside /Applications never installs")
         check(!LoginDefault.shouldInstall(installed: false, optedOut: nil, executable: nil),
               "an unknown executable never installs")

@@ -445,7 +445,8 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
             self.assertEqual(info["CFBundleDisplayName"], "Gateway Studio KH")
             self.assertEqual(info["CFBundleIdentifier"], "kh.gateway.menubar")
-            self.assertEqual(info["CFBundleExecutable"], "GatewayKH")
+            self.assertEqual(info["CFBundleExecutable"], "Gateway Studio KH")
+            self.assertEqual(info["CFBundleName"], "Gateway Studio KH")
             version = info["CFBundleShortVersionString"]
             self.assertFalse((fixture.root / "dist" / f"Gateway Studio KH-{version}.dmg").exists())
             candidates = list(
@@ -461,6 +462,17 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             self.assertIn("Built:", result.stdout)
             self.assertRegex(result.stdout, r"archive sha256:[0-9a-f]{64}")
             self.assertIn("verified", fixture.codesign_log.read_text(encoding="utf-8"))
+            # The gateway service is a proper helper bundle, so macOS names it by
+            # "Gateway Studio KH Helper" instead of a bare interpreter.
+            helper = app / "Contents" / "Helpers" / "Gateway Studio KH Helper.app"
+            helper_info = plistlib.loads((helper / "Contents/Info.plist").read_bytes())
+            self.assertEqual(helper_info["CFBundleName"], "Gateway Studio KH Helper")
+            self.assertEqual(helper_info["CFBundleDisplayName"], "Gateway Studio KH Helper")
+            self.assertEqual(helper_info["CFBundleIdentifier"], "kh.gateway.helper")
+            self.assertEqual(helper_info["CFBundleExecutable"], "Gateway Studio KH Helper")
+            self.assertTrue(helper_info["LSUIElement"])
+            self.assertTrue((helper / "Contents/MacOS/Gateway Studio KH Helper").is_file())
+            self.assertTrue((helper / "Contents/Resources/AppIcon.icns").is_file())
 
     def test_default_build_stages_descriptor_only_when_authority_source_exists(self) -> None:
         with _BuildFixture() as fixture:
@@ -646,6 +658,7 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             helper = [c for c in signing if "--identifier kh.gateway.python" in c]
             self.assertEqual(len(helper), 1, calls)
             self.assertTrue(helper[0].endswith("Contents/Resources/python/bin/python3"), helper)
+            self.assertTrue(signing[-2].endswith("/Gateway Studio KH Helper.app"), signing[-2])
             self.assertTrue(signing[-1].endswith("/gateway-kh.app"), "the bundle is sealed last")
 
     def test_archive_checksum_mismatch_cannot_claim_a_built_bundle(self) -> None:

@@ -74,6 +74,17 @@ enum AppPaths {
     static var bundledPython: URL? {
         bundledRoot?.appendingPathComponent("python/bin/python3")
     }
+    /// The shipped service runs from a real helper bundle, so macOS names it by
+    /// "Gateway Studio KH Helper" rather than showing a bare interpreter.
+    static var bundledHelper: URL? {
+        Bundle.main.bundleURL.appendingPathComponent(
+            "Contents/Helpers/Gateway Studio KH Helper.app/Contents/MacOS/Gateway Studio KH Helper"
+        )
+    }
+    /// The helper's executable is the interpreter; this is the runtime it reads.
+    static var bundledPythonHome: URL? {
+        bundledRoot?.appendingPathComponent("python", isDirectory: true)
+    }
     static var bundledSource: URL? {
         bundledRoot?.appendingPathComponent("gateway", isDirectory: true)
     }
@@ -485,17 +496,23 @@ final class GatewayController {
     /// developer checkout is the fallback, which keeps the usual edit-and-run
     /// loop working without rebuilding the bundle each time.
     enum Runtime {
-        case bundled(python: URL, source: URL)
+        case bundled(python: URL, pythonHome: URL?, source: URL)
         case checkout(root: URL)
         case missing(String)
     }
 
     var runtime: Runtime {
-        if let python = AppPaths.bundledPython,
-           let source = AppPaths.bundledSource,
-           FileManager.default.fileExists(atPath: python.path),
+        if let source = AppPaths.bundledSource,
            FileManager.default.fileExists(atPath: source.path) {
-            return .bundled(python: python, source: source)
+            // A bundle from before 0.2.243 has no helper; it still runs.
+            if let helper = AppPaths.bundledHelper,
+               FileManager.default.fileExists(atPath: helper.path) {
+                return .bundled(python: helper, pythonHome: AppPaths.bundledPythonHome, source: source)
+            }
+            if let python = AppPaths.bundledPython,
+               FileManager.default.fileExists(atPath: python.path) {
+                return .bundled(python: python, pythonHome: nil, source: source)
+            }
         }
         let root = URL(fileURLWithPath: gatewayDir, isDirectory: true)
         if FileManager.default.fileExists(
@@ -598,13 +615,16 @@ final class GatewayController {
         stopping = false
 
         let executable: URL
+        let pythonHome: URL?
         let workingDirectory: URL
         switch runtime {
-        case .bundled(let python, let source):
+        case .bundled(let python, let home, let source):
             executable = python
+            pythonHome = home
             workingDirectory = source
         case .checkout(let root):
             executable = root.appendingPathComponent(".venv/bin/python")
+            pythonHome = nil
             workingDirectory = root
         case .missing(let reason):
             publish(.failed(reason))
@@ -644,7 +664,7 @@ final class GatewayController {
                     self.publish(.failed("Port \(self.port) is in use. Stop its service before starting Gateway."))
                     return
                 }
-                self.spawn(executable: executable, workingDirectory: workingDirectory)
+                self.spawn(executable: executable, workingDirectory: workingDirectory, pythonHome: pythonHome)
             }
         }
     }
@@ -695,7 +715,7 @@ final class GatewayController {
         }.resume()
     }
 
-    private func spawn(executable: URL, workingDirectory: URL) {
+    private func spawn(executable: URL, workingDirectory: URL, pythonHome: URL?) {
         let task = Process()
         task.executableURL = executable
         task.arguments = [
@@ -734,6 +754,9 @@ final class GatewayController {
         environment["GATEWAY_ENV_FILE"] = AppPaths.env.path
         // Run the source in place; no install step required.
         environment["PYTHONPATH"] = workingDirectory.path
+        // The helper's executable is the interpreter, so it must be told where
+        // the bundled runtime's stdlib and packages are.
+        if let pythonHome { environment["PYTHONHOME"] = pythonHome.path }
         // The gateway reports this at /health, so the app can tell whether the
         // process it is talking to is the one it just installed.
         environment["GATEWAY_BUILD"] = appBuild
@@ -1085,8 +1108,27 @@ enum LaunchAgent {
         FileManager.default.fileExists(atPath: plistURL.path)
     }
 
+    /// The program the owner's plist currently starts, if it can be read.
+    static var installedExecutable: String? {
+        guard let data = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data, options: [], format: nil
+              ) as? [String: Any],
+              let arguments = plist["ProgramArguments"] as? [String]
+        else { return nil }
+        return arguments.first
+    }
+
+    /// The executable is renamed between releases, so a plist written by an older
+    /// build is rewritten in place: same label, same owner choice. The duplicate
+    /// this bootstrap starts exits on its own (see the single-instance guard).
+    static func repairIfNeeded(current: String?) {
+        guard isInstalled, let current, installedExecutable != current else { return }
+        install()
+    }
+
     static func install() {
-        guard let executable = Bundle.main.executableURL?.path else { return }
+        guard let executable = Bundle.main.executableURL?.resolvingSymlinksInPath().path else { return }
         let directory = plistURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
@@ -1398,10 +1440,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainWindow.shared.show(section: "overview")
         }
         ConfigStore.shared.update { $0.hasLaunchedBefore = true }
+        let ownExecutable = Bundle.main.executableURL?.resolvingSymlinksInPath().path
         if LoginDefault.shouldInstall(installed: LaunchAgent.isInstalled,
                                       optedOut: ConfigStore.shared.config.launchAtLoginOptedOut,
-                                      executable: Bundle.main.executableURL?.resolvingSymlinksInPath().path) {
+                                      executable: ownExecutable) {
             LaunchAgent.install()
+        } else if ConfigStore.shared.config.launchAtLoginOptedOut != true {
+            LaunchAgent.repairIfNeeded(current: ownExecutable)
         }
 
         // Editing shortcuts (⌘A/⌘C/⌘V/⌘X/⌘Z) are dispatched through the main

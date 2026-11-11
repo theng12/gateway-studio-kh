@@ -10,7 +10,7 @@ import Foundation
 enum LoginDefault {
     /// The only bundle that may write the owner's LaunchAgent; a test binary or a build in
     /// `menubar/build/` never installs one by accident.
-    static let appExecutable = "/Applications/gateway-kh.app/Contents/MacOS/GatewayKH"
+    static let appExecutable = "/Applications/gateway-kh.app/Contents/MacOS/Gateway Studio KH"
 
     static func shouldInstall(installed: Bool, optedOut: Bool?, executable: String?) -> Bool {
         !installed && optedOut != true && executable == appExecutable
