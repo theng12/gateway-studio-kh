@@ -72,6 +72,8 @@ final class ConfigStore {
 enum AppPaths {
     static let appSupport = URL(fileURLWithPath: ConfigStore.shared.config.gatewayDir)
     static let bundledPython: URL? = URL(fileURLWithPath: ProcessInfo.processInfo.environment["FIXTURE_PYTHON"]!)
+    static let bundledHelper: URL? = nil
+    static let bundledPythonHome: URL? = nil
     static let bundledSource: URL? = appSupport
     static let env = appSupport.appendingPathComponent(".env")
     static let data = appSupport.appendingPathComponent("data")
