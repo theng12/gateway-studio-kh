@@ -18,6 +18,7 @@ every feature title, and they are left as they were written.
 - Saving browser pacing preserves the latest pause and close settings, including changes made by another manager. Saved pacing still needs acknowledgment from the worker.
 - Video requests preserve the selected model's supported controls and reject unsupported choices before execution. Native and web creation use the same request fields.
 - Full-image transfers to separate controllers can proceed together while transfers to the same controller remain protected. Release candidates are staged separately; the latest two verified released installers are retained after installed acceptance.
+- The Fleet headline names Macs and workers separately, such as "35 of 47 Macs online · 246 of 364 workers ready". When a Mac is joined to more than one location it also says how many distinct Macs those rows are; a figure the gateway has not measured still shows as "?", never 0.
 
 ## 0.2.241 — 2026-11-09
 
