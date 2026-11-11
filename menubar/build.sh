@@ -164,12 +164,12 @@ if [ ! -x "$RUNTIME_CACHE/python/bin/python3" ] || [ ! -f "$STAMP" ]; then
 fi
 
 RUNTIME_PYTHON="$RUNTIME_CACHE/python/bin/python3"
-RUNTIME_VERSION="$($RUNTIME_PYTHON --version 2>&1)"
+RUNTIME_VERSION="$("$RUNTIME_PYTHON" --version 2>&1)"
 [ "$RUNTIME_VERSION" = "Python $PY_VERSION" ] || {
   echo "ERROR: bundled runtime is $RUNTIME_VERSION, expected Python $PY_VERSION" >&2
   exit 1
 }
-RUNTIME_MACHINE="$($RUNTIME_PYTHON -c 'import platform; print(platform.machine())')"
+RUNTIME_MACHINE="$("$RUNTIME_PYTHON" -c 'import platform; print(platform.machine())')"
 case "$PY_ARCH" in
   aarch64|arm64) EXPECTED_MACHINE="arm64" ;;
   *) EXPECTED_MACHINE="$PY_ARCH" ;;

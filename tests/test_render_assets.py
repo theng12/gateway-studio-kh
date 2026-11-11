@@ -291,8 +291,9 @@ def process_append(root: str, upload_id: str, data: bytes, started, done, output
 
 class RenderAssetStoreTest(unittest.TestCase):
     def setUp(self) -> None:
-        self._trash_bucket = ROOT / "_trash" / f"render-assets-fd-tests-{uuid4().hex}"
-        self._trash_bucket.mkdir(parents=True, exist_ok=False)
+        # A temp bucket, not the repo's `_trash` (a symlink): the store refuses a user-owned symlink
+        # in the data path as unsafe.
+        self._trash_bucket = Path(tempfile.mkdtemp(prefix="render-assets-fd-tests-"))
         self.sandbox = Path(tempfile.mkdtemp(prefix="active-", dir=self._trash_bucket))
         self.root = self.sandbox / "store"
         self.free = FreeSpace(512 * MiB)
@@ -1295,7 +1296,8 @@ class RenderAssetStoreTest(unittest.TestCase):
         def swap_after_verified_parent(path: Path) -> None:
             nonlocal swapped
             real_reject(path)
-            if not swapped and Path(path) == parent:
+            # The store holds the canonical parent (/private/var... under $TMPDIR), so compare canonical.
+            if not swapped and Path(path) == Path(os.path.realpath(parent)):
                 swapped = True
                 parent.rename(saved)
                 parent.symlink_to(foreign2, target_is_directory=True)
@@ -1597,7 +1599,8 @@ class RenderAssetStoreTest(unittest.TestCase):
         def swap_after_verified_walk(path: Path) -> None:
             nonlocal swapped
             real_reject(path)
-            if not swapped and Path(path) == parent:
+            # The store holds the canonical parent (/private/var... under $TMPDIR), so compare canonical.
+            if not swapped and Path(path) == Path(os.path.realpath(parent)):
                 swapped = True
                 trusted.rename(saved)
                 trusted.symlink_to(foreign, target_is_directory=True)

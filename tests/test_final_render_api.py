@@ -5,16 +5,17 @@ from __future__ import annotations
 import os
 import hashlib
 import sys
+import tempfile
 import unittest
-import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-RUN_ROOT = ROOT / "_trash" / "tests" / f"gateway-final-render-api-{uuid.uuid4().hex}"
-RUN_ROOT.mkdir(parents=True, mode=0o700)
+# Temp dir, not the repo's `_trash` (a symlink): RenderAssetStore refuses a user-owned symlink in
+# the data path as unsafe, so a profile under it cannot boot.
+RUN_ROOT = Path(tempfile.mkdtemp(prefix="gateway-final-render-api-"))
 os.environ.update({
     "GATEWAY_APP_SUPPORT": str(RUN_ROOT),
     "GATEWAY_DATA": str(RUN_ROOT / "data"),

@@ -12,8 +12,9 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-RUN_ROOT = ROOT / "_trash" / "tests" / "gateway-render-descriptors"
-RUN_ROOT.mkdir(parents=True, exist_ok=True)
+# Temp dir, not the repo's `_trash` (a symlink): RenderAssetStore refuses a user-owned symlink in
+# the data path as unsafe, so a profile under it cannot boot.
+RUN_ROOT = Path(tempfile.mkdtemp(prefix="gateway-render-descriptors-"))
 os.environ.update({
     "GATEWAY_APP_SUPPORT": str(RUN_ROOT),
     "GATEWAY_DATA": str(RUN_ROOT / "data"),

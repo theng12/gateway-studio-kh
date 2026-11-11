@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 import { cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const [mode, baseUrl, apiKey, fixtureRoot, storyRoot, gatewayData] = process.argv.slice(2)
 if (!mode || !baseUrl || !apiKey || !fixtureRoot || !storyRoot) throw Error('Expected mode, Gateway URL/key, fixture root, Story root and Gateway data root.')
@@ -200,7 +200,8 @@ async function revalidate() {
 
 function runRestart() {
   return new Promise((resolveRestart, rejectRestart) => {
-    const child = spawn(process.execPath, ['--import', 'tsx', new URL(import.meta.url).pathname,
+    // fileURLToPath: .pathname keeps %20 encoded, so a checkout path with a space fails to load.
+    const child = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url),
       'revalidate', baseUrl, apiKey, fixtureRoot, storyRoot, gatewayData], {
       cwd: storyRoot, env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
     })

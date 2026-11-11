@@ -18,15 +18,17 @@ import subprocess
 import threading
 import time
 import unittest
-import uuid
+import tempfile
 from pathlib import Path
 from unittest.mock import call, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-RUN_ROOT = ROOT / "_trash" / "tests" / f"gateway-render-service-{uuid.uuid4().hex}"
-RUN_ROOT.mkdir(parents=True, mode=0o700)
+# Temp dir, not the repo's `_trash` (a symlink): RenderAssetStore refuses a user-owned symlink in
+# the data path as unsafe, so a profile under it cannot boot.
+RUN_ROOT = Path(tempfile.mkdtemp(prefix="gateway-render-service-"))
+os.chmod(RUN_ROOT, 0o700)
 os.environ.update({
     "GATEWAY_APP_SUPPORT": str(RUN_ROOT),
     "GATEWAY_DATA": str(RUN_ROOT / "data"),

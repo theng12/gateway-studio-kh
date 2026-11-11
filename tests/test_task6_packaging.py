@@ -20,8 +20,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 BUILD_SCRIPT = ROOT / "menubar" / "build.sh"
-ARTIFACT_ROOT = ROOT / "_trash" / "tests" / "gateway-task6-packaging"
-ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+# Temp, not the repo's `_trash`: that is a symlink to the shared trash, so paths through it are
+# shallower than their string form and the relative-path acceptance cases below mis-resolve.
+# realpath the base too: $TMPDIR is `/var/...`, a link to `/private/var`, and `..` past it in a
+# relative path lands outside `/`.
+ARTIFACT_ROOT = Path(os.path.realpath(tempfile.mkdtemp(prefix="gateway-task6-packaging-")))
 RUN_ROOT = Path(tempfile.mkdtemp(prefix="run-", dir=ARTIFACT_ROOT))
 PY_VERSION = "3.11.16"
 PY_TAG = "20260901"
