@@ -9266,10 +9266,30 @@ function renderFleetGroups(d) {
   // at its worst cause; a row shown from a slow site's last report was not measured, so it is
   // reported separately and counted as neither healthy nor broken.
   const issues = fleetIssueCounts(items);
+  summary.innerHTML = fleetSummaryHtml(s, issues, q, d, problematic);
+}
+
+/**
+ * The Fleet headline. Every figure comes from the Gateway's own summary or from the same rows the
+ * list below draws; this only puts words around them.
+ *
+ * **Macs and workers are named separately.** One Mac runs many workers, and the owner read a
+ * machine figure as "the actual number of workers/nodes" (2026-11-11), so both are stated.
+ * **A Mac joined to two locations is two rows**, so when that happens the headline says how many
+ * distinct Macs those rows are instead of implying they are separate machines.
+ */
+function fleetSummaryHtml(s, issues, q, d, problematic) {
   const issueTitle = 'Counted once per Mac or site, at its worst cause. Red is broken or down, '
     + 'yellow is degraded but running, blue is information on a healthy Mac.';
-  summary.innerHTML = [
+  const shared = Number(s.machines_shared_across_locations || 0);
+  const distinct = s.machines_distinct;
+  return [
     `<span><b>${s.machines_online ?? '?'}</b> of ${s.machines ?? '?'} Macs online</span>`,
+    (shared > 0
+      ? `<span title="One Mac joined to more than one location has one row per location here.">`
+        + `${distinct ?? '?'} distinct Mac${distinct === 1 ? '' : 's'} · `
+        + `${shared} row${shared === 1 ? '' : 's'} on a second location</span>` : ''),
+    `<span><b>${s.workers_ready ?? '?'}</b> of ${s.workers_total ?? '?'} workers ready</span>`,
     // **Which figures were measured.** A slow site's Macs are in the list below but not in these
     // counts; the number carried is said here so the two never read as the same kind of fact.
     (issues.not_counted > 0

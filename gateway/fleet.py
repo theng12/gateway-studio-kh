@@ -2137,6 +2137,12 @@ def _summarise(rows: list[dict]) -> dict:
             and not worker.get("quarantined")
         )
 
+    # **One Mac joined to two locations is two rows in the table, one Mac in the fleet.**
+    # `machines` counts rows (the table's own number, deliberately); these say how many Macs
+    # those rows are, so a headline cannot imply 47 Macs when it means 43.
+    # A row with no id is counted as its own Mac, never as a second row of another one.
+    distinct_machines = len({str(row.get("machine") or f"row-{i}") for i, row in enumerate(flat)})
+
     startups = [row.get("startup") for row in flat]
     statuses = [row.get("version_status") for row in flat]
     latest = next((row.get("hub_latest") for row in rows if isinstance(row.get("hub_latest"), dict)), None)
@@ -2150,6 +2156,8 @@ def _summarise(rows: list[dict]) -> dict:
         "startup_unknown": sum(1 for fact in startups
                                if not fact or fact["start_services_on_launch"] is None),
         "machines": machines_total,
+        "machines_distinct": distinct_machines,
+        "machines_shared_across_locations": max(0, machines_total - distinct_machines),
         "machines_online": online,
         # A Lite Mode Mac switched off is not "offline" (a fault) but its own, expected count.
         "machines_offline": offline - off_lite,

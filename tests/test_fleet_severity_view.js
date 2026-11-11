@@ -359,3 +359,23 @@ test('the Show dropdown gains Down, Degraded and Has any issue, and each filters
   assert.match(shown(), /xray/);
   assert.doesNotMatch(shown(), /alpha/);
 });
+
+test('the headline keeps Macs and workers apart, and says when a Mac is two rows', async () => {
+  const d = payload([machine()]);
+  Object.assign(d.summary, { machines: 47, machines_online: 35, machines_distinct: 43,
+    machines_shared_across_locations: 4, workers_total: 364, workers_ready: 246 });
+  const ctx = context(d);
+  await ctx.loadFleet();
+  const summary = ctx.nodes.get('fleet-summary').innerHTML;
+  assert.match(summary, /<b>35<\/b> of 47 Macs online/);
+  assert.match(summary, /<b>246<\/b> of 364 workers ready/);
+  assert.match(summary, /43 distinct Macs · 4 rows on a second location/);
+});
+
+test('one Mac per location has no duplicate note, and an unstated worker count stays unknown', async () => {
+  const ctx = context(payload([machine()]));
+  await ctx.loadFleet();
+  const summary = ctx.nodes.get('fleet-summary').innerHTML;
+  assert.doesNotMatch(summary, /distinct Mac/);
+  assert.match(summary, /<b>\?<\/b> of \? workers ready/, 'unknown is "?", never 0');
+});

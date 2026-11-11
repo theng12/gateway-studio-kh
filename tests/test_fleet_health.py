@@ -354,5 +354,26 @@ class VersionBadges(unittest.TestCase):
         self.assertNotIn("hub_behind", [i["code"] for i in issues])
 
 
+class TheHeadlineSaysMacsAndWorkersSeparately(unittest.TestCase):
+    """Owner, 2026-11-11: *"gateway shows over 461 macs online"* — the table holds **one row per Mac
+    per location**, so the row count is not the number of Macs, and it is not a worker count either.
+    Live 2026-11-11 the running Gateway read 47 rows for 43 Macs (4 extra rows). Both facts are
+    published rather than guessed by the page."""
+
+    def test_a_mac_at_two_locations_is_two_rows_and_one_mac(self) -> None:
+        first, second = group(nodes=2), group(nodes=2)
+        second["id"], second["label"] = "ctrl-1101", "terranash-1101"
+        summary = read(first, second)[2]
+        self.assertEqual(summary["machines"], 6, "the table's own number: 3 Macs at 2 locations")
+        self.assertEqual(summary["machines_distinct"], 3)
+        self.assertEqual(summary["machines_shared_across_locations"], 3)
+
+    def test_one_mac_at_one_location_is_no_duplicate(self) -> None:
+        summary = read(group(nodes=2))[2]
+        self.assertEqual((summary["machines"], summary["machines_distinct"],
+                          summary["machines_shared_across_locations"]), (3, 3, 0))
+        self.assertNotIn(None, (summary["machines_distinct"], summary["machines_shared_across_locations"]))
+
+
 if __name__ == "__main__":
     unittest.main()
