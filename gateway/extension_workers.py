@@ -655,7 +655,7 @@ def manager_view(worker_ids: list[str]) -> dict:
                             "current_job": active, "held_jobs": held, "durableBusy": durable_busy,
                             "safeToClose": bool(fresh and control["credentialGeneration"]
                                 and not control["dispatchEnabled"]
-                                and control["revision"] and state["paused"]
+                                and control["revision"] and state["paused"] and state.get("paused_observed") is True
                                 and state["activity"] in ("idle", "cooling", "resting", "waiting")
                                 and state["control_revision"] == control["revision"]
                                 and active is None and not held and not durable_busy),

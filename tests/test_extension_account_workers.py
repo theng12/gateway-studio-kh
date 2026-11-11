@@ -146,6 +146,37 @@ class AccountWorkersTests(unittest.TestCase):
         self.assertTrue(row["safeToClose"])
         self.assertIsNone(row["accountBinding"])
 
+    def test_close_requires_an_explicit_pause_observation(self):
+        for path in ("account", "state"):
+            for paused in (None, False, True):
+                with self.subTest(path=path, paused=paused):
+                    revision = self.control(dispatchEnabled=False, closeRequested=True).json()["workers"][0]["control"]["revision"]
+                    observation = observed_account(paused=paused, enabled=False, controlRevision=revision)
+                    if paused is None:
+                        observation.pop("paused")
+                        observation["paused_observed"] = True  # Untrusted input cannot invent presence.
+                    if path == "account":
+                        response = self.report(observation)
+                    else:
+                        state = {k: v for k, v in observation.items() if k in (
+                            "source", "observedAt", "paused", "paused_observed", "enabled", "activity", "controlRevision")}
+                        response = self.client.post("/api/workers/telemetry", headers=self.auth(), json={
+                            "workerId": "account-video", "kind": "video", "telemetry": {"state": state}})
+                    self.assertEqual(response.status_code, 200)
+                    row = self.status()["workers"][0]
+                    self.assertTrue(row["fresh"])
+                    self.assertEqual(row["safeToClose"], paused is True)
+                    self.assertEqual(row["state"]["paused"], True if paused is None else paused)
+
+    def test_omitted_pause_still_blocks_paid_claims(self):
+        observation = observed_account()
+        observation.pop("paused")
+        self.ready(observation)
+        job = ew.broker.offer("video", {"prompt": "scene"})
+        self.assertEqual(self.claim(self.quote(job)).status_code, 204)
+        self.assertEqual(job.state, "pending")
+        self.assertIsNone(runtime.store.get(job.gateway_job_id)["upstream_job_id"])
+
     def test_held_paid_job_prevents_account_rebind_and_safe_close_even_after_memory_reset(self):
         self.ready()
         job = ew.broker.offer("video", {"prompt": "scene"})
@@ -176,7 +207,7 @@ class AccountWorkersTests(unittest.TestCase):
 
     def test_scoped_credentials_never_inherit_loopback_admin_trust(self):
         for token in (self.token, self.manager):
-            for prefix in ("Bearer ", "Bearer   ", "bearer "):
+            for prefix in ("Bearer ", "Bearer   ", "bearer ", "Token ", "Token\t", " \tToken\t  ", "Bearer\t", "", " \t"):
                 headers = {"Authorization": prefix + token}
                 with self.subTest(prefix=prefix, manager=token == self.manager):
                     read = self.local.get("/admin/api/status", headers=headers)
@@ -185,7 +216,7 @@ class AccountWorkersTests(unittest.TestCase):
                     enable = self.local.put("/admin/api/extension-workers/accounts/enabled", headers=headers,
                                             json={"provider": "flow", "account_id": "fixture-account", "enabled": True})
                     for response in (read, mint, enable):
-                        self.assertEqual(response.status_code, 403, response.text)
+                        self.assertEqual(response.status_code, 403)
                         self.assertEqual(response.json()["code"], "WORKER_SCOPE_REFUSED")
 
     def test_new_control_revision_requires_ack_before_execution(self):

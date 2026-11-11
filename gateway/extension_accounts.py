@@ -111,6 +111,7 @@ def worker_state(value: Any, *, now: float) -> dict:
         if type(selected) is not bool:
             raise ValueError(f"{key} must be an explicit boolean")
         result[key] = selected
+    result["paused_observed"] = "paused" in value
     result["next_eligible_at"] = timestamp(value["nextEligibleAt"], now=now, future=True) if value.get("nextEligibleAt") is not None else None
     revision = value.get("controlRevision")
     if revision is not None and (not isinstance(revision, str) or not _ID.fullmatch(revision)):

@@ -82,8 +82,7 @@ def _key_matches(candidate: str) -> bool:
 
 def _refuse_worker_key(authorization: str | None) -> None:
     # A scoped worker/manager credential must never inherit this Mac's ambient admin trust.
-    text = (authorization or "").strip()
-    if text.lower().startswith("bearer ") and text[7:].strip().startswith("ekw_"):
+    if any(part.startswith("ekw_") for part in (authorization or "").split()):
         raise AdminError(403, "Worker and manager tokens only authorize their scoped worker routes.",
                          "WORKER_SCOPE_REFUSED")
 
