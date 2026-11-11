@@ -253,10 +253,12 @@ def main(argv: list[str]) -> int:
                 "evidence": str(evidence),
             }
         ]
-        document = {
-            "schema": 1,
-            "apps": [{"app": APP, "project": str(project), "releases": releases}],
-        }
+        entry = {"app": APP, "project": str(project), "releases": releases}
+        # This project's `_trash` is a symlink to the shared trash; the helper refuses a
+        # symlinked retirement folder unless the pin names the real directory it links to.
+        if (project / "_trash").is_symlink() and (project / "_trash").is_dir():
+            entry["retirement_trash"] = str(Path(os.path.realpath(project / "_trash")))
+        document = {"schema": 1, "apps": [entry]}
         # Scratch pins live inside the named project and are removed by the same
         # kind of ephemeral-temp cleanup the shared helper uses for its own stage.
         with tempfile.TemporaryDirectory(prefix="accept-release-", dir=project) as scratch:

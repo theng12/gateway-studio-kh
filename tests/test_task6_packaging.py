@@ -839,6 +839,43 @@ class AcceptanceHelper(unittest.TestCase):
             )
 
     @unittest.skipUnless(RELEASE_DIST_HELPER.is_file(), "shared release-dist helper is not present")
+    def test_a_symlinked_trash_retires_the_oldest_release_into_it(self) -> None:
+        """The repo's `_trash` is a symlink to the shared trash, which the helper refuses
+        unless the pin names the real folder; without that the third release cannot be
+        retired. This is the live 0.2.240/241/242 case."""
+        with tempfile.TemporaryDirectory(dir=RUN_ROOT) as temporary:
+            root = Path(os.path.realpath(temporary))
+            project, installed, evidence = self.base(root, "0.2.242")
+            dist = project / "dist"
+            trash = root / "shared-trash"
+            (trash / "dist").mkdir(parents=True)
+            (project / "_trash").symlink_to(trash, target_is_directory=True)
+            releases = []
+            for version, data in (("0.2.240", b"oldest"), ("0.2.241", b"prior")):
+                source = root / f"adopt-{version}.dmg"
+                source.write_bytes(data)
+                releases.append({"version": version, "source": str(source),
+                                 "sha256": hashlib.sha256(data).hexdigest(),
+                                 "bytes": len(data), "evidence": str(evidence)})
+            pins = root / "pins-pair.json"
+            pins.write_text(json.dumps({"schema": 1, "apps": [{
+                "app": "Gateway Studio KH", "project": str(project), "releases": releases,
+            }]}), encoding="utf-8")
+            adopted = subprocess.run([sys.executable, str(RELEASE_DIST_HELPER), str(pins)],
+                                     text=True, capture_output=True, check=False)
+            self.assertEqual(adopted.returncode, 0, adopted.stderr)
+
+            result = self.run_accept(project, self.candidate(root, "0.2.242"), "0.2.242",
+                                     installed, evidence)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((dist / "Gateway Studio KH-0.2.240.dmg").exists())
+            self.assertEqual(
+                (trash / "dist" / "Gateway Studio KH-0.2.240.dmg").read_bytes(), b"oldest")
+            self.assertTrue((dist / "Gateway Studio KH-0.2.241.dmg").is_file())
+            self.assertEqual((dist / "Gateway Studio KH-0.2.242.dmg").read_bytes(),
+                             b"new accepted bytes")
+
+    @unittest.skipUnless(RELEASE_DIST_HELPER.is_file(), "shared release-dist helper is not present")
     def test_repeating_the_same_version_is_allowed_only_when_bytes_match(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
