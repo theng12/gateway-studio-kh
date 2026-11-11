@@ -10,6 +10,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.242 — 2026-11-11
+
+- Browser workers can pair image, video and audio credentials separately. Optional browser providers stay off until deliberately enabled; audio still needs confirmed compatible provider limits before it can take work.
+- Browser account credits retain their observed source and age. Image and video workers on the same account share reservations; unknown charges stay held, and missing balances stay unknown.
+- A scoped browser manager can read its paired workers, pause future claims and request a safe close. Closing waits for fresh acknowledgments from every mapped worker and for active or held work to clear.
+- Saving browser pacing preserves the latest pause and close settings, including changes made by another manager. Saved pacing still needs acknowledgment from the worker.
+- Video requests preserve the selected model's supported controls and reject unsupported choices before execution. Native and web creation use the same request fields.
+- Full-image transfers to separate controllers can proceed together while transfers to the same controller remain protected. Release candidates are staged separately; the latest two verified released installers are retained after installed acceptance.
+
 ## 0.2.241 — 2026-11-09
 
 - Browser workers: the Story Studio Video Chrome extension can make Flow video for this Gateway. It is off until you switch it on, and the provider is off until you enable it. Pair a worker in the app on this Mac under Providers > Browser workers; the token is shown once.
