@@ -685,8 +685,9 @@ async def workers_manager_control(request: Request, authorization: str | None = 
                 or any(not isinstance(w, str) or w not in manager["worker_ids"] for w in worker_ids)):
             return _refusal(403, "MANAGER_SCOPE_REFUSED", "control only the exact paired worker scope")
         dispatch, close = body.get("dispatchEnabled"), body.get("closeRequested", False)
-        if type(dispatch) is not bool or type(close) is not bool or (close and dispatch):
-            raise ValueError("control needs dispatchEnabled boolean; close requires dispatch disabled")
+        pacing_only = "pacing" in body and "dispatchEnabled" not in body and "closeRequested" not in body
+        if not pacing_only and (type(dispatch) is not bool or type(close) is not bool or (close and dispatch)):
+            raise ValueError("control needs dispatchEnabled boolean or pacing only; close requires dispatch disabled")
         selected_pacing = extension_accounts.pacing(body["pacing"]) if "pacing" in body else None
         with admin_session._lock:
             rows = _rows()
@@ -695,8 +696,9 @@ async def workers_manager_control(request: Request, authorization: str | None = 
             revision, requested = uuid.uuid4().hex, time.time()
             for row in rows.values():
                 if row["worker_id"] in worker_ids and row["kind"] in KINDS and not row.get("revoked_at"):
-                    row.update(dispatch_enabled=dispatch, close_requested=close,
-                               control_revision=revision, control_requested_at=requested)
+                    if not pacing_only:
+                        row.update(dispatch_enabled=dispatch, close_requested=close)
+                    row.update(control_revision=revision, control_requested_at=requested)
                     if selected_pacing is not None:
                         row["pacing"] = selected_pacing
             admin_session._write(_tokens_path(), {"workers": rows})

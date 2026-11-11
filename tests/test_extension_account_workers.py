@@ -242,6 +242,45 @@ class AccountWorkersTests(unittest.TestCase):
         self.assertEqual(deficit["reserved"], 60)
         self.assertEqual(deficit["available"], -50)
 
+    def test_pacing_only_preserves_an_intervening_dispatch_or_close_change(self):
+        for cached, current in (((False, True), (True, False)), ((True, False), (False, True))):
+            with self.subTest(current=current):
+                stale = self.control(dispatchEnabled=cached[0], closeRequested=cached[1]).json()
+                changed = self.control(dispatchEnabled=current[0], closeRequested=current[1]).json()
+                self.assertNotEqual(stale["workers"][0]["control"]["revision"], changed["workers"][0]["control"]["revision"])
+                response = self.client.post("/api/workers/manager/control", headers=self.auth(self.manager), json={
+                    "worker_ids": ["account-video"], "pacing": {"minSeconds": 0, "maxSeconds": 0}})
+                self.assertEqual(response.status_code, 200)
+                control = response.json()["workers"][0]["control"]
+                self.assertEqual((control["dispatchEnabled"], control["closeRequested"]), current)
+                self.assertEqual(control["pacing"], {"minSeconds": 0, "maxSeconds": 0})
+                self.assertNotEqual(control["revision"], changed["workers"][0]["control"]["revision"])
+
+    def test_bulk_pacing_only_preserves_each_workers_independent_controls(self):
+        ew.mint("account-image", "image")
+        manager = ew.mint("pacing-manager", "manager", worker_ids=["account-video", "account-image"])
+        self.control(dispatchEnabled=True)
+        self.client.post("/api/workers/manager/control", headers=self.auth(manager), json={
+            "worker_ids": ["account-image"], "dispatchEnabled": False, "closeRequested": True})
+        response = self.client.post("/api/workers/manager/control", headers=self.auth(manager), json={
+            "worker_ids": ["account-video", "account-image"], "pacing": {"minSeconds": 0, "maxSeconds": 5}})
+        self.assertEqual(response.status_code, 200)
+        rows = {row["worker_id"]: row["control"] for row in response.json()["workers"]}
+        self.assertEqual((rows["account-video"]["dispatchEnabled"], rows["account-video"]["closeRequested"]), (True, False))
+        self.assertEqual((rows["account-image"]["dispatchEnabled"], rows["account-image"]["closeRequested"]), (False, True))
+        for row in rows.values():
+            self.assertEqual(row["pacing"], {"minSeconds": 0, "maxSeconds": 5})
+        self.assertEqual(rows["account-video"]["revision"], rows["account-image"]["revision"])
+
+    def test_incomplete_or_mixed_pacing_only_requests_do_not_write(self):
+        revision = self.control(dispatchEnabled=False, closeRequested=True).json()["workers"][0]["control"]["revision"]
+        for invalid in ({}, {"pacing": None}, {"pacing": {"minSeconds": 0, "maxSeconds": 1}, "closeRequested": True},
+                        {"pacing": {"minSeconds": 0, "maxSeconds": 1}, "dispatchEnabled": None}):
+            response = self.client.post("/api/workers/manager/control", headers=self.auth(self.manager), json={
+                "worker_ids": ["account-video"], **invalid})
+            self.assertEqual(response.status_code, 422)
+            self.assertEqual(self.status()["workers"][0]["control"]["revision"], revision)
+
     def test_credential_generation_persists_and_remint_invalidates_close_readback(self):
         response = self.control(dispatchEnabled=False, closeRequested=True)
         control = response.json()["workers"][0]["control"]
