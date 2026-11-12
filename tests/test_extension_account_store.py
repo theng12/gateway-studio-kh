@@ -316,7 +316,6 @@ class AccountReserveTests(_Base):
     def test_reserve_requires_known_fresh_matching_balance_and_quote(self) -> None:
         cases = [
             ("ACCOUNT_CREDITS", {"balance": 1.0}, {}),
-            ("ACCOUNT_BALANCE_UNKNOWN", {"balance": None}, {}),
             ("ACCOUNT_BALANCE_STALE", {"balance": 10.0, "balance_observed_at": 900.0}, {}),
             ("ACCOUNT_STALE", {"now": 900.0, "balance": 10.0}, {"now": 1000.0}),
             ("ACCOUNT_BALANCE_UNIT", {"balance": 10.0},
@@ -342,6 +341,21 @@ class AccountReserveTests(_Base):
                               quote=reserve_quote, **reserve_args),
                     code,
                 )
+
+    def test_an_unreadable_balance_is_claimable_and_reported_as_null(self) -> None:
+        """A signed-in, ready account with no readable balance may claim; null is not zero."""
+        self.eligible(balance=None)
+        row = self.reserve(self.job(), worker_job_id="wj-null-balance")
+        self.assertEqual(row["state"], "reserved")
+        self.assertIsNone(row["available_after"])
+
+    def test_a_known_balance_still_refuses_a_quote_it_cannot_cover(self) -> None:
+        """The overdraw guard is untouched: a quote above the balance refuses, an exact one passes."""
+        self.eligible(balance=10.0)
+        self.assertEqual(self.code(self.reserve, self.job(), worker_job_id="wj-over", value=11.0),
+                         "ACCOUNT_CREDITS")
+        self.assertEqual(self.reserve(self.job(), worker_job_id="wj-exact",
+                                      value=10.0)["available_after"], 0.0)
 
     def test_held_reservation_blocks_even_a_fresh_balance_until_a_known_outcome(self) -> None:
         self.eligible()

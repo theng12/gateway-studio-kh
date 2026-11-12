@@ -1650,14 +1650,16 @@ class JobStore:
                 if now < account["next_eligible_at"]:
                     raise ExtensionAccountRefused("ACCOUNT_NOT_ELIGIBLE_YET",
                                                   "the account is not eligible for paid work yet")
-                if account["balance_value"] is None:
-                    raise ExtensionAccountRefused("ACCOUNT_BALANCE_UNKNOWN",
-                                                  "the account has not reported a balance")
-                if not self._acc_fresh(account["balance_observed_at"],
-                                       account["balance_received_at"], now=now, max_age=max_age):
+                # An unreadable balance does not block the claim: the price is what authorizes spend,
+                # and the worker's page refuses the generation if the account cannot afford it. When a
+                # balance was observed it is still checked, and an over-quote is refused below.
+                balance_known = account["balance_value"] is not None
+                if balance_known and not self._acc_fresh(account["balance_observed_at"],
+                                                        account["balance_received_at"],
+                                                        now=now, max_age=max_age):
                     raise ExtensionAccountRefused("ACCOUNT_BALANCE_STALE",
                                                   "the balance is older than max_age")
-                if account["balance_unit"] != quote["unit"]:
+                if balance_known and account["balance_unit"] != quote["unit"]:
                     raise ExtensionAccountRefused("ACCOUNT_BALANCE_UNIT",
                                                   "the quote unit does not match the balance unit")
                 held = self._conn.execute(
@@ -1707,13 +1709,15 @@ class JobStore:
                         "ACCOUNT_BALANCE_UNIT",
                         "a live reservation on this account uses a different credit unit",
                     )
-                available = float(account["balance_value"]) - sum(
-                    float(row["total"] or 0) for row in live_rows)
-                if quote["value"] > available + 1e-9:
-                    raise ExtensionAccountRefused(
-                        "ACCOUNT_CREDITS",
-                        f"the quote {quote['value']:g} exceeds the available {available:g}",
-                    )
+                available = None
+                if balance_known:
+                    available = float(account["balance_value"]) - sum(
+                        float(row["total"] or 0) for row in live_rows)
+                    if quote["value"] > available + 1e-9:
+                        raise ExtensionAccountRefused(
+                            "ACCOUNT_CREDITS",
+                            f"the quote {quote['value']:g} exceeds the available {available:g}",
+                        )
                 reservation_id = uuid.uuid4().hex
                 self._conn.execute(
                     "INSERT INTO extension_account_reservations "
@@ -1745,7 +1749,7 @@ class JobStore:
                 self._conn.rollback()
                 raise
         result = self._reservation_row(row)
-        result["available_after"] = available - quote["value"]
+        result["available_after"] = None if available is None else available - quote["value"]
         result["upstream_job_id"] = canonical
         return result
 
