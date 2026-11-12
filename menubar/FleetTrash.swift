@@ -148,6 +148,7 @@ enum FleetTrash {
             } else {
                 alert.addButton(withTitle: "OK")
             }
+            alert.closeOnEscape()
             switch alert.runModal() {
             case .alertSecondButtonReturn: move([report], done: done)
             case .alertThirdButtonReturn: confirmDelete([report], done: done)
@@ -182,6 +183,7 @@ enum FleetTrash {
                 alert.addButton(withTitle: "Move All to macOS Trash")
                 alert.addButton(withTitle: "Delete Permanently on All…")
             }
+            alert.closeOnEscape()
             switch alert.runModal() {
             case .alertSecondButtonReturn: move(deletable, done: done)
             case .alertThirdButtonReturn: confirmDelete(deletable, done: done)
@@ -248,6 +250,7 @@ enum FleetTrash {
             })
         }
         sure.addButton(withTitle: "Cancel")
+        sure.closeOnEscape()
         let delete = sure.addButton(withTitle: reports.count == 1 ? "Delete Permanently" : "Delete Permanently on \(reports.count) Macs")
         if #available(macOS 11.0, *) { delete.hasDestructiveAction = true }
         guard sure.runModal() == .alertSecondButtonReturn else { return }

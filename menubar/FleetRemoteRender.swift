@@ -386,6 +386,7 @@ enum FleetRemoteRender {
         alert.accessoryView = form.view
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Close")
+        alert.closeOnEscape()
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         // Two independent kinds of change, each saved one Mac at a time so a refusal is named
         // against the Mac it belongs to. The exemption runs first: it is the narrower switch, and

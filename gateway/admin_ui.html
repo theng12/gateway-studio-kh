@@ -9769,6 +9769,30 @@ async function signOut() {
     else if (state.view === 'fleet') loadFleet();
     else if (state.view === 'jobs') loadJobs();
   }, 15000);
+
+  // Owner rule (2026-11-12): Escape must work everywhere. A dialog or menu closes with the
+  // browser's own Escape; an Escape typed in a search or filter field clears it in place instead —
+  // and never while a dialog is open, where the dialog's Escape wins.
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    const field = event.target;
+    if (!(field instanceof HTMLInputElement) || !field.value) return;
+    if (field.type !== 'search' && field.type !== 'text') return;
+    if (field.closest('dialog[open]')) return;
+    field.value = '';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    event.preventDefault();
+  }, true);
+  // A dialog closed with Escape runs none of its buttons, so the pending action each one started
+  // is cleared on close, however it closed.
+  for (const [id, clear] of [
+    ['fleet-dialog', () => { fleetDialogState = null; }],
+    ['shelf-retire-dialog', () => { shelfRetirePending = null; }],
+    ['shelf-remove-dialog', () => { shelfRemovePending = null; }],
+  ]) {
+    const dialog = document.getElementById(id);
+    if (dialog) dialog.addEventListener('close', clear);
+  }
 })();
 </script>
 </body>

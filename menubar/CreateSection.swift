@@ -1029,7 +1029,7 @@ final class CreateWorkspace: NSView {
             ?? "Submission outcome is unknown. Retry the same attempt or start a new draft; do not submit another request."
         retryAttemptButton?.isHidden = false
         newDraftButton?.isHidden = false
-        cancelButton?.isHidden = true
+        showCancel(false)
         updateGenerateEnabled()
     }
 
@@ -1319,7 +1319,7 @@ final class CreateWorkspace: NSView {
             let terminal = ["succeeded", "failed", "cancelled"].contains(state)
             pendingJobID = terminal ? nil : id
             render(job)
-            cancelButton?.isHidden = terminal
+            showCancel(!terminal)
             if lane.modality == "chat" { clearPrompt() }
             persistState()
             if terminal {
@@ -1364,7 +1364,7 @@ final class CreateWorkspace: NSView {
                 let state = job["state"] as? String ?? ""
                 let terminal = ["succeeded", "failed", "cancelled"].contains(state)
                 self.pendingJobID = terminal ? nil : id
-                self.cancelButton?.isHidden = terminal
+                self.showCancel(!terminal)
                 self.setEditingEnabled(terminal && self.ambiguousAttempt == nil)
                 self.persistState()
                 if terminal {
@@ -1387,6 +1387,13 @@ final class CreateWorkspace: NSView {
         updateActions()
         setEditingEnabled(ambiguousAttempt == nil)
         refreshModels()
+    }
+
+    /// While a generation is running the Cancel button is this page's running action, so it answers
+    /// Escape too (owner rule 2026-11-12). Hidden, it must not keep a key equivalent alive.
+    private func showCancel(_ visible: Bool) {
+        cancelButton?.isHidden = !visible
+        cancelButton?.keyEquivalent = visible ? "\u{1b}" : ""
     }
 
     @objc private func cancel() {

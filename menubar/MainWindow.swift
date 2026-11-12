@@ -389,6 +389,31 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         completionHandler(alert.runModal() == .alertFirstButtonReturn)
     }
 
+    /// **The page's Rename and Network buttons were dead in the app without this.** The web Fleet
+    /// page asks for a new name with `prompt()`; a WKUIDelegate that does not implement this panel
+    /// silently answers null, so pressing Rename did nothing at all. Cancel answers Escape, as for
+    /// every other dialog.
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (String?) -> Void
+    ) {
+        let alert = NSAlert()
+        // The page writes a title, then a blank line, then what the change will and will not do.
+        let parts = prompt.components(separatedBy: "\n\n")
+        alert.messageText = parts.first ?? prompt
+        alert.informativeText = parts.dropFirst().joined(separator: "\n\n")
+        let field = NSTextField(string: defaultText ?? "")
+        field.frame = NSRect(x: 0, y: 0, width: 340, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        completionHandler(alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil)
+    }
+
     /// Errors from the page were being swallowed whole. Now they are shown.
     func webView(
         _ webView: WKWebView,
@@ -401,6 +426,7 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
+        alert.closeOnEscape()
         alert.runModal()
         completionHandler()
     }

@@ -257,6 +257,17 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
 
     func controlTextDidChange(_ obj: Notification) { searchChanged() }
 
+    /// Escape clears the search field, in this page's own context (owner rule 2026-11-12):
+    /// the keyboard never leaves the owner in a filtered list with no way out but the pointer.
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard commandSelector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        if !searchField.stringValue.isEmpty {
+            searchField.stringValue = ""
+            searchChanged()
+        }
+        return true
+    }
+
     @objc private func refreshVoices() {
         summaryLabel.stringValue = "Discovering voices…"
         GatewayAPI.post("/admin/api/voices/refresh") { [weak self] result in
@@ -381,6 +392,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                 : "Replace \(name) (\(Self.clipLabel(voice["duration_seconds"], voice["imported_at"])))")
         }
         alert.addButton(withTitle: "Skip")
+        alert.closeOnEscape()
         let index = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
         if index == 0 { return "keep_both" }
         if index >= 1, index <= existing.count, let id = existing[index - 1]["id"] as? String {
@@ -441,6 +453,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             alert.informativeText = notes.joined(separator: "\n\n")
             alert.alertStyle = .informational
             alert.addButton(withTitle: "OK")
+            alert.closeOnEscape()
             alert.runModal()
         }
 
@@ -1157,6 +1170,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
             alert.informativeText = note
             alert.alertStyle = .informational
             alert.addButton(withTitle: "OK")
+            alert.closeOnEscape()
             alert.runModal()
             report("No local reference clip for this voice.", ok: true)
             return
@@ -1207,6 +1221,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         alert.alertStyle = .informational
         alert.accessoryView = scroll
         alert.addButton(withTitle: "OK")
+        alert.closeOnEscape()
         alert.runModal()
         report("Checked \(models.count) local models.", ok: true)
     }
@@ -1282,6 +1297,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
                     alert.informativeText = failures.joined(separator: "\n\n")
                     alert.alertStyle = .warning
                     alert.addButton(withTitle: "OK")
+                    alert.closeOnEscape()
                     alert.runModal()
                 }
                 self.reload()

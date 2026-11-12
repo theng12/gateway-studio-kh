@@ -1693,6 +1693,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         + "read, so no Mac was chosen and nothing was changed. Start the Gateway, "
                         + "then try again."
                     alert.addButton(withTitle: "OK")
+                    alert.closeOnEscape()
                     alert.runModal()
                     return
                 }
@@ -1703,6 +1704,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     alert.informativeText = "No Mac on the fleet answered with a machine id, so "
                         + "there is nothing to open. Refresh the fleet, then try again."
                     alert.addButton(withTitle: "OK")
+                    alert.closeOnEscape()
                     alert.runModal()
                     return
                 }
@@ -1782,6 +1784,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.alertStyle = .informational
             alert.addButton(withTitle: "OK")
             alert.addButton(withTitle: "Restart Gateway")
+            alert.closeOnEscape()
             if alert.runModal() == .alertSecondButtonReturn {
                 GatewayController.shared.confirmIfBusy("Restart") { if $0 { GatewayController.shared.restartCleanly() } }
             }

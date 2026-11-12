@@ -92,6 +92,7 @@ extension FleetStartup {
             force.informativeText = first.sentence + "\n\nRestart anyway and interrupt that work?"
             force.addButton(withTitle: "Wait")
             force.addButton(withTitle: "Restart Anyway")
+            force.closeOnEscape()
             guard force.runModal() == .alertSecondButtonReturn else { done(); return }
             request(machine, action, force: true) { forced in
                 if !forced.ok { show("\(action.title) failed on \(name)", forced.sentence) }
@@ -105,6 +106,7 @@ extension FleetStartup {
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = detail
+        alert.closeOnEscape()
         alert.runModal()
     }
 

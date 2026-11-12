@@ -1139,6 +1139,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Close the Hold")
         alert.addButton(withTitle: "Keep It Open")
+        alert.closeOnEscape()
         return alert.runModal() == .alertFirstButtonReturn
     }
 
@@ -1154,6 +1155,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Discard")
         alert.addButton(withTitle: "Keep Waiting")
+        alert.closeOnEscape()
         return alert.runModal() == .alertFirstButtonReturn
     }
 

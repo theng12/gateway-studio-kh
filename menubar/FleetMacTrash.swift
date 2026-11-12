@@ -99,6 +99,7 @@ extension FleetMacTrash {
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = detail
+        alert.closeOnEscape()
         alert.runModal()
     }
 

@@ -796,3 +796,59 @@ final class CreatePageLayout: NSView {
         caption.isHidden = text.isEmpty
     }
 }
+
+// MARK: - Escape closes every dialog
+
+/// Owner rule (2026-11-12): Escape closes dialogs, sheets, popovers and menus everywhere.
+///
+/// AppKit maps Escape to a button titled **Cancel** by itself — measured: a two-button alert with
+/// Cancel closes, and `alertSecondButtonReturn` comes back. But an alert with only **OK**, or with
+/// no buttons at all, or one offering Wait / Restart Anyway, ignores Escape completely (measured:
+/// the window stayed up). `closeOnEscape()` watches for Escape while its alert is the key window
+/// and ends it as cancelled, so none of those dialogs traps the keyboard.
+private final class EscapeCloser {
+    private var monitor: Any?
+    private var token: NSObjectProtocol?
+
+    init(window: NSWindow) {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak window] event in
+            guard let window, event.keyCode == 53, window.isVisible,
+                  window.isKeyWindow || NSApp.modalWindow === window else { return event }
+            if let parent = window.sheetParent {
+                parent.endSheet(window, returnCode: .cancel)
+            } else {
+                NSApp.stopModal(withCode: .cancel)
+                window.orderOut(nil)
+            }
+            return nil
+        }
+        token = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in self?.stop() }
+    }
+
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        if let token { NotificationCenter.default.removeObserver(token) }
+        token = nil
+    }
+
+    deinit { stop() }
+}
+
+private nonisolated(unsafe) var escapeCloserKey: UInt8 = 0
+
+extension NSAlert {
+    /// See `EscapeCloser`. Only needed where no Cancel button answers Escape; calling it twice is safe.
+    @discardableResult
+    func closeOnEscape() -> NSAlert {
+        if objc_getAssociatedObject(self, &escapeCloserKey) == nil {
+            objc_setAssociatedObject(
+                self, &escapeCloserKey, EscapeCloser(window: window),
+                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            )
+        }
+        return self
+    }
+}
