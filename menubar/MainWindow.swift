@@ -481,6 +481,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         "what's new",
         // Analytics is index 15, appended with the section it names — see `build()`.
         "analytics",
+        "support",
     ]
 
     /// The View menu follows the sidebar, with What's New last.
@@ -595,6 +596,8 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             // and a single missed entry would silently point a sidebar row at the wrong page. A new
             // section goes on the end and `layout` places it where it belongs on screen.
             ConsoleSection.analytics,
+            // Index 16: reachable from the sidebar footer's Support button, never a sidebar row.
+            SupportSection.shared,
         ]
 
         let window = NSWindow(
@@ -644,15 +647,16 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         support.font = TextRole.secondary.font
         support.image = NSImage(systemSymbolName: "heart", accessibilityDescription: nil)
         support.imagePosition = .imageLeading
-        support.toolTip = "Open the donation page in your browser"
+        support.toolTip = "What supporting the app pays for"
 
         // Two lines: the name over the version is the only form that fits beside the two icon
-        // buttons in a 220 pt sidebar.
+        // buttons in a 220 pt sidebar. No indents and tail truncation per line: with 11 pt of
+        // head/tail indent the 11 pt semibold name (104.7 pt) wrapped onto a second line, which
+        // pushed the version to a third and the 34 pt pill clipped it away.
         let pill = SidebarPillButton(title: "", target: self, action: #selector(openWhatsNew))
         let paragraph = NSMutableParagraphStyle()
-        paragraph.headIndent = 11
-        paragraph.tailIndent = -11
         paragraph.lineSpacing = 1
+        paragraph.lineBreakMode = .byTruncatingTail
         let title = NSMutableAttributedString(string: "Gateway Studio KH\n", attributes: [
             .font: TextRole.captionStrong.font,
             .foregroundColor: NSColor.labelColor,
@@ -920,7 +924,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         statusTimer = tick
     }
 
-    @objc private func openSupport() { _ = SupportLink.openDonationPage() }
+    @objc private func openSupport() { show(section: "support") }
     @objc private func openUpdateStudio() { _ = UpdateChecker.shared.openUpdateStudio() }
     @objc private func checkForUpdates() {
         UpdateChecker.shared.check { [weak self] _ in self?.updateStatusLine() }

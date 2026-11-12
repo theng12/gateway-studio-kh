@@ -10,6 +10,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.246 — 2026-11-12
+
+- **Support this app** now opens a page in the app that says what support pays for, who receives it and how, with the donation page behind a button. The sidebar no longer jumps straight to the browser.
+- The sidebar footer shows the app name over its **version** again, and clicking it opens **What's New**. Before, the name wrapped to a second line inside the pill, so the version was clipped away and the pill looked dead.
+- **Settings → Appearance** offers System, Light or Dark — the fourth "Default" palette is gone. An install that saved it falls back to System.
+- Browser workers: an audio job is offered once the extension's live report lists both the model and the voice, instead of being refused after that check passed. The audio extension still cannot claim until it sends an account and a quote.
+
+---
+
 ## 0.2.245 — 2026-11-12
 
 - **One navigation list.** Create (Image, Audio, Video, Music, Subtitle, Chat), Library (Models, Voices, Jobs, Analytics, Content Packs), Connection (Providers, Fleet) and App (Settings) — no page appears twice, and What's New is reached from the version pill instead of taking a row of its own.
