@@ -62,6 +62,16 @@ class EveryAlertClosesOnEscapeTest(unittest.TestCase):
         self.assertIn("showCancel(!terminal)", source)
         self.assertIn("func showCancel(_ visible: Bool)", source)
 
+    def test_a_selected_table_row_clears_on_escape(self):
+        """Jobs and Voices: Esc never silently does nothing when a row is selected."""
+        design = (MENUBAR / "PageKit.swift").read_text()
+        self.assertIn("final class EscapeClearingTableView: NSTableView", design)
+        self.assertIn("event.keyCode == 53", design)
+        self.assertIn("deselectAll(nil)", design)
+        for name in ["JobsWindow.swift", "VoicesWindow.swift"]:
+            self.assertIn("table = EscapeClearingTableView()", (MENUBAR / name).read_text(),
+                          f"{name} keeps a table that ignores Escape with a row selected")
+
     def test_the_native_voices_search_clears_on_escape(self):
         source = (MENUBAR / "VoicesWindow.swift").read_text()
         self.assertIn("doCommandBy commandSelector: Selector", source)

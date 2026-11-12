@@ -797,6 +797,21 @@ final class CreatePageLayout: NSView {
     }
 }
 
+// MARK: - Escape clears a table's selection
+
+/// A table whose Escape clears the selected row (owner rule 2026-11-12): in a page whose table has
+/// a selection, Escape does something defined and harmless instead of nothing. The destructive
+/// actions stay explicit buttons.
+final class EscapeClearingTableView: NSTableView {
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, !selectedRowIndexes.isEmpty {
+            deselectAll(nil)
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
 // MARK: - Escape closes every dialog
 
 /// Owner rule (2026-11-12): Escape closes dialogs, sheets, popovers and menus everywhere.

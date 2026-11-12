@@ -172,7 +172,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
             filterPopup, showRemovedBox, NSView(), clearFailedButton, resolveAllButton, summaryLabel,
         ]), to: root)
 
-        table = NSTableView()
+        table = EscapeClearingTableView()
         table.dataSource = self
         table.delegate = self
         table.rowHeight = DS.Size.row

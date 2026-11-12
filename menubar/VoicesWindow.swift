@@ -142,7 +142,7 @@ final class VoicesSection: NSObject, AppSection, NSTableViewDataSource, NSTableV
         ])
         PageKit.addFull(byIdBar, to: root)
 
-        table = NSTableView()
+        table = EscapeClearingTableView()
         table.dataSource = self
         table.delegate = self
         table.rowHeight = DS.Size.row
