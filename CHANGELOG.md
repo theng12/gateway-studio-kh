@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.249 — 2026-11-12
+
+- **Launch at login is registered the supported way.** The agent's plist now ships inside the app and is registered with the system, so turning it off or deleting the app removes its record instead of leaving a dead entry pointing at a file that no longer exists. An older launch-at-login file from a previous version is removed on first launch, so a Mac that upgraded has one record, not two.
+
+---
+
 ## 0.2.248 — 2026-11-12
 
 - **Browser workers read at a glance.** One line per worker — name, online, last seen, paired, credits — with the actions beside it and the detail behind a Details expand.

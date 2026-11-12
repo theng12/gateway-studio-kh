@@ -14,13 +14,15 @@
 //    surfaces its state. Bundling a Python runtime would make the app
 //    self-contained but would also mean shipping a second copy of the
 //    interpreter; the directory path is therefore a setting.
-//  * Launch-at-login uses a LaunchAgent rather than `SMAppService.mainApp`.
-//    It predates the stable signing identity (0.2.239) and works whatever the
-//    signature; it is on by default and switchable off (`LoginDefault`).
+//  * Launch-at-login is an `SMAppService.agent` whose plist ships inside the
+//    bundle (`Contents/Library/LaunchAgents/`), so it moves with the app and
+//    unregistering removes its background-item record. It is on by default and
+//    switchable off (`LoginDefault`).
 //  * Status is polled from the gateway's own `/health`, so what the menu shows
 //    is what the service actually reports, not what the app hopes is true.
 
 import Cocoa
+import ServiceManagement
 import WebKit
 
 // MARK: - App paths
@@ -1137,20 +1139,32 @@ enum OrphanSweep {
 
 enum LaunchAgent {
     static let label = "kh.gateway.menubar"
+    /// The agent registered through `SMAppService`: its plist ships inside this bundle at
+    /// `Contents/Library/LaunchAgents/`, so it travels with the app and **unregistering removes the
+    /// background-item record**. The old raw `~/Library/LaunchAgents` plist did not — measured
+    /// 2026-11-12, three stale `kh.gateway.menubar` rows survived an uninstall.
+    static let service = SMAppService.agent(plistName: "\(label).plist")
 
+    /// Where the plist lives now, in the bundle (for messages and tests).
     static var plistURL: URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LaunchAgents/\(label).plist")
+    }
+
+    /// The pre-SMAppService location. Nothing writes it any more; it is removed so a machine that
+    /// had one keeps a single launch-at-login record instead of two.
+    static var legacyPlistURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
             .appendingPathComponent("\(label).plist")
     }
 
     static var isInstalled: Bool {
-        FileManager.default.fileExists(atPath: plistURL.path)
+        service.status == .enabled || FileManager.default.fileExists(atPath: legacyPlistURL.path)
     }
 
-    /// The program the owner's plist currently starts, if it can be read.
-    static var installedExecutable: String? {
-        guard let data = try? Data(contentsOf: plistURL),
+    /// The legacy plist's program, read only to decide whether it still points at this app.
+    static var legacyExecutable: String? {
+        guard let data = try? Data(contentsOf: legacyPlistURL),
               let plist = try? PropertyListSerialization.propertyList(
                   from: data, options: [], format: nil
               ) as? [String: Any],
@@ -1159,47 +1173,36 @@ enum LaunchAgent {
         return arguments.first
     }
 
-    /// The executable is renamed between releases, so a plist written by an older
-    /// build is rewritten in place: same label, same owner choice. The duplicate
-    /// this bootstrap starts exits on its own (see the single-instance guard).
+    /// Registering is idempotent, so "repair" is: drop the legacy plist if one is left, and make
+    /// sure the service is registered. The executable path is no longer stored anywhere by hand —
+    /// that is what let an old path strand the agent after a rename.
     static func repairIfNeeded(current: String?) {
-        guard isInstalled, let current, installedExecutable != current else { return }
-        install()
+        removeLegacyPlist()
+        guard !isInstalled else { return }
+        if ConfigStore.shared.config.launchAtLoginOptedOut != true {
+            install()
+        }
     }
 
     static func install() {
-        guard let executable = Bundle.main.executableURL?.resolvingSymlinksInPath().path else { return }
-        let directory = plistURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        let plist: [String: Any] = [
-            "Label": label,
-            // `--background` keeps a login launch quiet: starting at login should
-            // put the icon in the menu bar, not open a window in your face.
-            "ProgramArguments": [executable, "--background"],
-            "RunAtLoad": true,
-            // Only auto-launch if it died; a user quit stays quit.
-            "KeepAlive": ["SuccessfulExit": false],
-            "ProcessType": "Interactive",
-        ]
-        if let data = try? PropertyListSerialization.data(
-            fromPropertyList: plist, format: .xml, options: 0
-        ) {
-            try? data.write(to: plistURL)
+        removeLegacyPlist()
+        do {
+            try service.register()
+        } catch {
+            NSLog("launch-at-login could not be registered: %@", error.localizedDescription)
         }
-        reload()
     }
 
     static func uninstall() {
-        let domain = "gui/\(getuid())"
-        _ = runLaunchctl(["bootout", "\(domain)/\(label)"])
-        try? FileManager.default.removeItem(at: plistURL)
+        // Unregistering is what clears the background-item row; removing the old plist alone did not.
+        try? service.unregister()
+        removeLegacyPlist()
     }
 
-    private static func reload() {
-        let domain = "gui/\(getuid())"
-        _ = runLaunchctl(["bootout", "\(domain)/\(label)"])
-        _ = runLaunchctl(["bootstrap", domain, plistURL.path])
+    private static func removeLegacyPlist() {
+        guard FileManager.default.fileExists(atPath: legacyPlistURL.path) else { return }
+        _ = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
+        try? FileManager.default.removeItem(at: legacyPlistURL)
     }
 
     @discardableResult

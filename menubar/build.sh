@@ -511,6 +511,36 @@ echo "==> stamping the build"
 # was built, because two builds of the same commit are still two builds.
 BUILD_ID="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)-$(date -u +%Y%m%d%H%M)"
 echo "$BUILD_ID" > "$APP/Contents/Resources/gateway/BUILD"
+
+# Launch at login is an SMAppService agent: its plist lives inside the bundle, so it travels with
+# the app and unregistering removes the background-item record. A raw ~/Library/LaunchAgents plist
+# does not — measured 2026-11-12, three stale kh.gateway.menubar rows survived an uninstall.
+LAGENTS="$APP/Contents/Library/LaunchAgents"
+mkdir -p "$LAGENTS"
+cat > "$LAGENTS/kh.gateway.menubar.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>kh.gateway.menubar</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/gateway-kh.app/Contents/MacOS/Gateway Studio KH</string>
+		<string>--background</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>
+PLIST
 # `gateway.__version__` (and so `/api/version`) reads `VERSION` from beside the package.
 [ -f "$ROOT/VERSION" ] && cp "$ROOT/VERSION" "$APP/Contents/Resources/gateway/VERSION"
 echo "    build $BUILD_ID"
