@@ -357,6 +357,16 @@ class AccountReserveTests(_Base):
         self.assertEqual(self.reserve(self.job(), worker_job_id="wj-exact",
                                       value=10.0)["available_after"], 0.0)
 
+    def test_a_free_job_claims_at_zero_and_a_priced_job_still_refuses(self) -> None:
+        """Images are free: a zero quote on a zero balance reserves, and priced work still refuses."""
+        self.eligible(balance=0.0)
+        free = self.reserve(self.job(), worker_job_id="wj-free", value=0.0)
+        self.assertEqual(free["state"], "reserved")
+        self.assertEqual(free["quote_value"], 0.0)
+        self.assertEqual(free["available_after"], 0.0)
+        self.assertEqual(self.code(self.reserve, self.job(), worker_job_id="wj-priced", value=1.0),
+                         "ACCOUNT_CREDITS")
+
     def test_held_reservation_blocks_even_a_fresh_balance_until_a_known_outcome(self) -> None:
         self.eligible()
         self.reserve(self.job())

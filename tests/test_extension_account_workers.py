@@ -97,6 +97,19 @@ class AccountWorkersTests(unittest.TestCase):
         self.assertEqual(repeated.status_code, 409)
         self.assertNotIn("job", repeated.json())
 
+    def test_a_zero_priced_job_claims_end_to_end(self):
+        """A free image is a literal 0 quote: it must claim, and 0 must never read as "no price"."""
+        self.assertEqual(ea.credits({"value": 0, "unit": "credits", "source": "flow.nzlxg",
+                                     "observedAt": iso()}, now=time.time())["value"], 0)
+        self.ready(observed_account(balance={"value": 0, "unit": "credits",
+                                             "source": "fixture.balance", "observedAt": iso()}))
+        job = ew.broker.offer("video", {"prompt": "scene"})
+        answer = self.claim(self.quote(job, value=0))
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(answer.json()["reservation"]["value"], 0)
+        self.assertEqual(answer.json()["reservation"]["unit"], "credits")
+        self.assertEqual(answer.json()["job"], job.payload)
+
     def test_unknown_balance_and_reset_never_become_free_daily_allowance(self):
         """A null balance stays unknown: the claim may proceed on a stated price, never on a zero."""
         self.ready(observed_account(balance=None, resetAt=None))
