@@ -317,7 +317,9 @@ def main() -> None:
     env = seed(args.support, upstream.server_address[1])
     seed_jobs(env)
     gateway_port = free_port()
-    env.update({"GATEWAY_HOST": "127.0.0.1", "GATEWAY_PORT": str(gateway_port)})
+    env.update({"GATEWAY_HOST": "127.0.0.1", "GATEWAY_PORT": str(gateway_port),
+                # The pairing endpoint file is real behavior; a render must never touch the owner's ~/.kh.
+                "GATEWAY_ENDPOINT_FILE": str(args.support / "gateway-endpoint.json")})
     child_env = dict(os.environ, **env)
     log = (args.support / "gateway.log").open("w")
     gateway = subprocess.Popen([sys.executable, "-m", "uvicorn", "gateway.api:app", "--host", "127.0.0.1",
