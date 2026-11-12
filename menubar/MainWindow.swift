@@ -649,15 +649,13 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         support.imagePosition = .imageLeading
         support.toolTip = "What supporting the app pays for"
 
-        // Two lines: the name over the version is the only form that fits beside the two icon
-        // buttons in a 220 pt sidebar. No indents and tail truncation per line: with 11 pt of
-        // head/tail indent the 11 pt semibold name (104.7 pt) wrapped onto a second line, which
-        // pushed the version to a third and the 34 pt pill clipped it away.
+        // One line (owner standard 2026-11-12): the name and version stay on a single line and the
+        // name truncates rather than wrapping, so the 34 pt pill can never grow a second row or
+        // clip the version away.
         let pill = SidebarPillButton(title: "", target: self, action: #selector(openWhatsNew))
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 1
         paragraph.lineBreakMode = .byTruncatingTail
-        let title = NSMutableAttributedString(string: "Gateway Studio KH\n", attributes: [
+        let title = NSMutableAttributedString(string: "Gateway Studio KH ", attributes: [
             .font: TextRole.captionStrong.font,
             .foregroundColor: NSColor.labelColor,
             .paragraphStyle: paragraph,
@@ -668,8 +666,9 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             .paragraphStyle: paragraph,
         ]))
         pill.attributedTitle = title
-        pill.cell?.wraps = true
-        pill.cell?.usesSingleLineMode = false
+        pill.cell?.wraps = false
+        pill.cell?.usesSingleLineMode = true
+        pill.cell?.lineBreakMode = .byTruncatingTail
         pill.alignment = .left
         pill.isBordered = false
         pill.wantsLayer = true
@@ -695,7 +694,10 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         pillRow.orientation = .horizontal
         pillRow.alignment = .centerY
         pillRow.spacing = DS.Space.s
-        let statusRow = NSStackView(views: [statusLine, support, pillRow])
+        // One tidy column, pinned to the bottom (owner standard 2026-11-12): the Support row,
+        // then the pill and its update buttons on one centred line, then the single status line.
+        // Equal 16 pt insets left and right, one 8 pt spacing, nothing floating.
+        let statusRow = NSStackView(views: [support, pillRow, statusLine])
         statusRow.orientation = .vertical
         statusRow.alignment = .leading
         statusRow.spacing = DS.Space.s
