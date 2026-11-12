@@ -1375,17 +1375,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// is real, so it is one checkbox away in Settings — but the safe thing is now
     /// the default, and the app says which build is running either way.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if ConfigStore.shared.config.keepGatewayRunning == true {
-            return .terminateNow
+        // Quit takes the service down with it, Keep running setting or not: leaving the helper
+        // behind strips the only icon while something still serves the port, and the next
+        // launch merely adopts it. stopAnything also covers a gateway this launch adopted.
+        var replied = false
+        func finish(_ ok: Bool) {
+            guard !replied else { return }
+            replied = true
+            NSApp.reply(toApplicationShouldTerminate: ok)
         }
         GatewayController.shared.confirmIfBusy("Quit") { ok in
-            if ok {
-                guard GatewayController.shared.stop() else {
-                    NSApp.reply(toApplicationShouldTerminate: false)
-                    return
-                }
-            }
-            NSApp.reply(toApplicationShouldTerminate: ok)
+            guard ok else { return finish(false) }
+            // A wedged backend must not keep the app alive forever.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 25) { finish(true) }
+            GatewayController.shared.stopAnything { stopped in finish(stopped) }
         }
         return .terminateLater
     }
@@ -1476,8 +1479,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // applicationShouldTerminate already applied the Keep running setting and
-        // stopped the child when needed. There is no second lifecycle action here.
+        // applicationShouldTerminate stopped the gateway before allowing the exit.
+        // There is no second lifecycle action here.
     }
 
     // MARK: Menu
