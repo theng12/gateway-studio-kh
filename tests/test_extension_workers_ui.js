@@ -23,7 +23,8 @@ function esc(value) {
 }
 
 function el(value = '') {
-  return { value, innerHTML: '', textContent: '', className: '', disabled: false, style: {}, dataset: {} };
+  return { value, innerHTML: '', textContent: '', className: '', disabled: false, style: {}, dataset: {},
+    type: 'text', setAttribute() {}, getAttribute() { return null; } };
 }
 
 function page({ inApp = true, answers = [] } = {}) {
@@ -52,6 +53,46 @@ function page({ inApp = true, answers = [] } = {}) {
 function failure(status, message = 'x', ambiguous = false) {
   return Object.assign(new Error(message), { status, ambiguous });
 }
+
+test('a minted token is masked, and Show reveals it without losing the value', async () => {
+  const { context, nodes } = page();
+  const field = nodes['ew-token-value'];
+  field.value = 'ekw_secret';
+  field.type = 'password';
+  const btn = el();
+  context.ewTokenReveal(btn);
+  assert.equal(field.type, 'text');
+  assert.equal(btn.textContent, 'Hide');
+  assert.equal(field.value, 'ekw_secret');
+  context.ewTokenReveal(btn);
+  assert.equal(field.type, 'password');
+  assert.equal(btn.textContent, 'Show');
+});
+
+test('the page says plainly that a token cannot be read again', () => {
+  assert.ok(source.includes('stored as a hash'), 'the hash explanation is missing');
+  assert.ok(source.includes('never read again'), 'the reason it cannot be re-shown is missing');
+  assert.ok(source.includes('Rotate'), 'no rotate path is offered');
+});
+
+test('Rotate posts the same worker and kind, shows a new token, and says dispatch is off', async () => {
+  const { context, calls, nodes } = page({ answers: [{ token: 'ekw_new' }] });
+  const btn = el();
+  await context.ewRotate('chrome-<a>', 'video', btn);
+  assert.deepEqual(calls[0][0], '/extension-workers');
+  assert.equal(calls[0][1], 'POST');
+  assert.deepEqual(JSON.parse(calls[0][2]), { worker_id: 'chrome-<a>', kind: 'video' });
+  assert.equal(nodes['ew-token-value'].value, 'ekw_new');
+  assert.equal(nodes['ew-token-value'].type, 'password');
+  assert.ok(nodes['ew-msg'].textContent.includes('dispatch is off'));
+  assert.equal(btn.disabled, false);
+});
+
+test('an unknown rotate outcome says so rather than inviting a second attempt', async () => {
+  const { context, nodes } = page({ answers: [failure(500, 'boom', true)] });
+  await context.ewRotate('chrome-<a>', 'video', el());
+  assert.ok(nodes['ew-msg'].textContent.includes('Not known whether the token was rotated'));
+});
 
 const WORKER = {
   worker_id: 'chrome-<a>', kind: 'video', has_live_token: true, online: true,
