@@ -29,6 +29,8 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 `~/Library/Application Support/gateway-kh/` holds `.env`, `data/` (sqlite, artifacts, credentials), `extension-workers.json` and the menubar state file. None of it is inside the bundle, so an update does not disturb it — keep it that way.
 
+**After any update on 1301, re-check the linkage in three commands:** `/api/workers/health` answers 401 without a token (the switch is on) rather than 404; `kh.gateway.menubar` is loaded and running the installed bundle; and Relay's `settings.json` still reads `gateway_url: http://127.0.0.1:8787`. An update replaces the bundle, so a launch agent or login item that hard-codes a path is what breaks — the agents must self-heal to the running bundle, not trust that a plist exists.
+
 ## Invariants
 
 - **Never take the owner's desktop:** no foreground launches, no synthetic input, hidden launches with `open -g -j`.
