@@ -11,14 +11,25 @@ SETTINGS = (ROOT / "menubar" / "SettingsSection.swift").read_text()
 
 
 class AppearanceTests(unittest.TestCase):
-    def test_modes_have_the_four_raw_values(self):
+    def test_modes_are_exactly_system_light_and_dark(self):
+        """Owner's call: three choices, no fourth "Default" palette."""
         self.assertRegex(APPEARANCE, r"case system, light, dark\b")
-        self.assertIn('case appDefault = "default"', APPEARANCE)
         self.assertIn("enum AppearanceMode: String, CaseIterable", APPEARANCE)
+        self.assertNotIn("appDefault", APPEARANCE)
+        self.assertNotIn('"default"', APPEARANCE)
+        # No user-visible "Default" wording survives in the picker or its detail line.
+        self.assertNotIn("Default", APPEARANCE)
+        self.assertNotIn("Default", SETTINGS[SETTINGS.index('section("Appearance"'):][:400])
+
+    def test_a_stored_default_reads_as_system(self):
+        """0.2.245's first cut saved "default"; those installs must land on System, not fall through."""
+        current = APPEARANCE[APPEARANCE.index("static var current"):]
+        self.assertIn("return .system", current)
+        self.assertIn("AppearanceMode(rawValue: value) ?? .system", current)
 
     def test_appearance_mapping(self):
         for case, value in (("system", "nil"), ("light", "NSAppearance(named: .aqua)"),
-                            ("dark", "NSAppearance(named: .darkAqua)"), ("appDefault", "nil")):
+                            ("dark", "NSAppearance(named: .darkAqua)")):
             self.assertIn(f"case .{case}: NSApp.appearance = {value}", APPEARANCE)
 
     def test_config_and_launch(self):

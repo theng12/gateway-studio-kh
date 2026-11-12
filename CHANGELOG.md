@@ -14,7 +14,7 @@ every feature title, and they are left as they were written.
 
 - **One navigation list.** Create (Image, Audio, Video, Music, Subtitle, Chat), Library (Models, Voices, Jobs, Analytics, Content Packs), Connection (Providers, Fleet) and App (Settings) — no page appears twice, and What's New is reached from the version pill instead of taking a row of its own.
 - **A calmer sidebar footer.** One line for the gateway's state, **Support this app** (the donation page), then the app name and version as a pill that opens What's New, with an icon-only **Check for Updates**. When the Update Studio feed offers a newer version a small download icon appears; the app never installs anything itself, it hands that to Update Studio KH.
-- **Settings → Appearance:** System (the default), Light, Dark or Default, applied to the whole app and its console and remembered across launches.
+- **Settings → Appearance:** System (the default), Light or Dark, applied to the whole app and its console and remembered across launches.
 - **Overview** now names this Mac and its build, so the footer no longer has to.
 
 ## 0.2.244 — 2026-11-12
