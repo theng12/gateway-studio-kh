@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.251 — 2026-11-13
+
+- **Update opens Studio Launcher KH.** Gateway checks the signed feed but never installs anything itself; the download button now opens the Launcher, the only app that installs updates. If the Launcher is not installed, Gateway says so instead of doing nothing.
+
+---
+
 ## 0.2.250 — 2026-11-13
 
 - **The sidebar footer is one tidy column.** Support, then the version pill on one line (the name shortens instead of wrapping), the icon-only Check for Updates button, and one status line — equal insets, pinned to the bottom.
