@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
@@ -25,6 +26,8 @@ BUILD_SCRIPT = ROOT / "menubar" / "build.sh"
 # realpath the base too: $TMPDIR is `/var/...`, a link to `/private/var`, and `..` past it in a
 # relative path lands outside `/`.
 ARTIFACT_ROOT = Path(os.path.realpath(tempfile.mkdtemp(prefix="gateway-task6-packaging-")))
+# The staged bundle is ~700 MB; without this every run leaves a copy in TMPDIR, failed runs too.
+atexit.register(shutil.rmtree, ARTIFACT_ROOT, ignore_errors=True)
 RUN_ROOT = Path(tempfile.mkdtemp(prefix="run-", dir=ARTIFACT_ROOT))
 PY_VERSION = "3.11.16"
 PY_TAG = "20260901"
