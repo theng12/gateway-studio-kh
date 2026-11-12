@@ -10,6 +10,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.250 — 2026-11-13
+
+- **The sidebar footer is one tidy column.** Support, then the version pill on one line (the name shortens instead of wrapping), the icon-only Check for Updates button, and one status line — equal insets, pinned to the bottom.
+- **Escape now works everywhere.** It closes dialogs, sheets and popovers, clears a search field and clears a selected row, in the app and in the console; typing into a prompt opened by the console (Fleet Rename, Network) now works instead of being ignored.
+- **Apps on this Mac can pair automatically.** Settings → Local apps, on by default: the app writes `~/.kh/gateway-endpoint.json` (mode 0600, rewritten on every launch) with the Gateway's URL, a machine id and a narrow pairing token. That token can only mint a worker token for a worker id over loopback — never the Gateway API key. Turning the switch off removes the file and revokes the token; pairing a Gateway on another Mac stays manual.
+- **Secrets stay in the app's own data folder.** Provider keys and guest records live in the app data directory, mode 0600. The agent connector now reads its guest key from the MCP client's env block, so nothing in the app or the connector touches the macOS Keychain.
+
+---
+
 ## 0.2.249 — 2026-11-12
 
 - **Launch at login is registered the supported way.** The agent's plist now ships inside the app and is registered with the system, so turning it off or deleting the app removes its record instead of leaving a dead entry pointing at a file that no longer exists. An older launch-at-login file from a previous version is removed on first launch, so a Mac that upgraded has one record, not two.
