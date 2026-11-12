@@ -256,9 +256,10 @@ def _first_stated(*values):
 def _audio_payload(request: BackendRequest) -> dict:
     """Validate audio against the copied policy and authenticated worker discovery.
 
-    Schema 1 claim inventories establish exact live membership, not compatible pairs or required
-    provider limits. Until those are established, no audio job is offered. Caller params never
-    supply discovery authority or bypass the missing compatibility evidence.
+    The copied catalogue states the limits (max_chars, speed_range, autoTag/providerSettings) and a
+    schema 1 claim inventory states live membership, so a pair is offered when both ids are members of
+    one fresh complete observation and those limits pass. Neither provider publishes per-pair
+    compatibility, so nothing more is inferred. Caller params never supply discovery authority.
     """
     params = request.params
     provider = str(params.get("provider") or "").strip()
@@ -329,13 +330,23 @@ def _audio_payload(request: BackendRequest) -> dict:
         if unknown:
             raise _refuse(f"{provider} does not support providerSettings "
                           f"{', '.join(sorted(unknown))}")
+    # A pair is supported when both ids are members of the same provider entry of the fresh, complete,
+    # live inventory that arrived with the claim (checked above against the copied catalogue's limits).
     if not ew.broker.audio_member({"provider": provider, "model": model_key, "voice": voice}):
         raise _unavailable(
             f"{provider} audio needs fresh authenticated worker discovery for {model_key!r}/{voice!r}; "
             "no audio job is offered")
-    raise _unavailable(
-        f"{provider} discovery confirms model and voice membership, but compatible pairs and required "
-        "provider limits are not established; no audio job is offered")
+    # Wire v1 (`TTS_JOB_SCHEMA`): jobId is added by the broker when the job is offered.
+    return {
+        "kind": "audio",
+        "provider": provider,
+        "model": model_key,
+        "voice": voice,
+        "text": text,
+        **({"speed": speed} if speed is not None else {}),
+        **({"autoTag": auto_tag} if auto_tag is not None else {}),
+        **({"providerSettings": provider_settings} if provider_settings is not None else {}),
+    }
 
 
 class ChromeExtensionBackend:

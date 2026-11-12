@@ -86,7 +86,7 @@ def audio_inventory_max_bytes() -> int:
 
 
 def audio_inventory(value: Any, now: float) -> dict:
-    """Schema 1 proves current membership only; it states no compatible pairs or provider limits."""
+    """Schema 1 states current membership; limits come from the copied catalogue, not from here."""
     if not isinstance(value, dict) or type(value.get("schema")) is not int or value["schema"] != 1:
         raise ValueError("audioInventory must use schema 1")
     providers = value.get("providers")
@@ -312,7 +312,11 @@ class _Broker:
                 and payload.get("voice") in data.get("voices", ()))
 
     def audio_member(self, payload: dict) -> bool:
-        """Discovery preflight only, never proof that the model/voice pair can be generated."""
+        """Whether a live worker's inventory lists both ids for the provider: the pair evidence there is.
+
+        Neither provider publishes per-pair compatibility, so membership in one fresh complete
+        observation is what the Gateway can state; the copied catalogue supplies the limits.
+        """
         with admin_session._lock, self._lock:
             rows, now = _rows(), time.time()
             return any(_current_worker(entry, rows)

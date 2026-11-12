@@ -236,17 +236,41 @@ class AudioInventoryTests(unittest.TestCase):
             self.assertIn("1024 bytes", response.json()["detail"])
             self.assertFalse(ew.broker.audio_member(self.payload))
 
-    def test_membership_is_not_compatibility_and_caller_cannot_authorize_it(self):
+    def test_confirmed_member_pair_is_offered_and_caller_cannot_authorize_it(self):
+        """Membership in the live inventory is the pair evidence; a caller-supplied one is not."""
         from gateway.adapters.base import BackendError, BackendRequest
         from gateway.adapters.chrome_extension import ChromeExtensionBackend
         self.claim(self.inventory())
         request = BackendRequest(provider_id="story-studio-audio", model_id="s2.1-pro", modality="tts",
                                  params={"provider": "fish", "voice_id": "voice-a", "text": "hello",
                                          "_worker_inventory": {"compatible": True}}, values={}, base_url="")
-        with patch.object(ew.broker, "offer") as offer, self.assertRaises(BackendError) as caught:
+        reached = BackendError("offer reached", code="OFFER_REACHED", upstream_accepted=False)
+        with patch.object(ew.broker, "online", return_value=True), \
+                patch.object(ew.broker, "offer", side_effect=reached) as offer:
+            with self.assertRaises(BackendError) as caught:
+                ChromeExtensionBackend().generate(request)
+        self.assertEqual(caught.exception.code, "OFFER_REACHED")
+        offer.assert_called_once()
+        payload = offer.call_args.args[1]
+        self.assertEqual(payload["model"], "s2.1-pro")
+        self.assertEqual(payload["voice"], "voice-a")
+        # Wire v1 TTS_JOB_SCHEMA; the broker adds jobId when it offers the job.
+        self.assertTrue({"kind", "provider", "voice", "text", "model"} <= set(payload))
+
+    def test_an_unlisted_voice_is_refused_never_offered(self):
+        """No membership means no pair evidence, so the job is refused rather than guessed at."""
+        from gateway.adapters.base import BackendError, BackendRequest
+        from gateway.adapters.chrome_extension import ChromeExtensionBackend
+        self.claim(self.inventory())
+        request = BackendRequest(provider_id="story-studio-audio", model_id="s2.1-pro", modality="tts",
+                                 params={"provider": "fish", "voice_id": "voice-not-listed", "text": "hi"},
+                                 values={}, base_url="")
+        with patch.object(ew.broker, "online", return_value=True), \
+                patch.object(ew.broker, "offer") as offer, \
+                self.assertRaises(BackendError) as caught:
             ChromeExtensionBackend().generate(request)
         self.assertEqual(caught.exception.code, "WORKER_INVENTORY_UNAVAILABLE")
-        self.assertIn("compatible pairs", str(caught.exception))
+        self.assertIn("needs fresh authenticated worker discovery", str(caught.exception))
         offer.assert_not_called()
 
 
