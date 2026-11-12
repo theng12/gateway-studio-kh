@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.247 — 2026-11-12
+
+- **A gateway from an older build is never adopted.** If something older is still serving the port, the app stops it and starts its own; if it will not stop, the app says which build is holding the port instead of pretending.
+- **A leftover helper from a replaced app is stopped at launch.** Nothing the app starts can outlive its bundle: a helper nobody owns is stopped before the app starts its own. On 1301 this also removes the stale `gatewayDir` pointer, so that Mac no longer records a checkout path that does not exist.
+
+---
+
 ## 0.2.246 — 2026-11-12
 
 - **Support this app now explains the donation before opening your browser.** It opens a page in the app first — what support pays for, who receives it and how — and the donation page is a button on that page.
