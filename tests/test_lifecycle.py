@@ -28,6 +28,19 @@ class LifecycleTests(unittest.TestCase):
         for steal in ("activate(", "NSApp.activate", "makeKeyAndOrderFront"):
             self.assertNotIn(steal, guard)
 
+    def test_a_gateway_from_another_build_is_never_adopted(self):
+        """Measured on 1301: a 0.2.241 helper out of an updater trash folder served :8787 after
+        0.2.246 was installed, and the new app adopted it. A foreign build must be replaced."""
+        start = MAIN[MAIN.index("func start()"):]
+        start = start[:start.index("/// Probe first, then stop whatever is serving the port")]
+        self.assertIn("self.probedBuild", start)
+        self.assertIn("served != GatewayController.shared.appBuild", start)
+        self.assertIn("and did not stop", start)      # it says so instead of pretending
+        probe = MAIN[MAIN.index("func probeExisting("):]
+        probe = probe[:probe.index("private func spawn(")]
+        self.assertIn('json["build"] as? String', probe)
+        self.assertIn("self?.probedBuild = build", probe)
+
     def test_uninstall_removes_the_launch_agent(self):
         uninstall = MAIN[MAIN.index("static func uninstall()"):]
         uninstall = uninstall[:uninstall.index("private static func reload()")]

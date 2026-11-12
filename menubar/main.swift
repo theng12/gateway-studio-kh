@@ -445,6 +445,8 @@ final class GatewayController {
     private var lifecycleGeneration = 0
     /// Pid of a gateway this app adopted rather than spawned.
     private var adoptedProcess: BackendIdentity?
+    /// The build string the last probe found listening, so `start()` can refuse a foreign build.
+    private var probedBuild: String?
     private var adoptedPid: pid_t? { adoptedProcess?.pid }
 
     /// Start time distinguishes a stopped backend from an unrelated reused PID.
@@ -626,6 +628,21 @@ final class GatewayController {
             guard let self, self.isStarting, !self.stopping,
                   self.lifecycleGeneration == generation else { return }
             if alive {
+                if let served = self.probedBuild, served != GatewayController.shared.appBuild {
+                    // **Never adopt another build's gateway.** A leftover helper from an older
+                    // bundle answers /health perfectly well, so adopting it would run old code
+                    // behind a new app — measured on 1301: a 0.2.241 helper out of an updater
+                    // trash folder served :8787 after 0.2.246 was installed. Stop it, then start
+                    // ours; if it will not stop, say so instead of pretending.
+                    self.isStarting = false
+                    guard self.stop() else {
+                        self.publish(.failed("A gateway from build \(served) is serving \(self.port) and did not stop. Quit Gateway Studio KH, then start it again."))
+                        return
+                    }
+                    self.isStarting = true
+                    self.start()
+                    return
+                }
                 self.isStarting = false
                 // Adopting a gateway that is still shutting down used to leave
                 // `stopping == true`, which is only ever cleared inside `spawn`.
@@ -681,10 +698,12 @@ final class GatewayController {
         URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             var found: pid_t?
+            var build: String?
             if code == 200, let data,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let raw = json["pid"] as? Int, raw > 0, raw <= Int(Int32.max) {
                 found = pid_t(raw)
+                build = json["build"] as? String
             }
             DispatchQueue.main.async {
                 guard self?.lifecycleGeneration == generation else { completion(false); return }
@@ -695,6 +714,9 @@ final class GatewayController {
                 if let found, let identity = BackendIdentity(found) {
                     self?.adoptedProcess = identity
                 }
+                // What the listener says it is running; a mismatch with our own build is why
+                // `start()` refuses to adopt it.
+                self?.probedBuild = build
                 completion(code == 200)
             }
         }.resume()
