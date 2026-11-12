@@ -3983,8 +3983,10 @@ function ewCard(w) {
   const held = (w.held_jobs || []).length
     ? `<div class="hint">Held, outcome unknown: ${w.held_jobs.map(esc).join(', ')}</div>` : '';
   // Actions sit with the facts they change, not at the bottom of a tall block.
+  // The consequence is beside the button, before it is pressed: rotate re-mints, and a minted
+  // token always has dispatch off. 1301-image-1 being armed makes that a silent queue otherwise.
   const rotate = IN_APP && w.has_live_token
-    ? `<button class="sm" type="button" data-ew-rotate="${esc(w.worker_id)}" data-ew-kind="${esc(w.kind || '')}" onclick="ewRotate(this.dataset.ewRotate, this.dataset.ewKind, this)">Rotate</button>` : '';
+    ? `<button class="sm" type="button" title="Issues a new token: the old one stops working and dispatch turns off until you arm it again" data-ew-rotate="${esc(w.worker_id)}" data-ew-kind="${esc(w.kind || '')}" onclick="ewRotate(this.dataset.ewRotate, this.dataset.ewKind, this)">Rotate</button>` : '';
   const unpair = IN_APP && w.has_live_token
     ? `<button class="sm" type="button" data-ew-revoke="${esc(w.worker_id)}" onclick="ewRevoke(this.dataset.ewRevoke, this)">Unpair</button>` : '';
   const scope = IN_APP && w.has_live_token
@@ -3995,7 +3997,10 @@ function ewCard(w) {
         <b>${esc(w.worker_id)}</b> <span class="badge">${w.online ? 'online' : 'offline'}</span>
         <div class="hint" style="margin-top:2px">last seen ${ewAgo(w.last_seen_at)} · ${key} · ${credits}</div>
       </div>
-      <div class="row" style="gap:6px;flex:0 0 auto">${scope}${rotate}${unpair}</div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex:0 0 auto">
+        <div class="row" style="gap:6px">${scope}${rotate}${unpair}</div>
+        ${rotate ? '<div class="hint" style="margin:0;font-size:11px">Rotate turns dispatch off</div>' : ''}
+      </div>
     </div>
     <details style="margin-top:6px">
       <summary class="hint">Details</summary>

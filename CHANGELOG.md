@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.248 — 2026-11-12
+
+- **Browser workers read at a glance.** One line per worker — name, online, last seen, paired, credits — with the actions beside it and the detail behind a Details expand.
+- **A token can be shown, copied or replaced.** It is masked until Show, Copy is right there, and Rotate issues a new one. The page says plainly that a token is stored as a hash, so it can be replaced but never read again — and that **Rotate turns dispatch off** until you arm it again.
+
+---
+
 ## 0.2.247 — 2026-11-12
 
 - **A gateway from an older build is never adopted.** If something older is still serving the port, the app stops it and starts its own; if it will not stop, the app says which build is holding the port instead of pretending.

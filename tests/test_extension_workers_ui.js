@@ -54,6 +54,13 @@ function failure(status, message = 'x', ambiguous = false) {
   return Object.assign(new Error(message), { status, ambiguous });
 }
 
+test('the rotate consequence sits beside the button, not only after clicking', () => {
+  const { context } = page();
+  const html = context.ewCard(WORKER);
+  assert.ok(html.includes('Rotate turns dispatch off'), 'the visible hint is missing');
+  assert.ok(html.includes('title="Issues a new token'), 'the button has no title');
+});
+
 test('a minted token is masked, and Show reveals it without losing the value', async () => {
   const { context, nodes } = page();
   const field = nodes['ew-token-value'];
