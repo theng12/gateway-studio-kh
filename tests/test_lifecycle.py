@@ -56,5 +56,28 @@ class LifecycleTests(unittest.TestCase):
             self.assertNotIn(forbidden, segment[:segment.index("private static func reload()")])
 
 
+
+class BundleRunnerTests(unittest.TestCase):
+    """Owner, 2026-11-12: background runners live inside the app bundle — deleting the app deletes
+    the runner, and nothing an app starts may outlive or point outside its bundle."""
+
+    def test_every_runner_path_is_derived_from_the_bundle(self):
+        paths = MAIN[MAIN.index("enum AppPaths {"):]
+        paths = paths[:paths.index("// MARK: - Configuration")]
+        self.assertIn("Bundle.main.bundleURL", paths)
+        self.assertIn("Contents/Helpers/Gateway Studio KH Helper.app/Contents/MacOS/Gateway Studio KH Helper", paths)
+        self.assertIn('appendingPathComponent("python/bin/python3")', paths)
+        self.assertIn('appendingPathComponent("gateway", isDirectory: true)', paths)
+        for absolute in ('"/Applications/', '"/Users/', '"/opt/', '"/usr/local/'):
+            self.assertNotIn(absolute, paths)
+
+    def test_the_bundle_runtime_wins_over_a_checkout(self):
+        runtime = MAIN[MAIN.index("var runtime: Runtime {"):]
+        runtime = runtime[:runtime.index("var isReady")]
+        self.assertLess(runtime.index("AppPaths.bundledSource"), runtime.index("gatewayDir"))
+        # The checkout is the documented developer fallback, and only when the bundle has no runtime.
+        self.assertIn("The app has no bundled runtime and there is no .venv", runtime)
+
+
 if __name__ == "__main__":
     unittest.main()
