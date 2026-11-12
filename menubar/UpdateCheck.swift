@@ -16,7 +16,8 @@ final class UpdateChecker {
 
     private init() {}
 
-    // This app never installs anything: it reads the Launcher/Update Studio feed and hands installs to Update Studio KH.
+    // This app never installs anything (owner rule 2026-11-13): it reads the signed Launcher feed and
+    // hands every install to Studio Launcher KH, the only installer. It may check the feed itself.
     func check(completion: @escaping (UpdateState) -> Void) {
         DispatchQueue.main.async {
             self.state = .checking
@@ -47,7 +48,7 @@ final class UpdateChecker {
               url.host?.isEmpty == false,
               let keyData = Data(base64Encoded: config.publicKey),
               let key = try? Curve25519.Signing.PublicKey(rawRepresentation: keyData) else {
-            completion(.unknown("Update Studio KH is not set up on this Mac."))
+            completion(.unknown("Studio Launcher KH is not set up on this Mac."))
             return
         }
 
@@ -104,8 +105,9 @@ final class UpdateChecker {
         return numbers
     }
 
-    func openUpdateStudio() -> Bool {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.khupdater.app") else {
+    /// Open Studio Launcher KH — the only installer. The app itself never installs, mounts or unpacks.
+    func openLauncher() -> Bool {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.khupdater.launcher") else {
             return false
         }
         return NSWorkspace.shared.open(url)

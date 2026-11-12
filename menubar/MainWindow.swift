@@ -704,7 +704,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
         for (button, symbol, action, tooltip) in [
             (updateButton, "arrow.clockwise", #selector(checkForUpdates), "Check for Updates"),
-            (availableButton, "arrow.down.circle", #selector(openUpdateStudio), ""),
+            (availableButton, "arrow.down.circle", #selector(openLauncher), ""),
         ] {
             button.target = self
             button.action = action
@@ -953,7 +953,17 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     @objc private func openSupport() { show(section: "support") }
-    @objc private func openUpdateStudio() { _ = UpdateChecker.shared.openUpdateStudio() }
+    /// Updates go through Studio Launcher KH only (owner rule 2026-11-13). A missing Launcher is said
+    /// plainly rather than leaving the download button looking dead.
+    @objc private func openLauncher() {
+        guard !UpdateChecker.shared.openLauncher() else { return }
+        let alert = NSAlert()
+        alert.messageText = "Studio Launcher KH is not installed"
+        alert.informativeText = "Install Studio Launcher KH to update Gateway Studio KH; it is the only app that installs updates."
+        alert.addButton(withTitle: "OK")
+        alert.closeOnEscape()
+        alert.runModal()
+    }
     @objc private func checkForUpdates() {
         UpdateChecker.shared.check { [weak self] _ in self?.updateStatusLine() }
         updateStatusLine()
@@ -986,7 +996,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         case .available(let version):
             suffix = " · \(version) available"
             availableButton.isHidden = false
-            availableButton.toolTip = "Gateway Studio KH \(version) is available — open Update Studio KH"
+            availableButton.toolTip = "Gateway Studio KH \(version) is available — open Studio Launcher KH"
         case .unknown(let reason): tooltip += " · \(reason)"
         case .idle, .checking: break
         }

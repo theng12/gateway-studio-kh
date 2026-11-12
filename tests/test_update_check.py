@@ -11,7 +11,7 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertIn('config.feedURL', SOURCE)
         self.assertIn('config.publicKey', SOURCE)
         self.assertNotRegex(SOURCE, r'https?://')
-        self.assertIn('Update Studio KH is not set up on this Mac.', SOURCE)
+        self.assertIn('Studio Launcher KH is not set up on this Mac.', SOURCE)
 
     def test_verifies_before_decoding_payload(self):
         self.assertIn('Curve25519.Signing.PublicKey(rawRepresentation:', SOURCE)
@@ -31,7 +31,9 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertIn('timeoutInterval: 10', SOURCE)
         self.assertIn('.reloadIgnoringLocalCacheData', SOURCE)
         self.assertIn('DispatchQueue.main.async', SOURCE)
-        self.assertIn('com.khupdater.app', SOURCE)
+        # Studio Launcher KH is the only installer (owner rule 2026-11-13); never Update Studio.
+        self.assertIn('com.khupdater.launcher', SOURCE)
+        self.assertNotIn('com.khupdater.app', SOURCE)
         self.assertIn('NSWorkspace.shared', SOURCE)
 
     def test_no_installer_or_shell(self):
