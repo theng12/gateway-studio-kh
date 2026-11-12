@@ -36,6 +36,8 @@ final class SettingsSection: NSObject, AppSection {
     private var loginCheck: NSButton!
     private var autoStartCheck: NSButton!
     private var keepRunningCheck: NSButton!
+    private var pairingCheck: NSButton!
+    private var pairingStatus: NSTextField!
     private var statusLabel: NSTextField!
     private var publisherKeyHexLabel: NSTextField!
     /// The whole key, kept beside the label so Copy can hand over exactly what is shown and never
@@ -246,6 +248,21 @@ final class SettingsSection: NSObject, AppSection {
         section("Alerts", alerts.rows, in: root)
         // ---- the password a phone browser signs in with at /admin (gateway/admin_session.py)
         section("Browser password", browserPassword.rows, in: root)
+        // ---- automatic pairing for apps on this Mac (gateway/pairing.py)
+        pairingCheck = NSButton(
+            checkboxWithTitle: "Allow local apps to pair automatically",
+            target: self, action: #selector(togglePairing)
+        )
+        pairingCheck.setAccessibilityLabel("Allow local apps to pair automatically")
+        pairingStatus = PageKit.label("Reading…", .secondary, colour: .secondaryLabelColor, wrapping: true)
+        section("Local apps", [
+            PageKit.formRow("Pairing", [pairingCheck]),
+            PageKit.help(
+                "The pairing token can only mint a worker token for a worker id on this Mac; "
+                + "it cannot read providers, change settings, publish, or act as admin."
+            ),
+            pairingStatus,
+        ], in: root)
         // ---- backups (keys, credentials, roster, voices): gateway/backup.py
         section("Backups", backups.rows(), in: root)
 
@@ -342,7 +359,53 @@ final class SettingsSection: NSObject, AppSection {
         telegram.load()
         alerts.load()
         browserPassword.load()
+        loadPairing()
         backups.reload()
+    }
+
+    /// The automatic-pairing switch and where its file is. The token itself is never shown here.
+    private func loadPairing() {
+        GatewayAPI.get("/admin/api/settings/pairing") { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.pairingCheck?.state = .off
+                self.pairingCheck?.isEnabled = false
+                self.pairingStatus?.stringValue =
+                    "Pairing settings unavailable — \(error.localizedDescription)"
+            case .success(let payload):
+                let on = (payload["enabled"] as? Bool) ?? true
+                self.pairingCheck?.isEnabled = true
+                self.pairingCheck?.state = on ? .on : .off
+                if on, let file = payload["endpoint_file"] as? String {
+                    self.pairingStatus?.stringValue = "On — a local app reads \(file)."
+                } else if on {
+                    self.pairingStatus?.stringValue =
+                        "On, but no file is written while the gateway does not listen on loopback."
+                } else {
+                    self.pairingStatus?.stringValue =
+                        "Off — the file is removed and the pairing token is revoked."
+                }
+            }
+        }
+    }
+
+    @objc private func togglePairing() {
+        let wanted = pairingCheck.state == .on
+        pairingCheck.isEnabled = false
+        GatewayAPI.put("/admin/api/settings/pairing", body: ["enabled": wanted]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.loadPairing()
+            case .failure(let error):
+                // The box goes back to what the gateway still has; the reason stays on the page.
+                self.pairingCheck?.isEnabled = true
+                self.pairingCheck?.state = wanted ? .off : .on
+                self.pairingStatus?.stringValue =
+                    "Could not change pairing — \(error.localizedDescription)"
+            }
+        }
     }
 
     private func fill(_ field: NSTextField?, _ value: String) {

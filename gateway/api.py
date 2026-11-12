@@ -785,6 +785,11 @@ async def lifespan(_: FastAPI):
     from . import model_share
 
     model_share.resume_on_startup()
+    # The endpoint file local apps read (`~/.kh/gateway-endpoint.json`), written on every launch
+    # while its switch is on; off removes the file and revokes the token (`pairing`).
+    from . import pairing
+
+    pairing.sync_on_startup()
     # The gateway only *receives* artifacts; Story Studio keeps the copy that
     # matters. Without this the directory grew without bound.
     retention.start_pruner()

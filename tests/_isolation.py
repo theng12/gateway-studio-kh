@@ -47,6 +47,7 @@ def sandbox_env(prefix: str = "gateway-test-"):
         "GATEWAY_CREDENTIALS": str(root / "data" / "credentials.json"),
         "GATEWAY_MODEL_CACHE": str(root / "data" / "models_cache.json"),
         "GATEWAY_ENV_FILE": str(root / ".env"),
+        "GATEWAY_ENDPOINT_FILE": str(root / "gateway-endpoint.json"),
         "GATEWAY_FLEET": str(root / "fleet.json"),
         "GATEWAY_VOICES": str(root / "voices.json"),
         "GATEWAY_VOICES_OUT": str(root / "voices.json"),

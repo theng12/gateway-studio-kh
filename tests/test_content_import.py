@@ -34,6 +34,7 @@ os.environ.update(
         "GATEWAY_CREDENTIALS": str(_TEMP_ROOT / "data" / "credentials.json"),
         "GATEWAY_MODEL_CACHE": str(_TEMP_ROOT / "data" / "models_cache.json"),
         "GATEWAY_ENV_FILE": str(_TEMP_ROOT / ".env"),
+        "GATEWAY_ENDPOINT_FILE": str(_TEMP_ROOT / "gateway-endpoint.json"),
         "GATEWAY_NO_MIGRATE": "1",
         # A customer's Mac has no Story Studio checkout. Point the source at a path
         # that does not exist, which is what "no source" means to the shelf.

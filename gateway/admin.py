@@ -1710,6 +1710,24 @@ def set_fleet_warnings(payload: dict[str, Any]) -> Any:
     return fleet.warnings_setting()
 
 
+@router.get("/api/settings/pairing", dependencies=[Depends(require_admin)])
+def get_pairing_settings() -> dict[str, Any]:
+    """The automatic-pairing switch and where its endpoint file lives. Never the token itself."""
+    from . import pairing
+
+    return pairing.status()
+
+
+@router.put("/api/settings/pairing", dependencies=[Depends(require_local_app)])
+def set_pairing_settings(payload: dict[str, Any]) -> Any:
+    """Turn the endpoint file and its narrow pairing token on or off. Off removes both."""
+    from . import pairing
+
+    if type(payload.get("enabled")) is not bool:
+        return _error(422, "enabled must be an explicit boolean", "PAIRING_SETTING_INVALID")
+    return pairing.set_enabled(payload["enabled"])
+
+
 @router.get("/api/settings/fleet-health", dependencies=[Depends(require_admin)])
 def get_fleet_health() -> dict[str, Any]:
     """When a Mac counts as *problematic*: drops in 24 h, with the bounds the page draws."""

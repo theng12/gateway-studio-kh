@@ -108,6 +108,12 @@ Ponytail/Graphify apply here and to delegated workers.
   `default_enabled=False`; their models come from `gateway/extension_*_models.json`, copied by
   script from Relay's catalogue (never hand-edit; re-copy and update `source_sha256`). Enabling the
   provider is not enough — the model must be switched on in Models too, or Create offers nothing.
+- **Automatic pairing is one narrow door.** Settings → Local apps → "Allow local apps to pair
+  automatically" (on by default) writes `~/.kh/gateway-endpoint.json` (0600, rewritten on launch)
+  with `{url, machineId, pairingToken, schema}` and never the gateway key. The pairing token can
+  only `POST /admin/api/extension-workers/pair {kind, worker_id}` over loopback, returning a worker
+  token through the ordinary mint path; it cannot read providers, change settings, publish, or act
+  as admin. Off removes the file and revokes the token. Manual pairing stays the other-Mac fallback.
 - **A claim needs an account observation and an exact quote in the same request**
   (`extension_workers.py` refuses otherwise): schema-1 account (`provider`, opaque `accountId`,
   `source`, `observedAt`, connection/sign-in/readiness/activity, `nextEligibleAt`), then a quote

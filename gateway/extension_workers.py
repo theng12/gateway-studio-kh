@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from . import admin_session, extension_accounts
-from .config import APP_SUPPORT, get as config_get
+from .config import APP_SUPPORT, get as config_get, request_is_loopback
 
 SWITCH = "GATEWAY_EXTENSION_WORKERS"
 #: The kinds a worker may serve. Video first (owner/Relay brief, 2026-11-09); image and audio added
@@ -1015,6 +1015,34 @@ def _admin_routes() -> None:
             return _refusal(400, "WORKER_INVALID", str(exc))
         # Shown once, to the app on this Mac only; never stored, logged or shown again.
         return {"ok": True, "worker_id": body.get("worker_id"), "token": token}
+
+    @router.post("/admin/api/extension-workers/pair")
+    async def extension_workers_pair(request: Request, authorization: str | None = Header(default=None)):
+        """The narrow door for apps on this Mac: a pairing token mints one worker token.
+
+        Deliberately no `require_admin`/`require_local_app`: those accept the gateway key, and this
+        door is the one place a **pairing token** is valid. Loopback-only, and it can do nothing but
+        the mint below — see `pairing.py` for the file and the switch.
+        """
+        if not enabled():
+            return _NOT_FOUND
+        from . import pairing
+        from .admin import guest_identity
+
+        if guest_identity(request) is not None:
+            return _refusal(403, "GUEST_NOT_ALLOWED", "A guest account may only use the Create page.")
+        if not request_is_loopback(request):
+            return _refusal(403, "PAIRING_LOOPBACK_ONLY", "Pairing works only on this Mac.")
+        if not pairing.verify(authorization):
+            return _refusal(401, "PAIRING_REFUSED",
+                            "The pairing token is not valid. Read " + str(pairing.endpoint_path())
+                            + " again; the Gateway rewrites it on launch.")
+        body = await _json(request)
+        try:
+            token = mint(str(body.get("worker_id") or ""), str(body.get("kind") or ""))
+        except ValueError as exc:
+            return _refusal(422, "WORKER_INVALID", str(exc))
+        return {"ok": True, "worker_id": body.get("worker_id"), "kind": body.get("kind"), "token": token}
 
     @router.delete("/admin/api/extension-workers/{worker_id}",
                    dependencies=[Depends(require_local_app)])
