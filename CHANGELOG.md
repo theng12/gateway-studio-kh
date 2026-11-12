@@ -12,8 +12,8 @@ every feature title, and they are left as they were written.
 
 ## 0.2.246 — 2026-11-12
 
-- **Support this app** now opens a page in the app that says what support pays for, who receives it and how, with the donation page behind a button. The sidebar no longer jumps straight to the browser.
-- The sidebar footer shows the app name over its **version** again, and clicking it opens **What's New**. Before, the name wrapped to a second line inside the pill, so the version was clipped away and the pill looked dead.
+- **Support this app now explains the donation before opening your browser.** It opens a page in the app first — what support pays for, who receives it and how — and the donation page is a button on that page.
+- **The version and What's New now work in the footer.** The app name and version are both readable again, and clicking them opens What's New.
 - **Settings → Appearance** offers System, Light or Dark — the fourth "Default" palette is gone. An install that saved it falls back to System.
 - Browser workers: an audio job is offered once the extension's live report lists both the model and the voice, instead of being refused after that check passed. The audio extension still cannot claim until it sends an account and a quote.
 
