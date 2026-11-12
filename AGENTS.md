@@ -381,10 +381,10 @@ Moved to [docs/giving-the-app-away.md](docs/giving-the-app-away.md).
   a note under `_trash/` before deleting it, and never rewrite published history.
   `_trash/` is outside Git and nothing in it is read by the app, tests or build.
 - **Every change finishes through qualified main integration, push, DMG, release and intended-machine verification.**
-  Do not call source checkpoints or builds stable, done or shipped. Owner, 2026-11-10: canonical
-  `dist/` keeps the latest **two verified released** DMGs, named `Gateway Studio KH-<version>.dmg`.
+  Do not call source checkpoints or builds stable, done or shipped. Owner, 2026-11-12: canonical
+  `dist/` keeps the latest **three verified released** DMGs, named `Gateway Studio KH-<version>.dmg`.
   `menubar/build.sh` stages an exact candidate under `dist/.candidates/`, including its build stamp;
-  a failed or same-version rebuild never moves the accepted pair. After install/launch verification
+  a failed or same-version rebuild never moves the accepted set. After install/launch verification
   and quiet/active-job/dependency checks, the release lead calls `scripts/accept_release.py` with
   the exact candidate, installed identity and real acceptance receipt. It invokes the canonical
   shared `release-dist.py` helper to promote verified bytes and retire only obsolete managed DMGs

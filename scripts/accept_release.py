@@ -4,7 +4,7 @@
 Call this only after the candidate is installed, launched and accepted, and after
 the caller's quiet/active-job/dependency checks. This script never builds, signs,
 launches or decides acceptance: it records the caller's evidence and invokes the
-shared release-dist.py helper, which validates hashes and retains the latest two
+shared release-dist.py helper, which validates hashes and retains the latest three
 managed DMGs. `menubar/build.sh` stages candidates outside the canonical names.
 
 The candidate must be build.sh's exact staged file for the build actually
@@ -244,7 +244,7 @@ def main(argv: list[str]) -> int:
             if _version(value, "managed version") != requested_key
         ]
         prior.sort(key=lambda record: _version(record["version"], "managed version"))
-        releases = prior[-1:] + [
+        releases = prior[-2:] + [
             {
                 "version": args.version,
                 "source": str(candidate),
