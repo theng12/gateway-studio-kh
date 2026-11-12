@@ -20,6 +20,8 @@ Ponytail/Graphify apply here and to delegated workers.
 - A verified web page replaces a native one; the native page is **switched off but kept** in the
   repository so it can be restored — never deleted. Retired this way: the native Fleet page
   (`FleetSection.swift` and the `Fleet*.swift` views).
+- **Settings → Appearance offers exactly System, Light and Dark** (owner, 2026-11-12), System the
+  starting value for a new install; a stored fourth value reads as System.
 
 ## Contract traps — each cost real debugging time
 
@@ -91,10 +93,10 @@ Ponytail/Graphify apply here and to delegated workers.
   scoped manager routes. `gateway/extension_workers.py` serves it; `adapters/chrome_extension.py`
   hands jobs to it.
 - **The switch is `GATEWAY_EXTENSION_WORKERS`** (read live): off, every route answers 404. It is
-  **on for the 1301 gateway** — the owner's words: *"it is to be run on the 1301 mac. as it's a
-  gateway machine and still left a lot of ram we can have 2-3 sessions running"*. The earlier
-  "never 1301" restriction is void. No paid Flow generation without a go that names it; the first
-  claim is a free image job.
+  **on for the 1301 gateway** (owner, 2026-11-12) — the owner's words: *"it is to be run on the
+  1301 mac. as it's a gateway machine and still left a lot of ram we can have 2-3 sessions
+  running"*. The earlier "never 1301" restriction is void. No paid Flow generation without a go
+  that names it; the first claim is a free image job.
 - **Pairing.** `POST /admin/api/extension-workers {worker_id, kind}` (`require_local_app`: loopback
   plus the gateway key) returns the token **once**, shaped `ekw_` + 43 chars; only its sha256 digest
   is stored, in `APP_SUPPORT/extension-workers.json` (0600, via `admin_session`). Re-minting revokes
@@ -218,7 +220,10 @@ Ponytail/Graphify apply here and to delegated workers.
 - **Test narrowly and off the owner's screen.** Console/JS → `node --test tests/<file>`; Python →
   the focused isolated suite; native Swift → build, then a named read-only `tests/check_native.py`
   check. Reserve `test_ui.py` for an explicit request or a promotion gate; it needs Accessibility
-  permission and takes over his app.
+  permission and takes over his app. **Never take the owner's desktop** (owner, 2026-11-12): no
+  `open` without `-g -j`, no `activate`, no keystrokes or clicks, no visible window, nothing
+  restarted on his Mac to "prove" something — ask first and name what would appear and for how long;
+  test-machine work needs no ask.
 - `hub.find_ready_file()` falls back to the owner's real Hub: any isolated suite must set
   `STUDIOHUB_READY_FILE` in its temp dir, and any test reaching a *location* points it at
   `tests/mock_upstream.py`.
@@ -233,13 +238,15 @@ Ponytail/Graphify apply here and to delegated workers.
   deleting, and never rewrite published history.
 - **Every change finishes through qualified main integration, push, DMG, release and
   intended-machine verification.** Do not call source checkpoints or builds stable, done or shipped.
-  Canonical `dist/` keeps the latest **three verified released** DMGs, named
+  Canonical `dist/` keeps the latest **three verified released** DMGs (owner, 2026-11-12), named
   `Gateway Studio KH-<version>.dmg`; `menubar/build.sh` stages an exact candidate under
   `dist/.candidates/`, and a failed or same-version rebuild never moves the accepted set. After
   install/launch verification and quiet/active-job checks, the release lead runs
   `scripts/accept_release.py` with the exact candidate, installed identity and real acceptance
   receipt; it calls the shared `release-dist.py` helper, which promotes verified bytes and retires
   only obsolete managed DMGs recoverably to `_trash/dist/`. `dist/` and its ledger stay outside Git.
+  **Publishing does not wait for an approval ceremony** (owner, 2026-11-12): a stable, gated
+  release goes out immediately; the owner's holds on paid, public and Production actions stand.
 - **Version bumps are patch-only:** `VERSION` at the repo root is the one place to bump
   (`menubar/build.sh` reads it). Increment the third number per shipped change; do not roll to
   `0.3.x` or `1.0.0` until the owner says so.
