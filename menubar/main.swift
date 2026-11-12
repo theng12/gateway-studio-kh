@@ -161,7 +161,9 @@ enum LocalAddresses {
 }
 
 struct AppConfig: Codable {
-    var gatewayDir: String
+    /// Optional: a shipped install has no developer checkout, and a dead pointer is worse than
+    /// none — it is only ever a fallback for running from a checkout, never the bundled path.
+    var gatewayDir: String?
     var port: Int
     var autoStartGateway: Bool
     // Existing configs never stored appearance, so no migration is needed.
@@ -202,7 +204,7 @@ struct AppConfig: Codable {
         let gatewayDir = FileManager.default.fileExists(atPath: repository)
             ? repository : container
         return AppConfig(
-            gatewayDir: gatewayDir,
+            gatewayDir: FileManager.default.fileExists(atPath: repository) ? gatewayDir : nil,
             port: 8787,
             autoStartGateway: true,
             keepGatewayRunning: false
@@ -489,7 +491,7 @@ final class GatewayController {
     var statusItemReady = false
 
     var port: Int { ConfigStore.shared.config.port }
-    var gatewayDir: String { ConfigStore.shared.config.gatewayDir }
+    var gatewayDir: String { ConfigStore.shared.config.gatewayDir ?? "" }
     var consoleURL: URL? { URL(string: "http://127.0.0.1:\(port)/admin") }
     var storyURL: URL? { URL(string: "http://127.0.0.1:\(port)") }
 
@@ -518,13 +520,17 @@ final class GatewayController {
                 return .bundled(python: python, pythonHome: nil, source: source)
             }
         }
-        let root = URL(fileURLWithPath: gatewayDir, isDirectory: true)
-        if FileManager.default.fileExists(
-            atPath: root.appendingPathComponent(".venv/bin/python").path
-        ) {
-            return .checkout(root: root)
+        // A developer checkout is the only fallback, and only when one is actually configured.
+        if let configured = ConfigStore.shared.config.gatewayDir, !configured.isEmpty {
+            let root = URL(fileURLWithPath: configured, isDirectory: true)
+            if FileManager.default.fileExists(
+                atPath: root.appendingPathComponent(".venv/bin/python").path
+            ) {
+                return .checkout(root: root)
+            }
+            return .missing("The app has no bundled runtime and there is no .venv in \(configured).")
         }
-        return .missing("The app has no bundled runtime and there is no .venv in \(gatewayDir).")
+        return .missing("The app has no bundled runtime and no developer checkout is configured.")
     }
 
     var isReady: Bool {
@@ -1100,6 +1106,33 @@ final class GatewayController {
     }
 }
 
+// MARK: - Orphan sweep
+
+/// **Nothing this app started may outlive its bundle.** A helper is a child of this app, so a
+/// helper running with no parent is either a leftover from a replaced bundle (measured on 1301:
+/// a 0.2.241 helper kept serving :8787 out of an updater's trash folder) or one whose app was
+/// killed rather than quit. Either way it is stopped here, at launch, before we start our own.
+enum OrphanSweep {
+    /// The helper's own bundle id; `NSRunningApplication` is the only way to find a process by
+    /// the bundle it came from without shelling out.
+    static let helperBundleID = "kh.gateway.helper"
+
+    static func stopForeignHelpers() {
+        let ours = Bundle.main.bundleURL.standardizedFileURL.path
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: helperBundleID) {
+            let pid = app.processIdentifier
+            guard pid != getpid() else { continue }
+            guard let url = app.bundleURL?.standardizedFileURL.path else { continue }
+            // Inside our own bundle, or a copy of our app elsewhere (an updater's archive, an old
+            // install): both are ours to clean up. A helper from a *different* app is not.
+            let insideOurs = url == ours || url.hasPrefix(ours + "/")
+            let copyOfOurs = url.contains("gateway-kh.app")
+            guard insideOurs || copyOfOurs else { continue }
+            app.terminate()
+        }
+    }
+}
+
 // MARK: - Launch at login
 
 enum LaunchAgent {
@@ -1480,6 +1513,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         GatewayController.shared.observe { [weak self] in self?.refreshTitle() }
 
         startStudioHubProbe()
+        // Before anything of ours starts: stop a helper from a replaced bundle that nobody owns.
+        // At this point in launch we have spawned nothing, so any such process is an orphan.
+        OrphanSweep.stopForeignHelpers()
+
         if ConfigStore.shared.config.autoStartGateway {
             GatewayController.shared.start()
         }

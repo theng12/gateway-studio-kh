@@ -78,6 +78,25 @@ class BundleRunnerTests(unittest.TestCase):
         # The checkout is the documented developer fallback, and only when the bundle has no runtime.
         self.assertIn("The app has no bundled runtime and there is no .venv", runtime)
 
+    def test_an_orphaned_helper_is_stopped_at_launch(self):
+        """A helper with no owning app — a leftover from a replaced bundle — must not survive."""
+        sweep = MAIN[MAIN.index("enum OrphanSweep {"):]
+        sweep = sweep[:sweep.index("// MARK: - Launch at login")]
+        self.assertIn('helperBundleID = "kh.gateway.helper"', sweep)
+        self.assertIn("Bundle.main.bundleURL", sweep)
+        self.assertIn("app.terminate()", sweep)
+        # It runs before this app starts anything of its own.
+        launch = MAIN[MAIN.index("OrphanSweep.stopForeignHelpers()"):]
+        self.assertLess(launch.index("OrphanSweep.stopForeignHelpers()"),
+                        launch.index("GatewayController.shared.start()"))
+
+    def test_a_dead_checkout_pointer_is_not_written(self):
+        """gatewayDir is optional now: a shipped install stores nothing rather than a dead path."""
+        config = MAIN[MAIN.index("struct AppConfig: Codable"):]
+        config = config[:config.index("final class ConfigStore")]
+        self.assertIn("var gatewayDir: String?", config)
+        self.assertIn("fileExists(atPath: repository) ? gatewayDir : nil", config)
+
 
 if __name__ == "__main__":
     unittest.main()
