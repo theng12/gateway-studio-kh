@@ -1143,7 +1143,9 @@ enum LaunchAgent {
     /// `Contents/Library/LaunchAgents/`, so it travels with the app and **unregistering removes the
     /// background-item record**. The old raw `~/Library/LaunchAgents` plist did not — measured
     /// 2026-11-12, three stale `kh.gateway.menubar` rows survived an uninstall.
-    static let service = SMAppService.agent(plistName: "\(label).plist")
+    /// The registered agent, on macOS 13 and later; older systems use the raw plist below.
+    @available(macOS 13.0, *)
+    static var service: SMAppService { SMAppService.agent(plistName: "\(label).plist") }
 
     /// Where the plist lives now, in the bundle (for messages and tests).
     static var plistURL: URL {
@@ -1159,7 +1161,8 @@ enum LaunchAgent {
     }
 
     static var isInstalled: Bool {
-        service.status == .enabled || FileManager.default.fileExists(atPath: legacyPlistURL.path)
+        if #available(macOS 13.0, *), service.status == .enabled { return true }
+        return FileManager.default.fileExists(atPath: legacyPlistURL.path)
     }
 
     /// The legacy plist's program, read only to decide whether it still points at this app.
@@ -1186,16 +1189,35 @@ enum LaunchAgent {
 
     static func install() {
         removeLegacyPlist()
-        do {
-            try service.register()
-        } catch {
-            NSLog("launch-at-login could not be registered: %@", error.localizedDescription)
+        if #available(macOS 13.0, *) {
+            do { try service.register() } catch {
+                NSLog("launch-at-login could not be registered: %@", error.localizedDescription)
+            }
+            return
+        }
+        installLegacyPlist()
+    }
+
+    /// macOS 12 and older: the only option there, and the path that leaves a row behind on delete.
+    private static func installLegacyPlist() {
+        guard let executable = Bundle.main.executableURL?.resolvingSymlinksInPath().path else { return }
+        try? FileManager.default.createDirectory(at: legacyPlistURL.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [executable, "--background"],
+            "RunAtLoad": true,
+            "KeepAlive": ["SuccessfulExit": false],
+            "ProcessType": "Interactive",
+        ]
+        if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) {
+            try? data.write(to: legacyPlistURL)
         }
     }
 
     static func uninstall() {
         // Unregistering is what clears the background-item row; removing the old plist alone did not.
-        try? service.unregister()
+        if #available(macOS 13.0, *) { try? service.unregister() }
         removeLegacyPlist()
     }
 
