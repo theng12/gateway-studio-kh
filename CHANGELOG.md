@@ -9,6 +9,10 @@ below the newest group are the history from before this shape existed: their tit
 every feature title, and they are left as they were written.
 
 ---
+ 
+## 0.2.244 — 2026-11-12
+
+- **Quit Gateway Studio KH** at the bottom of the menu bar menu now really quits: the gateway service stops with the app, so nothing keeps serving the port with no icon to control it, and the next launch starts fresh instead of picking up an old service. It still asks first when jobs are running.
 
 ## 0.2.243 — 2026-11-12
 
