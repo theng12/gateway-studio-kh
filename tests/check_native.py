@@ -46,23 +46,12 @@ def open_section(name: str) -> str:
 
 
 def check_sidebar() -> tuple[bool, str]:
-    """The footer names the build, and What's New still has a door.
+    """The footer names the app and version, and What's New has a View menu entry."""
+    import re
 
-    **This check used to look for a "New" button in the sidebar, and had been failing
-    ever since What's New became a page.** It was a modal opened from a small link at the
-    bottom of the sidebar; the owner asked for Studio Hub's shape instead, where What's
-    New is an ordinary row — and this assertion was left naming the control that was
-    removed. The sidebar is an `NSTableView` and holds **0 buttons**; measured, not
-    assumed, and the same on every section.
-
-    What is worth pinning is what the footer still promises: the app version is readable
-    in the sidebar, and What's New is reachable. Now that it is a page rather than a
-    button, that door is the View menu — which `order` is what resolves, so this also
-    catches those index-aligned lists drifting apart.
-    """
-    version = osa(f"tell {MAIN_WINDOW} to tell splitter group 1 to return (value of every static text)")
+    buttons = osa(f'tell {MAIN_WINDOW} to return name of (every UI element of entire contents whose role is "AXButton")')
     menu = osa('tell menu bar item "View" of menu bar 1 to return (name of every menu item of menu 1)')
-    has_version = "App version" in version
+    has_version = bool(re.search(r"Gateway Studio KH\s+\d+\.\d+\.\d+\b", buttons))
     has_door = "What's New" in menu
     return has_version and has_door, (
         f"app_version_in_footer={has_version} whats_new_door={has_door}"

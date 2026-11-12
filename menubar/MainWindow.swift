@@ -469,7 +469,8 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private var timer: Timer?
     private let statusDot = StatusDot(.tertiaryLabelColor)
     private let sidebarStatus = NSTextField(labelWithString: "…")
-    private let sidebarVersion = NSTextField(wrappingLabelWithString: "")
+    private let updateButton = NSButton()
+    private let availableButton = NSButton()
     private var statusTimer: Timer?
 
     /// Section names accepted by `--open` and the menu.
@@ -477,31 +478,17 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         "overview",
         "audio", "subtitle", "image", "music", "video", "chat",
         "jobs", "voices", "models", "providers", "fleet", "settings", "content packs",
-        // **What's New is a page now, not a modal.** It sits directly above Settings under the
-        // *App* heading, which is where Studio Hub keeps it — the two apps are read side by side,
-        // so the same thing should be in the same place in both.
         "what's new",
         // Analytics is index 15, appended with the section it names — see `build()`.
         "analytics",
     ]
 
-    /// The View menu, in sidebar order: (title, key equivalent).
-    ///
-    /// Derived from the same grouping the sidebar uses rather than typed out
-    /// again, because a section that exists in the sidebar but not here is a
-    /// destination with no door. Settings is deliberately absent — it is ⌘, and a
-    /// row in the sidebar already, so a third route to it would be a third thing to
-    /// keep in step.
+    /// The View menu follows the sidebar, with What's New last.
     static let viewMenuSections: [(title: String, key: String)] = [
         ("Overview", "1"),
-        ("Audio", ""), ("Subtitle", ""), ("Image", ""),
-        ("Music", ""), ("Video", ""), ("Chat", ""),
-        ("Jobs", "2"), ("Analytics", ""), ("Voices", "3"), ("Models", "4"), ("Content Packs", ""),
-        ("Providers", "5"), ("Fleet", "6"),
-        // Kept in step with the sidebar for the same reason every other row is: this list is
-        // derived from the sidebar's order on purpose, and a section that exists in one and not
-        // the other is a destination with no door.
-        ("What's New", ""),
+        ("Image", ""), ("Audio", ""), ("Video", ""), ("Music", ""), ("Subtitle", ""), ("Chat", ""),
+        ("Models", "4"), ("Voices", "3"), ("Jobs", "2"), ("Analytics", ""), ("Content Packs", ""),
+        ("Providers", "5"), ("Fleet", "6"), ("What's New", ""),
     ]
 
     /// A sidebar row is either a group header or a section.
@@ -523,24 +510,17 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         case section(Int)
     }
 
+    // Order follows the owner's 2026-11-12 sidebar cleanup.
     private static let layout: [SidebarRow] = [
-        .section(0),                                    // Overview
+        .section(0),
         .header("Create"),
-        .section(1), .section(2), .section(3),          // Audio, Subtitle, Image
-        .section(4), .section(5), .section(6),          // Music, Video, Chat
+        .section(3), .section(1), .section(5), .section(4), .section(2), .section(6),
         .header("Library"),
-        .section(7), .section(8), .section(9),          // Jobs, Voices, Models
-        // Analytics sits with the other "what I have kept" pages, directly after Jobs: it is the
-        // same record read the other way round — Jobs answers "what happened to that job", this
-        // answers "what has this machine been doing".
-        .section(15),                                   // Analytics
-        .section(13),                                   // Content Packs
+        .section(9), .section(8), .section(7), .section(15), .section(13),
         .header("Connection"),
-        .section(10), .section(11),                     // Providers, Fleet
+        .section(10), .section(11),
         .header("App"),
-        // Studio Hub's order inside its own `app` group: What's New, then Settings.
-        .section(14),                                   // What's New
-        .section(12),                                   // Settings
+        .section(12),
     ]
 
     private var rowForSection: [Int: Int] {
@@ -582,7 +562,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     /// Show the What's New **page**. Every door to the notes — the Overview button, the app menu,
-    /// this one — lands on the sidebar row rather than on a separate window, so there is one place
+    /// this one — lands on the same page rather than on a separate window, so there is one place
     /// the notes live and no second surface to keep in step.
     @objc private func openWhatsNew() {
         show(section: "what's new")
@@ -649,41 +629,75 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sidebarScroll.drawsBackground = false
         sidebarScroll.translatesAutoresizingMaskIntoConstraints = false
 
-        // Studio Hub KH pins a connection line to the bottom of its sidebar
-        // (`safeAreaInset(edge: .bottom)`), so the state of the thing you are
-        // driving is always on screen no matter which page you are on. Same
-        // line here, same place. It replaced a Settings gear, because Settings
-        // is now a row in the list rather than a lone button.
         sidebarStatus.font = TextRole.caption.font
         sidebarStatus.textColor = .secondaryLabelColor
-        sidebarStatus.lineBreakMode = .byWordWrapping
-        sidebarStatus.preferredMaxLayoutWidth = DS.Size.sidebar - 2 * DS.Space.l - DS.Space.s - 8
+        sidebarStatus.lineBreakMode = .byTruncatingTail
+        sidebarStatus.maximumNumberOfLines = 1
+        sidebarStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let statusLine = NSStackView(views: [statusDot, sidebarStatus])
+        statusLine.orientation = .horizontal
+        statusLine.alignment = .centerY
+        statusLine.spacing = DS.Space.s
 
-        sidebarVersion.font = TextRole.caption.font
-        sidebarVersion.textColor = .secondaryLabelColor
-        sidebarVersion.lineBreakMode = .byWordWrapping
-        sidebarVersion.maximumNumberOfLines = 0
-        // The fixed sidebar minus its margins, status dot and gap.
-        sidebarVersion.preferredMaxLayoutWidth = DS.Size.sidebar - 2 * DS.Space.l - DS.Space.s - 8
-        sidebarVersion.isSelectable = true
-        sidebarVersion.stringValue = "App version \(GatewayController.shared.appVersion)\nBuild \(GatewayController.shared.appBuild)"
+        let support = NSButton(title: "Support this app", target: self, action: #selector(openSupport))
+        support.isBordered = false
+        support.font = TextRole.secondary.font
+        support.image = NSImage(systemSymbolName: "heart", accessibilityDescription: nil)
+        support.imagePosition = .imageLeading
+        support.toolTip = "Open the donation page in your browser"
 
-        // **The "What's New?" link is gone from the status block.** It existed because the notes
-        // were a modal with one door; the row is now in the sidebar directly above Settings, so the
-        // link was the same destination twice in the same column. The View menu and the Overview
-        // button still reach it.
-        let statusText = NSStackView(views: [sidebarStatus, sidebarVersion])
-        statusText.orientation = .vertical
-        statusText.alignment = .leading
-        statusText.spacing = DS.Space.xs
-        statusText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        sidebarVersion.widthAnchor.constraint(equalTo: statusText.widthAnchor).isActive = true
+        // Two lines: the name over the version is the only form that fits beside the two icon
+        // buttons in a 220 pt sidebar.
+        let pill = SidebarPillButton(title: "", target: self, action: #selector(openWhatsNew))
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.headIndent = 11
+        paragraph.tailIndent = -11
+        paragraph.lineSpacing = 1
+        let title = NSMutableAttributedString(string: "Gateway Studio KH\n", attributes: [
+            .font: TextRole.captionStrong.font,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph,
+        ])
+        title.append(NSAttributedString(string: GatewayController.shared.appVersion, attributes: [
+            .font: TextRole.caption.font,
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: paragraph,
+        ]))
+        pill.attributedTitle = title
+        pill.cell?.wraps = true
+        pill.cell?.usesSingleLineMode = false
+        pill.alignment = .left
+        pill.isBordered = false
+        pill.wantsLayer = true
+        pill.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        pill.toolTip = "What's New — release notes"
+        pill.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let statusRow = NSStackView(views: [statusDot, statusText])
-        statusRow.orientation = .horizontal
-        statusRow.alignment = .top
+        for (button, symbol, action, tooltip) in [
+            (updateButton, "arrow.clockwise", #selector(checkForUpdates), "Check for Updates"),
+            (availableButton, "arrow.down.circle", #selector(openUpdateStudio), ""),
+        ] {
+            button.target = self
+            button.action = action
+            button.isBordered = false
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)
+            button.toolTip = tooltip
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 7
+            button.widthAnchor.constraint(equalToConstant: 26).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        }
+        let pillRow = NSStackView(views: [pill, updateButton, availableButton])
+        pillRow.orientation = .horizontal
+        pillRow.alignment = .centerY
+        pillRow.spacing = DS.Space.s
+        let statusRow = NSStackView(views: [statusLine, support, pillRow])
+        statusRow.orientation = .vertical
+        statusRow.alignment = .leading
         statusRow.spacing = DS.Space.s
         statusRow.translatesAutoresizingMaskIntoConstraints = false
+        statusLine.widthAnchor.constraint(equalTo: statusRow.widthAnchor).isActive = true
+        pillRow.widthAnchor.constraint(equalTo: statusRow.widthAnchor).isActive = true
 
         let statusDivider = NSBox()
         statusDivider.boxType = .separator
@@ -811,6 +825,8 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             currentIndex = index
             if let row = rowForSection[index] {
                 sidebar.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            } else {
+                sidebar.deselectAll(nil)
             }
             window.title = "Gateway Studio KH — \(section.title)"
         }
@@ -904,13 +920,61 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         statusTimer = tick
     }
 
+    @objc private func openSupport() { _ = SupportLink.openDonationPage() }
+    @objc private func openUpdateStudio() { _ = UpdateChecker.shared.openUpdateStudio() }
+    @objc private func checkForUpdates() {
+        UpdateChecker.shared.check { [weak self] _ in self?.updateStatusLine() }
+        updateStatusLine()
+    }
+
     private func updateStatusLine() {
-        let running: Bool
+        let text: String
         switch GatewayController.shared.state {
-        case .running: running = true
-        default: running = false
+        case .running:
+            statusDot.colour = Health.ok.tint
+            text = "Running on \(LocalAddresses.displayHost()):\(GatewayController.shared.port)"
+        case .starting:
+            statusDot.colour = Health.warn.tint
+            text = "Starting…"
+        case .stopped:
+            statusDot.colour = Health.off.tint
+            text = "Stopped"
+        case .failed(let reason):
+            statusDot.colour = Health.bad.tint
+            text = reason
         }
-        statusDot.colour = (running ? Health.ok : Health.off).tint
-        sidebarStatus.stringValue = GatewayController.shared.sidebarSummary
+        var suffix = ""
+        var tooltip = text
+        availableButton.isHidden = true
+        let state = UpdateChecker.shared.state
+        updateButton.image = NSImage(systemSymbolName: state == .checking ? "arrow.triangle.2.circlepath" : "arrow.clockwise", accessibilityDescription: "Check for Updates")
+        updateButton.isEnabled = state != .checking
+        switch state {
+        case .upToDate: suffix = " · Up to date"
+        case .available(let version):
+            suffix = " · \(version) available"
+            availableButton.isHidden = false
+            availableButton.toolTip = "Gateway Studio KH \(version) is available — open Update Studio KH"
+        case .unknown(let reason): tooltip += " · \(reason)"
+        case .idle, .checking: break
+        }
+        sidebarStatus.stringValue = text + suffix
+        sidebarStatus.toolTip = tooltip + suffix
+    }
+}
+
+/// The footer's name-and-version pill.
+///
+/// `NSColor.cgColor` snapshots the appearance it was read in, so a fill set once at build time kept
+/// its light colour after the app switched to dark (the same defect `FleetTabs` records). The fill
+/// and border are set in `updateLayer`, which runs inside the effective appearance.
+private final class SidebarPillButton: NSButton {
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        layer?.borderColor = NSColor.separatorColor.cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = 8
     }
 }

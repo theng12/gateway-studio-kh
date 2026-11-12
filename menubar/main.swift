@@ -164,6 +164,8 @@ struct AppConfig: Codable {
     var gatewayDir: String
     var port: Int
     var autoStartGateway: Bool
+    // Existing configs never stored appearance, so no migration is needed.
+    var appearance: String?
     // NOTE: there is deliberately no `launchAtLogin` here. It existed, was
     // written by the Settings checkbox, and was **never read** — the checkbox
     // reads `LaunchAgent.isInstalled`, i.e. the plist itself, which is the real
@@ -537,23 +539,6 @@ final class GatewayController {
     }
 
     var logPath: String { AppPaths.logFile.path }
-
-    /// The one line pinned to the bottom of the sidebar, mirroring Studio Hub's
-    /// connection line. It answers "is it up, and what is on offer" without
-    /// making the owner change pages to find out.
-    var sidebarSummary: String {
-        let where_ = "\(LocalAddresses.displayHost()):\(port)"
-        switch state {
-        case .running(let providers, let models):
-            return "Running on \(where_)\n\(providers) providers · \(models) models live"
-        case .starting:
-            return "Starting on \(where_)…"
-        case .stopped:
-            return "Stopped\n\(where_)"
-        case .failed(let reason):
-            return "Failed: \(reason)"
-        }
-    }
 
     func observe(_ handler: @escaping () -> Void) {
         onStateChange = handler
@@ -1412,6 +1397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppearanceMode.current.apply()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             let image = NSImage(systemSymbolName: "bolt.horizontal.circle",

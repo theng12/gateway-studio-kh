@@ -113,7 +113,7 @@ class TheNotesPageRendersAsAPageTest(unittest.TestCase):
             self.assertIn("PASS:", checked.stdout)
 
 
-class TheSidebarPutsItAboveSettingsTest(unittest.TestCase):
+class TheSidebarReachesWhatsNewTest(unittest.TestCase):
     def setUp(self) -> None:
         self.source = (ROOT / "menubar" / "MainWindow.swift").read_text(encoding="utf-8")
 
@@ -125,7 +125,9 @@ class TheSidebarPutsItAboveSettingsTest(unittest.TestCase):
         self.assertEqual(names.index("what's new"), 14,
                          "the section's index must match the one `layout` and `sections` use")
 
-    def test_it_sits_directly_above_settings_under_the_app_heading(self) -> None:
+    def test_whats_new_left_the_sidebar_for_the_version_pill(self) -> None:
+        # Owner, 2026-11-12: one navigation list, so the App group holds Settings only. The notes
+        # are still one click away — the footer's version pill opens them.
         # Line-based rather than one regex: the layout carries comments of its own, and a pattern
         # that has to step over them is a pattern that will quietly match the wrong array.
         lines = self.source.splitlines()
@@ -139,12 +141,12 @@ class TheSidebarPutsItAboveSettingsTest(unittest.TestCase):
             if stripped.startswith(".header(") or stripped.startswith(".section("):
                 rows.append(stripped.rstrip(","))
         self.assertTrue(rows, "the sidebar layout is gone")
+        self.assertNotIn(".section(14)", rows, "What's New is still a sidebar row")
         app = rows.index('.header("App")')
-        # The two rows immediately after the App heading, in order.
-        self.assertTrue(rows[app + 1].startswith(".section(14)"),
-                        f"What's New is not the first row under App: {rows[app + 1]}")
-        self.assertTrue(rows[app + 2].startswith(".section(12)"),
-                        f"Settings is not directly below What's New: {rows[app + 2]}")
+        self.assertEqual(rows[app + 1:], [".section(12)"],
+                         "the App group should hold Settings and nothing else")
+        self.assertIn("SidebarPillButton(title: \"\", target: self, action: #selector(openWhatsNew))",
+                      self.source, "the version pill no longer opens the notes")
 
     def test_the_section_instance_is_wired_in(self) -> None:
         self.assertIn("WhatsNewSection.shared,", self.source,

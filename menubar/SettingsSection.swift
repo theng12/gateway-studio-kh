@@ -22,6 +22,8 @@ final class SettingsSection: NSObject, AppSection {
     let refreshesAutomatically = false
 
     private var runtimeLabel: NSTextField!
+    private var appearanceControl: NSSegmentedControl!
+    private var appearanceDetail: NSTextField!
     private var dataLabel: NSTextField!
     private var portField: NSTextField!
     private var keyField: SecretField!
@@ -110,6 +112,16 @@ final class SettingsSection: NSObject, AppSection {
                 PageKit.help("Changing this restarts the gateway. Story Studio must match."),
             ]),
         ], in: root)
+
+        // ---- appearance
+        appearanceControl = NSSegmentedControl(labels: AppearanceMode.allCases.map(\.title),
+                                               trackingMode: .selectOne,
+                                               target: self, action: #selector(changeAppearance))
+        appearanceControl.setAccessibilityLabel("Appearance")
+        appearanceDetail = PageKit.label(AppearanceMode.current.detail, .secondary,
+                                         colour: .secondaryLabelColor, wrapping: true)
+        appearanceControl.selectedSegment = AppearanceMode.allCases.firstIndex(of: .current) ?? 0
+        section("Appearance", [appearanceControl, appearanceDetail], in: root)
 
         // ---- API key
         // Masked like every secret in the app: the eye shows it, Copy works without showing it.
@@ -552,6 +564,14 @@ final class SettingsSection: NSObject, AppSection {
     }
 
     // MARK: Actions
+
+    @objc private func changeAppearance() {
+        let index = appearanceControl.selectedSegment
+        guard AppearanceMode.allCases.indices.contains(index) else { return }
+        let mode = AppearanceMode.allCases[index]
+        AppearanceMode.set(mode)
+        appearanceDetail.stringValue = mode.detail
+    }
 
     /// Copies the whole hex key, exactly as shown — the one value a Mac takes.
     @objc private func copyUpdateKey() {

@@ -278,6 +278,11 @@ final class OverviewSection: NSObject, AppSection {
         actions.addArrangedSubview(button("Open Data Folder", #selector(openData)))
         root.addArrangedSubview(actions)
 
+        let appBuild = NSTextField(labelWithString: "build \(GatewayController.shared.appBuild)")
+        appBuild.font = TextRole.caption.font
+        appBuild.textColor = .secondaryLabelColor
+        root.addArrangedSubview(appBuild)
+
         // The build check reports here, next to the other status text rather than
         // in a dialog: an answer you have to dismiss is one you stop asking for.
         buildLabel = NSTextField(labelWithString: "")
@@ -379,8 +384,9 @@ final class OverviewSection: NSObject, AppSection {
             let byState = jobs["by_state"] as? [String: Any] ?? [:]
             let uptime = payload["uptime_seconds"] as? Int ?? 0
 
-            self.subtitleLabel.stringValue =
-                "127.0.0.1:\(GatewayController.shared.port) · up \(GatewayAPI.uptime(uptime))"
+            let computerName = (payload["computer_name"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let address = "127.0.0.1:\(GatewayController.shared.port) · up \(GatewayAPI.uptime(uptime))"
+            self.subtitleLabel.stringValue = computerName.map { "\($0) · \(address)" } ?? address
 
             // Onboarding: say what to do next, rather than showing zeros and
             // leaving a new owner to work it out.
@@ -423,10 +429,11 @@ final class OverviewSection: NSObject, AppSection {
             let switchedOn = models["enabled_models"] as? Int ?? 0
             self.tiles["models"]?.set(
                 value: "\(liveModels)",
-                title: withheld > 0
-                    ? "Offered of \(switchedOn) enabled · \(withheld) withheld"
-                    : "Offered of \(switchedOn) enabled"
+                title: withheld > 0 ? "\(withheld) withheld" : "\(switchedOn) enabled"
             )
+            self.tiles["models"]?.toolTip = withheld > 0
+                ? "Offered of \(switchedOn) enabled · \(withheld) withheld"
+                : "Offered of \(switchedOn) enabled"
             self.tiles["succeeded"]?.set(
                 value: "\(byState["succeeded"] as? Int ?? 0)", title: "Jobs succeeded"
             )
