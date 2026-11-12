@@ -211,7 +211,7 @@ if [ "${1:-}" = "--verify" ]; then
 fi
 """,
         )
-        # The real Keychain is never read: the fixture states which identities exist.
+        # The real signing identities are never read: the fixture states which exist.
         _write_executable(
             self.bin / "security",
             """
@@ -639,7 +639,7 @@ print(f"fresh=0 imported={voice.display_name} clip={clip}")
             result = fixture.run(GATEWAY_SIGN_IDENTITY="KH Missing Fixture Identity")
             output = result.stdout + result.stderr
             self.assertNotEqual(result.returncode, 0, output)
-            self.assertIn('signing identity "KH Missing Fixture Identity" is not in the Keychain', output)
+            self.assertIn('signing identity "KH Missing Fixture Identity" is not available to codesign', output)
             self.assertNotIn("Built:", output)
             self.assertFalse(fixture.codesign_calls.exists(), "nothing may be signed ad-hoc instead")
 

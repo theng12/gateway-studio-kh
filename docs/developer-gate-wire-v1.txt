@@ -98,7 +98,7 @@ inventory checks are not a lease. Preserve default Developer Mode OFF; no implic
 Production arrival stops/cancels only owned gate/preparation work; never pause Production.
 Trusted manifests prepare CLT/Swift, Node, Python, Rust and Go where required by packaged
 registry. No guessed versions. Official installer unavailable/unknown hash or interactive
-admin/license/keychain/privacy/security step fails with plain reason, never bypasses it.
+admin/license/password/privacy/security step fails with plain reason, never bypasses it.
 Use existing normal Hub install/check-in mechanism, owned tool root where possible, no SSH,
 new daemon, credential, paid provider call, model download or inference.
 ToolFact.available=true only after actual exact executable/version/SDK probes; pin.id equals

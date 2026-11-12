@@ -9593,8 +9593,8 @@ function showGuestKey(value, who) {
   const what = document.getElementById('guest-key-what');
   if (!box || !field) return;
   field.value = value;            // textContent/value only: never markup
-  if (what) what.textContent = `Key for ${who}. Point the MCP server at it with GATEWAY_GUEST_KEY, `
-    + 'or store it in the Keychain. Issuing again replaces it; Revoke stops it immediately.';
+  if (what) what.textContent = `Key for ${who}. Set GATEWAY_GUEST_KEY in the MCP client's env block. `
+    + 'Issuing again replaces it; Revoke stops it immediately.';
   box.style.display = '';
   field.focus();
   field.select();

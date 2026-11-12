@@ -7,7 +7,7 @@ Source contract for the existing Gateway `/api/workers/*` service. This is not a
 Gateway's own app uses existing `require_local_app` authentication to mint tokens. That means a loopback peer, plus the Gateway bearer key when Gateway binds beyond loopback. Relay must never extract this key from another app, a web view or Chrome. The Gateway key is not the manager credential.
 
 - `POST /admin/api/extension-workers` with `{worker_id,kind}` still pairs image/video/audio workers. Each starts with dispatch disabled. Tokens remain hashed, scoped to one worker/kind, revocable and displayed once.
-- `POST /admin/api/extension-workers/manager` with `{manager_id,worker_ids:[exact paired worker IDs]}` returns `{ok:true,manager_id,token}` once. The manager uses `Authorization: Bearer <token>` on the two manager routes below. Keep it in Relay's own Keychain, bound to the saved Gateway origin; never in URLs, logs or rendered pages.
+- `POST /admin/api/extension-workers/manager` with `{manager_id,worker_ids:[exact paired worker IDs]}` returns `{ok:true,manager_id,token}` once. The manager uses `Authorization: Bearer <token>` on the two manager routes below. Keep it in Relay's own app data file (mode 0600), bound to the saved Gateway origin; never in URLs, logs or rendered pages.
 - A manager token cannot claim jobs, submit telemetry/results, mint/revoke tokens, read unrelated workers, or enable account spending. Remint/revoke invalidates the credential on its next request.
 - `PUT /admin/api/extension-workers/accounts/enabled` with `{provider,account_id,enabled:boolean}` is app-only. A newly observed account starts disabled. This stored switch survives restart. It is separate from worker dispatch and the profile's own enabled/paused state.
 

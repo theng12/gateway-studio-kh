@@ -243,8 +243,7 @@ class Mcp:
 
     def __init__(self, *, url: str, key: str | None, output_dir: Path) -> None:
         env = {k: v for k, v in os.environ.items()
-               if k not in ("GATEWAY_GUEST_KEY", "GATEWAY_GUEST_KEY_SERVICE",
-                            "GATEWAY_GUEST_KEY_ACCOUNT", "GATEWAY_URL", "GATEWAY_OUTPUT_DIR")}
+               if k not in ("GATEWAY_GUEST_KEY", "GATEWAY_URL", "GATEWAY_OUTPUT_DIR")}
         env.update({"GATEWAY_URL": url, "GATEWAY_OUTPUT_DIR": str(output_dir),
                     "PYTHONUNBUFFERED": "1"})
         if key is not None:

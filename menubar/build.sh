@@ -626,7 +626,7 @@ HELPER_PLIST
 # GATEWAY_SIGN_IDENTITY="" signs ad-hoc; a named identity that is missing fails closed.
 SIGN_ID="${GATEWAY_SIGN_IDENTITY-KH Studio Local Signing}"
 if [ -n "$SIGN_ID" ] && ! security find-identity -p codesigning | grep -qF "\"$SIGN_ID\""; then
-  echo "ERROR: signing identity \"$SIGN_ID\" is not in the Keychain (GATEWAY_SIGN_IDENTITY= signs ad-hoc)" >&2
+  echo "ERROR: signing identity \"$SIGN_ID\" is not available to codesign (GATEWAY_SIGN_IDENTITY= signs ad-hoc)" >&2
   exit 1
 fi
 SIGN="${SIGN_ID:--}"

@@ -14,9 +14,7 @@ stdio). The Gateway's own API is the only thing it knows.
 Configuration (environment, or the same names in the client's `env` block):
 
   GATEWAY_URL          e.g. http://100.x.y.z:8787 — the Gateway over Tailscale
-  GATEWAY_GUEST_KEY    the key the owner showed once          (or:)
-  GATEWAY_GUEST_KEY_SERVICE / GATEWAY_GUEST_KEY_ACCOUNT
-                       read it from the macOS Keychain instead
+  GATEWAY_GUEST_KEY    the key the owner showed once
   GATEWAY_OUTPUT_DIR   the only folder `download_result` may write into
                        (default ~/GatewayAssets)
 
@@ -29,7 +27,6 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
-import subprocess
 import sys
 import time
 import uuid
@@ -68,23 +65,10 @@ def gateway_url() -> str:
 
 
 def guest_key() -> str:
-    """The key, from the environment or the Keychain — read once, held in memory only."""
+    """The key from the client's env block — read once, held in memory only."""
     if "value" in _KEY_CACHE:
         return _KEY_CACHE["value"]
     value = (os.environ.get("GATEWAY_GUEST_KEY") or "").strip()
-    if not value:
-        service = (os.environ.get("GATEWAY_GUEST_KEY_SERVICE")
-                   or "gateway-kh-agent-connector").strip()
-        account = (os.environ.get("GATEWAY_GUEST_KEY_ACCOUNT") or "guest").strip()
-        try:
-            answer = subprocess.run(
-                ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if answer.returncode == 0:
-                value = answer.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            value = ""
     _KEY_CACHE["value"] = value
     return value
 
@@ -112,8 +96,7 @@ def _require_key() -> None:
     if not guest_key():
         raise ConnectorError(
             "No guest key is configured. Ask the Gateway's owner for one (Guests page → "
-            "Create key), then set GATEWAY_GUEST_KEY, or store it in the Keychain with: "
-            "security add-generic-password -s gateway-kh-agent-connector -a guest -w",
+            "Create key), then set GATEWAY_GUEST_KEY in this client's env block.",
             code="NO_KEY",
         )
 

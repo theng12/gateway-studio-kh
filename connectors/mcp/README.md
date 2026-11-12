@@ -17,16 +17,8 @@ The agent is a guest, not an admin. It can make things; it cannot change the Gat
 3. In that guest's **Agent key** column, press **Create key**.
 4. **The key is shown once.** Copy it now; it is stored only as a hash and cannot be shown
    again. It starts with `gwk_`.
-5. Put the key where the agent can read it — one of:
-   - the `env` block of the MCP config below (`GATEWAY_GUEST_KEY`), or
-   - the macOS Keychain, so no file holds it:
-
-     ```sh
-     security add-generic-password -s gateway-kh-agent-connector -a guest -w
-     # paste the key when asked; it is not echoed
-     ```
-
-     then leave `GATEWAY_GUEST_KEY` out of the config: the connector reads the Keychain.
+5. Put the key in the `env` block of the MCP config below (`GATEWAY_GUEST_KEY`). Secrets
+   live in the app's own data directory, mode 0600 — never in a system credential store.
 
 **Replace key** makes a new one and retires the old immediately. **Revoke key** stops the
 agent on its next request; the guest's account and its jobs stay. Disabling or removing the
@@ -70,9 +62,6 @@ the Gateway app installed, the copy that ships inside it:
 - **Claude Desktop** — add the block to
   `~/Library/Application Support/Claude/claude_desktop_config.json`, then quit and reopen
   Claude.
-
-If you used the Keychain, drop `GATEWAY_GUEST_KEY` from the block and add
-`"GATEWAY_GUEST_KEY_SERVICE": "gateway-kh-agent-connector", "GATEWAY_GUEST_KEY_ACCOUNT": "guest"`.
 
 The connector needs only `python3` — nothing to `pip install`.
 
@@ -125,7 +114,7 @@ key is the second lock, not the first.
 | What the agent says | What it means |
 | --- | --- |
 | `That guest API key is not valid … (GUEST_KEY_INVALID)` | Revoked, or the guest disabled/removed. Issue a new key. |
-| `No guest key is configured` | Set `GATEWAY_GUEST_KEY`, or store it in the Keychain. |
+| `No guest key is configured` | Set `GATEWAY_GUEST_KEY` in the client's env block. |
 | `The Gateway at … did not answer` | Wrong `GATEWAY_URL`, Gateway not running, or not on the same tailnet. |
 | `… is a paid model. This guest account may use free and local models only` | The owner's switch for this guest, on the Guests page. |
 | `is outside the allowed output folder` | `folder` must be a subfolder of `GATEWAY_OUTPUT_DIR`. |
