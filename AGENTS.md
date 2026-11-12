@@ -17,6 +17,12 @@ Ponytail/Graphify apply here and to delegated workers.
 - Native-only exceptions, the whole list: menu-bar icon and menu, app menu and shortcuts,
   notifications and alerts, launching/quitting/restarting the gateway, `NSOpenPanel`, macOS
   permissions. "A web page cannot do it" is not a reason to add a native view without adding it here.
+- **Page dialogs are compliant-by-delegate — do not reopen this in a `window.confirm` sweep.**
+  `gateway/admin_ui.html` makes 44 `confirm`/`alert`/`prompt` calls (28 confirm, 10 alert, 6 prompt
+  as of 0.2.250). The app's only `WKWebView` sets `web.uiDelegate = self`
+  (`menubar/MainWindow.swift:126-133`) and implements all three panels as native in-app dialogs —
+  an action-verb confirm whose Cancel is Escape, a text-field prompt, and an error alert — so none
+  is a silent no-op in the packaged app. They are not rewrites waiting to happen.
 - A verified web page replaces a native one; the native page is **switched off but kept** in the
   repository so it can be restored — never deleted. Retired this way: the native Fleet page
   (`FleetSection.swift` and the `Fleet*.swift` views).
