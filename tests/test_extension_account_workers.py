@@ -98,9 +98,13 @@ class AccountWorkersTests(unittest.TestCase):
         self.assertNotIn("job", repeated.json())
 
     def test_unknown_balance_and_reset_never_become_free_daily_allowance(self):
+        """A null balance stays unknown: the claim may proceed on a stated price, never on a zero."""
         self.ready(observed_account(balance=None, resetAt=None))
         job = ew.broker.offer("video", {"prompt": "scene"})
-        self.assertEqual(self.claim(self.quote(job)).status_code, 409)
+        answer = self.claim(self.quote(job))
+        self.assertEqual(answer.status_code, 200, answer.text)
+        # The price is still what authorizes the spend; only the balance is unknown.
+        self.assertGreater(answer.json()["reservation"]["value"], 0)
         account = self.status()["accounts"][0]
         self.assertIsNone(account["balance"])
         self.assertIsNone(account["available"])
