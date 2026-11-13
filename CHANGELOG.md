@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.255 — 2026-11-13
+
+- **Fleet gets the same frame.** One status line, one Refresh action, one search field with the filters in a Filters menu that shows how many are on; each Mac or site card keeps its name, state and likely cause on the surface and puts its 7-day history and device facts behind Details.
+- **Settings is a real page.** It shows this Gateway's version, Mac, address, Studio Hub state, providers, models and uptime, and says plainly that appearance, startup, keys and backups are changed in the Gateway app on this Mac.
+
+---
+
 ## 0.2.254 — 2026-11-13
 
 - **Providers reads as an app now.** Four tabs — Providers, SFX, Workers and Capacity — replace the seven that made you hunt; The queue, measured numbers and pools are sections of Capacity.

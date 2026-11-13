@@ -74,7 +74,10 @@ test('shared page has navigation, hash, section, script and app Fleet entry', ()
   assert.match(html,/view: 'developer-tests', label: 'Run test'/);
   assert.match(html,/id="view-developer-tests"/); assert.match(html,/hash.startsWith\('developer-tests'\)/);
   assert.match(html,/loadDeveloperTests\(\)/); assert.match(html,/fetch\('\/admin\/developer-tests.js', \{headers: adminHeaders\(\)\}\)/);
-  assert.match(html,/onclick="openNav\('developer-tests'\)"/);
+  // The door is the sidebar row, drawn by the nav template with the row's own view key —
+  // a second literal button in Fleet was a duplicate door and is gone.
+  assert.match(html,/onclick="openNav\('\$\{esc\(value\)\}'\)"/);
+  assert.match(html,/function openNav\(value\)/);
 });
 test('evidence uses text rendering and has no polling or automatic retry loop', () => {
   assert.doesNotMatch(script,/\.innerHTML\s*=/); assert.doesNotMatch(script,/setInterval|setTimeout/);

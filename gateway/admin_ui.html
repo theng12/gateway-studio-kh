@@ -424,6 +424,7 @@
   .fleet-mac { background: var(--panel); padding: var(--s8) var(--s16); min-width: 0; }
   .fleet-mac .name { font-size: 13px; }
   .fleet-mac .cat, .fleet-mac .hint { overflow-wrap: anywhere; }
+  .fleet-mac-detail { margin-top: var(--s8); padding-top: var(--s8); border-top: 1px solid var(--line); }
   /* The 7-day strip: one bar a day, oldest on the left, filled by how much of that day this Mac or
      site was unreachable. A day nobody observed is hatched, not empty — "nobody looked" must not
      draw like "it was up all day". */
@@ -569,10 +570,12 @@
   .badge.chip-action:hover { filter: brightness(1.15); }
   .tabs button svg { width: 14px; height: 14px; vertical-align: -2px; margin-right: 6px; }
   .nav-pill-row { display: flex; align-items: center; gap: var(--s8); }
-  .nav-pill { display: flex; align-items: center; gap: var(--s8); width: 100%; min-width: 0;
+  .nav-pill { display: flex; align-items: center; gap: var(--s6); width: 100%; min-width: 0;
     padding: var(--s6) var(--s12); border-radius: 999px; border: 1px solid var(--line);
     background: var(--panel); color: var(--text); font-size: 12px; font-weight: 600;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    white-space: nowrap; overflow: hidden; }
+  .nav-pill-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .nav-pill #app-version { flex: 0 0 auto; }
   .nav-pill #app-version { font-weight: 400; color: var(--dim); }
   .nav-icon-btn { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; display: inline-flex;
     align-items: center; justify-content: center; border-radius: 7px; }
@@ -610,7 +613,7 @@
          or install the Launcher, so none is drawn here rather than a control that cannot act. -->
     <div class="nav-pill-row">
       <button type="button" class="nav-pill" onclick="openNav('whatsnew')" title="What's New — release notes"
-        >Gateway Studio KH <span id="app-version">unknown</span></button>
+        ><span class="nav-pill-name">Gateway Studio KH</span><span id="app-version">unknown</span></button>
       <!-- Icon-only, and it says where updates live: a browser cannot install or launch the
            Launcher, so this explains rather than pretending to check. -->
       <button type="button" class="nav-icon-btn" id="nav-update" aria-label="Update information"
@@ -647,6 +650,24 @@
     </div>
   </div>
   <!-- A page the Mac app still owns. One shared note, so a sidebar row is never a dead link. -->
+  <!-- SETTINGS: a read-only view of what this gateway is running. The settings themselves are
+       the app's — appearance, startup, keys, backups — so this page names that plainly and shows
+       the facts a browser can honestly read instead of an empty note. -->
+  <section id="view-settings" style="display:none">
+    <div class="heading">
+      <h1>Settings</h1>
+      <p>What this Gateway is running. Appearance, startup, keys and backups are changed in the
+         Gateway app on this Mac.</p>
+    </div>
+    <div class="pane-status" id="settings-status">Reading this gateway…</div>
+    <div class="card" style="max-width:820px">
+      <div class="body" id="settings-facts"></div>
+      <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+        <button class="primary sm" type="button" id="settings-copy" onclick="copyGatewayAddress(this)">Copy this gateway's address</button>
+        <button class="sm" type="button" onclick="openNav('whatsnew')">Release notes</button>
+      </div>
+    </div>
+  </section>
   <section id="view-whatsnew" style="display:none">
     <div class="heading">
       <h1>What's New</h1>
@@ -673,23 +694,30 @@
   </section>
   <!-- FLEET — the same page the native app shows: one tab strip, then one pane. -->
   <section id="view-fleet" style="display:none">
-    <div class="heading">
-      <h1>Fleet</h1>
-      <p>Every group of Macs this gateway can send work to, and how each one is doing.</p>
-      <button type="button" onclick="openNav('developer-tests')">Run test</button>
+    <div class="row" style="justify-content:space-between;align-items:flex-start;gap:var(--s12)">
+      <div class="heading" style="margin-bottom:0">
+        <h1>Fleet</h1>
+        <p>Every group of Macs this gateway can send work to, and how each one is doing.</p>
+      </div>
+      <div class="pane-actions" style="position:relative">
+        <button type="button" class="primary sm" onclick="fleetRefresh(this)">Refresh</button>
+      </div>
     </div>
     <div class="tabs" id="fleet-tabs" role="group" aria-label="Fleet section"></div>
     <!-- One filter row over every tab, exactly where the native page puts it. Fixed markup, so
          the 15 s poll redraws the list and never the control under the owner's hand. -->
-    <div class="row" id="fleet-controls">
-      <label>Show <select id="fleet-filter" onchange="fleetSetFilter(this.value)"></select></label>
-      <label>Sort <select id="fleet-sort" title="Orders Groups, Locations and the Machines table — a column header on Machines takes over from it"
-        onchange="fleetSetSort(this.value)"></select></label>
-      <select id="fleet-location" aria-label="Location" onchange="fleetSetLocation(this.value)"></select>
+    <div class="row" id="fleet-controls" style="flex-wrap:wrap;position:relative">
       <input type="search" id="fleet-search" placeholder="Filter machines, models, jobs…"
              autocomplete="off" aria-label="Filter machines, models, jobs">
-      <!-- The native page's Refresh: the one read that waits for a real fan-out. -->
-      <button type="button" onclick="fleetRefresh(this)">Refresh</button>
+      <div class="spacer"></div>
+      <button type="button" class="sm" id="fleet-filters-btn" aria-haspopup="true" aria-expanded="false"
+        onclick="toggleFleetFilters()">Filters <span id="fleet-filter-count" class="badge" hidden></span></button>
+      <div class="more-menu" id="fleet-filters" hidden style="left:auto;right:0;top:calc(100% + 4px)">
+        <label>Show <select id="fleet-filter" onchange="fleetSetFilter(this.value)"></select></label>
+        <label>Sort <select id="fleet-sort" title="Orders Groups, Locations and the Machines table — a column header on Machines takes over from it"
+          onchange="fleetSetSort(this.value)"></select></label>
+        <label>Location <select id="fleet-location" aria-label="Location" onchange="fleetSetLocation(this.value)"></select></label>
+      </div>
     </div>
 
     <!-- Groups: the one list the browser page has always drawn, Macs and sites together. -->
@@ -1574,7 +1602,7 @@ const NAV = [
   { group: 'App', items: [
     // What's New is the footer pill's own door (the standard bottom-left pill), not a second row.
     { view: 'guests', label: 'Guests', icon: 'person' },
-    { view: 'settings', label: 'Settings', icon: 'settings', app: true },
+    { view: 'settings', label: 'Settings', icon: 'settings' },
   ] },
 ];
 
@@ -1608,7 +1636,6 @@ function navIcon(name) {
 //: Pages this console does not carry yet: a real note, never an empty page.
 const APP_ONLY = {
   overview: 'Overview is in the Gateway app.',
-  settings: 'Settings is in the Gateway app.',
 };
 
 function navEntries() {
@@ -1700,7 +1727,7 @@ function setView(view) {
       else row.removeAttribute('aria-current');
     });
   }
-  for (const id of ['fleet', 'jobs', 'analytics', 'voices', 'models', 'providers', 'create', 'packs', 'guests', 'whatsnew', 'developer-tests', 'missing']) {
+  for (const id of ['fleet', 'jobs', 'analytics', 'voices', 'models', 'providers', 'create', 'packs', 'guests', 'whatsnew', 'settings', 'developer-tests', 'missing']) {
     const section = document.getElementById('view-' + id);
     if (section) section.style.display = view === id ? '' : 'none';
   }
@@ -1712,6 +1739,7 @@ function setView(view) {
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
   else if (view === 'packs') { loadContentShelf(); loadPreservedArchives(); }
   else if (view === 'fleet') loadFleet();
+  else if (view === 'settings') loadSettingsPage();
   else if (view === 'jobs') loadJobs();
   else if (view === 'analytics') loadAnalytics();
   else if (view === 'create') {
@@ -1737,6 +1765,57 @@ function setView(view) {
   // nothing showed the pane `providerTab` names until a tab was clicked. A tab the owner picked in
   // this session is kept (`providerTab`); otherwise it is the providers list, every activation.
   else if (view === 'providers') selectProviderTab(providerTab);
+}
+
+// Settings, read-only: the gateway's own answers, honestly labelled. The controls live in the
+// app, so the page names that and offers the two things a browser can do (copy the address,
+// read the notes) instead of a blank pane that says "Settings is in the Gateway app."
+async function loadSettingsPage() {
+  const facts = document.getElementById('settings-facts');
+  const status = document.getElementById('settings-status');
+  if (!facts) return;
+  try {
+    const s = await api('/status');
+    const hub = s.hub || {};
+    const models = s.models || {};
+    const providers = s.providers || {};
+    const up = Number(s.uptime_seconds);
+    const uptime = Number.isFinite(up) && up >= 0
+      ? (up >= 86400 ? `${Math.floor(up / 86400)} d ${Math.floor((up % 86400) / 3600)} h` : up >= 3600 ? `${Math.floor(up / 3600)} h ${Math.floor((up % 3600) / 60)} min` : `${Math.max(1, Math.round(up / 60))} min`)
+      : 'not reported';
+    const hubText = hub.running
+      ? `running at ${hub.base_url || 'an address it did not state'}`
+      : `not running${hub.probe ? ' — ' + hub.probe : ' (no address published)'}`;
+    const rows = [
+      ['Version', s.version || 'not read'],
+      ['This Mac', s.computer_name || 'name not reported'],
+      ['Address', window.location.origin],
+      ['Studio Hub', hubText],
+      ['Providers', `${providers.enabled ?? 0} of ${providers.total ?? 0} on`],
+      ['Models', `${models.publishable_models ?? 0} offered${models.withheld_models ? ` · ${models.withheld_models} withheld` : ''}`],
+      ['Running for', uptime],
+    ];
+    facts.innerHTML = rows.map(([k, v]) =>
+      `<div class="row" style="gap:12px;padding:6px 0;border-bottom:1px solid var(--line);align-items:baseline">
+        <b style="min-width:130px">${esc(k)}</b><span style="flex:1;min-width:0;overflow-wrap:anywhere">${esc(v)}</span></div>`).join('');
+    if (status) {
+      status.innerHTML = `<span class="dot ${hub.running ? '' : 'warn'}"></span>Gateway ${esc(s.version || 'version not read')} on ${esc(s.computer_name || 'this Mac')} · ${hub.running ? 'Studio Hub running' : 'Studio Hub not running'}`;
+    }
+  } catch (e) {
+    facts.innerHTML = '';
+    if (status) status.innerHTML = `<span class="dot bad"></span>Could not read this gateway — ${esc(e.message)} <button class="sm" type="button" onclick="loadSettingsPage()">Retry</button>`;
+  }
+}
+
+async function copyGatewayAddress(button) {
+  const text = `${window.location.origin}/admin`;
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = 'Copied';
+  } catch (e) {
+    button.textContent = 'Copy failed — select the address above';
+  }
+  setTimeout(() => { button.textContent = "Copy this gateway's address"; }, 2000);
 }
 
 async function loadWhatsNew() {
@@ -6305,6 +6384,22 @@ function fleetCauseTooltip(causes) {
   return lines.length ? lines.join('\n\n') : '';
 }
 
+// A card's own detail is opened on demand and survives the 15 s redraw: the page keeps the keys
+// the operator opened, and the redraw renders those panels open.
+const fleetOpenDetails = new Set();
+
+function toggleFleetDetail(button) {
+  const key = button.dataset.fleetKey || '';
+  const card = button.closest('.fleet-mac');
+  const panel = card && card.querySelector('.fleet-mac-detail');
+  if (!panel) return;
+  const opening = panel.hidden;
+  if (opening) fleetOpenDetails.add(key); else fleetOpenDetails.delete(key);
+  panel.hidden = !opening;
+  button.textContent = opening ? 'Hide' : 'Details';
+  button.setAttribute?.('aria-expanded', String(opening));
+}
+
 function fleetMac(m) {
   // **From its site's last answer.** The site timed out this read, so the Mac is listed — it did
   // not vanish — with the time it last reported and no live state. Its old state is not drawn as
@@ -6351,17 +6446,22 @@ function fleetMac(m) {
   const history = m.history || null;
   const offlineSince = history && history.offline_since != null
     ? `<div class="hint">Offline for ${fleetDuration(Date.now() / 1000 - history.offline_since)}</div>` : '';
-  return `<div class="fleet-mac">
+  const detailKey = `m:${m.machine || m.label || ''}`;
+  const detailOpen = fleetOpenDetails.has(detailKey);
+  return `<div class="fleet-mac" data-fleet-card="${esc(detailKey)}">
     <div class="row"><span class="name">${esc(m.label || m.machine)}</span><span class="badge ${cls}">${esc(word)}</span>${
       m.history && m.history.problematic === true
-        ? `<span class="badge warn" title="${esc(m.history.problematic_basis || '')}">Problematic</span>` : ''}</div>
+        ? `<span class="badge warn" title="${esc(m.history.problematic_basis || '')}">Problematic</span>` : ''}<span class="spacer"></span><button class="sm" type="button" data-fleet-key="${esc(detailKey)}"
+        aria-expanded="${detailOpen}" onclick="toggleFleetDetail(this)">${detailOpen ? 'Hide' : 'Details'}</button></div>
     ${doing ? `<div class="cat">${esc(doing)}</div>` : ''}
     ${m.attention ? `<div class="msg warn">${esc(m.attention)}</div>` : ''}
     ${offlineSince}
     ${conn && conn.slow ? `<div class="msg warn">Slow link — check cable/port (${esc(connText)})</div>` : ''}
     ${fleetCause({ kind: 'machine', row: m })}
-    <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(history)}<span>${esc(fleetHistoryLine({ kind: 'machine', row: m }))}</span></div>
-    <div class="hint" title="${esc(connTitle)}">${esc([`Network: ${connText}`, ...facts].join(' · '))}</div>
+    <div class="fleet-mac-detail" ${detailOpen ? '' : 'hidden'}>
+      <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(history)}<span>${esc(fleetHistoryLine({ kind: 'machine', row: m }))}</span></div>
+      <div class="hint" title="${esc(connTitle)}">${esc([`Network: ${connText}`, ...facts].join(' · '))}</div>
+    </div>
   </div>`;
 }
 
@@ -6374,17 +6474,22 @@ function fleetSite(L) {
   // beside it is honest, and the count says which of them were not measured this read.
   const carried = macs.filter(m => m.last_known === true).length;
   const offline = macs.filter(m => m.reachable === false || m.state === 'offline').length;
-  return `<div class="fleet-mac">
+  const detailKey = `s:${L.id || L.label || ''}`;
+  const detailOpen = fleetOpenDetails.has(detailKey);
+  return `<div class="fleet-mac" data-fleet-card="${esc(detailKey)}">
     <div class="row"><span class="name">${esc(L.label || L.id)}</span><span class="badge">Site</span>${badge}${
       L.history && L.history.problematic === true
-        ? `<span class="badge warn" title="${esc(L.history.problematic_basis || '')}">Problematic</span>` : ''}</div>
+        ? `<span class="badge warn" title="${esc(L.history.problematic_basis || '')}">Problematic</span>` : ''}<span class="spacer"></span><button class="sm" type="button" data-fleet-key="${esc(detailKey)}"
+        aria-expanded="${detailOpen}" onclick="toggleFleetDetail(this)">${detailOpen ? 'Hide' : 'Details'}</button></div>
     ${L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
     ${fleetCause({ kind: 'site', row: L })}
-    <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(L.history)}<span>${esc(fleetHistoryLine({ kind: 'site', row: L }))}</span></div>
-    <div class="hint">${esc([`${macs.length} Mac${macs.length === 1 ? '' : 's'}${
-        carried ? ` (${carried} from their last report)` : ''}${offline ? ` · ${offline} offline` : ''}`,
-      L.version ? `Hub ${L.version}` : '', `${(L.running_jobs || []).length} running`,
-      L.capacity && L.capacity.queue_depth ? `${L.capacity.queue_depth} queued` : ''].filter(Boolean).join(' · '))}</div>
+    <div class="fleet-mac-detail" ${detailOpen ? '' : 'hidden'}>
+      <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(L.history)}<span>${esc(fleetHistoryLine({ kind: 'site', row: L }))}</span></div>
+      <div class="hint">${esc([`${macs.length} Mac${macs.length === 1 ? '' : 's'}${
+          carried ? ` (${carried} from their last report)` : ''}${offline ? ` · ${offline} offline` : ''}`,
+        L.version ? `Hub ${L.version}` : '', `${(L.running_jobs || []).length} running`,
+        L.capacity && L.capacity.queue_depth ? `${L.capacity.queue_depth} queued` : ''].filter(Boolean).join(' · '))}</div>
+    </div>
   </div>`;
 }
 
@@ -9037,15 +9142,40 @@ function fleetControls() {
   }
 }
 
+function toggleFleetFilters() {
+  const menu = document.getElementById('fleet-filters');
+  const button = document.getElementById('fleet-filters-btn');
+  if (!menu) return;
+  const open = menu.hidden;
+  document.querySelectorAll('.more-menu').forEach(other => { other.hidden = true; });
+  menu.hidden = !open;
+  if (button) button.setAttribute?.('aria-expanded', String(open));
+}
+
+// "Filters 2" — every filter that is doing something says its count. The count is of filters,
+// not of results: results are in the status line under the tabs.
+function updateFleetFilterCount() {
+  const badge = document.getElementById('fleet-filter-count');
+  if (!badge) return;
+  let active = 0;
+  if (fleetFilter && fleetFilter !== FLEET_FILTERS[0][0]) active += 1;
+  if (fleetSort && fleetSort !== FLEET_SORTS[0][0]) active += 1;
+  if (fleetLocation && fleetLocation !== 'all') active += 1;
+  badge.textContent = active ? String(active) : '';
+  badge.hidden = !active;
+}
+
 function fleetSetFilter(value) {
   fleetFilter = value;
   const pick = document.getElementById('fleet-filter');
   if (pick) pick.value = value;
+  updateFleetFilterCount();
   if (lastFleetPayload) renderFleet(lastFleetPayload);
 }
 
 function fleetSetLocation(value) {
   fleetLocation = value || 'all';
+  updateFleetFilterCount();
   if (lastFleetPayload) renderFleet(lastFleetPayload);
 }
 
@@ -9060,6 +9190,7 @@ function fleetSetSort(value) {
   fleetSort = value;
   const pick = document.getElementById('fleet-sort');
   if (pick) pick.value = value;
+  updateFleetFilterCount();
   if (lastFleetPayload) renderFleet(lastFleetPayload);
 }
 
