@@ -434,21 +434,21 @@
     white-space: nowrap; }
   .fleet-card-actions { display: flex; gap: var(--s6); justify-content: flex-end; }
   .fleet-pane .ftable { min-width: 1020px; }
-  @media (max-width: 900px) { .fleet-pane .ftable th:first-child, .fleet-pane .ftable td:first-child { position: static; } }
   /* The two Fleet tables share the box instead of running past its edge: fixed widths, content
      wraps inside its own cell. At 768 they still scroll in their box (min-width). */
   #fleet-machines-wrap .ftable, #fleet-locations-wrap .ftable { table-layout: fixed; width: 100%; }
-  #fleet-machines-wrap .ftable th:nth-child(1) { width: 13%; }
-  #fleet-machines-wrap .ftable th:nth-child(2) { width: 8%; }
-  #fleet-machines-wrap .ftable th:nth-child(3) { width: 7%; }
-  #fleet-machines-wrap .ftable th:nth-child(4) { width: 7%; }
-  #fleet-machines-wrap .ftable th:nth-child(5) { width: 12%; }
-  #fleet-machines-wrap .ftable th:nth-child(6) { width: 14%; }
+  .fleet-pane .ftable td { overflow: hidden; }
+  #fleet-machines-wrap .ftable th:nth-child(1) { width: 12%; }
+  #fleet-machines-wrap .ftable th:nth-child(2) { width: 11%; }
+  #fleet-machines-wrap .ftable th:nth-child(3) { width: 8%; }
+  #fleet-machines-wrap .ftable th:nth-child(4) { width: 6%; }
+  #fleet-machines-wrap .ftable th:nth-child(5) { width: 10%; }
+  #fleet-machines-wrap .ftable th:nth-child(6) { width: 13%; }
   #fleet-machines-wrap .ftable th:nth-child(7) { width: 6%; }
   #fleet-machines-wrap .ftable th:nth-child(8) { width: 9%; }
   #fleet-machines-wrap .ftable th:nth-child(9) { width: 7%; }
   #fleet-machines-wrap .ftable th:nth-child(10) { width: 6%; }
-  #fleet-machines-wrap .ftable th:nth-child(11) { width: 11%; }
+  #fleet-machines-wrap .ftable th:nth-child(11) { width: 12%; }
   #fleet-locations-wrap .ftable th:nth-child(1) { width: 14%; }
   #fleet-locations-wrap .ftable th:nth-child(2) { width: 8%; }
   #fleet-locations-wrap .ftable th:nth-child(3) { width: 16%; }
@@ -458,8 +458,8 @@
   #fleet-locations-wrap .ftable th:nth-child(7) { width: 8%; }
   #fleet-locations-wrap .ftable th:nth-child(8) { width: 14%; }
   #fleet-locations-wrap .ftable th:nth-child(9) { width: 15%; }
-  .ftable td[data-label="Actions"], .ftable td[data-label="Batch"] { white-space: nowrap; }
-  .ftable td[data-label="Actions"] > .row { flex-wrap: nowrap; }
+  .ftable td[data-label="Batch"] { white-space: nowrap; }
+  .ftable td[data-label="Actions"] .row { flex-wrap: wrap; row-gap: var(--s4); }
   .ftable td[data-label="Likely cause"], .ftable td[data-label="Status"] { max-width: 300px; }
   .ftable td[data-label="Status"] .ft-sub, .ftable td[data-label="Likely cause"] .ft-sub {
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
