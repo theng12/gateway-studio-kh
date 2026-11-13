@@ -111,7 +111,11 @@ const WORKER = {
 test('a switched-off Gateway reads off, not an error, and hides pairing', async () => {
   const { context, nodes } = page({ answers: [failure(404, 'Not Found')] });
   await context.loadExtensionWorkers();
-  assert.match(nodes['ew-workers'].innerHTML, /switched off/);
+  // The next step is said once, in the status line; the empty box does not repeat it.
+  assert.match(nodes['ew-status'].innerHTML, /Browser workers are off/);
+  assert.match(nodes['ew-status'].innerHTML, /GATEWAY_EXTENSION_WORKERS=1/, 'the next step is named');
+  assert.match(nodes['ew-workers'].innerHTML, /Nothing to list while browser workers are off/);
+  assert.doesNotMatch(nodes['ew-workers'].innerHTML, /GATEWAY_EXTENSION_WORKERS/, 'the fix is not repeated in the box');
   assert.doesNotMatch(nodes['ew-workers'].innerHTML, /Could not/);
   assert.equal(nodes['ew-pair'].style.display, 'none');
   assert.equal(nodes['ew-manager'].style.display, 'none');

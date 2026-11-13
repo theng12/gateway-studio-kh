@@ -119,7 +119,8 @@ test('one status line says what is down, why, and offers the place that acts', (
   vm.runInContext('state.hub = {running: true, base_url: "http://127.0.0.1:47873"}; state.localRunners = 1', ctx);
   vm.runInContext('renderProviderStatus()', ctx);
   const up = get('provider-status').innerHTML;
-  assert.match(up, /Studio Hub running at/);
+  assert.match(up, /Studio Hub running\./);
+  assert.doesNotMatch(up, /127\.0\.0\.1/, 'no endpoint on the surface');
   assert.doesNotMatch(up, /not running/);
 });
 

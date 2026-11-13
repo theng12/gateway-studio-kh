@@ -303,8 +303,8 @@ test('provider support is labelled separately from configured availability', () 
 
   const html = harness.context.providerCard(provider);
 
-  assert.match(html, /4\/4 supported/);
-  assert.doesNotMatch(html, /4\/4 offered/);
+  assert.match(html, /4 supported · needs a key/, 'a keyless provider says its models cannot run yet');
+  assert.doesNotMatch(html, /4 of 4 models supported/, 'a keyless provider must not read as ready');
   assert.match(html, /no key/);
   assert.match(html, /role="switch" aria-label="BFL On\/Off"/);
   assert.match(html, /onchange="toggleEnabled\('bfl', this.checked, this\)"> Off/);
@@ -533,7 +533,8 @@ test('the measured panel puts the stated ceiling beside what really ran', () => 
   assert.match(target.innerHTML, /4096/);
   assert.match(target.innerHTML, /gateway/, 'the stated source must travel with the number');
   assert.match(target.innerHTML, /17\.3/);
-  assert.match(target.innerHTML, /measured by us/);
+  assert.match(target.innerHTML, /A dash is unknown, never zero/, 'the footnote is plain words, not a server note');
+  assert.doesNotMatch(target.innerHTML, /stated: null|stated`/, 'no JSON terms on the page');
 });
 
 test('an unmeasured figure is a dash and never a zero', () => {

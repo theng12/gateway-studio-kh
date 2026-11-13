@@ -237,7 +237,8 @@ test('"Nothing wrong reported" and "No evidence yet" stay plain hints', async ()
   ]));
   await ctx.loadFleet();
   const card = ctx.nodes.get(GROUPS).innerHTML;
-  assert.match(card, /class="hint">Likely cause: Nothing wrong reported/);
+  // A healthy Mac says nothing (the repeated caption was noise); a real "No evidence yet" shows.
+  assert.doesNotMatch(card, /Likely cause: Nothing wrong reported/);
   assert.match(card, /class="hint">Likely cause: No evidence yet/);
 });
 

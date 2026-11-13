@@ -425,6 +425,19 @@
   .fleet-mac .name { font-size: 13px; }
   .fleet-mac .cat, .fleet-mac .hint { overflow-wrap: anywhere; }
   .fleet-mac-detail { margin-top: var(--s8); padding-top: var(--s8); border-top: 1px solid var(--line); }
+  /* Two lines in every card, always: the name and its state chips, then the row's actions
+     right-aligned. A single line crushed the name to two characters once badges and buttons
+     shared it. */
+  .fleet-card-head { display: flex; flex-direction: column; gap: var(--s6); }
+  .fleet-card-title { display: flex; align-items: center; gap: var(--s6); flex-wrap: wrap; min-width: 0; }
+  .fleet-card-title .name { flex: 1 1 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .fleet-card-actions { display: flex; gap: var(--s6); justify-content: flex-end; }
+  .fleet-pane .ftable { min-width: 1020px; }
+  .ftable td[data-label="Actions"], .ftable td[data-label="Batch"] { white-space: nowrap; }
+  .ftable td[data-label="Actions"] .row { flex-wrap: nowrap; }
+  .ft-more > summary { padding: 2px 6px; }
+
   /* The 7-day strip: one bar a day, oldest on the left, filled by how much of that day this Mac or
      site was unreachable. A day nobody observed is hatched, not empty — "nobody looked" must not
      draw like "it was up all day". */
@@ -592,6 +605,11 @@
   .pane-status { display: flex; align-items: center; gap: var(--s8); flex-wrap: wrap;
     font-size: 12px; color: var(--dim); margin: var(--s8) 0 var(--s12); }
   .pane-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
+  .pane-status > span:not(.dot) { flex: 1 1 0; min-width: 0; }
+  /* No bare disclosure triangles: a summary reads as a row with a Show/Hide word. */
+  summary { list-style: none; cursor: pointer; }
+  summary::-webkit-details-marker { display: none; }
+  details.card > summary { padding: var(--s8) var(--s16); }
   .pane-status .dot.bad { background: var(--bad, #ef4444); }
   .pane-status .dot.warn { background: var(--warn); }
   .pane-actions { display: flex; align-items: center; gap: var(--s8); flex-wrap: wrap; }
@@ -660,11 +678,13 @@
          Gateway app on this Mac.</p>
     </div>
     <div class="pane-status" id="settings-status">Reading this gateway…</div>
-    <div class="card" style="max-width:820px">
+    <div class="card">
       <div class="body" id="settings-facts"></div>
-      <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+      <div class="body" style="padding-top:12px">
+      <div class="row" style="gap:8px;flex-wrap:wrap">
         <button class="primary sm" type="button" id="settings-copy" onclick="copyGatewayAddress(this)">Copy this gateway's address</button>
         <button class="sm" type="button" onclick="openNav('whatsnew')">Release notes</button>
+      </div>
       </div>
     </div>
   </section>
@@ -738,10 +758,15 @@
         <span id="fleet-threshold-note" role="status" aria-live="polite"></span>
       </div>
       <!-- The native page's bulk bar, for the two settings it can change on every Mac at once. -->
-      <div class="row" id="fleet-machine-bulk">
-        <button type="button" onclick="fleetEnableAutostartEverywhere(this)">Enable Auto-Start on All Macs</button>
-        <button type="button" onclick="fleetEnableMacTrashEverywhere(this)">Turn On macOS Trash on All Macs That Are Off</button>
-        <button type="button" onclick="fleetResetCounters(this)">Reset Job Counters…</button>
+      <div class="row" id="fleet-machine-bulk" style="position:relative">
+        <span class="hint" style="margin:0">Fleet-wide changes:</span>
+        <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
+          onclick="toggleCardMenu(event, 'fleet-bulk')">Bulk actions…</button>
+        <div class="more-menu" id="pmenu-fleet-bulk" hidden>
+          <button type="button" class="sm" onclick="fleetEnableAutostartEverywhere(this)">Enable Auto-Start on all Macs</button>
+          <button type="button" class="sm" onclick="fleetEnableMacTrashEverywhere(this)">Turn on macOS Trash on all Macs that are off</button>
+          <button type="button" class="sm" onclick="fleetResetCounters(this)">Reset job counters…</button>
+        </div>
       </div>
       <div id="fleet-machine-action-note" role="status" aria-live="polite"></div>
       <details class="card" id="fleet-bulk-priority">
@@ -1039,14 +1064,8 @@
          setting nobody can reach is the same defect as a control that does nothing. -->
     <h2>Concurrency</h2>
     <p class="hint" style="margin:0 0 12px">
-      How much work the gateway runs at once. The <b>pool</b> is its total. A
-      <b>cloud</b> provider's limit is what that lane will accept, so a tier that
-      unlocks with payment is a number here rather than a code change. A
-      <b>Studio Hub location</b> sizes itself from the free workers it reports, and a
-      number here <b>caps</b> that: it can throttle a busy site, and can never push
-      more work at one than the site says it has free. The two are separate sections
-      because they are governed by different rules. A blank box means <b>not set</b>,
-      which is not the same as a limit of one.
+      How much work runs at once. A blank box means <b>not set</b> — no cap, not a
+      limit of one. Fleet lanes follow the fleet automatically; a number here caps them.
     </p>
     <div id="concurrency-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="concurrency"></div>
@@ -1099,7 +1118,7 @@
     <section class="provider-section" id="provider-capacity-pools">
     <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:var(--s8)">
       <h3 style="margin:0">Model pools</h3>
-      <button class="primary" id="pool-new" onclick="newPool()">New Pool</button>
+      <button class="sm" id="pool-new" onclick="newPool()">New Pool</button>
     </div>
     <p class="hint" style="margin:0 0 12px;max-width:760px">
       One name for several models, tried in order. A caller saves a single id and the gateway
@@ -1220,7 +1239,7 @@
     </div>
     <div id="ew-msg" class="msg" role="status" aria-live="polite"></div>
     <div id="ew-workers"><div class="empty">Reading browser workers…</div></div>
-    <h3 style="margin:16px 0 8px">Observed accounts</h3>
+    <h3 style="margin:16px 0 8px" id="ew-accounts-head">Observed accounts</h3>
     <div id="ew-accounts"><div class="empty">Reading observed accounts…</div></div>
     </div><!-- /provider-pane-extension-workers -->
   </section>
@@ -3487,9 +3506,13 @@ function renderQueue(data) {
     // been put back — the count the deferral ceiling in the summary is measured against.
     // A job that has never been through this says nothing rather than "put back 0 times".
     const putBack = Number(job.deferrals || 0);
+    const lane = lanes.find(l => l.modality === job.modality) || null;
+    const capZero = lane && String(lane.limit) === '0';
     const why = (job.defer_reason
       ? esc(job.defer_reason)
-      : '<span class="muted">queued for the next free slot</span>')
+      : capZero
+        ? `<span class="muted">waiting: this lane's cap is 0</span><div class="hint" style="margin:4px 0 0">Raise the ${esc(job.modality || '')} lane under Concurrency above, or the job fails at the wait ceiling.</div>`
+        : '<span class="muted">queued for the next free slot</span>')
       + (putBack
         ? `<div class="hint" style="margin:4px 0 0">put back ${esc(putBack)} time${putBack === 1 ? '' : 's'}</div>`
         : '')
@@ -3501,7 +3524,7 @@ function renderQueue(data) {
         <td>${position}</td>
         <td>${esc(job.modality || '—')}</td>
         <td>${esc(job.model_name || job.model_id || '—')}<div class="hint" style="margin:4px 0 0">${esc(job.provider_name || job.provider_id || '')}${job.eligible_macs == null ? '' : ` · ${esc(job.eligible_macs)} Mac${job.eligible_macs === 1 ? '' : 's'} eligible`}</div></td>
-        <td>${esc(ago(job.created_at))}<div class="hint" style="margin:4px 0 0">${esc(job.short_id || '')}</div></td>
+        <td>${esc(ago(job.created_at))}</td>
         <td>${why}</td>
         <td title="${esc(job.attempt_policy || '')}">${queueAttemptText(job)}</td>
       </tr>`;
@@ -3620,7 +3643,7 @@ function renderMeasured(data) {
       <tbody>${rows || '<tr><td colspan="6" class="muted">Nothing has run yet, so nothing is measured.</td></tr>'}</tbody>
     </table>
     <div class="hint" style="margin-top:6px">
-      Measured over the last ${esc(data.window)} jobs · ${esc(data.note || '')}
+      Measured over the last ${esc(data.window)} jobs. A dash is unknown, never zero; the stated ceiling is the maker's own number.
     </div>`;
 }
 
@@ -3724,7 +3747,7 @@ function renderProviderStatus() {
   const parts = [];
   let health = 'ok';
   if (hub && hub.running === true) {
-    parts.push(`Studio Hub running${hub.base_url ? ` at <code>${esc(hub.base_url)}</code>` : ''}.`);
+    parts.push('Studio Hub running.');
   } else if (hub) {
     health = 'bad';
     const why = String(hub.probe || hub.probe_status || '').trim();
@@ -3860,7 +3883,11 @@ function providerCard(p) {
     ).join('\n');
     badges.push(`<span class="badge warn" title="${esc(detail)}">${p.skipped.length} unrecognised engine${p.skipped.length === 1 ? '' : 's'}</span>`);
   }
-  badges.push(`<span class="badge">${p.publishable_model_count}/${p.model_count} supported</span>`);
+  if (p.model_count) {
+    badges.push(p.configured
+      ? `<span class="badge">${p.publishable_model_count} of ${p.model_count} models supported</span>`
+      : `<span class="badge" title="The models are listed; nothing can run until this provider has a key.">${p.publishable_model_count} supported · needs a key</span>`);
+  }
   badges.push(privacyBadge(p.data_use, p.free_tier));
 
   const fields = p.configured_fields.map(f => `
@@ -3868,7 +3895,8 @@ function providerCard(p) {
       <label for="f-${esc(p.id)}-${esc(f.key)}">${esc(f.label)}${f.required ? '' : ' <span style="opacity:.6">(optional)</span>'}</label>
       ${f.secret ? '<span class="secret">' : ''}<input id="f-${esc(p.id)}-${esc(f.key)}" type="${f.secret ? 'password' : 'text'}"
              data-provider="${esc(p.id)}" data-field="${esc(f.key)}" autocomplete="off"
-             placeholder="${esc(f.source === 'env' ? 'from .env (' + f.env_var + ')' : (f.masked || f.placeholder || ''))}"
+             title="${esc(f.source === 'env' ? 'from the gateway\'s .env: ' + f.env_var : '')}"
+             placeholder="${esc(f.source === 'env' ? 'from the gateway\'s .env' : (f.masked || f.placeholder || ''))}"
              value="${f.secret ? '' : esc(f.masked)}">${f.secret ? '<button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span>' : ''}
       <div class="hint">${f.present ? `configured (${esc(f.source)})` : `env var <code>${esc(f.env_var)}</code>`}${f.help_text ? ' · ' + esc(f.help_text) : ''}</div>
     </div>`).join('');
@@ -3902,7 +3930,7 @@ function providerCard(p) {
         <span class="msg" id="msg-${esc(p.id)}"></span>
       </div>
     </div>
-    ${p.description ? `<div class="desc">${esc(p.description)}</div>` : ''}
+    ${p.description && p.description.trim() !== 'User-defined provider.' ? `<div class="desc">${esc(p.description)}</div>` : ''}
     ${open ? `
     <div class="body">
       <div class="hint card-details">${esc(p.id)} · ${esc(p.kind)}${p.base_url ? ' · ' + esc(p.base_url) : ''}</div>
@@ -4334,10 +4362,12 @@ async function loadExtensionWorkers() {
     if (accounts) accounts.innerHTML = '';
     const status = document.getElementById('ew-status');
     if (status) status.innerHTML = e.status === 404
-      ? '<span class="dot warn"></span>Browser workers are switched off on this Gateway — turn them on in the app’s Settings.'
+      ? '<span class="dot warn"></span>Browser workers are off — set GATEWAY_EXTENSION_WORKERS=1 in the gateway’s .env, then restart it from the app.'
       : `<span class="dot bad"></span>Could not read browser workers — ${esc(e.message)}`;
+    const accountsHead = document.getElementById('ew-accounts-head');
+    if (accountsHead) accountsHead.hidden = true;
     root.innerHTML = e.status === 404
-      ? '<div class="empty">Browser workers are switched off on this Gateway (GATEWAY_EXTENSION_WORKERS).</div>'
+      ? '<div class="empty">Nothing to list while browser workers are off — the line above says how to turn them on.</div>'
       : `<div class="empty">Could not read browser workers: ${esc(e.message)}</div>`;
   }
 }
@@ -4537,8 +4567,7 @@ function renderPoolList() {
     <div class="card" style="margin-top:12px${editing ? ';opacity:.55' : ''}">
       <div class="card-head">
         <div class="card-main">
-          <b>${esc(pool.display_name)}</b>
-          <code style="margin-left:8px">pool::${esc(pool.name)}</code>
+          <b title="pool::${esc(pool.name)}">${esc(pool.display_name)}</b>
           <div class="hint" style="margin-top:4px">
             ${pool.resolvable_count} of ${pool.members.length} members can answer${cooling ? `, ${cooling} out of quota` : ''}
             ${pool.description ? ` · ${esc(pool.description)}` : ''}
@@ -4603,7 +4632,7 @@ function openPoolEditor() {
   const e = poolEdit;
   host.innerHTML = `
     <div class="card" style="padding:16px">
-      <h3>${e.isNew ? 'New pool' : `Edit pool <code>pool::${esc(e.name)}</code>`}</h3>
+      <h3>${e.isNew ? 'New pool' : `Edit ${esc(e.name)}`}</h3>
       <div class="row" style="gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
         <label style="flex:0 0 220px">Name<br>
           <input type="text" id="pool-name" placeholder="free-all" value="${esc(e.name)}"
@@ -4986,8 +5015,8 @@ function sfxCard(source) {
              data-sfx="${esc(source.id)}" data-field="${esc(f.key)}" autocomplete="off"
              placeholder="${esc(f.source === 'env' ? 'from .env (' + f.env_var + ')' : (f.masked || f.placeholder || ''))}"
              value="${f.secret ? '' : esc(f.masked)}">${f.secret ? '<button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span>' : ''}
-      <div class="hint">${f.present ? `configured (${esc(f.source)})` : 'not set'}${
-        f.env_var ? ` · .env var <code>${esc(f.env_var)}</code>` : ''}${
+      <div class="hint">${f.present ? `configured (${esc(f.source)})`
+        : (f.source === 'env' ? `not set · the .env value is used if present` : `not set — paste it here and Save`)} ${
         f.help_text ? ' · ' + esc(f.help_text) : ''}</div>
     </div>`).join('');
   // Only https links are drawn, the same guard the rate-limit research uses: a value from the
@@ -5002,7 +5031,7 @@ function sfxCard(source) {
   <div class="card">
     <div class="card-head">
       <div class="card-main">
-        <div class="name">${esc(source.display_name)}</div>
+        <div class="name" title="${esc(source.id)}${source.kind && source.kind !== source.id ? ' · ' + esc(source.kind) : ''}">${esc(source.display_name)}</div>
         <div class="card-badges">${badges.join(' ')}</div>
       </div>
       <div class="card-actions">
@@ -5016,9 +5045,7 @@ function sfxCard(source) {
         <span class="msg" id="sfx-msg-${esc(source.id)}"></span>
       </div>
     </div>
-    ${source.description ? `<div class="desc">${esc(source.description)}</div>` : ''}
     <div class="body">
-      <div class="hint card-details">${esc(source.id)} · ${esc(source.kind)}</div>
       <div class="fields">${fields || '<div class="hint">This source needs no key.</div>'}</div>
       <div class="actions">
         <button class="primary sm" onclick="saveSfxCreds('${esc(source.id)}', this)">Save</button>
@@ -6327,7 +6354,9 @@ function fleetVisible(items) {
 function fleetCause(item) {
   const causes = item.row.causes || [];
   const main = causes[0];
-  if (!main) return '';
+  // A healthy subject says nothing: the generic "Nothing wrong reported" on every card is noise
+  // the reviewer rightly called out. Real causes (slow link, Wi-Fi, no evidence) still show.
+  if (!main || main.code === 'fine') return '';
   const cls = fleetCauseMsgClass(fleetCauseHealth(causes, item.row));
   const more = causes.slice(1).filter(c => c.code !== 'fine');
   const body = `<div class="${cls}">Likely cause: ${esc(main.text)}</div>` +
@@ -6341,7 +6370,9 @@ function fleetCause(item) {
 // cause is and supplies its evidence; nothing here works one out from a number.
 function fleetCauseLine(causes) {
   const first = (causes || [])[0];
-  return first && first.text ? first.text : '';
+  // The generic "Nothing wrong reported" is noise in a table column; real causes still show.
+  if (!first || first.code === 'fine') return '';
+  return first.text || '';
 }
 
 // **The colour is the cause's own severity, read from the Gateway** — `bad` (broken or down),
@@ -6387,6 +6418,22 @@ function fleetCauseTooltip(causes) {
 // A card's own detail is opened on demand and survives the 15 s redraw: the page keeps the keys
 // the operator opened, and the redraw renders those panels open.
 const fleetOpenDetails = new Set();
+
+// "Open" on a group card goes to the tab that can act on that Mac or site, with the location
+// filter already set: a card that says "Unreachable" now offers the place that fixes it.
+function fleetOpenFromButton(button) {
+  fleetOpenCard(button.dataset.openKind || '', button.dataset.openId || '', button.dataset.openLabel || '');
+}
+
+function fleetOpenCard(kind, id, label) {
+  if (kind === 'site') {
+    selectFleetTab('locations');
+    fleetSetLocation(id);
+  } else {
+    selectFleetTab('machines');
+    fleetSetSearch(label || id);
+  }
+}
 
 function toggleFleetDetail(button) {
   const key = button.dataset.fleetKey || '';
@@ -6449,10 +6496,17 @@ function fleetMac(m) {
   const detailKey = `m:${m.machine || m.label || ''}`;
   const detailOpen = fleetOpenDetails.has(detailKey);
   return `<div class="fleet-mac" data-fleet-card="${esc(detailKey)}">
-    <div class="row"><span class="name">${esc(m.label || m.machine)}</span><span class="badge ${cls}">${esc(word)}</span>${
+    <div class="fleet-card-head">
+      <div class="fleet-card-title"><span class="name">${esc(m.label || m.machine)}</span><span class="badge ${cls}">${esc(word)}</span>${
       m.history && m.history.problematic === true
-        ? `<span class="badge warn" title="${esc(m.history.problematic_basis || '')}">Problematic</span>` : ''}<span class="spacer"></span><button class="sm" type="button" data-fleet-key="${esc(detailKey)}"
-        aria-expanded="${detailOpen}" onclick="toggleFleetDetail(this)">${detailOpen ? 'Hide' : 'Details'}</button></div>
+        ? `<span class="badge warn" title="${esc(m.history.problematic_basis || '')}">Problematic</span>` : ''}</div>
+      <div class="fleet-card-actions">
+        <button class="sm" type="button" data-open-kind="machine" data-open-id="${esc(m.machine || '')}"
+          data-open-label="${esc(m.label || m.machine || '')}" onclick="fleetOpenFromButton(this)">Open</button>
+        <button class="sm" type="button" data-fleet-key="${esc(detailKey)}"
+          aria-expanded="${detailOpen}" onclick="toggleFleetDetail(this)">${detailOpen ? 'Hide' : 'Details'}</button>
+      </div>
+    </div>
     ${doing ? `<div class="cat">${esc(doing)}</div>` : ''}
     ${m.attention ? `<div class="msg warn">${esc(m.attention)}</div>` : ''}
     ${offlineSince}
@@ -6477,10 +6531,16 @@ function fleetSite(L) {
   const detailKey = `s:${L.id || L.label || ''}`;
   const detailOpen = fleetOpenDetails.has(detailKey);
   return `<div class="fleet-mac" data-fleet-card="${esc(detailKey)}">
-    <div class="row"><span class="name">${esc(L.label || L.id)}</span><span class="badge">Site</span>${badge}${
+    <div class="fleet-card-head">
+      <div class="fleet-card-title"><span class="name">${esc(L.label || L.id)}</span><span class="badge">Site</span>${badge}${
       L.history && L.history.problematic === true
-        ? `<span class="badge warn" title="${esc(L.history.problematic_basis || '')}">Problematic</span>` : ''}<span class="spacer"></span><button class="sm" type="button" data-fleet-key="${esc(detailKey)}"
-        aria-expanded="${detailOpen}" onclick="toggleFleetDetail(this)">${detailOpen ? 'Hide' : 'Details'}</button></div>
+        ? `<span class="badge warn" title="${esc(L.history.problematic_basis || '')}">Problematic</span>` : ''}</div>
+      <div class="fleet-card-actions">
+        <button class="sm" type="button" data-open-kind="site" data-open-id="${esc(L.id || '')}" onclick="fleetOpenFromButton(this)">Open</button>
+        <button class="sm" type="button" data-fleet-key="${esc(detailKey)}"
+          aria-expanded="${detailOpen}" onclick="toggleFleetDetail(this)">${detailOpen ? 'Hide' : 'Details'}</button>
+      </div>
+    </div>
     ${L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
     ${fleetCause({ kind: 'site', row: L })}
     <div class="fleet-mac-detail" ${detailOpen ? '' : 'hidden'}>
@@ -7185,11 +7245,12 @@ function fleetLocationHub(L) {
 }
 
 function fleetLocationStatus(L) {
-  const address = L.url || '';
-  if (L.paused_at != null) return { main: address, sub: L.pause_reason || 'Paused: unreachable.', bad: true };
-  if (L.reachable === true) return { main: address, sub: '', bad: false };
-  if (L.pending === true) return { main: address, sub: 'Just added — reading its Macs…', bad: false };
-  return { main: address, sub: L.error || 'Not reachable', bad: true };
+  // The address is a detail (it has its own Address… dialog and lives in the row tooltip); the
+  // Status column says what is happening, in words.
+  if (L.paused_at != null) return { main: 'Paused', sub: L.pause_reason || 'Paused: unreachable.', bad: true };
+  if (L.reachable === true) return { main: 'Answering', sub: '', bad: false };
+  if (L.pending === true) return { main: 'Just added', sub: 'Reading its Macs…', bad: false };
+  return { main: 'Not reachable', sub: L.error || '', bad: true };
 }
 
 function fleetLocationRow(L) {
@@ -7202,7 +7263,7 @@ function fleetLocationRow(L) {
   const members = fleetLocationMembers(L);
   const status = fleetLocationStatus(L);
   return `<tr>
-    <td class="ft-lead" data-label="Location">
+    <td class="ft-lead" data-label="Location" title="${esc(L.url || '')}">
       <div class="ft-name">${esc(L.label || L.id || '—')}</div>
       ${caption ? `<div class="ft-sub">${esc(caption)}</div>` : ''}</td>
     <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">${fleetBadge(verdict.text, verdict.health)}</td>
@@ -7213,7 +7274,6 @@ function fleetLocationRow(L) {
     <td data-label="Members" title="${esc(fleetMembersTooltip(L))}"
       style="${members.refused > 0 ? 'color:var(--bad-text)' : ''}">${esc(members.text)}</td>
     <td data-label="Models">${esc(fleetLocationModels(L))}</td>
-    <td data-label="Release">${esc((L.release && L.release.version_build) || '—')}</td>
     <td data-label="Status" title="${esc(L.error || '')}"
       style="${status.bad ? 'color:var(--warn-text)' : 'color:var(--dim)'}">
       <div><div>${esc(status.main || '—')}</div>
@@ -8829,7 +8889,7 @@ function renderFleetLocations(d) {
     wrap.innerHTML = rows.length
       ? `<table class="ftable">
          <thead><tr><th>Location</th><th>Health</th><th>Likely cause</th>
-         <th>Network</th><th>Hub</th><th>Members</th><th>Models</th><th>Release</th><th>Status</th><th>Actions</th></tr></thead>
+         <th>Network</th><th>Hub</th><th>Members</th><th>Models</th><th>Status</th><th>Actions</th></tr></thead>
          <tbody>${rows.map(fleetLocationRow).join('')}</tbody></table>`
       : '<div class="fleet-empty">No location matches this filter.</div>';
   }
@@ -8943,13 +9003,12 @@ function renderFleetJobs(d) {
           // what the route addresses — a label is not an identity.
           const stoppable = job.location_id != null && job.batch_id != null;
           return `<tr>
-            <td class="ft-lead" data-label="Location"><div class="ft-name">${esc(job.location || job.location_id || '—')}</div>
-              <div class="ft-sub">${esc(job.batch_id || '')}</div></td>
+            <td class="ft-lead" data-label="Location"><div class="ft-name">${esc(job.location || job.location_id || '—')}</div></td>
             <td data-label="Type">${esc(job.modality ? (job.modality === 'tts' ? 'TTS' : job.modality) : '—')}</td>
             <td data-label="Model">${esc(job.label || job.model || '—')}</td>
-            <td data-label="Batch">${esc(job.batch_id || '—')}</td>
+            <td data-label="Batch" title="${esc(job.batch_id || '')}">${esc(job.label || job.modality || 'batch')}</td>
             <td data-label="Progress">${esc(fleetJobProgress(job))}
-              ${job.no_progress_s > 0 ? `<div class="ft-sub">no progress for ${job.no_progress_s}s</div>` : ''}</td>
+              ${job.no_progress_s > 0 ? `<div class="ft-sub">no progress for ${esc(fleetDuration(job.no_progress_s))}</div>` : ''}</td>
             <td class="nowrap" data-label="State">${fleetBadge(state.text, state.health)}</td>
             <td data-label="Actions">${stoppable ? `<button type="button" class="sm" data-id="${esc(job.location_id)}"`
               + ` data-batch="${esc(job.batch_id)}" onclick="fleetCancelBatch(this)">Stop</button>` : '—'}</td>

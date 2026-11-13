@@ -410,7 +410,7 @@ def global_budget() -> Budget:
         return Budget(limit=env, source=SOURCE_CURATED,
                       detail=f"GATEWAY_JOB_CONCURRENCY is set to {env}")
     return Budget(limit=DEFAULT_GLOBAL, source=SOURCE_GATEWAY,
-                  detail=f"nothing set it, so {DEFAULT_GLOBAL}; edit it on Providers")
+                  detail=f"nothing set it, so {DEFAULT_GLOBAL}; a number here overrides it")
 
 
 def fleet_share() -> dict[str, Any]:
@@ -720,7 +720,7 @@ def cloud_budget(provider_id: str) -> Budget:
     return Budget(
         limit=DEFAULT_PROVIDER,
         source=SOURCE_GATEWAY,
-        detail=f"no limit set, so one at a time; set it on the Providers page ({provider_id})",
+        detail=f"no limit set, so one at a time; set it here ({provider_id})",
     )
 
 
