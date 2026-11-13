@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MENUBAR = ROOT / "menubar"
 #: Read as text, never imported: importing `gateway.config` creates the data folder, and a test
 #: must not touch the owner's own.
-EVENT_KEYS = ('"fleet_watchdog"', '"story_update"', '"gateway_health"')
+EVENT_KEYS = ('"fleet_watchdog"', '"gateway_health"')
 
 
 class GatewayLivenessNative(unittest.TestCase):

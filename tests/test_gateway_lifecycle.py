@@ -62,7 +62,7 @@ import Cocoa
 import WebKit
 struct Configuration {
     let port = Int(ProcessInfo.processInfo.environment["FIXTURE_PORT"]!)!
-    let gatewayDir = ProcessInfo.processInfo.environment["GATEWAY_APP_SUPPORT"]!
+    let gatewayDir: String? = ProcessInfo.processInfo.environment["GATEWAY_APP_SUPPORT"]
     let autoStartGateway = false
 }
 final class ConfigStore {
@@ -70,7 +70,7 @@ final class ConfigStore {
     let config = Configuration()
 }
 enum AppPaths {
-    static let appSupport = URL(fileURLWithPath: ConfigStore.shared.config.gatewayDir)
+    static let appSupport = URL(fileURLWithPath: ConfigStore.shared.config.gatewayDir!)
     static let bundledPython: URL? = URL(fileURLWithPath: ProcessInfo.processInfo.environment["FIXTURE_PYTHON"]!)
     static let bundledHelper: URL? = nil
     static let bundledPythonHome: URL? = nil
