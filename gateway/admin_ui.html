@@ -679,7 +679,7 @@
          or install the Launcher, so none is drawn here rather than a control that cannot act. -->
     <div class="nav-pill-row">
       <button type="button" class="nav-pill" onclick="openNav('whatsnew')" title="What's New — release notes"
-        ><span class="nav-pill-name">Gateway Studio KH</span><span id="app-version">unknown</span></button>
+        ><span class="nav-pill-name" title="Gateway Studio KH">Gateway Studio</span><span id="app-version">unknown</span></button>
       <!-- Icon-only, and it says where updates live: a browser cannot install or launch the
            Launcher, so this explains rather than pretending to check. -->
       <button type="button" class="nav-icon-btn" id="nav-update" aria-label="Update information"
@@ -1815,6 +1815,9 @@ function navIcon(name) {
 const APP_ONLY = {
   overview: 'Overview is in the Gateway app.',
 };
+// A page this console does not carry still has its own name for the title; the sidebar row is
+// gone, so the label cannot come from NAV.
+const APP_ONLY_LABELS = { overview: 'Overview' };
 
 function navEntries() {
   return NAV.flatMap(section => section.items);
@@ -1883,7 +1886,7 @@ function setView(view) {
     const title = document.getElementById('missing-title');
     const note = document.getElementById('missing-note');
     const entry = typeof navEntryFor === 'function' ? navEntryFor(view) : null;
-    pageLabel = entry ? entry.label : view;
+    pageLabel = entry ? entry.label : (APP_ONLY_LABELS[view] || view);
     if (title) title.textContent = pageLabel;
     if (note) note.textContent = APP_ONLY[view];
     view = 'missing';
