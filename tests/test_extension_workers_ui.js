@@ -29,7 +29,8 @@ function el(value = '') {
 
 function page({ inApp = true, answers = [] } = {}) {
   const nodes = Object.fromEntries(['ew-workers', 'ew-pair', 'ew-token', 'ew-token-value', 'ew-token-label',
-    'ew-msg', 'ew-worker-id', 'ew-kind', 'ew-manager', 'ew-manager-id', 'ew-accounts'].map(id => [id, el()]));
+    'ew-msg', 'ew-worker-id', 'ew-kind', 'ew-manager', 'ew-manager-id', 'ew-accounts',
+    'ew-pair-toggle', 'ew-more-btn', 'ew-status'].map(id => [id, el()]));
   const calls = [];
   const scope = [];
   const context = {
@@ -124,9 +125,11 @@ test('unreported credits read unknown, server text is escaped, unpair only in th
   assert.match(html, /unknown — not reported yet/);
   assert.doesNotMatch(html, /chrome-<a>/);
   assert.match(html, /chrome-&lt;a&gt;/);
-  assert.match(html, /Unpair/);
-  assert.equal(app.nodes['ew-pair'].style.display, '');
-  assert.equal(app.nodes['ew-manager'].style.display, '');
+  assert.match(html, /Unpair/, 'the app can unpair from the card overflow');
+  // One primary action on the pane: Pair a worker reveals the form; Mint manager lives in ⋯.
+  assert.equal(app.nodes['ew-pair-toggle'].style.display, '');
+  assert.equal(app.nodes['ew-pair'].style.display, 'none');
+  assert.equal(app.nodes['ew-manager'].style.display, 'none');
 
   const browser = page({ inApp: false, answers: [{ workers: [WORKER] }] });
   await browser.context.loadExtensionWorkers();
@@ -134,6 +137,7 @@ test('unreported credits read unknown, server text is escaped, unpair only in th
   assert.doesNotMatch(browser.nodes['ew-workers'].innerHTML, /manager scope/);
   assert.equal(browser.nodes['ew-pair'].style.display, 'none');
   assert.equal(browser.nodes['ew-manager'].style.display, 'none');
+  assert.equal(browser.nodes['ew-pair-toggle'].style.display, 'none');
 });
 
 test('stated credits, a current job and held jobs are drawn', () => {

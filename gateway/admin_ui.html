@@ -574,6 +574,25 @@
     background: var(--panel); color: var(--text); font-size: 12px; font-weight: 600;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .nav-pill #app-version { font-weight: 400; color: var(--dim); }
+  .nav-icon-btn { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; display: inline-flex;
+    align-items: center; justify-content: center; border-radius: 7px; }
+  .support-row { margin-top: var(--s6); }
+  .nav-support { display: inline-flex; align-items: center; gap: 6px; padding: var(--s4) 0;
+    border: 0; background: transparent; color: var(--dim); font-size: 12px; }
+  .nav-support:hover:not(:disabled) { color: var(--text); background: transparent; }
+  /* The frame: wide tables scroll inside their own box, with the row's own name pinned, so a
+     page never scrolls sideways and the reader never loses which row they are on. */
+  .tablewrap { overflow-x: auto; }
+  .tablewrap table th:first-child, .tablewrap table td:first-child {
+    position: sticky; left: 0; z-index: 1; background: var(--panel);
+  }
+  .pane-status { display: flex; align-items: center; gap: var(--s8); flex-wrap: wrap;
+    font-size: 12px; color: var(--dim); margin: var(--s8) 0 var(--s12); }
+  .pane-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
+  .pane-status .dot.bad { background: var(--bad, #ef4444); }
+  .pane-status .dot.warn { background: var(--warn); }
+  .pane-actions { display: flex; align-items: center; gap: var(--s8); flex-wrap: wrap; }
+  .ew-detail { margin-top: var(--s8); padding-top: var(--s8); border-top: 1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -592,6 +611,19 @@
     <div class="nav-pill-row">
       <button type="button" class="nav-pill" onclick="openNav('whatsnew')" title="What's New — release notes"
         >Gateway Studio KH <span id="app-version">unknown</span></button>
+      <!-- Icon-only, and it says where updates live: a browser cannot install or launch the
+           Launcher, so this explains rather than pretending to check. -->
+      <button type="button" class="nav-icon-btn" id="nav-update" aria-label="Update information"
+        title="Updates are installed by Studio Launcher KH on this Mac" onclick="updateInfo()">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M8 11l4 4 4-4M4 20h16"/></svg>
+      </button>
+    </div>
+    <div class="support-row">
+      <button type="button" class="nav-support" onclick="window.open('https://nowpayments.io/donation/studiokh','_blank','noopener')">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20s-7-4.3-7-9a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 4.7-7 9-7 9z"/></svg>
+        Support this app</button>
     </div>
     <div class="nav-status" id="nav-status">Reading the gateway…</div>
     <div class="row"><button class="sm" onclick="signOut()">Sign Out</button></div>
@@ -1093,13 +1125,14 @@
          so an empty quota line means "nothing has been searched yet", never zero. -->
     <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:var(--s8)">
       <h2 style="margin:0">Sound sources</h2>
-      <button class="sm" type="button" onclick="loadSfxSources()">Refresh</button>
+      <div class="pane-actions">
+        <button class="sm" type="button" onclick="loadSfxSources()">Refresh</button>
+      </div>
     </div>
+    <div class="pane-status" id="sfx-status">Reading sound sources…</div>
     <p class="hint" style="margin:0 0 12px;max-width:760px">
-      Where cue and bed audio comes from for Smart Sound. Each source is searched live, and a clip
-      is only kept if its licence allows a monetised video — <b>CC0 first, CC BY when nothing CC0
-      fits</b>. A source works with no key at all on its anonymous quota; a key raises that quota
-      and is stored in the same place as every provider's.
+      Searched live for Smart Sound; a clip is kept only if its licence allows a monetised video
+      (<b>CC0 first, CC BY when nothing CC0 fits</b>). A source works anonymously; a key raises its quota.
     </p>
     <div id="sfx-msg" class="msg" role="status" aria-live="polite"></div>
     <div id="sfx-sources"><div class="empty">Reading sound sources…</div></div>
@@ -1111,9 +1144,20 @@
          which is drawn as "off", never as an error. Pairing (a token) and unpairing are this Mac's
          app only; a token is shown once, then dropped. Credits nobody reported read "unknown". -->
     <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:var(--s8)">
-      <h2 style="margin:0">Browser workers</h2>
-      <button class="sm" type="button" onclick="loadExtensionWorkers()">Refresh</button>
+      <h2 style="margin:0">Workers</h2>
+      <div class="pane-actions">
+        <button class="primary sm" type="button" id="ew-pair-toggle" style="display:none" onclick="toggleEwPair()">Pair a worker</button>
+        <button class="sm" type="button" onclick="loadExtensionWorkers()">Refresh</button>
+        <span class="overflow">
+          <button class="sm" type="button" id="ew-more-btn" aria-label="More worker actions"
+            aria-haspopup="true" aria-expanded="false" style="display:none" onclick="toggleCardMenu(event, 'workers-more')">⋯</button>
+          <div class="more-menu" id="pmenu-workers-more" hidden>
+            <button type="button" class="sm" onclick="toggleEwManager()">Mint a manager token…</button>
+          </div>
+        </span>
+      </div>
     </div>
+    <div class="pane-status" id="ew-status">Reading browser workers…</div>
     <p class="hint" style="margin:0 0 12px;max-width:760px">
       Chrome extensions that make video in Flow for this Gateway. Each run spends Flow credits, so
       a job a worker took and then went quiet on is <b>held, never sent again</b>.
@@ -3059,8 +3103,7 @@ function renderModelLimits(data) {
   target.innerHTML = `<table class="grid"><thead><tr><th>Model</th>${MODEL_LIMIT_FIELDS.map(([, l]) => `<th>${l}</th>`).join('')}<th></th></tr></thead>
     <tbody>${rows || '<tr><td colspan="6" class="muted">None yet.</td></tr>'}
     <tr><td><input type="text" id="ml-new-model" placeholder="provider::model" style="width:100%"></td>${MODEL_LIMIT_FIELDS.map(([f]) => cell('__new__', f, null)).join('')}
-      <td><button class="sm" type="button" onclick="saveModelLimit('__new__')">Add</button></td></tr></tbody></table>
-    <div class="hint" style="margin-top:6px">${esc(data.path || '')}</div>`;
+      <td><button class="sm" type="button" onclick="saveModelLimit('__new__')">Add</button></td></tr></tbody></table>`;
 }
 async function saveModelLimit(key, remove) {
   const model = key === '__new__' ? (document.getElementById('ml-new-model')?.value || '').trim() : key;
@@ -3172,6 +3215,7 @@ function renderConcurrency(data) {
   // What is written down, as opposed to the default: only a curated number shows in the box.
   const queueStated = queue.source === 'curated' ? queueHours : null;
   target.innerHTML = `
+    <div class="pane-status" style="margin-top:0">${lanes.length} lane${lanes.length === 1 ? '' : 's'} · ${providers.length} provider${providers.length === 1 ? '' : 's'} · a blank number means no cap</div>
     <div style="padding:12px;margin-bottom:16px;border:1px solid var(--line);border-radius:8px">
       <label for="conc-global"><b>Jobs running at once</b></label>
       <input type="number" min="1" step="1" id="conc-global"
@@ -3195,19 +3239,41 @@ function renderConcurrency(data) {
       <thead><tr><th>Lane</th><th>Limit</th><th>In force</th><th>Where it came from</th></tr></thead>
       <tbody>${laneRows || '<tr><td colspan="4" class="muted">No lanes.</td></tr>'}</tbody>
     </table>
-    <div class="tabs" id="conc-tabs" role="group" aria-label="Provider kind">
-      ${tabs.map(g => `<button data-tab="${g.key}" aria-pressed="${g.key === concurrencyTab}"
-             onclick="showConcurrencyTab('${g.key}')">${esc(g.title)} (${counts[g.key]})</button>`).join('')}
+    <div class="row" style="margin:16px 0 8px;align-items:center;gap:12px">
+      <button class="sm" type="button" id="conc-providers-toggle" aria-expanded="false"
+        onclick="toggleConcProviders()">Show all providers (${providers.length})</button>
+      <span class="hint" style="margin:0">Each uses the pool unless a number caps it — the fleet's own lanes follow the fleet automatically.</span>
     </div>
-    <p class="hint" id="conc-hint" style="margin:0 0 12px">${esc(active.hint)}</p>
-    <table class="grid">
-      <thead><tr><th>Provider</th><th>Limit</th><th>In force</th><th>Where it came from</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="4" class="muted">No providers.</td></tr>'}</tbody>
-    </table>
-    <div class="row" style="margin-top:12px">
-      <button class="sm" type="button" onclick="saveConcurrency()">Save Concurrency</button>
+    <div id="conc-providers" hidden>
+      <div class="tabs" id="conc-tabs" role="group" aria-label="Provider kind">
+        ${tabs.map(g => `<button data-tab="${g.key}" aria-pressed="${g.key === concurrencyTab}"
+               onclick="showConcurrencyTab('${g.key}')">${esc(g.title)} (${counts[g.key]})</button>`).join('')}
+      </div>
+      <p class="hint" id="conc-hint" style="margin:0 0 12px">${esc(active.hint)}</p>
+      <div class="tablewrap">
+        <table class="grid">
+          <thead><tr><th>Provider</th><th>Limit</th><th>In force</th><th>Where it came from</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="muted">No providers.</td></tr>'}</tbody>
+        </table>
+      </div>
     </div>
-    <div class="hint" style="margin-top:6px">${esc(data.path || '')}</div>`;
+    <div class="row" style="margin-top:12px;align-items:center;gap:12px">
+      <button class="primary sm" type="button" onclick="saveConcurrency()">Save Concurrency</button>
+      <span class="hint" style="margin:0">Blank means not set — no cap, not a limit of one.</span>
+    </div>`;
+}
+
+function toggleConcProviders() {
+  const panel = document.getElementById('conc-providers');
+  const button = document.getElementById('conc-providers-toggle');
+  if (!panel) return;
+  panel.hidden = !panel.hidden;
+  if (button) {
+    button.textContent = panel.hidden
+      ? button.textContent.replace(/^Hide/, 'Show')
+      : button.textContent.replace(/^Show/, 'Hide');
+    button.setAttribute?.('aria-expanded', String(!panel.hidden));
+  }
 }
 
 function showConcurrencyTab(key) {
@@ -3979,6 +4045,12 @@ function selectProviderTab(key) {
   if (key === 'extension-workers') loadExtensionWorkers();
 }
 
+function updateInfo() {
+  // The truth about updates, where the icon is: the Launcher installs them, not this page.
+  const el = document.getElementById('nav-status');
+  if (el) el.textContent = 'Updates are installed by Studio Launcher KH on this Mac.';
+}
+
 function scrollToSection(id) {
   // The pane must be displayed before its section can be scrolled to; requestAnimationFrame
   // waits for the display change from the same click to land.
@@ -4041,7 +4113,7 @@ function ewWorkerState(w) {
     <div>Pacing: ${ewPacing(s.pacing)} actual · ${desired} desired · next eligible: ${s.next_eligible_at == null ? 'unknown' : ewAt(s.next_eligible_at)}</div>`;
 }
 
-function ewCard(w) {
+function ewCard(w, index = 0) {
   const credits = w.credits
     ? `${esc(w.credits.value)} Flow credits <span class="hint">(${esc(w.credits.source)}, ${esc(w.credits.observedAt)})</span>`
     : 'credits unknown';
@@ -4060,25 +4132,61 @@ function ewCard(w) {
     ? `<button class="sm" type="button" data-ew-revoke="${esc(w.worker_id)}" onclick="ewRevoke(this.dataset.ewRevoke, this)">Unpair</button>` : '';
   const scope = IN_APP && w.has_live_token
     ? `<label class="hint" style="margin:0"><input type="checkbox" data-ew-scope="${esc(w.worker_id)}"> scope</label>` : '';
-  return `<div class="card" style="padding:10px 12px">
+  const detailId = `ew-detail-${index}`;
+  const paired = w.has_live_token ? '<span class="badge ok">paired</span>'
+    : (w.revoked_at != null ? '<span class="badge bad">unpaired</span>' : '<span class="badge">no token</span>');
+  const seen = w.online
+    ? `<span class="badge ok">online · seen ${esc(ewAgo(w.last_seen_at))}</span>`
+    : `<span class="badge bad">offline · last seen ${esc(ewAgo(w.last_seen_at))}</span>`;
+  return `<div class="card" style="padding:10px 12px" data-worker="${esc(w.worker_id)}">
     <div class="row" style="justify-content:space-between;align-items:center;gap:var(--s8)">
       <div style="min-width:0">
-        <b>${esc(w.worker_id)}</b> <span class="badge">${w.online ? 'online' : 'offline'}</span>
-        <div class="hint" style="margin-top:2px">last seen ${ewAgo(w.last_seen_at)} · ${key} · ${credits}</div>
+        <b>${esc(w.worker_id)}</b> ${seen} ${paired}
+        <div class="hint" style="margin-top:2px">${credits}${w.current_job ? ' · working on a job' : ''}</div>
       </div>
-      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex:0 0 auto">
-        <div class="row" style="gap:6px">${scope}${rotate}${unpair}</div>
-        ${rotate ? '<div class="hint" style="margin:0;font-size:11px">Rotate turns dispatch off</div>' : ''}
+      <div class="row" style="gap:6px;flex:0 0 auto">
+        <button class="sm" type="button" aria-expanded="false" onclick="toggleEwDetail(${index}, this)">Details</button>
+        <span class="overflow">
+          <button class="sm" type="button" aria-label="More actions for ${esc(w.worker_id)}"
+            aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(event, 'worker-${esc(w.worker_id)}')">⋯</button>
+          <div class="more-menu" id="pmenu-worker-${esc(w.worker_id)}" hidden>
+            ${scope}
+            ${rotate || ''}
+            ${unpair || ''}
+            ${rotate ? '<span class="hint" style="margin:0;font-size:11px">Rotate turns dispatch off</span>' : ''}
+          </div>
+        </span>
       </div>
     </div>
-    <details style="margin-top:6px">
-      <summary class="hint">Details</summary>
+    <div class="ew-detail" id="${detailId}" hidden>
       ${ewWorkerState(w)}
       <div>Job: ${job} · waiting jobs: ${esc(w.queue_depth ?? 0)}</div>
       <div class="hint">extension ${esc(w.extension_version || 'version not stated')}</div>
       ${held}
-    </details>
+    </div>
   </div>`;
+}
+
+function toggleEwDetail(index, button) {
+  const panel = document.getElementById(`ew-detail-${index}`);
+  if (!panel) return;
+  panel.hidden = !panel.hidden;
+  button.textContent = panel.hidden ? 'Details' : 'Hide details';
+  button.setAttribute?.('aria-expanded', String(!panel.hidden));
+}
+
+function toggleEwPair() {
+  const pair = document.getElementById('ew-pair');
+  if (!pair) return;
+  pair.style.display = pair.style.display === 'none' || !pair.style.display ? '' : 'none';
+  if (pair.style.display !== 'none') document.getElementById('ew-worker-id')?.focus();
+}
+
+function toggleEwManager() {
+  const manager = document.getElementById('ew-manager');
+  if (!manager) return;
+  manager.style.display = manager.style.display === 'none' || !manager.style.display ? '' : 'none';
+  if (manager.style.display !== 'none') document.getElementById('ew-manager-id')?.focus();
 }
 
 async function ewRotate(workerId, kind, btn) {
@@ -4114,11 +4222,23 @@ async function loadExtensionWorkers() {
   if (!root) return;
   try {
     const data = await api('/extension-workers');
-    if (pair) pair.style.display = IN_APP ? '' : 'none';
-    if (manager) manager.style.display = IN_APP ? '' : 'none';
+    const pairToggle = document.getElementById('ew-pair-toggle');
+    const moreBtn = document.getElementById('ew-more-btn');
+    if (pair) pair.style.display = 'none';
+    if (manager) manager.style.display = 'none';
+    if (pairToggle) pairToggle.style.display = IN_APP ? '' : 'none';
+    if (moreBtn) moreBtn.style.display = IN_APP ? '' : 'none';
     const workers = data.workers || [];
-    root.innerHTML = workers.length ? workers.map(ewCard).join('')
-      : `<div class="empty">No browser worker is paired yet.${IN_APP ? ' Pair one above.' : ' Pair one in the Gateway app on this Mac.'}</div>`;
+    const online = workers.filter(w => w.online).length;
+    const paired = workers.filter(w => w.has_live_token).length;
+    const status = document.getElementById('ew-status');
+    if (status) {
+      status.innerHTML = workers.length
+        ? `<span class="dot"></span>${workers.length} worker${workers.length === 1 ? '' : 's'} · ${online} online · ${paired} paired · held jobs are never re-sent`
+        : '<span class="dot warn"></span>No browser worker is paired' + (IN_APP ? ' — Pair a worker adds one.' : ' — pair one in the Gateway app on this Mac.');
+    }
+    root.innerHTML = workers.length ? workers.map((w, i) => ewCard(w, i)).join('')
+      : `<div class="empty">No browser worker is paired yet.${IN_APP ? ' Use Pair a worker above.' : ' Pair one in the Gateway app on this Mac.'}</div>`;
     if (accounts) {
       // The backend already dedupes by (provider, account_id); keep it so if a view ever repeats one.
       const seen = new Set();
@@ -4133,6 +4253,10 @@ async function loadExtensionWorkers() {
     if (pair) pair.style.display = 'none';
     if (manager) manager.style.display = 'none';
     if (accounts) accounts.innerHTML = '';
+    const status = document.getElementById('ew-status');
+    if (status) status.innerHTML = e.status === 404
+      ? '<span class="dot warn"></span>Browser workers are switched off on this Gateway — turn them on in the app’s Settings.'
+      : `<span class="dot bad"></span>Could not read browser workers — ${esc(e.message)}`;
     root.innerHTML = e.status === 404
       ? '<div class="empty">Browser workers are switched off on this Gateway (GATEWAY_EXTENSION_WORKERS).</div>'
       : `<div class="empty">Could not read browser workers: ${esc(e.message)}</div>`;
@@ -4772,7 +4896,8 @@ function sfxCard(source) {
   const badges = [`<span class="badge">${esc(source.category || 'sfx')}</span>`];
   badges.push(source.registered
     ? '<span class="badge ok">key set</span>'
-    : '<span class="badge">anonymous quota</span>');
+    : `<button type="button" class="badge chip-action" title="A key raises this source's quota; it works anonymously without one"
+         onclick="focusSfxKey('${esc(source.id)}')">anonymous quota — add a key</button>`);
   if (source.configured === false) badges.push('<span class="badge bad">cannot be used</span>');
   const fields = (source.credential_fields || []).map(f => `
     <div>
@@ -4799,16 +4924,22 @@ function sfxCard(source) {
     <div class="card-head">
       <div class="card-main">
         <div class="name">${esc(source.display_name)}</div>
-        <div class="cat">${esc(source.id)} · ${esc(source.kind)}</div>
         <div class="card-badges">${badges.join(' ')}</div>
       </div>
       <div class="card-actions">
-        <button class="sm" onclick="clearSfxCreds('${esc(source.id)}', this)">Clear Key</button>
+        <span class="overflow">
+          <button class="sm" type="button" aria-label="More actions for ${esc(source.display_name)}"
+            aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(event, 'sfx-${esc(source.id)}')">⋯</button>
+          <div class="more-menu" id="pmenu-sfx-${esc(source.id)}" hidden>
+            <button type="button" class="sm" onclick="clearSfxCreds('${esc(source.id)}', this)">Clear key</button>
+          </div>
+        </span>
         <span class="msg" id="sfx-msg-${esc(source.id)}"></span>
       </div>
     </div>
     ${source.description ? `<div class="desc">${esc(source.description)}</div>` : ''}
     <div class="body">
+      <div class="hint card-details">${esc(source.id)} · ${esc(source.kind)}</div>
       <div class="fields">${fields || '<div class="hint">This source needs no key.</div>'}</div>
       <div class="actions">
         <button class="primary sm" onclick="saveSfxCreds('${esc(source.id)}', this)">Save</button>
@@ -4822,10 +4953,22 @@ function sfxCard(source) {
 
 function renderSfxSources() {
   const root = document.getElementById('sfx-sources');
+  const status = document.getElementById('sfx-status');
+  if (status) {
+    const withKey = sfxSources.filter(s => s.registered).length;
+    status.innerHTML = sfxSources.length
+      ? `<span class="dot"></span>${sfxSources.length} source${sfxSources.length === 1 ? '' : 's'} · ${withKey} with a key · quotas are read from each source's own answer`
+      : '<span class="dot warn"></span>No sound sources are configured on this gateway.';
+  }
   if (!root) return;
   root.innerHTML = sfxSources.length
     ? sfxSources.map(sfxCard).join('')
-    : '<div class="empty">This gateway has no sound sources.</div>';
+    : '<div class="empty">This gateway has no sound sources. Nothing to add here yet.</div>';
+}
+
+function focusSfxKey(id) {
+  const input = document.querySelector(`#sfx-sources input[data-sfx="${CSS.escape(id)}"][data-field]`);
+  if (input) { input.scrollIntoView({ block: 'center', behavior: 'smooth' }); input.focus(); }
 }
 
 async function loadSfxSources() {
