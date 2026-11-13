@@ -20,6 +20,8 @@ import AppKit
 
 enum TextRole { case body, secondary, caption, rowTitle }
 enum DS { enum Space { static let xs: CGFloat = 4; static let s: CGFloat = 8; static let m: CGFloat = 12 } }
+extension NSAlert { @discardableResult func closeOnEscape() -> NSAlert { self } }
+
 enum PageKit {
     static func label(_ text: String, _ role: TextRole, colour: NSColor = .labelColor,
                       wrapping: Bool = false) -> NSTextField {

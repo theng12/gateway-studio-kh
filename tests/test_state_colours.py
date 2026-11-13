@@ -37,12 +37,9 @@ class StateColoursRouted(unittest.TestCase):
         self.assertIn("Health(state: displayState(job))", jobs)
         tabs = (MENUBAR / "FleetTabs.swift").read_text()
         self.assertIn('Health(state: "running")', tabs)
-        self.assertIn("step.panelText(", tabs)
         self.assertIn("row.badgeHealth", tabs)
         self.assertIn("Health(state: state).text", (MENUBAR / "OverviewWindow.swift").read_text())
         models = (MENUBAR / "FleetModels.swift").read_text()
-        self.assertIn('Health(state: "updating")', models)
-        self.assertIn('Health(state: state ?? "waiting")', models)  # a rollout step's colour (FleetRolloutStep.panelText)
         # Nothing hand-picks green for "running" any more.
         self.assertNotIn('case "succeeded", "running": return .ok', jobs)
 

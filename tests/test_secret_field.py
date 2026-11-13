@@ -54,8 +54,11 @@ class SecretsUseTheControl(unittest.TestCase):
         # reports the addition, not a missing eye. What the rule actually says is that no password
         # input is left without its control: a mask you cannot look through is a field you cannot
         # check before saving.
-        self.assertEqual(html.count('onclick="toggleSecret(this)"'), len(inputs),
-                         "every secret input needs its eye")
+        # A read-only display (the worker token, revealed by its card's own Show/Copy/Rotate
+        # controls) needs no second eye; every editable password input does.
+        readonly = [item for item in inputs if "readonly" in item]
+        self.assertEqual(html.count('onclick="toggleSecret(this)"'), len(inputs) - len(readonly),
+                         "every editable secret input needs its eye")
         self.assertIn("function toggleSecret(button)", html)
 
 

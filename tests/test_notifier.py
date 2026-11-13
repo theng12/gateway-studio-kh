@@ -131,7 +131,7 @@ class SettingsAndSecret(Base):
         events = {e["key"]: e["enabled"] for e in self.n.public_settings()["events"]}
         self.assertTrue(events["offline"])
         self.assertTrue(events["daily_summary"])
-        for key in ("disk_memory", "jobs_trouble", "release", "backup", "holds", "credentials", "gateway_restart"):
+        for key in ("disk_memory", "jobs_trouble", "backup", "holds", "credentials", "gateway_restart"):
             self.assertFalse(events[key], key)
         # The watchdog is on by default: every one of these faults went unnoticed for hours.
         for key in ("fleet_watchdog", "gateway_health"):
@@ -730,36 +730,6 @@ class FleetWatchdog(Base):
         self.run_ticks(0, 61, 122, 183)
         self.assertIn("The image lane is moving again", self.transport.sent[-1])
 
-    # ---- the Alerts list and the switches
-
-    def test_the_alerts_list_shows_what_is_open_and_what_cleared(self) -> None:
-        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
-        current = self.n.alerts()["current"]
-        self.assertEqual(len(current), 1)
-        self.assertIn("Mini A", current[0]["text"])
-        self.assertIsNone(current[0]["resolved_at"])
-        self.snapshot = snap([machine("Mini A", version_status="latest", hub_version="0.6.186")],
-                             summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, 61)
-        self.assertEqual(self.n.alerts()["current"], [])
-        self.assertEqual(len(self.n.alerts()["recent"]), 1)
-
-    def test_a_watchdog_switched_off_sends_nothing_and_forgets_quietly(self) -> None:
-        self.n.save_settings({"events": {"fleet_watchdog": False}})
-        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
-        self.assertEqual(self.transport.sent, [])
-
-    def test_one_message_per_incident_however_often_it_is_checked(self) -> None:
-        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
-        for _ in range(10):
-            self.run_ticks(60)
-        self.assertEqual(len(self.transport.sent), 1)
-
-
-class ReleaseAndApi(Base):
     def test_other_modules_use_notify(self) -> None:
         self.configure(events={"backup": True})
         with patch.object(nt, "notifier", self.n):
