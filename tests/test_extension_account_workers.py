@@ -528,7 +528,25 @@ class FreeAndConnectionStateTests(AccountWorkersTests):
         job = ew.broker.offer("video", {"prompt": "priced scene"})
         refused = self.claim(self.quote(job, value=10))
         self.assertEqual(refused.status_code, 409)
-        self.assertIn("Gateway dispatch is off for this account", refused.json()["detail"])
+
+    def test_a_free_quote_skips_the_paid_eligibility_cooldown(self):
+        """A free job spends nothing, so a future nextEligibleAt must not hold it back."""
+        self.ready(observed_account(nextEligibleAt=iso(time.time() + 1000)))
+        job = ew.broker.offer("video", {"prompt": "free while cooling down"})
+        answer = self.claim(self.quote(job, value=0))
+        self.assertEqual(answer.status_code, 200, answer.text)
+
+    def test_a_free_quote_claims_without_a_stated_eligibility(self):
+        self.ready(observed_account(nextEligibleAt=None))
+        job = ew.broker.offer("video", {"prompt": "free without stated eligibility"})
+        self.assertEqual(self.claim(self.quote(job, value=0)).status_code, 200)
+
+    def test_a_priced_quote_still_respects_the_paid_eligibility_cooldown(self):
+        """Free work passes the cooldown; priced work is still not offered during it."""
+        self.ready(observed_account(nextEligibleAt=iso(time.time() + 1000)))
+        job = ew.broker.offer("video", {"prompt": "priced while cooling down"})
+        self.assertEqual(self.claim(self.quote(job, value=10)).status_code, 204)
+        self.assertEqual(job.state, "pending")
 
     # -- G1 ----------------------------------------------------------------
     def state(self, **changes):

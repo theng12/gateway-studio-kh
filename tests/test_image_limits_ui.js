@@ -8,7 +8,11 @@ function fixture() {
   const target = {innerHTML: ''}, message = {textContent: ''};
   const context = {window: {}, document: {getElementById: id => id === 'image-limits' ? target : message},
     esc: value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))};
-  vm.createContext(context); vm.runInContext(source, context);
+  vm.createContext(context);
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+ vm.runInContext(source, context);
   return {ui: context.window.GatewayImageLimits, target};
 }
 function data(change = null) {

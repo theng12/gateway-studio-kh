@@ -19,6 +19,12 @@ function workspace(row) {
     api: async (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); return { id: 'music-job' }; },
     renderCreateResult() {}, pollCreate() {},
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(source.slice(source.indexOf('const CREATE_TABS = ['), source.indexOf('function pollCreate(id)')), context);
   context.row = row;
   vm.runInContext("createTab = 'music'; createCatalogue = { by_modality: { music: [row] } };", context);

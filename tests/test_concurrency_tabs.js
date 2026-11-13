@@ -92,6 +92,10 @@ function run(data) {
   const dom = fakeDom();
   const context = { document: dom.document, esc, console };
   vm.createContext(context);
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(concurrencyCode(), context);
   context.__t.renderConcurrency(data);
   dom._rebuildButtons();

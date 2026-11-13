@@ -37,6 +37,12 @@ function page(nodes = {}) {
     loadContentShelf() {}, loadCreate() {},
     requestAnimationFrame: fn => fn(),
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, ctx);
+
   vm.runInContext(between('function captureProviderDrafts()', 'async function loadProviders()'), ctx);
   vm.runInContext(between('function renderProviders(drafts', '// **Grouped by what they serve.**'), ctx);
   vm.runInContext(between('function closeMenus()', 'function providerGroupsHtml(list)'), ctx);

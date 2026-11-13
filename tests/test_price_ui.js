@@ -18,6 +18,12 @@ const between = (a, b) => {
 
 // -- price cell --------------------------------------------------------------------------------
 const priceCtx = vm.createContext({ esc, state: {} });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, priceCtx);
+
 vm.runInContext(between('const PRICE_UNITS', 'function machineRow('), priceCtx);
 const info = row => priceCtx.priceInfo(row);
 
@@ -72,6 +78,12 @@ test('rate-limit tiers render per provider from the evidence GET', () => {
   const ctx = vm.createContext({ esc, state: { evidence: { rate_limits: { 'openai-direct': [
     { tier: 'Tier 1', how_reached: '$5 paid', scope: 'per org', rpm: 500, tpm: 200000, rpd: null,
       source_url: 'https://platform.openai.com/docs/guides/rate-limits' }] } } } });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, ctx);
+
   vm.runInContext(between('function rateLimitLine', 'function providerCard('), ctx);
   const html = ctx.rateLimitsHtml('openai-direct');
   assert.match(html, /Rate limits \(from pricing research\)/);
@@ -114,6 +126,12 @@ function providersPage() {
     loadModels() {}, loadFreshness() {}, loadProviders() {}, loadConcurrency() {}, loadMeasured() {},
     loadQueue() {}, loadPools() {}, loadContentShelf() {}, loadCreate() {},
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, ctx);
+
   vm.runInContext(between('const PROVIDER_TABS', 'async function loadPools('), ctx);
   vm.runInContext(between('function setView(view)', 'const SHELF_KIND_LABELS'), ctx);
   const visible = () => ['list', 'sfx', 'extension-workers', 'capacity']

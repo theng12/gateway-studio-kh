@@ -580,6 +580,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# The app is installed as `gateway-kh.app`, so its Login Items row and Finder name come from
+# these two keys; a packaging run must not ship a bundle whose visible name has drifted back to
+# the file name. (Owner, 2026-11-13: Login Items showed "gateway-kh" with a generic icon.)
+for KEY in CFBundleName CFBundleDisplayName; do
+  VALUE=$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$APP/Contents/Info.plist" 2>/dev/null)
+  [ "$VALUE" = "Gateway Studio KH" ] || {
+    echo "ERROR: $KEY is '$VALUE', not 'Gateway Studio KH'" >&2
+    exit 1
+  }
+done
+
 echo "==> generating icon"
 "$RUNTIME_PYTHON" "$HERE/make_icon.py" "$APP/Contents/Resources/AppIcon.icns"
 [ -s "$APP/Contents/Resources/AppIcon.icns" ] || {

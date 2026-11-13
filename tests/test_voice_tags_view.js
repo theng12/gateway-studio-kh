@@ -15,6 +15,12 @@ test('tag filter shows only matching voices', () => {
   element('voice-tag-filter').options = [{value:''}, {value:'Khmer'}, {value:'English'}];
   element('voice-tag-filter').value = 'Khmer';
   const context = vm.createContext({document, Option: function(value) { this.value = value; }, console});
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(html.slice(start, end) + '\nvoiceTagRows = [{id:"a",display_name:"First",tags:["Khmer"]},{id:"b",display_name:"Second",tags:["English"]}]; voiceTagLimits = {max_length:32};', context);
   context.renderVoiceTags();
   const rows = element('voice-tag-rows').children;

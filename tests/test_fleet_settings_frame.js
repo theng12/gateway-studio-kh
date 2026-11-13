@@ -42,6 +42,12 @@ test('the Fleet toolbar is one search plus a Filters popover with a count', () =
     FLEET_FILTERS: [['all', 'All machines'], ['offline', 'Offline now']],
     FLEET_SORTS: [['issues', 'Issues (worst first)'], ['drops', 'Most drops']],
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, ctx);
+
   vm.runInContext('let fleetFilter = "all"; let fleetSort = "issues"; let fleetLocation = "all";', ctx);
   vm.runInContext(between('function updateFleetFilterCount()', 'function fleetSetFilter('), ctx);
   vm.runInContext('updateFleetFilterCount()', ctx);
@@ -90,6 +96,12 @@ test('the Settings page answers with the gateway’s own facts, and an error off
       providers: { enabled: 15, total: 34 }, models: { publishable_models: 458, withheld_models: 4 },
     }),
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, ctx);
+
   vm.runInContext(between('async function loadSettingsPage()', 'async function loadWhatsNew()'), ctx);
   await ctx.loadSettingsPage();
   const facts = nodes.get('settings-facts').innerHTML;
@@ -105,6 +117,12 @@ test('the Settings page answers with the gateway’s own facts, and an error off
     window: { location: { origin: '' } },
     api: async () => { const error = new Error('offline'); error.status = 0; throw error; },
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, failing);
+
   vm.runInContext(between('async function loadSettingsPage()', 'async function loadWhatsNew()'), failing);
   await failing.loadSettingsPage();
   assert.match(nodes.get('settings-status').innerHTML, /Could not read this gateway — offline/);

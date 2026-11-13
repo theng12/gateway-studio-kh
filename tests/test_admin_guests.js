@@ -37,6 +37,12 @@ function element(value = '') {
 
 function viewHarness(guest) {
   const context = vm.createContext({ GUEST: guest || null, location: { hash: '' } });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(between('function viewFromHash()', "window.addEventListener('hashchange'"),
     context);
   return context;
@@ -61,6 +67,12 @@ test('without a guest the hash still decides the page', () => {
 
 test('"Requested by" is a name, or an honest "not recorded"', () => {
   const context = vm.createContext({});
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(between('function requesterLabel(job)', '// One state -> colour mapping'),
     context);
   const label = job => vm.runInContext(`requesterLabel(${JSON.stringify(job)})`, context);
@@ -81,6 +93,12 @@ function guestPageHarness(answer) {
     confirm: () => true,
     prompt: () => null,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(between('let guestsState', 'async function signOut()'), context);
   return { context, nodes };
 }
@@ -107,6 +125,12 @@ test('a guest\'s own actions never carry their name into an attribute', async ()
     confirm: () => true,
     prompt: () => null,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(between('let guestsState', 'async function signOut()'), context);
   await vm.runInContext('loadGuests()', context);          // the page's own render, not a copy
   const html = nodes['guests-body'].innerHTML;
@@ -171,6 +195,12 @@ function keyHarness(answerFor) {
     prompt: () => null,
     navigator: {},
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(between('let guestsState', 'async function signOut()'), context);
   return { context, nodes, calls };
 }

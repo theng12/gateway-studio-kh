@@ -33,6 +33,12 @@ function between(start, end) {
 
 function nav() {
   const ctx = vm.createContext({});
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, ctx);
+
   vm.runInContext(between('const NAV = [', 'const NAV_PATHS'), ctx);
   vm.runInContext(between('const APP_ONLY = {', 'function navEntries()'), ctx);
   // `const` is lexical, so it is read back by evaluating the name, not from the context object.
@@ -119,6 +125,12 @@ function runStatus(payload) {
     document: {getElementById: id => (nodes[id] ||= {textContent: '', innerHTML: '', className: '', hidden: false})},
     esc: value => String(value ?? ''),
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, ctx);
+
   vm.runInContext(between('async function loadStatus()', 'let voiceSampleAudio'), ctx);
   return {nodes, done: vm.runInContext('loadStatus()', ctx)};
 }

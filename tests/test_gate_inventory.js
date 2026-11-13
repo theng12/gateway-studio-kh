@@ -75,6 +75,12 @@ function context(payload = null) {
     setTimeout,
     clearTimeout,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, ctx);
+
   vm.runInContext(between("let fleetFilter = 'all';", 'async function loadJobs()'), ctx);
   return ctx;
 }

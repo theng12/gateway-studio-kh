@@ -13,7 +13,10 @@ every feature title, and they are left as they were written.
 ## 0.2.256 — 2026-11-13
 
 - **Fleet's Machines table keeps its name column narrow at 768.** The one-line details under each Mac's name now wrap inside the pinned column, so more of the row's state and data is visible beside it while the table scrolls.
-- **Free browser-worker work no longer waits for the spending switch.** A new account can take its first zero-priced job immediately; priced work still needs the account switched on. Worker status now carries one shared connection state for the Relay row and the extension panel.
+- **Fleet's tables stack on a phone.** Below 760 px each row becomes labelled lines instead of a 1020 px table that needed sideways scrolling.
+- **Every question is asked in the page.** Confirms, warnings and the Rename/Network prompts are now in-app dialogs, so they work in the packaged app instead of depending on a browser panel (owner rule, 2026-11-13).
+- **Free browser-worker work no longer waits for the spending switch.** A new account can take its first zero-priced job immediately, and also skips the paid-work cooldown; priced work still needs the account switched on. Worker status now carries one shared connection state for the Relay row and the extension panel.
+- **An account signed in to Flow inside the page is recognized from its own address**, so a worker that signs in there does not have to be paired twice.
 - **Login Items shows "Gateway Studio KH".** macOS listed the app as "gateway-kh"; it now shows the name you know, while the bundle, data folder and updates stay where they were, so nothing needs re-pairing.
 
 ---

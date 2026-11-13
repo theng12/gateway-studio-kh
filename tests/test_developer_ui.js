@@ -161,6 +161,12 @@ test('page load executes the developer loader exactly once, never twice', async 
     sandbox.window.loadDeveloperTests = () => { loads += 1; return inner(); };
   };
   const sandboxContext = vm.createContext(sandbox);
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, sandboxContext);
+
   vm.runInContext(between(html, 'let developerPageLoad;', 'const NAV = ['), sandboxContext);
   await vm.runInContext('loadDeveloperTests()', sandboxContext);
   assert.equal(loads, 1, 'the wrapper must invoke the page loader exactly once');
@@ -197,6 +203,12 @@ async function runFormHarness() {
     },
   };
   const ctx = vm.createContext(sandbox);
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, ctx);
+
   vm.runInContext(script, ctx);
   await sandbox.window.loadDeveloperTests();
   const row = nodes['developer-targets'].children[0];

@@ -554,6 +554,9 @@
   .meter i { display: block; height: 100%; border-radius: 2px; }
   .fleet-empty { color: var(--dim); font-size: 13px; padding: var(--s24); text-align: center; }
   @media (max-width: 760px) {
+    /* A stacked row is not a table any more, so the 1020 px minimum that keeps columns readable
+       on a desktop must not survive here: it would put the whole row inside a sideways scroller. */
+    .fleet-pane .ftable, #fleet-machines-wrap .ftable, #fleet-locations-wrap .ftable { min-width: 0; }
     .ftable thead { display: none; }
     .ftable, .ftable tbody, .ftable tr, .ftable td { display: block; width: 100%; }
     .ftable tr { border-top: 1px solid var(--line); padding: var(--s8) 0; }
@@ -1463,6 +1466,92 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&
 const ago = (t) => { if (!t) return 'never'; const s = Date.now()/1000 - t;
   return s < 60 ? `${Math.floor(s)}s ago` : s < 3600 ? `${Math.floor(s/60)}m ago` : `${Math.floor(s/3600)}h ago`; };
 
+// **A question is asked in the page, never by the browser.** In the packaged webview the native
+// `confirm`/`alert`/`prompt` panel is a silent no-op: the call resolves to false and the click
+// does nothing (owner rule, 2026-11-13). One in-app `<dialog>` answers all three shapes, queues
+// when two arrive together, and resolves exactly once on the button, Escape, or Enter.
+let khDialogQueue = Promise.resolve();
+function khDialog({title = '', body = '', confirmLabel = 'OK', cancelLabel = null,
+                   danger = false, input = null, placeholder = ''}) {
+  const show = () => new Promise(resolve => {
+    if (!document.body) { resolve(input === null ? (cancelLabel ? false : undefined) : null); return; }
+    const dialog = document.createElement('dialog');
+    dialog.setAttribute('aria-label', title || confirmLabel);
+    if (title) {
+      const heading = document.createElement('h2');
+      heading.textContent = title;
+      dialog.append(heading);
+    }
+    const text = document.createElement('p');
+    text.style.whiteSpace = 'pre-line';
+    text.textContent = body;
+    dialog.append(text);
+    let field = null;
+    if (input !== null) {
+      field = document.createElement('input');
+      field.type = 'text';
+      field.value = input;
+      field.placeholder = placeholder;
+      field.style.width = '100%';
+      field.setAttribute('aria-label', title || 'Value');
+      dialog.append(field);
+    }
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.marginTop = '12px';
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      if (typeof dialog.close === 'function') dialog.close(); else dialog.remove();
+      dialog.remove();
+      resolve(value);
+    };
+    const ok = document.createElement('button');
+    ok.className = danger ? 'danger' : 'primary';
+    ok.textContent = confirmLabel;
+    ok.addEventListener('click', () => done(input === null ? (cancelLabel !== null ? true : undefined) : field.value));
+    row.append(ok);
+    if (cancelLabel !== null) {
+      const cancel = document.createElement('button');
+      cancel.textContent = cancelLabel;
+      cancel.addEventListener('click', () => done(input === null ? false : null));
+      row.append(cancel);
+    }
+    dialog.append(row);
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      done(input === null ? (cancelLabel !== null ? false : undefined) : null);
+    });
+    if (field) field.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); done(field.value); }
+    });
+    document.body.append(dialog);
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+    else dialog.setAttribute('open', '');
+    if (field) { field.focus(); field.select(); } else ok.focus();
+  });
+  const shown = khDialogQueue.then(show, show);
+  khDialogQueue = shown.then(() => {}, () => {});
+  return shown;
+}
+const uiConfirm = (body, options = {}) => khDialog({
+  title: options.title || '', body,
+  confirmLabel: options.confirmLabel || 'Continue',
+  cancelLabel: options.cancelLabel || 'Cancel',
+  danger: !!options.danger,
+});
+const uiAlert = (body, options = {}) => khDialog({
+  title: options.title || '', body,
+  confirmLabel: options.confirmLabel || 'OK',
+});
+const uiPrompt = (body, value = '', options = {}) => khDialog({
+  title: options.title || '', body, input: String(value ?? ''),
+  placeholder: options.placeholder || '',
+  confirmLabel: options.confirmLabel || 'Save',
+  cancelLabel: options.cancelLabel || 'Cancel',
+});
+
 // **The console has to be able to prove who it is.**
 //
 // `/admin/*` is trusted from loopback and demands the gateway key from anywhere
@@ -2016,7 +2105,7 @@ async function shelfPackAction(path, body, done) {
   }
 }
 // A retire is asked for in a native `<dialog>`: the text, one checkbox that is unticked every time
-// it opens, and Retire / Cancel. **Cancel closes and does nothing** — the second `confirm()` this
+// it opens, and Retire / Cancel. **Cancel closes and does nothing** — the second question this
 // replaced made Cancel mean "still retire", which reads backwards.
 let shelfRetirePending = null;
 
@@ -2059,7 +2148,7 @@ async function retirePack(releaseId) {
   if (openRetireDialog(row)) return;
   // No dialog element at all (a stripped page): retire only, and say where the removal lives.
   const name = `${row.title || row.pack_id} v${row.version}`;
-  if (!confirm(`Retire ${name}? Macs that already installed it keep working.`)) return;
+  if (!await uiConfirm(`Retire ${name}? Macs that already installed it keep working.`)) return;
   await shelfPackAction('/content-shelf/retire',
     {release_id: releaseId, confirm_latest: !!row.current, remove_from_installs: false},
     `${name} is retired. Nothing was deleted. Story apps keep the copy they have.`);
@@ -2094,7 +2183,7 @@ async function setPackRemoveFromInstalls(releaseId, enabled) {
   const text = enabled
     ? `Remove ${name} from every Story app?\n\nEach Story Mac drops this pack the next time it checks in, and reports what it did. A Mac using the pack in a channel may keep it. Nothing is deleted on this Gateway.`
     : `Keep ${name} on every Story app?\n\nThe removal request is withdrawn and each Mac is told to keep the pack. A copy already removed does not come back.`;
-  if (!confirm(text)) return;
+  if (!await uiConfirm(text)) return;
   await shelfPackAction('/content-shelf/remove-from-installs', {release_id: releaseId, enabled},
     enabled
       ? `${name} is marked for removal from every Story app. Each Mac reports what it did.`
@@ -2191,9 +2280,9 @@ async function removePack(releaseId) {
   if (openShelfRemoveDialog(row)) return;
   // No dialog element at all (a stripped page): the same decision through two plain questions.
   const name = `${row.title || row.pack_id} v${row.version}`;
-  if (!confirm(`Remove ${name}?\n\nIts file moves to the Gateway trash and it leaves the shelf. Macs that already installed it keep working. The Gateway keeps a record of where it went.`)) return;
+  if (!await uiConfirm(`Remove ${name}?\n\nIts file moves to the Gateway trash and it leaves the shelf. Macs that already installed it keep working. The Gateway keeps a record of where it went.`)) return;
   const protectedShelf = !shelfHasNewerLiveSibling(row);
-  if (protectedShelf && !confirm(`No newer live version of ${row.pack_id} would remain. Remove ${name} anyway?`)) return;
+  if (protectedShelf && !await uiConfirm(`No newer live version of ${row.pack_id} would remain. Remove ${name} anyway?`)) return;
   await shelfPackAction('/content-library/retire-version',
     {pack_id: row.pack_id, version: row.version, release_id: releaseId,
      confirm: true, force: protectedShelf},
@@ -3074,7 +3163,7 @@ async function toggleModel(providerId, modelId, enabled) {
       body: JSON.stringify({ items: [{ provider_id: providerId, model_id: modelId }], enabled })
     });
   } catch (e) {
-    alert(e.message);
+    await uiAlert(e.message);
   }
   // Re-read rather than patch the row in place. The local mutation showed the
   // *click*, not the server's state, so a rejected change left the checkbox
@@ -3098,7 +3187,7 @@ async function toggleModelEverywhere(modelId, modality, enabled) {
       body: JSON.stringify({ items, enabled })
     });
   } catch (e) {
-    alert(e.message);
+    await uiAlert(e.message);
   }
   await loadModels();
   loadStatus();
@@ -3136,7 +3225,7 @@ async function bulk(enabled) {
   const sentence = phrases.length
     ? `${enabled ? 'Enable' : 'Disable'} all ${n} models ${phrases.join(' ')}?`
     : `${enabled ? 'Enable' : 'Disable'} ALL ${n} models — every model in the catalogue, with no filter?`;
-  if (!confirm(sentence)) return;
+  if (!await uiConfirm(sentence)) return;
   try {
     const r = await api('/models/bulk', {
       method: 'POST', headers: {'Content-Type':'application/json'},
@@ -3145,7 +3234,7 @@ async function bulk(enabled) {
     await loadModels();
     await loadStatus();
     flash(`${r.changed} models ${enabled ? 'enabled' : 'disabled'}.`);
-  } catch (e) { alert(e.message); }
+  } catch (e) { await uiAlert(e.message); }
 }
 
 function flash(text) {
@@ -4102,10 +4191,10 @@ async function refreshProvider(id, btn) {
 }
 
 async function clearCreds(id, btn) {
-  if (!confirm('Clear the stored key for this provider?')) return;
+  if (!await uiConfirm('Clear the stored key for this provider?')) return;
   btn.disabled = true;
   try { await api(`/providers/${encodeURIComponent(id)}/credentials`, { method: 'DELETE' }); await loadProviders(); await loadStatus(); }
-  catch (e) { alert(e.message); } finally { btn.disabled = false; }
+  catch (e) { await uiAlert(e.message); } finally { btn.disabled = false; }
 }
 
 async function setModel(id, modelId, enabled) {
@@ -4117,7 +4206,7 @@ async function setModel(id, modelId, enabled) {
   } catch (e) {
     // Without this the promise rejected into the console: the checkbox kept the
     // clicked state and nothing on screen said the server had refused it.
-    alert(e.message);
+    await uiAlert(e.message);
   }
   // Either way, re-read the provider's list. The checkbox is a view of the
   // server's answer, and the only place that answer lives is the server.
@@ -4147,7 +4236,7 @@ async function removeModel(id, modelId) {
     const r = await api(`/providers/${encodeURIComponent(id)}/models/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
     state.models[id] = { ...(state.models[id] || {}), models: r.models };
     renderProviders(); await loadStatus();
-  } catch (e) { alert(e.message); }
+  } catch (e) { await uiAlert(e.message); }
 }
 
 // ---------------------------------------------------------------------------
@@ -4754,7 +4843,7 @@ async function setImageAssignment(controllerId, machine, value) {
       method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ model: value || null }) });
     drawImageAssignments(data.machines || []);
   } catch (err) {
-    alert('Could not save this Mac\'s image model: ' + (err.message || err));
+    await uiAlert('Could not save this Mac\'s image model: ' + (err.message || err));
     loadImageAssignments();
   }
 }
@@ -4895,13 +4984,13 @@ async function savePool(btn) {
 }
 
 async function removePool(name, btn) {
-  if (!confirm(`Delete the pool "${name}"? The models in it are untouched, but anything saved as pool::${name} stops resolving.`)) return;
+  if (!await uiConfirm(`Delete the pool "${name}"? The models in it are untouched, but anything saved as pool::${name} stops resolving.`)) return;
   btn.disabled = true;
   try {
     await api(`/pools/${encodeURIComponent(name)}`, { method: 'DELETE' });
     if (poolEdit && poolEdit.name === name) closePoolEditor();
     await loadPools();
-  } catch (e) { alert(e.message); btn.disabled = false; }
+  } catch (e) { await uiAlert(e.message); btn.disabled = false; }
 }
 
 // Import a price-research file: the gateway checks every number (source URL on the provider's own
@@ -4998,7 +5087,7 @@ async function refreshAll(btn) {
     // **After the reload**, which clears this line as part of a fresh read.
     const message = document.getElementById('providers-msg');
     if (message) { message.textContent = said; message.className = 'msg ok'; }
-  } catch (e) { alert(e.message); }
+  } catch (e) { await uiAlert(e.message); }
   finally { btn.disabled = false; btn.textContent = 'Re-discover all providers'; }
 }
 
@@ -5160,7 +5249,7 @@ async function saveSfxCreds(id, btn) {
 }
 
 async function clearSfxCreds(id, btn) {
-  if (!confirm('Clear the stored key for this sound source? Search keeps working on the anonymous quota.')) return;
+  if (!await uiConfirm('Clear the stored key for this sound source? Search keeps working on the anonymous quota.')) return;
   btn.disabled = true;
   try {
     await api(`/sounds/sources/${encodeURIComponent(id)}/credentials`, { method: 'DELETE' });
@@ -5261,11 +5350,11 @@ async function addCustomProvider(btn) {
 }
 
 async function removeCustomProvider(id) {
-  if (!confirm(`Remove '${id}'? Nothing else is affected.`)) return;
+  if (!await uiConfirm(`Remove '${id}'? Nothing else is affected.`)) return;
   try {
     await api(`/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
     loadCustomProviders();
-  } catch (e) { alert(e.message); }
+  } catch (e) { await uiAlert(e.message); }
 }
 
 document.getElementById('filter').addEventListener('input', renderProviders);
@@ -7374,13 +7463,13 @@ async function fleetLocationAction(button, action) {
   const base = `/fleet/controllers/${encodeURIComponent(location.id)}`;
   let path = base, method = 'POST', body = {};
   if (action === 'rename') {
-    const value = prompt('Rename this location. Only the name changes. Its address, its credential and its models are untouched.', name);
+    const value = await uiPrompt('Rename this location. Only the name changes. Its address, its credential and its models are untouched.', name);
     if (value == null) return;
     const label = value.trim();
     if (!label) { fleetLocationNote('A name is required. The location was not renamed.'); return; }
     method = 'PATCH'; body = { label };
   } else if (action === 'remove') {
-    if (!confirm(`Remove ${name}?\n\nThis gateway stops talking to that controller and forgets its credentials. Nothing on the controller itself changes, and its models stop being offered here until you add it again and paste a token.`)) return;
+    if (!await uiConfirm(`Remove ${name}?\n\nThis gateway stops talking to that controller and forgets its credentials. Nothing on the controller itself changes, and its models stop being offered here until you add it again and paste a token.`)) return;
     method = 'DELETE'; body = null;
   } else if (action === 'test') {
     path = `/fleet/controllers/${encodeURIComponent(location.id)}/test`;
@@ -7547,7 +7636,7 @@ async function fleetMachineStartup(button, locationId, machineId, key, forced) {
   }
   const name = machine.label || machine.machine;
   if (!forced && (key === 'start-services' || key === 'restart-services')) {
-    if (!confirm(`${spec.title} on ${name}?\n\nIts Studio Hub restarts its Studios. It refuses if a job is `
+    if (!await uiConfirm(`${spec.title} on ${name}?\n\nIts Studio Hub restarts its Studios. It refuses if a job is `
       + `running, and asks you again before interrupting one.`)) return;
   }
   const payload = { action: spec.action, force: forced === true };
@@ -7562,7 +7651,7 @@ async function fleetMachineStartup(button, locationId, machineId, key, forced) {
     // The Hub's refusal for running work is the one 409 that offers `force: true`.
     if (!forced && /force: true/.test(e.message || '')) {
       retryForced = true;
-      if (confirm(`${name} is busy\n\n${e.message}\n\nRestart anyway and interrupt that work?`)) {
+      if (await uiConfirm(`${name} is busy\n\n${e.message}\n\nRestart anyway and interrupt that work?`)) {
         button.disabled = false;
         return fleetMachineStartup(button, locationId, machineId, key, true);
       }
@@ -7576,11 +7665,11 @@ async function fleetMachineStartup(button, locationId, machineId, key, forced) {
   if (!retryForced) await loadFleet();
 }
 
-function fleetMachineRename(button, locationId, machineId) {
+async function fleetMachineRename(button, locationId, machineId) {
   const machine = fleetMachineById(locationId, machineId);
   if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
   const current = machine.label || machine.machine || '';
-  const value = prompt(`Rename ${current}\n\nThe new name is set on the Mac itself, so its own Studio Hub, its `
+  const value = await uiPrompt(`Rename ${current}\n\nThe new name is set on the Mac itself, so its own Studio Hub, its `
     + `controller and this page all show it. Its machine ID (${machine.machine}) stays the same, so nothing `
     + `re-joins and no work is re-routed.`, current);
   if (value == null) return;
@@ -7637,7 +7726,7 @@ async function fleetMachineNetwork(button, locationId, machineId) {
   if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
   const name = machine.label || machine.machine;
   const known = fleetKnownNetworks();
-  const value = prompt(`Network for ${name}\n\nMacs copy models only from Macs on the same network. A shop iMac `
+  const value = await uiPrompt(`Network for ${name}\n\nMacs copy models only from Macs on the same network. A shop iMac `
     + `can be on any.\n\nKnown networks: ${known.join(', ') || 'none yet'}. Leave it empty to use its location's network.`,
     machine.network_override || '');
   if (value == null) return;
@@ -7660,7 +7749,7 @@ async function fleetLocationNetwork(button) {
   if (!location) { fleetLocationNote('Location no longer available. Refresh and try again.'); return; }
   const label = location.label || location.id;
   const known = fleetKnownNetworks();
-  const value = prompt(`Network for ${label}\n\nMacs on the same network copy models from each other instead of `
+  const value = await uiPrompt(`Network for ${label}\n\nMacs on the same network copy models from each other instead of `
     + `each downloading them. A Mac can have its own network on Fleet → Machines.\n\nKnown networks: `
     + `${known.join(', ') || 'none yet'}. Leave it empty to clear it.`, location.network || '');
   if (value == null) return;
@@ -7719,7 +7808,7 @@ async function fleetEnableMacTrashEverywhere(button) {
   }
   const lines = asked.map(m => `• ${m.label || m.machine}: will be turned on`)
     .concat(away.map(m => `• ${m.label || m.machine}: skipped — not answering`)).join('\n');
-  if (!confirm(`Turn on macOS's 30-day Trash emptying for ${asked.length} Mac${asked.length === 1 ? '' : 's'}?\n\n`
+  if (!await uiConfirm(`Turn on macOS's 30-day Trash emptying for ${asked.length} Mac${asked.length === 1 ? '' : 's'}?\n\n`
     + `Finder on those Macs will remove items from the Trash after 30 days. `
     + (away.length ? `${away.length} more are not answering and will be skipped, not saved for. ` : '')
     + `This is macOS's own setting. Nothing is emptied now, and nothing is turned off.\n\n${lines}`)) return;
@@ -7757,7 +7846,7 @@ async function fleetEnableAutostartEverywhere(button) {
       : 'Every Mac that reported its setting already starts its services after a restart.');
     return;
   }
-  if (!confirm(`Turn on "Start services on startup" for ${targets.length} Mac${targets.length === 1 ? '' : 's'}?\n\n`
+  if (!await uiConfirm(`Turn on "Start services on startup" for ${targets.length} Mac${targets.length === 1 ? '' : 's'}?\n\n`
     + `After a restart those Macs will bring Studio Hub's services up by themselves. `
     + (away.length ? `${away.length} more are not answering and will be skipped. ` : '')
     + 'Nothing is restarted now.')) return;
@@ -7783,7 +7872,7 @@ async function fleetEnableAutostartEverywhere(button) {
 // ---- Reset the job counters ------------------------------------------------
 
 async function fleetResetCounters(button) {
-  if (!confirm('Reset the job counters on every Mac?\n\nThe Machines tab will count done and failed jobs from '
+  if (!await uiConfirm('Reset the job counters on every Mac?\n\nThe Machines tab will count done and failed jobs from '
     + 'now on. Nothing is deleted: every Hub keeps its full job history. A Mac on an older Studio Hub keeps '
     + 'counting everything until it updates, and says so.')) return;
   button.disabled = true;
@@ -8368,7 +8457,7 @@ async function fleetInstallSave(button, state) {
 async function fleetInstallEverywhere(button) {
   const choice = fleetInstallChoice(fleetDialogState || {});
   if (!choice) return;
-  if (!confirm(`Install ${choice.name} on every Mac that can run it?\n\nEach network downloads it from the `
+  if (!await uiConfirm(`Install ${choice.name} on every Mac that can run it?\n\nEach network downloads it from the `
     + `internet once; the other Macs on that network copy it from each other. Macs that cannot run it (memory, `
     + `Lite Mode), This Mac while it is paused and Macs that are offline are skipped. Progress shows on the `
     + `Models tab, per network.`)) return;
@@ -8488,7 +8577,7 @@ async function fleetRemoveSave(button, state) {
   const machine = fleetMachineById(state.locationId, state.machineId);
   if (!packageId || !machine) { fleetDialogClose(); return; }
   const name = machine.label || machine.machine;
-  if (!confirm(`Remove ${packageId} from ${name}?\n\nIt is moved into that Mac's model-library trash, not deleted, `
+  if (!await uiConfirm(`Remove ${packageId} from ${name}?\n\nIt is moved into that Mac's model-library trash, not deleted, `
     + `and can be restored there for 30 days.`)) return;
   button.disabled = true;
   fleetDialogNote('Removing…');
@@ -8684,7 +8773,7 @@ async function fleetAddressChange(button, state) {
   const location = fleetLocationById(state.locationId);
   const label = (location && location.label) || state.locationId;
   if (state.testedOK !== body.url) {
-    if (!confirm(`This address has not answered a test\n\nChange ${label} to ${body.url} anyway? Routing to it `
+    if (!await uiConfirm(`This address has not answered a test\n\nChange ${label} to ${body.url} anyway? Routing to it `
       + 'will fail until that Mac answers.')) return;
   }
   button.disabled = true;
@@ -8915,7 +9004,7 @@ function renderFleetInstalls(d) {
 
 async function fleetStopInstall(button) {
   const planId = button.dataset.plan;
-  if (!confirm('Stop installing this model on every Mac?\n\nNothing new starts; a copy or download already '
+  if (!await uiConfirm('Stop installing this model on every Mac?\n\nNothing new starts; a copy or download already '
     + 'running on a Mac finishes there.')) return;
   button.disabled = true;
   try {
@@ -9099,7 +9188,7 @@ async function fleetCancelBatch(button) {
   const job = (lastFleetPayload?.running || []).find(row =>
     String(row.batch_id) === button.dataset.batch && String(row.location_id) === String(button.dataset.id));
   const what = `${fleetJobWords(job ? job.modality : '')} · ${(job && (job.model || job.label)) || button.dataset.batch}`;
-  if (!confirm(`Stop ${what}?\n\n${job?.running ?? 0} running, ${job?.queued ?? 0} queued at ${job?.location || 'this location'}. `
+  if (!await uiConfirm(`Stop ${what}?\n\n${job?.running ?? 0} running, ${job?.queued ?? 0} queued at ${job?.location || 'this location'}. `
     + `Queued items are cancelled; a worker that already took its item cannot be promised to stop.`)) return;
   button.disabled = true;
   fleetNote('fleet-jobs-note', `Asking the Hub to stop ${what}…`);
@@ -9469,7 +9558,7 @@ async function stopOrphan(button) {
   const slot = button.parentElement.querySelector('[data-answer]');
   // The same question every other Stop asks: the Hub is signalled, not interrupted, and a batch
   // that keeps working for a moment is not a failure.
-  if (!confirm('Stop this Hub batch?\n\nThe Gateway signals the Hub and the batch stops when it '
+  if (!await uiConfirm('Stop this Hub batch?\n\nThe Gateway signals the Hub and the batch stops when it '
     + 'reaches the request. Work already finished on that Mac is kept.')) return;
   button.disabled = true;
   try {
@@ -9920,7 +10009,7 @@ function copyGuestKey() {
 
 async function issueGuestKey(id) {
   const name = guestById(id).name;
-  if (!confirm(`Create an API key for ${name}? It is shown once, and replaces any key they have.`)) return;
+  if (!await uiConfirm(`Create an API key for ${name}? It is shown once, and replaces any key they have.`)) return;
   try {
     const answer = await api('/guests/' + encodeURIComponent(id) + '/key', { method: 'POST' });
     guestRowsFrom(answer);
@@ -9934,7 +10023,7 @@ async function issueGuestKey(id) {
 
 async function revokeGuestKey(id) {
   const name = guestById(id).name;
-  if (!confirm(`Revoke ${name}'s API key? Their agent stops on its next request; their account and jobs stay.`)) return;
+  if (!await uiConfirm(`Revoke ${name}'s API key? Their agent stops on its next request; their account and jobs stay.`)) return;
   try {
     const answer = await api('/guests/' + encodeURIComponent(id) + '/key', { method: 'DELETE' });
     guestRowsFrom(answer);
@@ -10005,7 +10094,7 @@ function guestById(id) {
 
 async function resetGuestPassword(id) {
   const name = guestById(id).name;
-  const password = prompt(`New password for ${name} (at least ${guestsState.minLength} characters):`);
+  const password = await uiPrompt(`New password for ${name} (at least ${guestsState.minLength} characters):`);
   if (password === null) return;
   try {
     const answer = await api('/guests/' + encodeURIComponent(id) + '/password', {
@@ -10022,7 +10111,7 @@ async function resetGuestPassword(id) {
 
 async function removeGuestAccount(id) {
   const name = guestById(id).name;
-  if (!confirm(`Remove ${name}? Their account stops working and their session ends. The record and its job count stay.`)) return;
+  if (!await uiConfirm(`Remove ${name}? Their account stops working and their session ends. The record and its job count stay.`)) return;
   try {
     const answer = await api('/guests/' + encodeURIComponent(id), { method: 'DELETE' });
     guestRowsFrom(answer);

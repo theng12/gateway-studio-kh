@@ -96,6 +96,12 @@ function sfxHarness(responses = [{}]) {
       return next;
     },
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(between('// SFX — sound sources', '// Adding a provider without editing a file')
     + ';globalThis.__sfx = {'
     + ' setSources: list => { sfxSources = list; },'
@@ -251,6 +257,12 @@ test('providers are drawn under the headings the server names, in its order', ()
     },
     providerCard: p => `<card id="${p.id}">`,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(between('function providerGroupsHtml', 'function rateLimitLine'), context);
   const html = context.providerGroupsHtml([{ id: 'alpha' }, { id: 'beta' }]);
 
@@ -266,6 +278,12 @@ test('a provider no heading names is still drawn, never dropped', () => {
     esc, state: { providerGroups: [{ key: 'chat', label: 'Text & chat', ids: ['alpha'] }] },
     providerCard: p => `<card id="${p.id}">`,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(between('function providerGroupsHtml', 'function rateLimitLine'), context);
   const html = context.providerGroupsHtml([{ id: 'alpha' }, { id: 'lonely' }]);
   assert.match(html, /<card id="lonely">/);
@@ -280,12 +298,24 @@ test('an empty group is not drawn, and no grouping still draws the flat list', (
     ] },
     providerCard: p => `<card id="${p.id}">`,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(between('function providerGroupsHtml', 'function rateLimitLine'), context);
   assert.doesNotMatch(context.providerGroupsHtml([{ id: 'alpha' }]), /Music/);
 
   const flat = vm.createContext({
     esc, state: {}, providerCard: p => `<card id="${p.id}">`,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, flat);
+
   vm.runInContext(between('function providerGroupsHtml', 'function rateLimitLine'), flat);
   const html = flat.providerGroupsHtml([{ id: 'alpha' }, { id: 'beta' }]);
   assert.doesNotMatch(html, /<h3/, 'an ungrouped response must not invent a heading');

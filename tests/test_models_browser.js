@@ -64,6 +64,12 @@ function harness(responses = [emptyPage()]) {
     alert() {}, confirm: () => true, loadStatus() {}, loadProviders() {},
     URLSearchParams, setTimeout, clearTimeout, console,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(source.slice(START, END), context);
   return { context, get, calls, writes };
 }
@@ -572,6 +578,12 @@ test('the Providers page control says it is the all-providers one, and says what
     loadStatus: async () => {},
     alert() {},
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   const refreshAll = source.indexOf('async function refreshAll(');
   vm.runInContext(
     functionSource('providerName') + functionSource('rediscoverAll')
@@ -669,6 +681,12 @@ test('selecting a tab shows one pane and hides the others', () => {
     ],
     providerTab: 'list',
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   // Evaluate just the two functions, so this drives the real code and not a copy.
   const start = source.indexOf('function providerPane(');
   const end = source.indexOf('async function refreshAll(');
@@ -697,6 +715,12 @@ test('an unknown tab key falls back to the first pane rather than showing none',
     PROVIDER_TABS: [{ key: 'list', title: 'Providers', hint: '' }],
     providerTab: 'list',
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   const start = source.indexOf('function providerPane(');
   vm.runInContext(source.slice(start, source.indexOf('async function refreshAll(')), context);
   context.selectProviderTab('gone');

@@ -60,6 +60,12 @@ function actionContext(fetchImpl) {
     URL,
     console,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext([
     'let pendingCreateAttempt = null;',
     section('async function api(path, opts)', '// Contents cannot go through'),
@@ -150,6 +156,12 @@ function providerContext(responses) {
     window: {},
     console,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext([
     'const state = { providers: [], open: {}, models: {} };',
     'const esc = s => String(s ?? "");',
@@ -196,6 +208,12 @@ function createPollContext() {
     artifactsHtml: () => '',
     console,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   const createStart = source.indexOf('let createTab =');
   const createEnd = source.indexOf('function artifactsHtml', createStart);
   if (createStart < 0 || createEnd < 0) throw new Error('Create section boundary changed');
@@ -446,6 +464,12 @@ function concurrencyContext(nodes, boxes) {
     },
     console,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext([
     'const esc = s => String(s ?? "");',
     section('function concurrencyMessage(', 'async function loadProviders()'),
@@ -504,6 +528,12 @@ function measuredContext(target) {
     document: { getElementById: id => (id === 'measured' ? target : undefined) },
     console,
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext([
     'const esc = s => String(s ?? "");',
     section('function measuredCell(', 'async function loadProviders()'),

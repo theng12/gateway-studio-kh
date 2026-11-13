@@ -1478,7 +1478,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--test-mode") {
-            // The headless entry: no window, no activation, no gateway launch.
+            // **The headless entry a test can walk** — no window, no Dock icon, no owner data.
+            // GATEWAY_APP_SUPPORT already points AppPaths at a throwaway dir; KH_TEST_PORT keeps the
+            // test gateway away from the owner's live port. The console is the same one the app
+            // window loads, so a headless browser exercises the real UI and API.
+            guard let support = ProcessInfo.processInfo.environment["GATEWAY_APP_SUPPORT"],
+                  !support.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                FileHandle.standardError.write(Data(
+                    "--test-mode needs GATEWAY_APP_SUPPORT pointing at a throwaway data dir.\n".utf8))
+                exit(2)
+            }
+            guard let rawPort = ProcessInfo.processInfo.environment["KH_TEST_PORT"],
+                  let testPort = Int(rawPort), (1...65535).contains(testPort) else {
+                FileHandle.standardError.write(Data(
+                    "--test-mode needs KH_TEST_PORT for the console.\n".utf8))
+                exit(2)
+            }
+            ConfigStore.shared.update { $0.port = testPort }
+            signal(SIGTERM, SIG_IGN)
+            let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+            term.setEventHandler {
+                GatewayController.shared.stopAnything { _ in exit(0) }
+                // A wedged child must not hold the test run open forever.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 12) { exit(0) }
+            }
+            term.resume()
+            testSignalSource = term
+            var announced = false
+            GatewayController.shared.observe {
+                let controller = GatewayController.shared
+                if case .failed(let reason) = controller.state {
+                    FileHandle.standardError.write(Data("gateway could not start: \(reason)\n".utf8))
+                    exit(1)
+                }
+                guard controller.isRunning, !announced else { return }
+                announced = true
+                print("TEST_URL=http://127.0.0.1:\(controller.port)/admin")
+                fflush(stdout)
+            }
+            GatewayController.shared.statusItemReady = false
+            GatewayController.shared.writeState()
+            GatewayController.shared.start()
             return
         }
         AppearanceMode.current.apply()
@@ -1933,6 +1973,14 @@ if arguments.contains("--stop-gateway") {
     exit(0)
 }
 
+// **A headless entry for tests** (`--test-mode`): the app runs with no window and no Dock icon,
+// so an acceptance or smoke run never takes the owner's desktop. It starts the real gateway on
+// the port `KH_TEST_PORT` names, with the throwaway data dir `GATEWAY_APP_SUPPORT` names, prints
+// `TEST_URL` once the console answers, and exits on SIGTERM. A test instance is deliberately not
+// treated as a duplicate of the owner's running app: it is a separate process with its own port
+// and data dir.
+let testMode = CommandLine.arguments.contains("--test-mode")
+
 // Single-instance guard.
 //
 // `open` on an already-running app just activates it, but a LaunchAgent
@@ -1951,21 +1999,18 @@ let duplicates = NSRunningApplication
     .runningApplications(withBundleIdentifier: bundleIdentifier)
     .filter { $0.processIdentifier != ownPID }
 
-if !duplicates.isEmpty {
+if !testMode && !duplicates.isEmpty {
     FileHandle.standardError.write(
         Data("gateway-kh is already running; exiting this copy.\n".utf8)
     )
     exit(0)
 }
 
-// **A headless entry for tests** (`--test-mode`): the app runs with no window and no Dock icon,
-// so an acceptance or smoke run never takes the owner's desktop. The gateway itself is not
-// started here; a test points GATEWAY_APP_SUPPORT at its own throwaway data dir.
-let testMode = CommandLine.arguments.contains("--test-mode")
 // A gateway that exits before the owner-console secret is written must not kill this app with SIGPIPE.
 signal(SIGPIPE, SIG_IGN)
 let application = NSApplication.shared
 let delegate = AppDelegate()
 application.delegate = delegate
 application.setActivationPolicy(testMode ? .accessory : .regular)
+var testSignalSource: DispatchSourceSignal?
 application.run()

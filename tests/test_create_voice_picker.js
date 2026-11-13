@@ -46,6 +46,12 @@ function harness(nodes, answers = {}) {
       return answers[path];
     },
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
   vm.runInContext(SECTION, context);
   return { context, calls, nodes };
 }
@@ -142,6 +148,12 @@ test('an empty answer and a failed answer are different sentences', async () => 
     esc,
     api: async () => { throw new Error('HTTP 500'); },
   });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, failing);
+
   vm.runInContext(SECTION, failing);
   await vm.runInContext('loadCreateVoices()', failing);
   assert.match(nodes['cf-voice-hint'].textContent, /Could not read this model's voices: HTTP 500/);
@@ -215,6 +227,12 @@ test('the model picker is bound on every lane, so a change reaches every reader 
       esc,
       api: async () => ({ voices: [] }),
     });
+// Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
+// stubs are where each answer comes from.
+vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);
+globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
+globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, context);
+
     vm.runInContext(SECTION, context);
     vm.runInContext(`createTab = ${JSON.stringify(tab)};
       createCatalogue = { by_modality: { ${JSON.stringify(modality)}: [${JSON.stringify(row)}] } };

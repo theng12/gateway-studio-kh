@@ -484,11 +484,14 @@ class _Broker:
             revision = rows[worker["_token_id"]].get("control_revision")
             if revision is not None and state.get("control_revision") != revision:
                 return None
+            # nextEligibleAt is the provider's **paid-work** cooldown; a zero-priced job spends
+            # nothing and must not be held back by it (owner rule: "if it's free, just run").
+            free = bool(quote) and float(quote.get("value") or 0) == 0
             if (state["connection"] != "connected" or state["sign_in"] != "signed_in"
                     or state["readiness"] != "ready" or not state["enabled"] or state["paused"]
                     or state["activity"] not in ("idle", "waiting")
                     or not 0 <= now - state["observed_at"] < online_seconds()
-                    or state["next_eligible_at"] is None or state["next_eligible_at"] > now):
+                    or (not free and (state["next_eligible_at"] is None or state["next_eligible_at"] > now))):
                 return None
             for job in sorted(self._jobs.values(), key=lambda j: j.created_at):
                 if job.state != "pending" or job.kind != worker["kind"]:

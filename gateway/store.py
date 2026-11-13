@@ -1647,12 +1647,16 @@ class JobStore:
                 if account["activity"] not in ACCOUNT_ACTIVITY_ELIGIBLE:
                     raise ExtensionAccountRefused("ACCOUNT_ACTIVITY",
                                                   "the account is not idle or waiting")
-                if account["next_eligible_at"] is None:
-                    raise ExtensionAccountRefused("ACCOUNT_ELIGIBLE_UNKNOWN",
-                                                  "the account did not state when it is next eligible")
-                if now < account["next_eligible_at"]:
-                    raise ExtensionAccountRefused("ACCOUNT_NOT_ELIGIBLE_YET",
-                                                  "the account is not eligible for paid work yet")
+                # Paid eligibility is a spending restriction, like the switch above: a zero-priced
+                # job spends nothing, so an account still inside its paid-work cooldown (or one
+                # that has not stated one yet) can take it now.
+                if quote["value"] > 0:
+                    if account["next_eligible_at"] is None:
+                        raise ExtensionAccountRefused("ACCOUNT_ELIGIBLE_UNKNOWN",
+                                                      "the account did not state when it is next eligible")
+                    if now < account["next_eligible_at"]:
+                        raise ExtensionAccountRefused("ACCOUNT_NOT_ELIGIBLE_YET",
+                                                      "the account is not eligible for paid work yet")
                 # An unreadable balance does not block the claim: the price is what authorizes spend,
                 # and the worker's page refuses the generation if the account cannot afford it. When a
                 # balance was observed it is still checked, and an over-quote is refused below.

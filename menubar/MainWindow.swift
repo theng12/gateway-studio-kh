@@ -125,11 +125,10 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         }
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = self
-        // Without a UI delegate, `confirm()` and `alert()` in the page are **silent
-        // no-ops**: `confirm` returns false, so a handler that asks first simply
-        // returns and nothing happens. That is why "Disable all matching" looked
-        // dead — and why every `alert(e.message)` in the console was invisible, so
-        // the errors that would have explained it never appeared either.
+        // The UI delegate exists for the file picker (`runOpenPanel`), which WKWebView has no
+        // default for. It deliberately does **not** implement the JavaScript confirm/alert/prompt
+        // panels: the console asks every question in its own `<dialog>` (owner rule, 2026-11-13),
+        // and a page that went back to the native API must fail visibly rather than bring it back.
         web.uiDelegate = self
         // A WKWebView reports its content's size as an intrinsic size and resists
         // compression, so the console page — which is wide — made the detail
@@ -366,71 +365,6 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
         decisionHandler(.cancel)
     }
 
-    // MARK: JavaScript dialogs
-
-    /// The page asks before acting; this is what makes that question appear.
-    ///
-    /// The confirm button says what the action is rather than "OK", because the
-    /// only caller is a bulk enable or disable and "OK" would leave the count in
-    /// the message as the only clue about which way it goes.
-    func webView(
-        _ webView: WKWebView,
-        runJavaScriptConfirmPanelWithMessage message: String,
-        initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping (Bool) -> Void
-    ) {
-        let alert = NSAlert()
-        alert.messageText = message
-        alert.addButton(withTitle: Self.verb(in: message))
-        alert.addButton(withTitle: "Cancel")
-        // Cancel is the default: Return must not make a bulk change.
-        alert.buttons.first?.keyEquivalent = ""
-        alert.buttons.last?.keyEquivalent = "\r"
-        completionHandler(alert.runModal() == .alertFirstButtonReturn)
-    }
-
-    /// **The page's Rename and Network buttons were dead in the app without this.** The web Fleet
-    /// page asks for a new name with `prompt()`; a WKUIDelegate that does not implement this panel
-    /// silently answers null, so pressing Rename did nothing at all. Cancel answers Escape, as for
-    /// every other dialog.
-    func webView(
-        _ webView: WKWebView,
-        runJavaScriptTextInputPanelWithPrompt prompt: String,
-        defaultText: String?,
-        initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping (String?) -> Void
-    ) {
-        let alert = NSAlert()
-        // The page writes a title, then a blank line, then what the change will and will not do.
-        let parts = prompt.components(separatedBy: "\n\n")
-        alert.messageText = parts.first ?? prompt
-        alert.informativeText = parts.dropFirst().joined(separator: "\n\n")
-        let field = NSTextField(string: defaultText ?? "")
-        field.frame = NSRect(x: 0, y: 0, width: 340, height: 24)
-        alert.accessoryView = field
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        completionHandler(alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil)
-    }
-
-    /// Errors from the page were being swallowed whole. Now they are shown.
-    func webView(
-        _ webView: WKWebView,
-        runJavaScriptAlertPanelWithMessage message: String,
-        initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping () -> Void
-    ) {
-        let alert = NSAlert()
-        alert.messageText = "The console reported a problem"
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.closeOnEscape()
-        alert.runModal()
-        completionHandler()
-    }
-
     /// **A file input needs this, or its button does nothing.** WKWebView shows no picker unless the
     /// UI delegate supplies one, so the console's "Import price research…" (a hidden `<input
     /// type=file>` the button clicks) was dead in the app while working in a browser.
@@ -456,14 +390,6 @@ final class ConsoleSection: NSObject, AppSection, WKNavigationDelegate, WKUIDele
     ) -> WKWebView? {
         if let url = navigationAction.request.url, url.scheme == "https" { NSWorkspace.shared.open(url) }
         return nil
-    }
-
-    /// `Enable all …` / `Disable all …` / `Clear …` → the verb alone.
-    private static func verb(in message: String) -> String {
-        for word in ["Enable", "Disable", "Clear", "Remove", "Delete"] where message.hasPrefix(word) {
-            return word
-        }
-        return "OK"
     }
 
     private static let startingPage = """
