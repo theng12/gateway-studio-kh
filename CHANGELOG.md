@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.252 — 2026-11-13
+
+- **Settings says plainly that Gateway's own updates are installed by Studio Launcher KH and never use the App Update Key.** The App Update Key signs Studio Hub and Story Studio releases; it is not a Gateway update control.
+
+---
+
 ## 0.2.251 — 2026-11-13
 
 - **Update opens Studio Launcher KH.** Gateway checks the signed feed but never installs anything itself; the download button now opens the Launcher, the only app that installs updates. If the Launcher is not installed, Gateway says so instead of doing nothing.
