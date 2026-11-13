@@ -631,7 +631,11 @@
     padding: var(--s6) var(--s12); border-radius: 999px; border: 1px solid var(--line);
     background: var(--panel); color: var(--text); font-size: 12px; font-weight: 600;
     white-space: nowrap; overflow: hidden; }
-  .nav-pill-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .nav-pill-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* Settings is a read-only facts page: give it a readable measure and let the facts sit in two
+     columns on a wide window instead of stretching one narrow table across the card. */
+  #view-settings .card { max-width: 900px; }
+  #settings-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); column-gap: 24px; }
   .nav-pill #app-version { flex: 0 0 auto; }
   .nav-pill #app-version { font-weight: 400; color: var(--dim); }
   .nav-icon-btn { flex: 0 0 auto; width: 26px; height: 26px; padding: 0; display: inline-flex;
@@ -1471,21 +1475,30 @@ const ago = (t) => { if (!t) return 'never'; const s = Date.now()/1000 - t;
 // does nothing (owner rule, 2026-11-13). One in-app `<dialog>` answers all three shapes, queues
 // when two arrive together, and resolves exactly once on the button, Escape, or Enter.
 let khDialogQueue = Promise.resolve();
+let khDialogSeq = 0;
 function khDialog({title = '', body = '', confirmLabel = 'OK', cancelLabel = null,
                    danger = false, input = null, placeholder = ''}) {
   const show = () => new Promise(resolve => {
     if (!document.body) { resolve(input === null ? (cancelLabel ? false : undefined) : null); return; }
+    // What had focus before the question: it gets focus back when the question closes, so a
+    // keyboard user does not land on the page body after Cancel or Continue.
+    const opener = document.activeElement;
     const dialog = document.createElement('dialog');
-    dialog.setAttribute('aria-label', title || confirmLabel);
+    const questionId = `kh-dialog-question-${++khDialogSeq}`;
     if (title) {
       const heading = document.createElement('h2');
+      heading.id = `${questionId}-title`;
       heading.textContent = title;
       dialog.append(heading);
     }
     const text = document.createElement('p');
+    text.id = questionId;
     text.style.whiteSpace = 'pre-line';
     text.textContent = body;
     dialog.append(text);
+    // The accessible name is the question itself, never the button word ("Continue" alone tells
+    // a screen reader nothing about what is about to happen).
+    dialog.setAttribute('aria-labelledby', title ? `${questionId}-title` : questionId);
     let field = null;
     if (input !== null) {
       field = document.createElement('input');
@@ -1505,6 +1518,7 @@ function khDialog({title = '', body = '', confirmLabel = 'OK', cancelLabel = nul
       settled = true;
       if (typeof dialog.close === 'function') dialog.close(); else dialog.remove();
       dialog.remove();
+      if (opener && opener !== document.body && typeof opener.focus === 'function') opener.focus();
       resolve(value);
     };
     const ok = document.createElement('button');
@@ -1512,12 +1526,25 @@ function khDialog({title = '', body = '', confirmLabel = 'OK', cancelLabel = nul
     ok.textContent = confirmLabel;
     ok.addEventListener('click', () => done(input === null ? (cancelLabel !== null ? true : undefined) : field.value));
     row.append(ok);
+    let cancel = null;
     if (cancelLabel !== null) {
-      const cancel = document.createElement('button');
+      cancel = document.createElement('button');
       cancel.textContent = cancelLabel;
       cancel.addEventListener('click', () => done(input === null ? false : null));
       row.append(cancel);
     }
+    // Tab stays inside the question: the page behind a modal must not take focus.
+    dialog.addEventListener('keydown', (event) => {
+      if (event.key !== 'Tab') return;
+      const items = [field, ok, cancel].filter(item => item && !item.disabled);
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first.focus();
+      }
+    });
     dialog.append(row);
     dialog.addEventListener('cancel', (event) => {
       event.preventDefault();
@@ -1727,7 +1754,9 @@ function loadDeveloperTests() {
 }
 
 const NAV = [
-  { items: [{ view: 'overview', label: 'Overview', icon: 'info' }] },
+  // There is deliberately no Overview row in the browser console: the status page lives in the
+  // Mac app, and a sidebar row that only says "that is in the app" is a dead end (an old
+  // `#overview` link still lands on the honest note, titled Overview).
   { group: 'Create', items: [
     { view: 'create', create: 'audio', label: 'Audio', icon: 'audio' },
     { view: 'create', create: 'subtitle', label: 'Subtitle', icon: 'subtitle' },
@@ -1847,11 +1876,15 @@ function setView(view) {
   // Guarded so the page's own code still runs against a partial document (the VM tests slice
   // this function out on its own): a page that exists says its own name, and one that does not
   // is a real note rather than a blank pane.
+  // The page's own name is captured before `view` becomes the shared "missing" pane, so the
+  // document title says Overview — never "missing" — while the note says where it lives.
+  let pageLabel = null;
   if (typeof APP_ONLY !== 'undefined' && APP_ONLY[view]) {
     const title = document.getElementById('missing-title');
     const note = document.getElementById('missing-note');
     const entry = typeof navEntryFor === 'function' ? navEntryFor(view) : null;
-    if (title) title.textContent = entry ? entry.label : view;
+    pageLabel = entry ? entry.label : view;
+    if (title) title.textContent = pageLabel;
     if (note) note.textContent = APP_ONLY[view];
     view = 'missing';
   }
@@ -1868,7 +1901,7 @@ function setView(view) {
   const active = view === 'create' && pending ? `create:${pending}` : view;
   const entry = typeof navEntryFor === 'function' ? navEntryFor(active.split(':')[0], pending) : null;
   if (typeof IN_APP === 'undefined' || !IN_APP) {
-    document.title = 'Gateway Studio KH — ' + (entry ? entry.label : view);
+    document.title = 'Gateway Studio KH — ' + (pageLabel || (entry ? entry.label : view));
   }
   if (typeof document.querySelectorAll === 'function') {
     document.querySelectorAll('.nav-row').forEach(row => {
@@ -3910,21 +3943,20 @@ function toggleMoreMenu() {
 }
 function toggleCardMenuFor(button) {
   // The menu's id travels in a data attribute: a Mac name with a quote cannot break the handler.
-  toggleCardMenu({ stopPropagation() {} }, button.dataset.menu || '');
+  toggleCardMenu(button, button.dataset.menu || '');
 }
 
-function toggleCardMenu(event, id) {
-  event.stopPropagation();
+function toggleCardMenu(button, id) {
   const menu = document.getElementById(`pmenu-${id}`);
-  const button = event.currentTarget;
-  if (!menu) return;
+  if (!menu || !button) return;
   const open = menu.hidden;
   closeMenus();
   menu.hidden = !open;
-  button.setAttribute('aria-expanded', String(open));
+  button.setAttribute?.('aria-expanded', String(open));
 }
 document.addEventListener?.('click', event => {
-  if (event.target.closest('.more-menu') || event.target.closest('#more-btn') || event.target.closest('.overflow')) return;
+  if (event.target.closest('.more-menu') || event.target.closest('#more-btn')
+      || event.target.closest('#fleet-filters-btn') || event.target.closest('.overflow')) return;
   closeMenus();
 });
 document.addEventListener?.('keydown', event => { if (event.key === 'Escape') closeMenus(); });
@@ -4464,6 +4496,19 @@ async function loadExtensionWorkers() {
   if (!root) return;
   try {
     const data = await api('/extension-workers');
+    if (data.enabled === false) {
+      // Off is a state the console explains, not a missing route: no failed request, no console
+      // error, and the same sentence the 404 path used to show.
+      if (pair) pair.style.display = 'none';
+      if (manager) manager.style.display = 'none';
+      if (accounts) accounts.innerHTML = '';
+      const accountsHead = document.getElementById('ew-accounts-head');
+      if (accountsHead) accountsHead.hidden = true;
+      const offStatus = document.getElementById('ew-status');
+      if (offStatus) offStatus.innerHTML = '<span class="dot warn"></span>Browser workers are off — set GATEWAY_EXTENSION_WORKERS=1 in the gateway’s .env, then restart it from the app.';
+      root.innerHTML = '<div class="empty">Nothing to list while browser workers are off — the line above says how to turn them on.</div>';
+      return;
+    }
     const pairToggle = document.getElementById('ew-pair-toggle');
     const moreBtn = document.getElementById('ew-more-btn');
     if (pair) pair.style.display = 'none';
@@ -6277,11 +6322,11 @@ let fleetOrphanSupersededStop = false;
 let fleetOrphanAnswers = {};
 const FLEET_FILTERS = [['all', 'All machines'], ['offline', 'Offline now'],
   ['down', 'Down'], ['degraded', 'Degraded'], ['issues', 'Has any issue'],
-  ['problematic', 'Problematic']];
+  ['problematic', 'Flapping']];
 // The page's orders. One visible control, because `fleetSetSort` existed and nothing
 // rendered it — the owner could not reach the sort at all (2026-10-30).
 const FLEET_SORTS = [['issues', 'Issues (worst first)'], ['offline', 'Offline first'],
-  ['problematic', 'Most problematic'], ['site', 'Site'], ['lastseen', 'Longest unseen'],
+  ['problematic', 'Most flapping'], ['site', 'Site'], ['lastseen', 'Longest unseen'],
   ['drops', 'Most drops'], ['name', 'Name']];
 const FLEET_TABS = [['groups', 'Groups'], ['locations', 'Locations'], ['machines', 'Machines'],
   ['models', 'Models'], ['jobs', 'Jobs'], ['story', 'Story Studio']];
@@ -7232,12 +7277,17 @@ function renderFleetMachines(d) {
   if (status) status.innerHTML = fleetStatusLine(rows, d.machines || []);
   if (warnings) warnings.innerHTML = fleetOrphanWarning(d) + fleetWarningsBox(d.machines || []);
   if (!wrap) return;
+  const read = (d.machines || []).length;
   wrap.innerHTML = rows.length
     ? `<table class="ftable">
        <thead><tr>${FLEET_MACHINE_COLUMNS.map(([key, title]) => fleetSortHeader(key, title)).join('')}
        <th scope="col">Actions</th></tr></thead>
        <tbody>${rows.map(fleetMachineRow).join('')}</tbody></table>`
-    : `<div class="fleet-empty">No machine matches this filter — ${(d.machines || []).length} were read.</div>`;
+    : read === 0
+      ? '<div class="fleet-empty">No Macs have joined yet — add a location or start Studio Hub on a Mac. '
+        + '<button class="sm" type="button" onclick="selectFleetTab(\'locations\')">Locations</button></div>'
+      : `<div class="fleet-empty">No machine matches this filter — ${read} were read. `
+        + '<button class="sm" type="button" onclick="fleetClearFilters()">Show all</button></div>';
 }
 
 // "8 machines. On latest 5/7 (Studio Hub 0.6.126) · 2 behind · 1 not answering."
@@ -9352,9 +9402,24 @@ function toggleFleetFilters() {
   const button = document.getElementById('fleet-filters-btn');
   if (!menu) return;
   const open = menu.hidden;
-  document.querySelectorAll('.more-menu').forEach(other => { other.hidden = true; });
+  // closeMenus clears every expanded state, including this button's; set ours after it.
+  closeMenus();
   menu.hidden = !open;
   if (button) button.setAttribute?.('aria-expanded', String(open));
+}
+
+// The empty states carry their own way out: a filter that matched nothing is never a dead end.
+function fleetClearFilters() {
+  fleetFilter = 'all';
+  fleetSort = FLEET_SORTS[0][0];
+  fleetLocation = 'all';
+  fleetQuery = '';
+  const pick = document.getElementById('fleet-filter');
+  if (pick) pick.value = 'all';
+  const search = document.getElementById('fleet-search');
+  if (search) search.value = '';
+  updateFleetFilterCount();
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
 }
 
 // "Filters 2" — every filter that is doing something says its count. The count is of filters,
@@ -9399,8 +9464,10 @@ function fleetSetSort(value) {
   if (lastFleetPayload) renderFleet(lastFleetPayload);
 }
 
+// The button is a toggle: pressing it again goes back to every machine, so a filter can never
+// trap the list. Its count is of the rows the filter would show, not of the issue summary.
 function fleetOnlyProblematic() {
-  fleetSetFilter('problematic');
+  fleetSetFilter(fleetFilter === 'problematic' ? 'all' : 'problematic');
 }
 
 function selectFleetTab(tab) {
@@ -9712,9 +9779,13 @@ function renderFleetGroups(d) {
   const visible = fleetVisible(items);
   const body = document.getElementById('fleet-body');
   if (body) {
+    const read = `${items.length} machine${items.length === 1 ? '' : 's'} and site${items.length === 1 ? '' : 's'}`;
     body.innerHTML = visible.length ? `<div class="fleet-macs">${visible.map(fleetCard).join('')}</div>`
-      : `<div class="empty">Nothing matches “${esc((FLEET_FILTERS.find(f => f[0] === fleetFilter) || [])[1] || fleetFilter)}”
-         — ${items.length} machine${items.length === 1 ? '' : 's'} and site${items.length === 1 ? '' : 's'} were read.</div>`;
+      : items.length === 0
+        ? '<div class="empty">No Macs or sites have been added yet. '
+          + '<button class="sm" type="button" onclick="selectFleetTab(\'locations\')">Add a location</button></div>'
+        : `<div class="empty">Nothing matches “${esc((FLEET_FILTERS.find(f => f[0] === fleetFilter) || [])[1] || fleetFilter)}”
+           — ${read} were read. <button class="sm" type="button" onclick="fleetClearFilters()">Show all</button></div>`;
   }
   const summary = document.getElementById('fleet-summary');
   if (!summary) return;
@@ -9760,9 +9831,10 @@ function fleetSummaryHtml(s, issues, q, d, problematic) {
       ? `<b>${issues.total}</b> issue${issues.total === 1 ? '' : 's'}: ${issues.down} down · `
         + `${issues.degraded} degraded · ${issues.info} info`
       : 'No issues'}</span>`,
-    // Counted from the rows below, so the figure and the list cannot disagree — and it is the
-    // filter the owner asked for, one click away.
-    `<button type="button" class="badge ${problematic ? 'warn' : ''}" title="Show only these" onclick="fleetOnlyProblematic()">${problematic} problematic</button>`,
+    // Counted from the rows below, so the figure and the list cannot disagree. **Flapping is the
+    // history verdict** (the owner's "problematic" threshold), not every down machine — naming it
+    // precisely keeps it from contradicting the issue count beside it. Press again to show all.
+    `<button type="button" class="badge ${problematic ? 'warn' : ''}" title="Rows with the owner's 24-hour drop threshold — press again to show every machine" onclick="fleetOnlyProblematic()">${problematic} flapping</button>`,
     `<span>Updated ${ago(d.generated_at)}</span>`,
     // "3 Macs on slow Ethernet": counted by the Gateway from the rows below, and named where it can.
     (s.connections && s.connections.slow_ethernet > 0)
@@ -9829,7 +9901,7 @@ function imageJobEvidence(job) {
     ? `${applied} reference image${applied === 1 ? '' : 's'} used` : 'Used count not recorded'}</div>`;
 }
 
-function jobsTable(rows) {
+function jobsTable(rows, filtered = false) {
   return rows.length ? `<div class="tablewrap"><table style="min-width:1100px"><thead><tr>
       <th>Job</th><th>Image mode / references</th><th>State</th><th>Model</th><th>Where</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
     </tr></thead><tbody>${rows.map(j => `<tr>
@@ -9841,7 +9913,9 @@ function jobsTable(rows) {
       <td>${esc(requesterLabel(j))}</td>
       <td>${esc(j.caller || '')}</td>
       <td class="num">${ago(j.created_at)}<div class="hint">Gateway dispatched: ${j.started_at == null ? 'not recorded' : ago(j.started_at)}</div><div class="hint">Gateway settled: ${j.finished_at == null ? 'not recorded' : ago(j.finished_at)}</div></td>
-    </tr>`).join('')}</tbody></table></div>` : '<div class="empty">No matching jobs.</div>';
+    </tr>`).join('')}</tbody></table></div>`
+    : `<div class="empty">${filtered ? 'No jobs match this image mode.'
+      : 'No jobs have run yet — they appear here after a Create job.'}</div>`;
 }
 
 function imageModeQuery(controlId) {
@@ -9854,7 +9928,7 @@ async function loadJobs() {
   const filter = imageModeQuery('jobs-image-mode');
   try {
     const d = await api('/jobs?limit=100' + filter);
-    if (state.view === 'jobs' && filter === imageModeQuery('jobs-image-mode')) box.innerHTML = jobsTable(d.jobs || []);
+    if (state.view === 'jobs' && filter === imageModeQuery('jobs-image-mode')) box.innerHTML = jobsTable(d.jobs || [], !!filter);
   } catch (e) { box.innerHTML = `<div class="empty">Could not read jobs: ${esc(e.message)}</div>`; }
 }
 
@@ -9881,7 +9955,7 @@ async function loadImageUsage() {
   const filter = imageModeQuery('analytics-image-mode');
   try {
     const d = await api('/jobs?limit=100&modality=image' + filter);
-    if (state.view === 'analytics' && filter === imageModeQuery('analytics-image-mode')) box.innerHTML = jobsTable(d.jobs || []);
+    if (state.view === 'analytics' && filter === imageModeQuery('analytics-image-mode')) box.innerHTML = jobsTable(d.jobs || [], !!filter);
   } catch (e) { box.innerHTML = `<div class="empty">Could not read image usage: ${esc(e.message)}</div>`; }
 }
 

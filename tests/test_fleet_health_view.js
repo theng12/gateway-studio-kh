@@ -302,7 +302,7 @@ test('the summary counts problematic from the rows below it', async () => {
     machine({ machine: 'b', label: 'b', history: history({ drops_day: 1, problematic: false }) }),
   ]));
   await ctx.loadFleet();
-  assert.match(ctx.nodes.get('fleet-summary').innerHTML, /1 problematic/);
+  assert.match(ctx.nodes.get('fleet-summary').innerHTML, /1 flapping/);
 });
 
 test('the Machines tab is the native table, sorted from its own headers', async () => {
@@ -330,7 +330,7 @@ test('the summary figure is a button that shows only the problematic ones', asyn
   await ctx.loadFleet();
   const summary = ctx.nodes.get('fleet-summary').innerHTML;
   assert.match(summary, /<button[^>]*onclick="fleetOnlyProblematic\(\)"/);
-  assert.match(summary, /1 problematic/);
+  assert.match(summary, /1 flapping/);
   ctx.fleetOnlyProblematic();
   const html = ctx.nodes.get('fleet-body').innerHTML;
   assert.match(html, />a</);

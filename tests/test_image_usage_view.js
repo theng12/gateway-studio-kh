@@ -45,7 +45,7 @@ test('Usage mode filter reaches the shared server before pagination', async () =
   node('analytics-image-mode').value = 'reference-to-image';
   await ctx.loadAnalytics();
   assert.ok(requests.includes('/jobs?limit=100&modality=image&image_mode=reference-to-image'));
-  assert.match(node('analytics-image-jobs').innerHTML, /No matching jobs/);
+  assert.match(node('analytics-image-jobs').innerHTML, /No jobs match this image mode/);
 });
 
 test('Jobs mode filter uses the same server field', async () => {

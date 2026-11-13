@@ -94,8 +94,13 @@ class SwitchAndAuthTests(_Base):
                                  ("post", "/api/workers/jobs/x/fail")):
                 answer = getattr(self.client, method)(path, headers=self.auth())
                 self.assertEqual(answer.status_code, 404, path)
+            # Off is a state the console can explain, not a missing route: a 404 here also put a
+            # failed request in the browser's network log on a normal disabled page.
             local = TestClient(api.app, client=("127.0.0.1", 40001))
-            self.assertEqual(local.get("/admin/api/extension-workers").status_code, 404)
+            off = local.get("/admin/api/extension-workers")
+            self.assertEqual(off.status_code, 200)
+            self.assertIs(off.json()["enabled"], False)
+            self.assertEqual(off.json()["workers"], [])
 
     def test_wrong_token_and_gateway_key_are_refused(self):
         self.assertEqual(self.client.get("/api/workers/health", headers=self.auth("ekw_wrong")).status_code, 401)

@@ -53,14 +53,16 @@ test('the sidebar carries the native groups, in the native order', () => {
   // `Array.from` reads the VM's own array into this realm, so the comparison is by value.
   assert.deepEqual(Array.from(NAV, section => section.group).filter(Boolean),
     ['Create', 'Library', 'Connection', 'App']);
-  assert.equal(NAV[0].group, undefined, 'Overview is ungrouped, as it is in the app');
-  assert.equal(NAV[0].items[0].view, 'overview');
+  // The browser sidebar has no Overview row: the status page is in the Mac app, and a row that
+  // only says "that is in the app" is a dead end (an old #overview link still lands on the note).
+  assert.ok(!Array.from(NAV).some(section => Array.from(section.items).some(item => item.view === 'overview')),
+    'Overview must not be a sidebar dead end in the browser');
   const labels = index => Array.from(NAV[index].items, item => item.label);
   const views = index => Array.from(NAV[index].items, item => item.view);
-  assert.deepEqual(labels(1), ['Audio', 'Subtitle', 'Image', 'Music', 'Video', 'Chat']);
-  assert.deepEqual(views(2), ['jobs', 'voices', 'models', 'analytics', 'packs']);
-  assert.deepEqual(views(3), ['providers', 'fleet', 'developer-tests']);
-  assert.deepEqual(views(4), ['guests', 'settings'],
+  assert.deepEqual(labels(0), ['Audio', 'Subtitle', 'Image', 'Music', 'Video', 'Chat']);
+  assert.deepEqual(views(1), ['jobs', 'voices', 'models', 'analytics', 'packs']);
+  assert.deepEqual(views(2), ['providers', 'fleet', 'developer-tests']);
+  assert.deepEqual(views(3), ['guests', 'settings'],
     "What's New left the sidebar for the standard footer pill (one door, not two)");
 });
 

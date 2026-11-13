@@ -42,7 +42,7 @@ class FakeElement {
   click() { this.dispatch('click'); }
   close() { this.closed = true; }
   showModal() { this.open = true; }
-  focus() { this.focused = true; }
+  focus() { this.focused = true; if (this.ownerDocument) this.ownerDocument.activeElement = this; }
   select() { this.selected = true; }
 }
 
@@ -57,14 +57,15 @@ function find(element, test) {
 
 function harness() {
   const body = new FakeElement('body');
-  const context = vm.createContext({
-    document: { body, createElement: tag => new FakeElement(tag) },
-    Promise, String, Object, Array,
-  });
+  const document = {
+    body, activeElement: body,
+    createElement: tag => { const element = new FakeElement(tag); element.ownerDocument = document; return element; },
+  };
+  const context = vm.createContext({ document, Promise, String, Object, Array });
   vm.runInContext(between('let khDialogQueue = Promise.resolve();',
                           '// **The console has to be able to prove who it is.**')
     + ';globalThis.__d = {uiConfirm, uiAlert, uiPrompt};', context);
-  return { body, d: context.__d };
+  return { body, d: context.__d, document };
 }
 
 const dialogs = body => body.children.filter(child => child.tagName === 'DIALOG');
@@ -107,6 +108,24 @@ test('Escape cancels, and Enter in a prompt accepts the typed value', async () =
   field.value = 'renamed';
   field.dispatch('keydown', { key: 'Enter' });
   assert.equal(await typed, 'renamed');
+});
+
+test('a dialog is named by its question and gives focus back to the opener', async () => {
+  const { body, d, document } = harness();
+  const opener = new FakeElement('button');
+  opener.ownerDocument = document;
+  body.append(opener);
+  opener.focus(); // the document now records this as the active element
+
+  const pending = d.uiConfirm('Delete this pool?');
+  await tick();
+  const dialog = dialogs(body)[0];
+  const question = dialog.children[0];
+  assert.equal(dialog.attrs['aria-labelledby'], question.id,
+    'the accessible name must be the question, not the Continue button');
+  button(dialog, 'Continue').click();
+  assert.equal(await pending, true);
+  assert.equal(document.activeElement, opener, 'focus returns to the opener');
 });
 
 test('a prompt answers null on Cancel and the text on Save', async () => {

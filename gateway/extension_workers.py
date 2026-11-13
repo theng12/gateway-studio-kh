@@ -993,7 +993,9 @@ def _admin_routes() -> None:
     @router.get("/admin/api/extension-workers", dependencies=[Depends(require_admin)])
     def extension_workers_status():
         if not enabled():
-            return _NOT_FOUND
+            # Switched off is a state, not a missing route: the console shows the same explanation
+            # without a failed request in its network log.
+            return {"enabled": False, "workers": [], "accounts": []}
         cutoff = time.time() - online_seconds()
         known: dict[str, dict[str, Any]] = {}
         for row in sorted(_rows().values(), key=lambda r: r.get("created_at") or 0):

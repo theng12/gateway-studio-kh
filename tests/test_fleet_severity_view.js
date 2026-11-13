@@ -257,7 +257,7 @@ test('a degraded-but-running Mac is yellow: its attention line and its chips', a
   await ctx.loadFleet();
   assert.match(ctx.nodes.get(GROUPS).innerHTML, /class="msg warn">Music studio not running/);
   const summary = ctx.nodes.get('fleet-summary').innerHTML;
-  assert.match(summary, /badge warn[^>]*>1 problematic/);
+  assert.match(summary, /badge warn[^>]*>1 flapping/);
   assert.match(ctx.nodes.get(TABLE).innerHTML, /class="badge warn"[^>]*>Problematic</);
 });
 
