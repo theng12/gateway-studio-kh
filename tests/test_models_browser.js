@@ -590,17 +590,24 @@ test('the Providers page control says it is the all-providers one, and says what
   assert.equal(node('providers-msg').className, 'msg ok');
 });
 
-test('every provider card carries its own Re-discover, visible without expanding', () => {
-  // "i only needed magpie refresh": re-discovering one provider is the common case, and a control
-  // that only exists inside the expanded body is one the page appears not to have.
+test('every provider card carries its own Re-discover in the row overflow', () => {
+  // Two controls on the row (On/Off and Configure) and the rest behind ⋯: "i only needed magpie
+  // refresh" stays one click away without a third button on every card.
   const card = source.slice(source.indexOf('function providerCard(p)'),
                             source.indexOf('function providerModelList('));
   const head = card.slice(card.indexOf('<div class="card-actions">'));
   const actions = head.slice(0, head.indexOf('</div>'));
+  assert.match(actions, /aria-label="More actions for \$\{esc\(p\.display_name\)\}"/,
+    'the card row has no overflow control');
+  assert.match(actions, /id="pmenu-\$\{esc\(p\.id\)\}"/,
+    'the overflow menu must be per card');
   assert.match(actions, /refreshProvider\('\$\{esc\(p\.id\)\}', this\)/,
-    'the per-provider re-discover is not on the row the owner sees');
-  assert.match(actions, /id="msg-\$\{esc\(p\.id\)\}"/,
+    'Re-discover left the row without moving into the card menu');
+  assert.match(head, /id="msg-\$\{esc\(p\.id\)\}"/,
     'the result of that button is written into a span that must exist on the collapsed row');
+  assert.doesNotMatch(card, /<div class="cat">/,
+    'the id · kind · endpoint line belongs behind the detail, not on every card');
+  assert.match(card, /card-details/);
 });
 
 test('the Models page button and its picker are both in the page, not only in the script', () => {
@@ -635,8 +642,8 @@ test('the Models page button and its picker are both in the page, not only in th
 test('every provider pane is named by exactly one tab, and every tab opens a pane', () => {
   const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
   const block = source.slice(source.indexOf('const PROVIDER_TABS'), source.indexOf('let providerTab'));
-  const tabs = [...block.matchAll(/key: '([a-z]+)'/g)].map(m => m[1]);
-  const panes = [...source.matchAll(/id="provider-pane-([a-z]+)"/g)].map(m => m[1]);
+  const tabs = [...block.matchAll(/key: '([a-z-]+)'/g)].map(m => m[1]);
+  const panes = [...source.matchAll(/id="provider-pane-([a-z-]+)"/g)].map(m => m[1]);
   assert.deepEqual(tabs.slice().sort(), panes.slice().sort(),
     'a pane with no tab is unreachable, and a tab with no pane opens nothing');
   assert.ok(tabs.length >= 4, `the page still stacks its subjects: ${tabs.join(', ')}`);
@@ -698,14 +705,12 @@ test('an unknown tab key falls back to the first pane rather than showing none',
     'an unrecognised key must show the default pane, not nothing');
 });
 
-test('the queue link selects the queue tab instead of scrolling to a hidden section', () => {
-  // `#queue` used to scroll the queue section into view, which only worked while every section
-  // shared one column. Behind a tab, scrolling would land on a hidden element.
+test('the queue link opens Capacity and scrolls to the queue section', () => {
+  // The queue is now a section of Capacity: the link must select that tab first, then scroll to
+  // the section once it is displayed.
   const source = fs.readFileSync(path.join(__dirname, '../gateway/admin_ui.html'), 'utf8');
   const setView = source.slice(source.indexOf('function setView(view)'),
                                source.indexOf('function renderProviders('));
-  assert.match(setView, /selectProviderTab\('queue'\)/,
-    'the #queue link no longer opens the queue');
-  assert.doesNotMatch(setView, /scrollIntoView/,
-    'the #queue link scrolls to an element that is now behind a tab');
+  assert.match(setView, /selectProviderTab\('capacity'\); scrollToSection\('provider-capacity-queue'\)/,
+    'the #queue link no longer opens the queue section');
 });

@@ -545,6 +545,35 @@
 #developer-message:not(:empty) { padding:10px 14px; background:color-mix(in srgb, var(--bad-text, #ef4444) 10%, transparent); border-left:3px solid var(--bad-text, #ef4444); border-radius:4px; font-size:13px; margin:12px 0; }
 .developer-refusal { padding:10px 14px; background:color-mix(in srgb, var(--bad-text, #ef4444) 10%, transparent); border-left:3px solid var(--bad-text, #ef4444); border-radius:4px; font-size:13px; color:var(--bad-text, #ef4444); margin:12px 0; }
 #developer-run-targets { font-weight:500; font-size:13px; padding:8px 12px; background:var(--panel); border-radius:4px; border:1px solid var(--line); }
+  /* Providers: one line per subject, the pill in the footer, and the small menus. */
+  .provider-status { display: flex; align-items: center; gap: var(--s8); flex-wrap: wrap;
+    font-size: 12px; color: var(--dim); margin: var(--s8) 0 0; }
+  .provider-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
+  .provider-status .dot.bad { background: var(--bad, #ef4444); }
+  .provider-status .dot.warn { background: var(--warn); }
+  .provider-section { margin-top: var(--s24); padding-top: var(--s8); border-top: 1px solid var(--line); }
+  .provider-section h3 { margin: 0 0 var(--s8); }
+  .provider-toolbar { flex-wrap: wrap; align-items: center; gap: var(--s8); position: relative; }
+  .provider-toolbar .chip { align-self: center; }
+  .provider-toolbar input[type=search] { flex: 1 1 220px; }
+  .more-menu { position: absolute; z-index: 30; top: calc(100% + 4px); right: 0; min-width: 220px;
+    display: flex; flex-direction: column; gap: var(--s4); padding: var(--s8);
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card);
+    box-shadow: 0 6px 20px color-mix(in srgb, CanvasText 18%, transparent); }
+  .more-menu[hidden] { display: none; }
+  .more-menu button { text-align: left; }
+  .card-head .overflow { position: relative; }
+  .card-head .more-menu { top: calc(100% + 2px); right: 0; }
+  .card-details { margin: 0 0 var(--s8); overflow-wrap: anywhere; }
+  .badge.chip-action { border: 1px solid currentColor; cursor: pointer; font: inherit; }
+  .badge.chip-action:hover { filter: brightness(1.15); }
+  .tabs button svg { width: 14px; height: 14px; vertical-align: -2px; margin-right: 6px; }
+  .nav-pill-row { display: flex; align-items: center; gap: var(--s8); }
+  .nav-pill { display: flex; align-items: center; gap: var(--s8); width: 100%; min-width: 0;
+    padding: var(--s6) var(--s12); border-radius: 999px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text); font-size: 12px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nav-pill #app-version { font-weight: 400; color: var(--dim); }
 </style>
 </head>
 <body>
@@ -557,15 +586,18 @@
   <div class="nav-title">Gateway Studio KH<span class="nav-machine" id="nav-machine" hidden></span></div>
   <div class="nav-list" id="nav-list"></div>
   <div class="nav-foot">
+    <!-- The standard bottom-left pill: the app name and version, one line, opening What's New.
+         The icon-only update control lives in the Mac app's own footer; a browser cannot launch
+         or install the Launcher, so none is drawn here rather than a control that cannot act. -->
+    <div class="nav-pill-row">
+      <button type="button" class="nav-pill" onclick="openNav('whatsnew')" title="What's New — release notes"
+        >Gateway Studio KH <span id="app-version">unknown</span></button>
+    </div>
     <div class="nav-status" id="nav-status">Reading the gateway…</div>
     <div class="row"><button class="sm" onclick="signOut()">Sign Out</button></div>
   </div>
 </nav>
 <main>
-  <div class="row" style="margin-bottom:var(--s16)">
-    <span class="hint" id="app-version">Version not read yet</span>
-    <button class="sm" onclick="openNav('whatsnew')">What's New</button>
-  </div>
   <!-- Shown only when the gateway refuses a request for want of a key. It appears
        when the gateway is bound beyond loopback — for Tailscale or the LAN — where
        `/admin/*` demands the key even from this Mac. -->
@@ -937,7 +969,7 @@
 
          The pane ids and the tab keys are one list (`PROVIDER_TABS`), so a pane that no tab
          names, or a tab that opens nothing, is not expressible. `#queue` still lands on the
-         queue — see `setView`. -->
+         Queue section inside Capacity — see `setView`. -->
     <div class="tabs" id="provider-tabs" role="group" aria-label="Providers page section"></div>
 
     <div class="pane" id="provider-pane-capacity">
@@ -952,7 +984,7 @@
       unlocks with payment is a number here rather than a code change. A
       <b>Studio Hub location</b> sizes itself from the free workers it reports, and a
       number here <b>caps</b> that: it can throttle a busy site, and can never push
-      more work at one than the site says it has free. The two are separate tabs
+      more work at one than the site says it has free. The two are separate sections
       because they are governed by different rules. A blank box means <b>not set</b>,
       which is not the same as a limit of one.
     </p>
@@ -966,16 +998,15 @@
     <p class="hint">Image jobs follow each Hub's model, reference count and physical RAM tier. Defaults and their provenance come from the Hub.</p>
     <div id="image-limits-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="image-limits"></div>
-    </div><!-- /provider-pane-capacity -->
-
-    <div class="pane" id="provider-pane-queue" style="display:none">
+    
+    <section class="provider-section" id="provider-capacity-queue">
     <!-- QUEUE
          The live half of the numbers above. The settings say what *may* run; this
          says what is waiting, in the order it will be dispatched, and which ceiling
          is actually holding each lane right now — the pool, the lane cap and each
          site's own budget, read from the running worker rather than re-derived. A
          position with no ceiling beside it is a number without a reason. -->
-    <h2>Queue</h2>
+    <h3>Queue</h3>
     <p class="hint" style="margin:0 0 12px">
       Every job <b>waiting</b> right now — accepted but not yet dispatched, deferred or not —
       in the order the gateway will take them, with each one's position and the size of the
@@ -990,10 +1021,10 @@
     </div>
     <div id="queue-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="queue"></div>
-    </div><!-- /provider-pane-queue -->
+    </section>
 
-    <div class="pane" id="provider-pane-measured" style="display:none">
-    <h2>Measured</h2>
+    <section class="provider-section" id="provider-capacity-measured">
+    <h3>Measured</h3>
     <p class="hint" style="margin:0 0 12px">
       What each model has <b>actually carried</b>, from real jobs this gateway has run —
       not what its maker advertises. The largest completion that really ran is the only
@@ -1003,11 +1034,11 @@
       not listed at all.
     </p>
     <div id="measured"></div>
-    </div><!-- /provider-pane-measured -->
+    </section>
 
-    <div class="pane" id="provider-pane-pools" style="display:none">
+    <section class="provider-section" id="provider-capacity-pools">
     <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:var(--s8)">
-      <h2 style="margin:0">Model pools</h2>
+      <h3 style="margin:0">Model pools</h3>
       <button class="primary" id="pool-new" onclick="newPool()">New Pool</button>
     </div>
     <p class="hint" style="margin:0 0 12px;max-width:760px">
@@ -1020,39 +1051,29 @@
     </p>
     <div id="pool-editor"></div>
     <div id="pools"></div>
-    </div><!-- /provider-pane-pools -->
+    </section>
+    </div><!-- /provider-pane-capacity -->
+
+
+
 
     <div class="pane" id="provider-pane-list" style="display:none">
-    <h2>Where work can run</h2>
-    <div id="local-note" class="hint" style="margin:12px 0 0"></div>
-    <div id="skipped-note" class="hint" style="margin:12px 0 0"></div>
-    <div class="row" style="margin:12px 0">
-      <div class="stat" id="hubline"></div>
+    <div class="provider-status" id="provider-status" role="status" aria-live="polite" hidden></div>
+    <div class="row provider-toolbar" style="margin:12px 0">
+      <input type="search" id="filter" placeholder="Search providers…" aria-label="Search providers" style="max-width:300px">
+      <button type="button" class="chip" id="keyless-chip" aria-pressed="false" onclick="toggleKeylessFilter()" hidden></button>
       <div class="spacer"></div>
-      <select id="key-filter" aria-label="Filter providers by key status" style="max-width:190px">
-        <option value="all">All providers</option>
-        <option value="set">Key set</option>
-        <option value="missing">No key</option>
-      </select>
-      <span class="stat" id="keyless-count"></span>
-      <input type="text" id="filter" placeholder="Filter providers…" style="max-width:260px">
-      <button class="sm" onclick="refreshAll(this)">Re-discover all providers</button>
-      <!-- Prices researched from each provider's own pricing page (a separate research session
-           writes the JSON; the gateway only validates and stores it — nothing is fetched here). -->
-      <button class="sm" id="evidence-import" onclick="document.getElementById('evidence-file').click()">Import Price Research…</button>
-      <input type="file" id="evidence-file" accept=".json,application/json" style="display:none" onchange="importEvidence(this)">
-      <!-- **Add a provider, which until now meant editing a file by hand.**
-           `providers.local.json` has been read at import since custom providers were supported, and
-           this page already reports an entry it could not load — but nothing could *write* one, so
-           adding a provider meant finding a file in Application Support and getting its schema right
-           by hand. The owner asked for the other half: *"i think we can allow an add custom option.
-           that would make future providers really easy until we can update native support."*
-           Behind a button so the page stays short, and it says plainly that a restart is needed —
-           providers are read when the gateway starts. -->
+      <button class="sm" type="button" id="more-btn" aria-haspopup="true" aria-expanded="false" onclick="toggleMoreMenu()">More…</button>
       <button class="sm" id="custom-provider-toggle" onclick="toggleCustomProviderForm()">+ Add a Provider</button>
+      <div class="more-menu" id="provider-more" hidden>
+        <button type="button" class="sm" onclick="refreshAll(this)">Re-discover all providers</button>
+        <button type="button" class="sm" id="evidence-import" onclick="document.getElementById('evidence-file').click()">Import Price Research…</button>
+      </div>
+      <input type="file" id="evidence-file" accept=".json,application/json" style="display:none" onchange="importEvidence(this)">
     </div>
     <div id="custom-provider-panel" style="display:none; margin:0 0 12px"></div>
     <div id="evidence-panel" class="hint" style="display:none; margin:0 0 12px" role="status" aria-live="polite"></div>
+    <div id="price-summary" class="hint" style="display:none; margin:0 0 12px"></div>
     <div id="providers-msg" class="msg" role="alert" aria-live="polite"></div>
     <div id="providers"></div>
     </div><!-- /provider-pane-list -->
@@ -1289,6 +1310,11 @@ const state = {
   // What each provider is filed under on the Providers page, as the gateway derives it from the
   // providers' own modalities. Empty until the first read, and an empty list draws one flat list.
   providerGroups: [],
+  // The Providers page's own state: the keyless filter (a chip, not a select) and the two
+  // facts behind its one status line (the Hub's answer and how many local runners exist).
+  keyFilter: 'all',
+  hub: null,
+  localRunners: 0,
   open: {},
   models: {},
   modelRows: [],
@@ -1502,7 +1528,7 @@ const NAV = [
     { view: 'developer-tests', label: 'Run test', icon: 'settings' },
   ] },
   { group: 'App', items: [
-    { view: 'whatsnew', label: "What's New", icon: 'sparkle' },
+    // What's New is the footer pill's own door (the standard bottom-left pill), not a second row.
     { view: 'guests', label: 'Guests', icon: 'person' },
     { view: 'settings', label: 'Settings', icon: 'settings', app: true },
   ] },
@@ -1653,15 +1679,15 @@ function setView(view) {
     }
     loadCreate();
   }
-  // A `#queue` link opens the Providers page **on the queue tab**. It used to scroll the
-  // queue section into view, which only worked while every section shared one column; now
-  // the section is behind a tab, so the link selects the tab. Scrolling is not needed and
-  // would land on the wrong pane.
-  if ((location.hash || '').startsWith('#queue')) selectProviderTab('queue');
+  // A `#queue` link opens the Providers page on the Capacity tab and scrolls to the Queue
+  // section, which now lives inside it. `#pools` and `#measured` land the same way.
+  if ((location.hash || '').startsWith('#queue')) { selectProviderTab('capacity'); scrollToSection('provider-capacity-queue'); }
   // `#sfx` is the same trick for the sound sources pane: the quota route's guide points the owner
   // at it, and a link that landed on the Providers list would leave him hunting for the tab.
   else if ((location.hash || '').startsWith('#sfx')) selectProviderTab('sfx');
   else if ((location.hash || '').startsWith('#extension-workers')) selectProviderTab('extension-workers');
+  else if ((location.hash || '').startsWith('#pools')) { selectProviderTab('capacity'); scrollToSection('provider-capacity-pools'); }
+  else if ((location.hash || '').startsWith('#measured')) { selectProviderTab('capacity'); scrollToSection('provider-capacity-measured'); }
   // **Apply the tab, do not just draw its button.** The strip said "Providers" while the HTML's
   // first pane (Concurrency) was the one on screen: `renderProviderTabs` only paints buttons, and
   // nothing showed the pane `providerTab` names until a tab was clicked. A tab the owner picked in
@@ -2264,7 +2290,7 @@ async function loadStatus() {
     const s = await api('/status');
     const machine = s.computer_name ? ` · on ${s.computer_name}` : '';
     const version = document.getElementById('app-version');
-    if (version) version.textContent = s.version ? `Version ${s.version}${machine}` : `Version not read yet${machine}`;
+    if (version) version.textContent = s.version ? s.version : 'unknown';
     const navMachine = document.getElementById('nav-machine');
     if (navMachine) {
       navMachine.textContent = s.computer_name ? `on ${s.computer_name}` : '';
@@ -2276,10 +2302,8 @@ async function loadStatus() {
     if (stats) stats.innerHTML =
       `<b>${s.providers.enabled}</b>/${s.providers.total} providers on · <b>${s.models.publishable_models}</b> models offered${s.models.withheld_models ? ` · ${s.models.withheld_models} withheld` : ''} · ${esc(parts)}`;
     const h = s.hub;
-    const el = document.getElementById('hubline');
-    if (el) el.innerHTML = h.running
-      ? `<span class="badge ok">Studio Hub running</span> <code>${esc(h.base_url)}</code>`
-      : `<span class="badge warn">Studio Hub not running</span>`;
+    state.hub = h || null;
+    renderProviderStatus();
     // The sidebar's own status line, in the place the native window puts it: the state of
     // the thing you are driving is on screen whichever page you are on.
     const foot = document.getElementById('nav-status');
@@ -3467,12 +3491,8 @@ async function loadProviders() {
     // The headings, from the gateway. It derives them from each provider's own `modalities`, so
     // this page holds no list of vendors and no opinion about what a provider is for.
     state.providerGroups = service_groups || [];
-    const note = document.getElementById('local-note');
-    if (note) {
-      note.textContent = scopes && scopes.local
-        ? `${scopes.local} local runner${scopes.local === 1 ? '' : 's'} (Studio Hub) ${scopes.local === 1 ? 'is' : 'are'} managed on the app's Fleet page, not here.`
-        : '';
-    }
+    state.localRunners = (scopes && scopes.local) || 0;
+    renderProviderStatus();
     // `providers.local.json` is written by hand, so an entry the gateway refused is
     // otherwise indistinguishable from the file not loading at all: the provider is
     // simply absent. Say which ones were skipped and why.
@@ -3504,10 +3524,17 @@ async function loadProviders() {
 
 function renderProviders(drafts = captureProviderDrafts()) {
   const filter = document.getElementById('filter').value.trim().toLowerCase();
-  const keyNode = document.getElementById('key-filter');
-  const keyFilter = keyNode ? keyNode.value : 'all';
+  const keyless = state.providers.filter(p => !p.configured).length;
+  if (!keyless && state.keyFilter === 'missing') state.keyFilter = 'all';
+  const chip = document.getElementById('keyless-chip');
+  if (chip) {
+    chip.hidden = !keyless;
+    chip.textContent = keyless ? `${keyless} without a key` : '';
+    chip.setAttribute?.('aria-pressed', String(state.keyFilter === 'missing'));
+    chip.title = state.keyFilter === 'missing' ? 'Showing only providers without a key — click to show all' : 'Show only providers without a key';
+  }
+  const keyFilter = state.keyFilter || 'all';
   const list = state.providers.filter(p => {
-    if (keyFilter === 'set' && !p.configured) return false;
     if (keyFilter === 'missing' && p.configured) return false;
     // The lanes it serves are part of what you can search by: the headings answer "what is this
     // for" for the common cases, but a multi-lane provider is filed under one of them, and
@@ -3518,11 +3545,6 @@ function renderProviders(drafts = captureProviderDrafts()) {
       || p.category.includes(filter)
       || (p.modalities || []).some(m => String(m).toLowerCase().includes(filter));
   });
-  const counter = document.getElementById('keyless-count');
-  if (counter) {
-    const keyless = state.providers.filter(p => !p.configured).length;
-    counter.textContent = keyless ? `${keyless} without a key` : 'all keys set';
-  }
   const root = document.getElementById('providers');
   if (!list.length) {
     root.innerHTML = `<div class="empty">${
@@ -3545,6 +3567,80 @@ function renderProviders(drafts = captureProviderDrafts()) {
 // one heading; a row the grouping did not name is drawn under "Other" rather than dropped,
 // because a provider under no heading is one the owner cannot reach at all. The count beside each
 // heading is the number of cards actually under it, so a filtered page never claims more.
+// One status line for the Providers page: what is down (and why), what exists, and the one
+// place that acts on it. The old page showed a "Studio Hub not running" chip beside "8 local
+// runners are managed on Fleet", which contradicted itself and offered no way out.
+function renderProviderStatus() {
+  const el = document.getElementById('provider-status');
+  if (!el) return;
+  const hub = state.hub;
+  const local = Number(state.localRunners) || 0;
+  if (!hub && !local) { el.hidden = true; return; }
+  const parts = [];
+  let health = 'ok';
+  if (hub && hub.running === true) {
+    parts.push(`Studio Hub running${hub.base_url ? ` at <code>${esc(hub.base_url)}</code>` : ''}.`);
+  } else if (hub) {
+    health = 'bad';
+    const why = String(hub.probe || hub.probe_status || '').trim();
+    parts.push(`Studio Hub is not running${why ? ` — ${esc(why)}` : ''}.`);
+  }
+  if (local) {
+    parts.push(`${local} local runner${local === 1 ? '' : 's'} ${local === 1 ? 'is' : 'are'} managed on the Fleet page.`);
+  }
+  if (!parts.length) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = `<span class="dot ${health === 'bad' ? 'bad' : ''}"></span><span>${parts.join(' ')}</span>`
+    + `<button class="sm" type="button" onclick="openNav('fleet')">Open Fleet</button>`;
+}
+
+// The Providers toolbar has one search field and one primary action; the rest live behind
+// "More…", and each card's Re-discover lives behind its own overflow. Both close on Escape and
+// on a click elsewhere, the same rule the app's own dialogs follow.
+function closeMenus() {
+  for (const menu of document.querySelectorAll('.more-menu')) menu.hidden = true;
+  for (const button of document.querySelectorAll('[aria-haspopup="true"]')) button.setAttribute('aria-expanded', 'false');
+}
+function toggleMoreMenu() {
+  const menu = document.getElementById('provider-more');
+  const button = document.getElementById('more-btn');
+  if (!menu) return;
+  const open = menu.hidden;
+  closeMenus();
+  menu.hidden = !open;
+  if (button) button.setAttribute('aria-expanded', String(open));
+}
+function toggleCardMenu(event, id) {
+  event.stopPropagation();
+  const menu = document.getElementById(`pmenu-${id}`);
+  const button = event.currentTarget;
+  if (!menu) return;
+  const open = menu.hidden;
+  closeMenus();
+  menu.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+}
+document.addEventListener?.('click', event => {
+  if (event.target.closest('.more-menu') || event.target.closest('#more-btn') || event.target.closest('.overflow')) return;
+  closeMenus();
+});
+document.addEventListener?.('keydown', event => { if (event.key === 'Escape') closeMenus(); });
+
+function toggleKeylessFilter() {
+  state.keyFilter = state.keyFilter === 'missing' ? 'all' : 'missing';
+  renderProviders();
+}
+
+// "no key — add it" on a card: open that card and put the cursor in its first field.
+function configureProvider(id) {
+  if (!state.open[id]) toggleOpen(id);
+  requestAnimationFrame(() => {
+    const card = document.querySelector(`[data-provider-card="${CSS.escape(id)}"]`);
+    const input = card && card.querySelector('.fields input');
+    if (input) input.focus();
+  });
+}
+
 function providerGroupsHtml(list) {
   const groups = state.providerGroups || [];
   // No grouping (an older response, or a harness driving one function): one flat list, exactly
@@ -3599,7 +3695,12 @@ function providerCard(p) {
     const lanes = p.unserved_modalities.join(', ');
     badges.push(`<span class="badge warn" title="This provider declares ${esc(lanes)}, but nothing on the gateway can run it. Models in that lane are never offered to Story Studio.">${esc(lanes)} unserved</span>`);
   }
-  badges.push(p.configured ? '<span class="badge ok">key set</span>' : '<span class="badge bad">no key</span>');
+  // Key state is a chip, and "no key" is the control that fixes it: it opens the card and puts
+  // the cursor in the first field. A badge that only reports is a dead end.
+  badges.push(p.configured
+    ? '<span class="badge ok">key set</span>'
+    : `<button type="button" class="badge bad chip-action" title="Add this provider's key"
+         onclick="configureProvider('${esc(p.id)}')">no key — add it</button>`);
   if (p.last_error) badges.push(`<span class="badge bad" title="${esc(p.last_error)}">discovery error</span>`);
   // **What the provider listed that discovery could not place at all.** A Studio
   // Hub gains lanes — and engines — on its own schedule, so a package nothing
@@ -3634,28 +3735,32 @@ function providerCard(p) {
     : providerModelList(p, models);
 
   return `
-  <div class="card ${enabled ? '' : 'off'}">
+  <div class="card ${enabled ? '' : 'off'}" data-provider-card="${esc(p.id)}">
     <div class="card-head">
       <div class="card-main">
         <div class="name">${esc(p.display_name)}</div>
-        <div class="cat">${esc(p.id)} · ${esc(p.kind)}${p.base_url ? ' · ' + esc(p.base_url) : ''}</div>
         <div class="card-badges">${badges.join(' ')}</div>
       </div>
       <div class="card-actions">
-        <!-- **On the row, not behind Configure.** Re-discovering one provider is the common
-             case — the owner's 2026-10-19 note was *"i only needed magpie refresh"* — and a
-             control you must expand a card to find is one the page appears not to have. The
-             message span travels with it, because toast() writes there and a button whose
+        <!-- One Configure per card; the rarer Re-discover lives in the card's overflow. The
+             message span stays on the row, because toast() writes there and a button whose
              only feedback is inside a collapsed body reports nothing. -->
         <label class="check"><input type="checkbox" role="switch" aria-label="${esc(p.display_name)} On/Off" ${enabled ? 'checked' : ''} onchange="toggleEnabled('${esc(p.id)}', this.checked, this)"> ${enabled ? 'On' : 'Off'}</label>
-        <button class="sm" onclick="refreshProvider('${esc(p.id)}', this)">Re-discover</button>
         <button class="sm" onclick="toggleOpen('${esc(p.id)}')">${open ? 'Hide' : 'Configure'}</button>
+        <span class="overflow">
+          <button class="sm" type="button" aria-label="More actions for ${esc(p.display_name)}"
+            aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(event, '${esc(p.id)}')">⋯</button>
+          <div class="more-menu" id="pmenu-${esc(p.id)}" hidden>
+            <button type="button" class="sm" onclick="refreshProvider('${esc(p.id)}', this)">Re-discover</button>
+          </div>
+        </span>
         <span class="msg" id="msg-${esc(p.id)}"></span>
       </div>
     </div>
     ${p.description ? `<div class="desc">${esc(p.description)}</div>` : ''}
     ${open ? `
     <div class="body">
+      <div class="hint card-details">${esc(p.id)} · ${esc(p.kind)}${p.base_url ? ' · ' + esc(p.base_url) : ''}</div>
       <div class="fields">${fields || '<div class="hint">This provider needs no credentials.</div>'}</div>
       <div class="actions">
         <button class="primary sm" onclick="saveCreds('${esc(p.id)}', this)">Save &amp; Discover Models</button>
@@ -3834,17 +3939,13 @@ async function removeModel(id, modelId) {
 // shows exactly one pane; the pane element ids are derived from the keys rather than
 // written out a second time.
 const PROVIDER_TABS = [
-  { key: 'list', title: 'Providers', hint: 'Keys, locations and the models each offers' },
-  // SFX sits beside Providers because it is the same kind of subject — a place a key is held —
-  // and the owner asked for it in its own tab for exactly that reason. A sound source is not in
-  // the Providers list itself: it offers no model, and a source that appeared there would fail
-  // the gateway's own "every provider has a working adapter" gate.
-  { key: 'sfx', title: 'SFX', hint: 'Where cue and bed audio comes from, and its key' },
-  { key: 'extension-workers', title: 'Browser workers', hint: 'Chrome extensions that make video for this Gateway' },
-  { key: 'capacity', title: 'Concurrency', hint: 'How much work runs at once, per lane' },
-  { key: 'queue', title: 'Queue', hint: 'What is waiting, and what is holding each lane' },
-  { key: 'measured', title: 'Measured', hint: 'What each model has actually carried' },
-  { key: 'pools', title: 'Pools', hint: 'One name for several models, tried in order' },
+  { key: 'list', title: 'Providers', icon: 'providers', hint: 'Keys, locations and the models each offers' },
+  // SFX sits with the providers because it is the same kind of subject — a place a key is held.
+  { key: 'sfx', title: 'SFX', icon: 'audio', hint: 'Where cue and bed audio comes from, and its key' },
+  { key: 'extension-workers', title: 'Workers', icon: 'person', hint: 'Chrome extensions that make video for this Gateway' },
+  // Capacity is the settings-and-numbers half: concurrency, the live queue, measured limits and
+  // pools are sections of one subject (how much runs, and what is holding it), not four pages.
+  { key: 'capacity', title: 'Capacity', icon: 'analytics', hint: 'How much runs at once, what is waiting, and the pools that route around limits' },
 ];
 let providerTab = 'list';
 
@@ -3857,7 +3958,7 @@ function renderProviderTabs() {
   if (!strip) return;
   strip.innerHTML = PROVIDER_TABS.map(t =>
     `<button data-tab="${t.key}" aria-pressed="${t.key === providerTab}" title="${esc(t.hint)}"
-             onclick="selectProviderTab('${t.key}')">${esc(t.title)}</button>`).join('');
+             onclick="selectProviderTab('${t.key}')">${t.icon ? navIcon(t.icon) : ''}${esc(t.title)}</button>`).join('');
 }
 
 // Show one pane and hide the rest. Every key is visited, so a pane left visible by a
@@ -3876,6 +3977,12 @@ function selectProviderTab(key) {
   // re-read behind a page nobody is looking at.
   if (key === 'sfx') loadSfxSources();
   if (key === 'extension-workers') loadExtensionWorkers();
+}
+
+function scrollToSection(id) {
+  // The pane must be displayed before its section can be scrolled to; requestAnimationFrame
+  // waits for the display change from the same click to land.
+  requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
 }
 
 // ---------------------------------------------------------------------------
@@ -4533,12 +4640,54 @@ function renderEvidence(title, r) {
       '</div>').join('');
 }
 
-// What is on file (accepted / dropped, and the rate-limit tiers each card shows). Silent on failure:
-// it annotates a list that loaded fine.
+// What is on file, in one sentence; the per-provider rows are a disclosure opened on demand.
+// The old default was "Price research on file: 139 accepted, 0 dropped" plus twelve lines of
+// research output — diagnostic, not an app. The import receipt above still reports accepted and
+// dropped, because that is the answer to the action the owner just took.
+function priceRowHtml(p) {
+  const when = p.researched_at ? String(p.researched_at).slice(0, 10) : null;
+  return `<div class="price-row"><strong>${esc(p.provider_id)}</strong> (${esc(p.status)}`
+    + (when ? `, researched ${esc(when)}` : '') + `): `
+    + `${p.accepted_prices} prices, ${p.accepted_rate_limits} rate-limit tiers`
+    + (p.dropped.length ? `<ul style="margin:4px 0 0 16px">` + p.dropped.map(d =>
+      `<li>${esc(d.kind)} ${esc([d.model_id, d.unit, d.tier].filter(Boolean).join(' '))}: ${esc(d.reason)}</li>`).join('') + '</ul>' : '')
+    + '</div>';
+}
+
+function renderPriceSummary() {
+  const summary = document.getElementById('price-summary');
+  if (!summary) return;
+  const providers = ((state.evidence || {}).providers) || [];
+  if (!providers.length) { summary.style.display = 'none'; summary.innerHTML = ''; return; }
+  const priced = providers.filter(p => (p.accepted_prices || 0) > 0);
+  const count = priced.length || providers.length;
+  const dates = providers.map(p => String(p.researched_at || '').slice(0, 10)).filter(Boolean).sort();
+  const when = dates.length
+    ? new Date(`${dates[dates.length - 1]}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+    : null;
+  summary.style.display = '';
+  summary.innerHTML = `Prices on file for ${count} provider${count === 1 ? '' : 's'}`
+    + `${when ? `, last researched ${esc(when)}` : ''}. `
+    + `<button type="button" class="sm" id="price-details-btn" aria-expanded="false" onclick="togglePriceDetails()">Show details</button>`
+    + `<div id="price-details" class="price-details" hidden>${providers.map(priceRowHtml).join('')}</div>`;
+}
+
+function togglePriceDetails() {
+  const details = document.getElementById('price-details');
+  const button = document.getElementById('price-details-btn');
+  if (!details) return;
+  details.hidden = !details.hidden;
+  if (button) {
+    button.textContent = details.hidden ? 'Show details' : 'Hide details';
+    button.setAttribute?.('aria-expanded', String(!details.hidden));
+  }
+}
+
+// Silent on failure: it annotates a list that loaded fine.
 async function loadEvidence() {
   try {
     state.evidence = await api('/pricing/evidence');
-    if ((state.evidence.providers || []).length) renderEvidence('Price research on file', state.evidence);
+    renderPriceSummary();
     renderProviders();
   } catch (e) { state.evidence = null; }
 }
@@ -4825,7 +4974,6 @@ async function removeCustomProvider(id) {
 }
 
 document.getElementById('filter').addEventListener('input', renderProviders);
-document.getElementById('key-filter').addEventListener('change', renderProviders);
 
 // The app shows Models, Providers and Create as separate sidebar pages, so each
 // one opens this console already on its own view. Without the hash they would all
@@ -4848,6 +4996,8 @@ function viewFromHash() {
   if (hash.startsWith('queue')) return 'providers';
   // The SFX pane is a section of the Providers page too — a key in the same place as the others.
   if (hash.startsWith('sfx')) return 'providers';
+  if (hash.startsWith('pools')) return 'providers';
+  if (hash.startsWith('measured')) return 'providers';
   if (hash.startsWith('create') || lane) return 'create';
   if (hash.startsWith('packs')) return 'packs';
   if (hash.startsWith('guests')) return 'guests';

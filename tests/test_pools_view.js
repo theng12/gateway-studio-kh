@@ -134,9 +134,11 @@ function api(calls, { pools = [pool()] } = {}) {
   };
 }
 
-test('the pane is a section of the Providers page', () => {
-  assert.match(source, /id="provider-pane-pools"/, 'the pools pane must exist');
-  assert.match(source, /key: 'pools'/, 'and a tab must point at it');
+test('the pools are a section of the Capacity tab', () => {
+  assert.match(source, /id="provider-capacity-pools"/, 'the pools section must exist');
+  assert.match(source, /key: 'capacity'/, 'and the Capacity tab must point at its pane');
+  assert.doesNotMatch(source, /key: 'pools'/,
+    'pools is a section now, not a seventh tab');
 });
 
 test('every member is drawn with its health, and a spent one says when it is back', async () => {

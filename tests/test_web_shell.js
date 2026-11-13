@@ -54,7 +54,8 @@ test('the sidebar carries the native groups, in the native order', () => {
   assert.deepEqual(labels(1), ['Audio', 'Subtitle', 'Image', 'Music', 'Video', 'Chat']);
   assert.deepEqual(views(2), ['jobs', 'voices', 'models', 'analytics', 'packs']);
   assert.deepEqual(views(3), ['providers', 'fleet', 'developer-tests']);
-  assert.deepEqual(views(4), ['whatsnew', 'guests', 'settings']);
+  assert.deepEqual(views(4), ['guests', 'settings'],
+    "What's New left the sidebar for the standard footer pill (one door, not two)");
 });
 
 test('every row opens a page this console has, or says where the page lives', () => {
@@ -67,7 +68,9 @@ test('every row opens a page this console has, or says where the page lives', ()
     assert.ok(hasPage || hasNote, `${row.view} is a dead link`);
     if (hasNote) assert.match(APP_ONLY[row.view], /in the Gateway app\./, `${row.view}'s note says where it is`);
   }
-  // The pages this console really carries are all reachable from the sidebar.
+  // The pages this console really carries are all reachable from the sidebar; What's New is the
+  // footer pill's door instead.
+  assert.match(source, /class="nav-pill" onclick="openNav\('whatsnew'\)"/);
   for (const view of ['fleet', 'jobs', 'models', 'providers', 'create', 'packs', 'guests']) {
     assert.ok(rows.some(row => row.view === view), `${view} has no sidebar row`);
   }
@@ -124,7 +127,7 @@ test('the version line names the Mac, and the name is text, never markup', async
   // A Computer Name is system text, not trusted markup: it is written with textContent.
   const {nodes, done} = runStatus(statusPayload({computer_name: '<b>not a tag</b>'}));
   await done;
-  assert.equal(nodes['app-version'].textContent, 'Version 0.2.236 · on <b>not a tag</b>');
+  assert.equal(nodes['app-version'].textContent, '0.2.236', 'the pill carries the version; the Mac name has its own line');
   assert.equal(nodes['app-version'].innerHTML, '', 'the label is text, so no markup is parsed');
   assert.equal(nodes['nav-machine'].textContent, 'on <b>not a tag</b>');
   assert.equal(nodes['nav-machine'].hidden, false);
@@ -133,7 +136,7 @@ test('the version line names the Mac, and the name is text, never markup', async
 test('an unreadable computer name leaves the version line as it was', async () => {
   const {nodes, done} = runStatus(statusPayload({computer_name: null}));
   await done;
-  assert.equal(nodes['app-version'].textContent, 'Version 0.2.236');
+  assert.equal(nodes['app-version'].textContent, '0.2.236');
   assert.equal(nodes['nav-machine'].textContent, '');
   assert.equal(nodes['nav-machine'].hidden, true, 'the sidebar line hides rather than guessing');
 });

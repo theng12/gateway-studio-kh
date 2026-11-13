@@ -214,8 +214,8 @@ test('the queue is a section of the Providers page and is loaded with it', () =>
   // longer in that column and the scroll would land on a hidden element. What must still hold is
   // the reason the assertion existed: **the link moves the operator to the queue, and it does so
   // after the view is shown**, not while it is still hidden.
-  assert.match(source, /if \(\(location\.hash \|\| ''\)\.startsWith\('#queue'\)\) selectProviderTab\('queue'\);/,
-    'a #queue link must open the queue tab, not leave the operator on whichever tab was last used');
+  assert.match(source, /if \(\(location\.hash \|\| ''\)\.startsWith\('#queue'\)\) \{ selectProviderTab\('capacity'\); scrollToSection\('provider-capacity-queue'\); \}/,
+    'a #queue link must open the Capacity tab and scroll to the queue, not leave the operator on the list');
   const setView = source.slice(source.indexOf('function setView(view)'),
                                source.indexOf('function renderProviders('));
   assert.doesNotMatch(setView, /scrollIntoView/,

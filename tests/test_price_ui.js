@@ -102,20 +102,21 @@ test('the app can open the import file picker and pricing links', () => {
 function providersPage() {
   const nodes = new Map();
   const node = id => {
-    if (!nodes.has(id)) nodes.set(id, { id, style: {}, innerHTML: '', value: '' });
+    if (!nodes.has(id)) nodes.set(id, { id, style: {}, innerHTML: '', value: '', scrollIntoView() {} });
     return nodes.get(id);
   };
   for (const m of source.matchAll(/<div class="pane" id="(provider-pane-[a-z]+)"([^>]*)>/g)) {
     node(m[1]).style.display = m[2].includes('display:none') ? 'none' : '';
   }
   const ctx = vm.createContext({
-    document: { getElementById: node }, esc, state: {}, location: { hash: '' },
+    document: { getElementById: node }, esc, navIcon: () => '', state: {}, location: { hash: '' },
+    requestAnimationFrame: fn => fn(),
     loadModels() {}, loadFreshness() {}, loadProviders() {}, loadConcurrency() {}, loadMeasured() {},
     loadQueue() {}, loadPools() {}, loadContentShelf() {}, loadCreate() {},
   });
   vm.runInContext(between('const PROVIDER_TABS', 'async function loadPools('), ctx);
   vm.runInContext(between('function setView(view)', 'const SHELF_KIND_LABELS'), ctx);
-  const visible = () => ['list', 'capacity', 'queue', 'measured', 'pools']
+  const visible = () => ['list', 'sfx', 'extension-workers', 'capacity']
     .filter(k => node(`provider-pane-${k}`).style.display !== 'none');
   return { ctx, node, visible };
 }
@@ -143,5 +144,5 @@ test('a sub-tab the owner chose this session is remembered; nothing else is', ()
   assert.deepEqual(visible(), ['list']);
   ctx.location.hash = '#queue';
   ctx.setView('providers');
-  assert.deepEqual(visible(), ['queue'], 'the #queue link still opens the queue');
+  assert.deepEqual(visible(), ['capacity'], 'the #queue link opens the Capacity tab that carries it');
 });

@@ -152,6 +152,20 @@ def seed(support: Path, upstream_port: int) -> dict:
         story("Studio Mac 3", "1.4.253", 1.5, 3, 12),
         story("Studio Mac 4", "1.4.245", 2, 0, 0),
         story("Studio Mac 5", "1.4.253", 95, 0, 0, held=True)])))
+    # Price research on file: three providers, one file, two researched dates — enough for the
+    # Providers summary sentence and its on-demand rows to draw as the owner's real data does.
+    (data / "price-evidence.json").write_text(json.dumps({"schema": "gateway-kh.price-evidence.v1", "providers": {
+        "openai-direct": {"status": "found", "researched_at": "2026-10-09", "notes": None,
+                          "prices": [{"model_id": "gpt-5", "modality": "chat", "unit": "input_per_1m_tokens", "amount": 1.25}] * 3,
+                          "rate_limits": [{"tier": "Tier 1", "rpm": 500, "tpm": 200000}],
+                          "other": [], "dropped": []},
+        "google-ai": {"status": "partial", "researched_at": "2026-10-09", "notes": None,
+                      "prices": [{"model_id": "gemini-2.5-flash", "modality": "chat", "unit": "input_per_1m_tokens", "amount": 0.3}] * 2,
+                      "rate_limits": [], "other": [], "dropped": []},
+        "anthropic-direct": {"status": "found", "researched_at": "2026-10-04", "notes": None,
+                             "prices": [{"model_id": "claude-sonnet", "modality": "chat", "unit": "output_per_1m_tokens", "amount": 15}] * 4,
+                             "rate_limits": [], "other": [], "dropped": []},
+    }}) + "\n", encoding="utf-8")
     (support / ".env").write_text("GATEWAY_API_KEY=render-fixture-key\n")
     (support / ".env").chmod(0o600)
     # Backups go to temp stand-ins for iCloud, ~/Developer/_backups and a KH-STUDIO drive.
