@@ -732,7 +732,7 @@
       <div class="body" id="settings-facts"></div>
       <div class="body" style="padding-top:12px">
       <div class="row" style="gap:8px;flex-wrap:wrap">
-        <button class="primary sm" type="button" id="settings-copy" onclick="copyGatewayAddress(this)">Copy this gateway's address</button>
+        <button class="primary sm" type="button" id="settings-copy" onclick="copyGatewayAddress(this)">Copy this Gateway's address</button>
         <button class="sm" type="button" onclick="openNav('whatsnew')">Release notes</button>
       </div>
       </div>
@@ -810,7 +810,7 @@
       <!-- The native page's bulk bar, for the two settings it can change on every Mac at once. -->
       <div class="row" id="fleet-machine-bulk" style="position:relative">
         <span class="hint" style="margin:0">Fleet-wide changes:</span>
-        <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
+        <button type="button" class="sm" id="fleet-bulk-btn" aria-haspopup="true" aria-expanded="false"
           onclick="toggleCardMenu(this, 'fleet-bulk')">Bulk actions…</button>
         <div class="more-menu" id="pmenu-fleet-bulk" hidden>
           <button type="button" class="sm" onclick="fleetEnableAutostartEverywhere(this)">Enable Auto-Start on all Macs</button>
@@ -1564,9 +1564,20 @@ function khDialog({title = '', body = '', confirmLabel = 'OK', cancelLabel = nul
   khDialogQueue = shown.then(() => {}, () => {});
   return shown;
 }
+// The button says what happens ("Delete", "Clear"), not the vague "Continue": the question's
+// own opening verb is the action. A question with no verb keeps Continue.
+const QUESTION_VERBS = ['Delete', 'Remove', 'Clear', 'Retire', 'Revoke', 'Reset', 'Stop',
+  'Install', 'Rename', 'Create', 'Enable', 'Disable', 'Restart', 'Turn on'];
+function questionVerb(body) {
+  const text = String(body || '').trim();
+  for (const verb of QUESTION_VERBS) {
+    if (new RegExp('^' + verb.replace(/ /g, '\\s+'), 'i').test(text)) return verb;
+  }
+  return null;
+}
 const uiConfirm = (body, options = {}) => khDialog({
   title: options.title || '', body,
-  confirmLabel: options.confirmLabel || 'Continue',
+  confirmLabel: options.confirmLabel || questionVerb(body) || 'Continue',
   cancelLabel: options.cancelLabel || 'Cancel',
   danger: !!options.danger,
 });
@@ -2005,7 +2016,7 @@ async function copyGatewayAddress(button) {
   } catch (e) {
     button.textContent = 'Copy failed — select the address above';
   }
-  setTimeout(() => { button.textContent = "Copy this gateway's address"; }, 2000);
+  setTimeout(() => { button.textContent = "Copy this Gateway's address"; }, 2000);
 }
 
 async function loadWhatsNew() {
@@ -3963,8 +3974,12 @@ function toggleCardMenu(button, id) {
   button.setAttribute?.('aria-expanded', String(open));
 }
 document.addEventListener?.('click', event => {
+  // Every control whose own click opens a .more-menu must be exempt here, or the document
+  // handler closes the menu again in the same click. The bulk bar's button is not inside an
+  // .overflow wrapper, so it is named.
   if (event.target.closest('.more-menu') || event.target.closest('#more-btn')
-      || event.target.closest('#fleet-filters-btn') || event.target.closest('.overflow')) return;
+      || event.target.closest('#fleet-filters-btn') || event.target.closest('#fleet-bulk-btn')
+      || event.target.closest('.overflow')) return;
   closeMenus();
 });
 document.addEventListener?.('keydown', event => { if (event.key === 'Escape') closeMenus(); });
@@ -4519,7 +4534,7 @@ async function loadExtensionWorkers() {
       const accountsHead = document.getElementById('ew-accounts-head');
       if (accountsHead) accountsHead.hidden = true;
       const offStatus = document.getElementById('ew-status');
-      if (offStatus) offStatus.innerHTML = '<span class="dot warn"></span>Browser workers are off — set GATEWAY_EXTENSION_WORKERS=1 in the gateway’s .env, then restart it from the app.';
+      if (offStatus) offStatus.innerHTML = '<span class="dot warn"></span>Browser workers are off — set GATEWAY_EXTENSION_WORKERS=1 in the Gateway’s .env, then restart it from the app.';
       root.innerHTML = '<div class="empty">Nothing to list while browser workers are off — the line above says how to turn them on.</div>';
       return;
     }
@@ -4556,7 +4571,7 @@ async function loadExtensionWorkers() {
     if (accounts) accounts.innerHTML = '';
     const status = document.getElementById('ew-status');
     if (status) status.innerHTML = e.status === 404
-      ? '<span class="dot warn"></span>Browser workers are off — set GATEWAY_EXTENSION_WORKERS=1 in the gateway’s .env, then restart it from the app.'
+      ? '<span class="dot warn"></span>Browser workers are off — set GATEWAY_EXTENSION_WORKERS=1 in the Gateway’s .env, then restart it from the app.'
       : `<span class="dot bad"></span>Could not read browser workers — ${esc(e.message)}`;
     const accountsHead = document.getElementById('ew-accounts-head');
     if (accountsHead) accountsHead.hidden = true;
@@ -9183,9 +9198,9 @@ function fleetQueueLine(d) {
   // `background` is an object ({waiting, running, waiting_by_modality}); interpolating it printed
   // "[object Object]" on the Jobs tab. Earlier payloads sent a number, so both are read.
   const bg = q.background;
-  const background = bg
-    ? ` (${typeof bg === 'number' ? bg : (bg.waiting ?? 0) + (bg.running ?? 0)} background)`
-    : '';
+  // A measured zero is said as zero, the same whether the payload is an object or an old number.
+  const background = bg == null ? ''
+    : ` (${typeof bg === 'number' ? bg : (bg.waiting ?? 0) + (bg.running ?? 0)} background)`;
   return `This Gateway's own queue: ${q.waiting ?? 0} waiting, ${q.running ?? 0} running${background}.`;
 }
 
@@ -9428,9 +9443,9 @@ function toggleFleetFilters() {
 }
 
 // The empty states carry their own way out: a filter that matched nothing is never a dead end.
+// It clears what hides rows (filter, location, search) and leaves the chosen order alone.
 function fleetClearFilters() {
   fleetFilter = 'all';
-  fleetSort = FLEET_SORTS[0][0];
   fleetLocation = 'all';
   fleetQuery = '';
   const pick = document.getElementById('fleet-filter');
@@ -9853,7 +9868,7 @@ function fleetSummaryHtml(s, issues, q, d, problematic) {
     // Counted from the rows below, so the figure and the list cannot disagree. **Flapping is the
     // history verdict** (the owner's "problematic" threshold), not every down machine — naming it
     // precisely keeps it from contradicting the issue count beside it. Press again to show all.
-    `<button type="button" class="badge ${problematic ? 'warn' : ''}" title="Rows with the owner's 24-hour drop threshold — press again to show every machine" onclick="fleetOnlyProblematic()">${problematic} flapping</button>`,
+    `<button type="button" class="badge ${problematic ? 'warn' : ''}" title="Rows at or above the drop threshold — press again to show every machine" onclick="fleetOnlyProblematic()">${problematic} flapping</button>`,
     `<span>Updated ${ago(d.generated_at)}</span>`,
     // "3 Macs on slow Ethernet": counted by the Gateway from the rows below, and named where it can.
     (s.connections && s.connections.slow_ethernet > 0)

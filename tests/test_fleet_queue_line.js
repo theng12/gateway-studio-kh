@@ -32,8 +32,9 @@ test('an object background is counted, never printed', () => {
   assert.doesNotMatch(text, /\[object/);
 });
 
-test('a numeric background from an older payload still reads', () => {
+test('a numeric background from an older payload still reads, including zero', () => {
   assert.match(line({ gateway_queue: { waiting: 0, running: 0, background: 5 } }), /\(5 background\)/);
+  assert.match(line({ gateway_queue: { waiting: 0, running: 0, background: 0 } }), /\(0 background\)/);
 });
 
 test('no background figure drops the clause rather than saying zero', () => {

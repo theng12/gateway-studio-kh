@@ -84,7 +84,7 @@ test('a confirm answers true on the button and false on Cancel', async () => {
   await tick();
   const first = dialogs(body)[0];
   assert.equal(first.children[0].textContent, 'Delete this pool?');
-  button(first, 'Continue').click();
+  button(first, 'Delete').click();
   assert.equal(await yes, true);
 
   const no = d.uiConfirm('Delete this pool?');
@@ -123,9 +123,24 @@ test('a dialog is named by its question and gives focus back to the opener', asy
   const question = dialog.children[0];
   assert.equal(dialog.attrs['aria-labelledby'], question.id,
     'the accessible name must be the question, not the Continue button');
-  button(dialog, 'Continue').click();
+  button(dialog, 'Delete').click();
   assert.equal(await pending, true);
   assert.equal(document.activeElement, opener, 'focus returns to the opener');
+});
+
+test('the button names the action when the question starts with one', async () => {
+  const { body, d } = harness();
+  const clearing = d.uiConfirm('Clear the stored key for this provider?');
+  await tick();
+  assert.ok(button(dialogs(body)[0], 'Clear'), 'a Clear question must offer Clear');
+  button(dialogs(body)[0], 'Clear').click();
+  assert.equal(await clearing, true);
+
+  const vague = d.uiConfirm('Is this ready to send?');
+  await tick();
+  assert.ok(button(dialogs(body)[1], 'Continue'), 'a question with no verb keeps Continue');
+  button(dialogs(body)[1], 'Continue').click();
+  assert.equal(await vague, true);
 });
 
 test('a prompt answers null on Cancel and the text on Save', async () => {
