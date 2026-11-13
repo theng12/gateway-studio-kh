@@ -434,8 +434,17 @@
     white-space: nowrap; }
   .fleet-card-actions { display: flex; gap: var(--s6); justify-content: flex-end; }
   .fleet-pane .ftable { min-width: 1020px; }
+  /* The row's actions stay at the right edge while the wide table scrolls under them,
+     so a button is never off-screen behind a horizontal scroll. */
+  .fleet-pane .ftable th:last-child, .fleet-pane .ftable td[data-label="Actions"] {
+    position: sticky; right: 0; background: var(--panel); z-index: 2;
+  }
   .ftable td[data-label="Actions"], .ftable td[data-label="Batch"] { white-space: nowrap; }
-  .ftable td[data-label="Actions"] .row { flex-wrap: nowrap; }
+  .ftable td[data-label="Actions"] > .row { flex-wrap: nowrap; }
+  .ftable td[data-label="Likely cause"], .ftable td[data-label="Status"] { max-width: 300px; }
+  .ftable td[data-label="Status"] .ft-sub, .ftable td[data-label="Likely cause"] .ft-sub {
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
   .ft-more > summary { padding: 2px 6px; }
 
   /* The 7-day strip: one bar a day, oldest on the left, filled by how much of that day this Mac or
@@ -3778,6 +3787,11 @@ function toggleMoreMenu() {
   menu.hidden = !open;
   if (button) button.setAttribute('aria-expanded', String(open));
 }
+function toggleCardMenuFor(button) {
+  // The menu's id travels in a data attribute: a Mac name with a quote cannot break the handler.
+  toggleCardMenu({ stopPropagation() {} }, button.dataset.menu || '');
+}
+
 function toggleCardMenu(event, id) {
   event.stopPropagation();
   const menu = document.getElementById(`pmenu-${id}`);
@@ -7278,17 +7292,20 @@ function fleetLocationRow(L) {
       style="${status.bad ? 'color:var(--warn-text)' : 'color:var(--dim)'}">
       <div><div>${esc(status.main || '—')}</div>
       ${status.sub ? `<div class="ft-sub">${esc(status.sub)}</div>` : ''}</div></td>
-    <td data-label="Actions"><div class="row">
+    <td data-label="Actions" style="position:relative"><div class="row">
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'${L.paused_at != null ? 'resume' : 'pause'}')">${L.paused_at != null ? 'Resume' : 'Pause'}</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationCredentials(this)">Credentials…</button>
-      <details class="ft-more"><summary>More…</summary><div class="row">
+      <span class="overflow">
+      <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
+        data-menu="loc-more-${esc(L.id)}" onclick="toggleCardMenuFor(this)">More…</button>
+      <div class="more-menu" id="pmenu-loc-more-${esc(L.id)}" hidden>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAddress(this)">Address…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationNetwork(this)">Network…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationRefresh(this)">Refresh models</button>
       ${L.id === 'local' ? '' : `<button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'remove')">Remove</button>`}
-      </div></details>
+      </div></span>
     </div></td>
   </tr>`;
 }
@@ -7795,8 +7812,12 @@ function fleetMachineActionCell(m) {
       && m.reachable === true && m.startup.stale !== true) {
     more.push(`<button type="button"${ids} onclick="fleetMacTrashOn(this, this.dataset.lid, this.dataset.mid)">Turn on macOS Trash</button>`);
   }
-  return `<td data-label="Actions"><div class="row">${buttons.join('')}
-    <details class="ft-more"><summary>More…</summary><div class="row">${more.join('')}</div></details></div></td>`;
+  return `<td data-label="Actions" style="position:relative"><div class="row">${buttons.join('')}
+    <span class="overflow">
+      <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
+        data-menu="mac-more-${esc(m.location_id)}-${esc(m.machine)}" onclick="toggleCardMenuFor(this)">More…</button>
+      <div class="more-menu" id="pmenu-mac-more-${esc(m.location_id)}-${esc(m.machine)}" hidden>${more.join('')}</div>
+    </span></div></td>`;
 }
 
 // ---- Lite Mode (`workstation`) ---------------------------------------------
@@ -9006,7 +9027,7 @@ function renderFleetJobs(d) {
             <td class="ft-lead" data-label="Location"><div class="ft-name">${esc(job.location || job.location_id || '—')}</div></td>
             <td data-label="Type">${esc(job.modality ? (job.modality === 'tts' ? 'TTS' : job.modality) : '—')}</td>
             <td data-label="Model">${esc(job.label || job.model || '—')}</td>
-            <td data-label="Batch" title="${esc(job.batch_id || '')}">${esc(job.label || job.modality || 'batch')}</td>
+            <td data-label="Batch" title="${esc(job.label || '')}">${esc(job.batch_id || '—')}</td>
             <td data-label="Progress">${esc(fleetJobProgress(job))}
               ${job.no_progress_s > 0 ? `<div class="ft-sub">no progress for ${esc(fleetDuration(job.no_progress_s))}</div>` : ''}</td>
             <td class="nowrap" data-label="State">${fleetBadge(state.text, state.health)}</td>
