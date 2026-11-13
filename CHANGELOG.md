@@ -16,7 +16,8 @@ every feature title, and they are left as they were written.
 - **One search field, one Add, and a More menu.** "1 without a key" is a chip you can click to filter; Re-discover all and Import Price Research moved behind More; each card's Re-discover is in its ⋯ menu.
 - **Price research is one sentence** — prices on file and when they were last researched — with the per-provider rows behind Show details.
 - **Cards show what matters at a glance.** The id, kind and address are behind Configure, "no key" is a button that opens the key field, and one status line says what is down, why, and opens Fleet.
-- **Version and What's New moved to the bottom-left pill**, where the app's own footer puts them.
+- **SFX, Workers and Capacity follow the same frame** — one status line, one primary action, state chips that say what is wrong, and the long provider table behind a "Show all providers" summary.
+- **Version and What's New moved to the bottom-left pill**, next to the update control (whose hover text says updates are installed by Studio Launcher KH) and a Support this app row.
 
 ---
 
