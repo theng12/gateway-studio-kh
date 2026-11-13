@@ -418,7 +418,9 @@
   /* Fleet: one card per location, a grid of Mac tiles inside it that folds to one
      column on a phone, so nothing on the page scrolls sideways. */
   .fleet-macs {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr));
+    /* auto-fit, not auto-fill: empty tracks must collapse, or one site card sits in a 290 px
+       column with three blank grey tracks filling the rest of a 1440 row. */
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr));
     gap: 1px; background: var(--line); border-top: 1px solid var(--line);
   }
   .fleet-mac { background: var(--panel); padding: var(--s8) var(--s16); min-width: 0; }
@@ -679,7 +681,7 @@
          or install the Launcher, so none is drawn here rather than a control that cannot act. -->
     <div class="nav-pill-row">
       <button type="button" class="nav-pill" onclick="openNav('whatsnew')" title="What's New — release notes"
-        ><span class="nav-pill-name" title="Gateway Studio KH">Gateway Studio</span><span id="app-version">unknown</span></button>
+        ><span class="nav-pill-name" title="Gateway Studio KH">Gateway</span><span id="app-version">unknown</span></button>
       <!-- Icon-only, and it says where updates live: a browser cannot install or launch the
            Launcher, so this explains rather than pretending to check. -->
       <button type="button" class="nav-icon-btn" id="nav-update" aria-label="Update information"
@@ -809,7 +811,7 @@
       <div class="row" id="fleet-machine-bulk" style="position:relative">
         <span class="hint" style="margin:0">Fleet-wide changes:</span>
         <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
-          onclick="toggleCardMenu(event, 'fleet-bulk')">Bulk actions…</button>
+          onclick="toggleCardMenu(this, 'fleet-bulk')">Bulk actions…</button>
         <div class="more-menu" id="pmenu-fleet-bulk" hidden>
           <button type="button" class="sm" onclick="fleetEnableAutostartEverywhere(this)">Enable Auto-Start on all Macs</button>
           <button type="button" class="sm" onclick="fleetEnableMacTrashEverywhere(this)">Turn on macOS Trash on all Macs that are off</button>
@@ -1245,7 +1247,7 @@
         <button class="sm" type="button" onclick="loadExtensionWorkers()">Refresh</button>
         <span class="overflow">
           <button class="sm" type="button" id="ew-more-btn" aria-label="More worker actions"
-            aria-haspopup="true" aria-expanded="false" style="display:none" onclick="toggleCardMenu(event, 'workers-more')">⋯</button>
+            aria-haspopup="true" aria-expanded="false" style="display:none" onclick="toggleCardMenu(this, 'workers-more')">⋯</button>
           <div class="more-menu" id="pmenu-workers-more" hidden>
             <button type="button" class="sm" onclick="toggleEwManager()">Mint a manager token…</button>
           </div>
@@ -1888,7 +1890,10 @@ function setView(view) {
     const entry = typeof navEntryFor === 'function' ? navEntryFor(view) : null;
     pageLabel = entry ? entry.label : (APP_ONLY_LABELS[view] || view);
     if (title) title.textContent = pageLabel;
-    if (note) note.textContent = APP_ONLY[view];
+    if (note) {
+      note.innerHTML = esc(APP_ONLY[view]) + (view === 'overview'
+        ? ' <button class="sm" type="button" onclick="openNav(\'fleet\')">Open Fleet</button>' : '');
+    }
     view = 'missing';
   }
   state.view = view;
@@ -4092,7 +4097,7 @@ function providerCard(p) {
         <button class="sm" onclick="toggleOpen('${esc(p.id)}')">${open ? 'Hide' : 'Configure'}</button>
         <span class="overflow">
           <button class="sm" type="button" aria-label="More actions for ${esc(p.display_name)}"
-            aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(event, '${esc(p.id)}')">⋯</button>
+            aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(this, '${esc(p.id)}')">⋯</button>
           <div class="more-menu" id="pmenu-${esc(p.id)}" hidden>
             <button type="button" class="sm" onclick="refreshProvider('${esc(p.id)}', this)">Re-discover</button>
           </div>
@@ -4230,6 +4235,12 @@ async function clearCreds(id, btn) {
   btn.disabled = true;
   try { await api(`/providers/${encodeURIComponent(id)}/credentials`, { method: 'DELETE' }); await loadProviders(); await loadStatus(); }
   catch (e) { await uiAlert(e.message); } finally { btn.disabled = false; }
+  // The card is redrawn after the delete, so the button that asked is detached; a keyboard
+  // user would be dropped on the page body. Focus the replacement card's Configure control.
+  if (!btn.isConnected) {
+    const card = document.querySelector(`[data-provider-card="${CSS.escape(id)}"]`);
+    card?.querySelector('.card-actions button')?.focus();
+  }
 }
 
 async function setModel(id, modelId, enabled) {
@@ -4425,7 +4436,7 @@ function ewCard(w, index = 0) {
         <button class="sm" type="button" aria-expanded="false" onclick="toggleEwDetail(${index}, this)">Details</button>
         <span class="overflow">
           <button class="sm" type="button" aria-label="More actions for ${esc(w.worker_id)}"
-            aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(event, 'worker-${esc(w.worker_id)}')">⋯</button>
+            aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(this, 'worker-${esc(w.worker_id)}')">⋯</button>
           <div class="more-menu" id="pmenu-worker-${esc(w.worker_id)}" hidden>
             ${scope}
             ${rotate || ''}
@@ -5220,7 +5231,7 @@ function sfxCard(source) {
       <div class="card-actions">
         <span class="overflow">
           <button class="sm" type="button" aria-label="More actions for ${esc(source.display_name)}"
-            aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(event, 'sfx-${esc(source.id)}')">⋯</button>
+            aria-haspopup="true" aria-expanded="false" onclick="toggleCardMenu(this, 'sfx-${esc(source.id)}')">⋯</button>
           <div class="more-menu" id="pmenu-sfx-${esc(source.id)}" hidden>
             <button type="button" class="sm" onclick="clearSfxCreds('${esc(source.id)}', this)">Clear key</button>
           </div>
@@ -9169,7 +9180,12 @@ function renderFleetModels(d) {
 function fleetQueueLine(d) {
   const q = d.gateway_queue || null;
   if (!q) return '';
-  const background = q.background ? ` (${q.background} background)` : '';
+  // `background` is an object ({waiting, running, waiting_by_modality}); interpolating it printed
+  // "[object Object]" on the Jobs tab. Earlier payloads sent a number, so both are read.
+  const bg = q.background;
+  const background = bg
+    ? ` (${typeof bg === 'number' ? bg : (bg.waiting ?? 0) + (bg.running ?? 0)} background)`
+    : '';
   return `This Gateway's own queue: ${q.waiting ?? 0} waiting, ${q.running ?? 0} running${background}.`;
 }
 
