@@ -14,6 +14,7 @@ every feature title, and they are left as they were written.
 
 - **Fleet's Machines table keeps its name column narrow at 768.** The one-line details under each Mac's name now wrap inside the pinned column, so more of the row's state and data is visible beside it while the table scrolls.
 - **Free browser-worker work no longer waits for the spending switch.** A new account can take its first zero-priced job immediately; priced work still needs the account switched on. Worker status now carries one shared connection state for the Relay row and the extension panel.
+- **Login Items shows "Gateway Studio KH".** macOS listed the app as "gateway-kh"; it now shows the name you know, while the bundle, data folder and updates stay where they were, so nothing needs re-pairing.
 
 ---
 
