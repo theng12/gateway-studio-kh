@@ -617,6 +617,62 @@ def _manager(authorization: str | None) -> dict | JSONResponse:
     return identity
 
 
+def _connection_state(*, has_live_token: bool, state: dict | None, received_at: float | None,
+                      control: dict | None, active: object, held: object, durable_busy: object,
+                      now: float) -> str:
+    """The one shared connection state (owner/G1): first match wins, in this order.
+
+    The Relay row and the extension panel display this word; neither re-derives it. `state` is the
+    last account observation; `tab`/`project` are optional facts a newer Relay sends (an older one
+    leaves them None and the state falls through to the remaining checks).
+    """
+    if not has_live_token:
+        return "not_paired"
+    if state is None or received_at is None:
+        return "not_connected"
+    age = online_seconds()
+    if not (0 <= now - float(state.get("observed_at") or 0) < age
+            and 0 <= now - float(received_at) < age):
+        return "offline"
+    tab = state.get("tab")
+    if state.get("connection") != "connected":
+        return "no_flow_tab"
+    if tab == "home" and not state.get("project"):
+        return "no_project"
+    if ((control or {}).get("dispatchEnabled") is not True
+            or (control or {}).get("closeRequested") is True
+            or state.get("paused") is True):
+        return "paused"
+    if held or durable_busy or state.get("attention") is True:
+        return "needs_review"
+    eligible = state.get("next_eligible_at")
+    if eligible is not None and float(eligible) > now:
+        return "waiting_turn"
+    if active:
+        return "working"
+    return "connected"
+
+
+def connection_state_for(worker: dict, *, now: float | None = None) -> str:
+    """The state for one worker token, used by the health and telemetry replies."""
+    from . import runtime
+
+    now = time.time() if now is None else now
+    with admin_session._lock, broker._lock:
+        rows = _rows()
+        entry = broker.workers.get(worker["worker_id"], {})
+        current = _current_worker(worker, rows)
+        state = entry.get("state") if current else None
+        received = entry.get("state_received_at") if current else None
+        control = worker_control(worker)
+        mine = [j for j in broker._jobs.values() if j.owner == worker["worker_id"]]
+        active = next((j.job_id for j in mine if j.state == "claimed"), None)
+        held = any(j.state == "held" or (j.state == "failed" and j.ambiguous) for j in mine)
+        durable_busy = runtime.store.extension_account_worker_busy(worker["worker_id"])
+    return _connection_state(has_live_token=True, state=state, received_at=received, control=control,
+                             active=active, held=held, durable_busy=durable_busy, now=now)
+
+
 def manager_view(worker_ids: list[str]) -> dict:
     from . import runtime
 
@@ -655,6 +711,10 @@ def manager_view(worker_ids: list[str]) -> dict:
             observed_account = entry.get("account") if current_entry else None
             workers.append({"worker_id": worker_id, "kind": row.get("kind") if row else None,
                             "has_live_token": row is not None, "control": control,
+                            "connectionState": _connection_state(
+                                has_live_token=row is not None, state=state, received_at=received,
+                                control=control, active=active, held=bool(held),
+                                durable_busy=durable_busy, now=now),
                             "state": state, "receivedAt": received, "fresh": fresh,
                             "current_job": active, "held_jobs": held, "durableBusy": durable_busy,
                             "safeToClose": bool(fresh and control["credentialGeneration"]
@@ -729,7 +789,8 @@ async def workers_telemetry(request: Request, authorization: str | None = Header
         return _refusal(413, "ACCOUNT_OBSERVATION_INVALID", str(exc))
     except PermissionError:
         return _refusal(401, "WORKER_TOKEN_REFUSED", "this worker token was revoked")
-    return {"ok": True, "receivedAt": time.time(), "control": worker_control(worker)}
+    return {"ok": True, "receivedAt": time.time(), "control": worker_control(worker),
+            "connectionState": connection_state_for(worker)}
 
 
 @router.get("/api/workers/health")
@@ -744,7 +805,8 @@ def workers_health(authorization: str | None = Header(default=None)):
             "onlineSeconds": age, "audioInventoryMaxAgeSeconds": age,
             "audioInventoryMaxBytes": audio_inventory_max_bytes(),
             "accountSchema": 1, "accountMaxAgeSeconds": age,
-            "claimMaxBytes": audio_inventory_max_bytes(), "control": worker_control(worker)}
+            "claimMaxBytes": audio_inventory_max_bytes(), "control": worker_control(worker),
+            "connectionState": connection_state_for(worker)}
 
 
 @router.post("/api/workers/claim")

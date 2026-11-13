@@ -13,6 +13,7 @@ every feature title, and they are left as they were written.
 ## 0.2.256 — 2026-11-13
 
 - **Fleet's Machines table keeps its name column narrow at 768.** The one-line details under each Mac's name now wrap inside the pinned column, so more of the row's state and data is visible beside it while the table scrolls.
+- **Free browser-worker work no longer waits for the spending switch.** A new account can take its first zero-priced job immediately; priced work still needs the account switched on. Worker status now carries one shared connection state for the Relay row and the extension panel.
 
 ---
 

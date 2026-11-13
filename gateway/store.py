@@ -1638,7 +1638,10 @@ class JobStore:
                 if account["profile_enabled"] != 1:
                     raise ExtensionAccountRefused("ACCOUNT_DISABLED",
                                                   "the worker's local profile switch is off")
-                if account["gateway_enabled"] != 1:
+                # **A free quote is not spending** (owner rule: "if it's free, just run"): the
+                # spending switch gates priced work only, so a new account can take its first
+                # free job before an account row exists to switch it on.
+                if quote["value"] > 0 and account["gateway_enabled"] != 1:
                     raise ExtensionAccountRefused("ACCOUNT_GATEWAY_DISABLED",
                                                   "Gateway dispatch is off for this account")
                 if account["activity"] not in ACCOUNT_ACTIVITY_ELIGIBLE:

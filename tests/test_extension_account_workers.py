@@ -498,3 +498,76 @@ class AccountWorkersTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreeAndConnectionStateTests(AccountWorkersTests):
+    """G1/G2/G3: the free path, the one shared connection state, and URL-derived accounts."""
+
+    def ready_but_spending_off(self, account=None):
+        """A fresh account: dispatch on for the worker, but the Gateway spending switch still 0."""
+        account = account or observed_account()
+        self.assertEqual(self.report(account).status_code, 200)
+        control = self.control()
+        self.assertEqual(control.status_code, 200)
+        revision = control.json()["workers"][0]["control"]["revision"]
+        self.assertEqual(self.report({**account, "observedAt": iso(), "controlRevision": revision}).status_code, 200)
+
+    # -- G2 ----------------------------------------------------------------
+    def test_a_free_quote_skips_the_spending_switch(self):
+        """A new account has gateway_enabled 0; a 0-priced quote must still claim ("if it's free, just run")."""
+        self.ready_but_spending_off()
+        self.assertFalse(self.status()["accounts"][0].get("gateway_enabled", True),
+                         "the fixture must start with the spending switch off")
+        job = ew.broker.offer("video", {"prompt": "free scene"})
+        answer = self.claim(self.quote(job, value=0))
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(answer.json()["reservation"]["value"], 0)
+
+    def test_a_priced_quote_still_needs_the_spending_switch(self):
+        self.ready_but_spending_off()
+        job = ew.broker.offer("video", {"prompt": "priced scene"})
+        refused = self.claim(self.quote(job, value=10))
+        self.assertEqual(refused.status_code, 409)
+        self.assertIn("Gateway dispatch is off for this account", refused.json()["detail"])
+
+    # -- G1 ----------------------------------------------------------------
+    def state(self, **changes):
+        from gateway.extension_accounts import worker_state
+        now = time.time()
+        return worker_state(observed_account(observedAt=iso(now - 1), **changes), now=now)
+
+    def test_connection_state_order_first_match_wins(self):
+        now = time.time()
+        state = self.state(tab="flow", projectId="p1")
+        control = {"dispatchEnabled": True, "closeRequested": False}
+        base = dict(state=state, received_at=now - 1, control=control, active=None, held=False,
+                    durable_busy=False, now=now)
+        self.assertEqual(ew._connection_state(has_live_token=False, **base), "not_paired")
+        self.assertEqual(ew._connection_state(has_live_token=True, **{**base, "state": None}), "not_connected")
+        self.assertEqual(ew._connection_state(has_live_token=True, **{**base, "received_at": now - 91}), "offline")
+        self.assertEqual(ew._connection_state(has_live_token=True, **{**base, "state": self.state(connection="disconnected")}), "no_flow_tab")
+        self.assertEqual(ew._connection_state(has_live_token=True, **{**base, "state": self.state(tab="home")}), "no_project")
+        self.assertEqual(ew._connection_state(has_live_token=True, **{**base, "control": {"dispatchEnabled": False}}), "paused")
+        self.assertEqual(ew._connection_state(has_live_token=True, **{**base, "held": True}), "needs_review")
+        self.assertEqual(ew._connection_state(has_live_token=True, **{**base, "state": self.state(nextEligibleAt=iso(now + 60))}), "waiting_turn")
+        self.assertEqual(ew._connection_state(has_live_token=True, **{**base, "active": "job-1"}), "working")
+        self.assertEqual(ew._connection_state(has_live_token=True, **base), "connected")
+
+    def test_health_telemetry_and_manager_share_the_word(self):
+        # Before any account report: paired, never heard.
+        health = self.client.get("/api/workers/health", headers=self.auth()).json()
+        self.assertEqual(health["connectionState"], "not_connected")
+        self.assertEqual(self.report().json()["connectionState"], "paused")  # dispatch still off
+        self.ready()
+        self.assertEqual(self.client.get("/api/workers/health", headers=self.auth()).json()["connectionState"], "connected")
+        self.assertEqual(self.report().json()["connectionState"], "connected")
+        self.assertEqual(self.status()["workers"][0]["connectionState"], "connected")
+
+    # -- G3 ----------------------------------------------------------------
+    def test_a_url_derived_account_with_a_new_source_is_accepted(self):
+        account = observed_account("flow_signed_in", source="flow.url")
+        self.ready_but_spending_off(account)
+        job = ew.broker.offer("video", {"prompt": "free scene"})
+        answer = self.claim(self.quote(job, value=0, accountId="flow_signed_in"))
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(answer.json()["accountBinding"]["accountId"], "flow_signed_in")

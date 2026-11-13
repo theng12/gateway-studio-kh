@@ -112,6 +112,12 @@ def worker_state(value: Any, *, now: float) -> dict:
             raise ValueError(f"{key} must be an explicit boolean")
         result[key] = selected
     result["paused_observed"] = "paused" in value
+    # Optional tab facts for the shared connection state: "flow" with a project id, or "home"
+    # without one. An unknown/missing value is None (never guessed), keeping older Relays valid.
+    tab = value.get("tab")
+    result["tab"] = tab if tab in ("flow", "home") else None
+    project = value.get("projectId")
+    result["project"] = project if isinstance(project, str) and project.strip() and len(project) <= 120 else None
     result["next_eligible_at"] = timestamp(value["nextEligibleAt"], now=now, future=True) if value.get("nextEligibleAt") is not None else None
     revision = value.get("controlRevision")
     if revision is not None and (not isinstance(revision, str) or not _ID.fullmatch(revision)):
