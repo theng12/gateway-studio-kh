@@ -443,9 +443,13 @@
   @media (max-width: 900px) {
     #fleet-machines-wrap .ftable, #fleet-locations-wrap .ftable { table-layout: auto; }
     /* The pinned name column stays narrow: its one-line meta wraps instead of widening it. */
-    .fleet-pane .ftable th:first-child { width: 160px; }
+    .fleet-pane .ftable th:first-child, .fleet-pane .ftable td:first-child { width: 160px; min-width: 150px; }
     .fleet-pane .ftable td.ft-lead .ft-name,
     .fleet-pane .ftable td.ft-lead .ft-sub { white-space: normal; overflow-wrap: anywhere; }
+    /* The meta wraps, but only to three lines, so rows stay a readable height. */
+    .fleet-pane .ftable td.ft-lead .ft-sub {
+      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+    }
   }
   #fleet-machines-wrap .ftable th:nth-child(1) { width: 12%; }
   #fleet-machines-wrap .ftable th:nth-child(2) { width: 11%; }
