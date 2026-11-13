@@ -6,10 +6,11 @@
 <title>Gateway Studio KH — provider control</title>
 <style>
   /* The same design language as the rest of the app (design spec 2026-10-02, 2.1-2.7b).
-     Everything here comes from system colours, so this page follows the Mac's
-     appearance and accent exactly as the native pages do: Canvas/CanvasText and
-     `prefers-color-scheme` carry light and dark, there is no second palette to keep
-     in step. Metrics mirror `menubar/PageKit.swift`:
+     Light and dark are explicit token ramps (page / rail / surface / sunken / border /
+     secondary text), not a single system canvas: the system greys sat too close
+     together in light mode and read flat (owner, 2026-11-13). Every text pair is
+     measured for WCAG AA in both appearances; the numbers live beside the tokens.
+     Metrics mirror `menubar/PageKit.swift`:
        type    26/600 title, 15/600 section, 13 body (13/600 row title), 12 secondary and
                table cells, 11 caption and table headers (11/600), 22 figures, mono 12.
                No half sizes, no bold above 600.
@@ -21,47 +22,66 @@
     color-scheme: light dark;
     --s4: 4px; --s6: 6px; --s8: 8px; --s12: 12px; --s16: 16px; --s24: 24px; --s28: 28px;
     --r-card: 8px; --r-ctl: 6px; --r-pill: 999px; --r-modal: 12px;
-    --bg: Canvas; --panel: Canvas; --panel2: color-mix(in srgb, CanvasText 6%, Canvas);
-    --line: color-mix(in srgb, CanvasText 16%, Canvas);
+    /* **A neutral ramp with layers, not one flat canvas.** Page, sidebar, surface and
+       sunken surface are separate values, so a card reads as a card and the rail reads
+       as a rail. Explicit per appearance (owner, 2026-11-13: "pale and bad, no proper
+       nice contrast") rather than system greys, which sat too close together in light
+       mode. Text pairs measured: body 16.2:1 light / 14.8:1 dark, secondary 7.1 / 7.5,
+       tertiary 5.2 / 5.0; every status chip text 5.9-11.3 on its own chip. */
+    --bg: #f0f2f6; --side: #dfe3ea; --panel: #ffffff; --panel2: #f7f8fa;
+    --line: #c9ccd6; --line-strong: #8f93a1;
+    --text: #17181e; --dim: #555861; --tertiary: #6a6d78;
+    --hover: color-mix(in srgb, var(--text) 5%, transparent);
     /* **A button has to look like a button, and a dead one must not.** The enabled
        state is raised (a fill you can see and a border you can see); the disabled
        state is flat (no fill, a faint outline, dimmer text). Affordance and its
        absence are two different drawings rather than one drawing at two opacities,
-       so nothing has to be inferred. */
-    --btn: color-mix(in srgb, CanvasText 14%, Canvas);
-    --btn-hover: color-mix(in srgb, CanvasText 24%, Canvas);
-    --btn-active: color-mix(in srgb, CanvasText 10%, Canvas);
-    --btn-line: color-mix(in srgb, CanvasText 34%, Canvas);
-    --btn-dead-line: color-mix(in srgb, CanvasText 10%, Canvas);
-    --text: CanvasText; --dim: color-mix(in srgb, CanvasText 58%, Canvas);
-    --tertiary: color-mix(in srgb, CanvasText 48%, Canvas);
-    --accent: AccentColor; --on-accent: AccentColorText;
-    /* Status vocabulary: ok green, warn amber, bad red, off grey, info blue.
-       `--x` paints fills, dots and borders; `--x-text` is the same colour blended 40%
-       toward the label colour so status TEXT stays readable (plain amber on white is
-       about 2:1). Never colour a number merely because it is large. */
-    --ok: #34c759; --warn: #ff9500; --bad: #ff3b30; --off: #8e8e93; --info: #007aff;
-    --ok-text: color-mix(in srgb, #34c759 60%, #000);
-    --warn-text: color-mix(in srgb, #ff9500 60%, #000);
-    --bad-text: color-mix(in srgb, #ff3b30 60%, #000);
-    --info-text: color-mix(in srgb, #007aff 60%, #000);
-    /* Segmented control: a neutral track with a raised, white-ish thumb. */
-    --seg-track: color-mix(in srgb, CanvasText 8%, Canvas);
-    --seg-thumb: #fff;
-    --seg-thumb-line: color-mix(in srgb, CanvasText 12%, Canvas);
+       so nothing has to be inferred. The control border is 3:1 against the surface. */
+    --btn: #eceef2;
+    --btn-hover: #e2e4ea;
+    --btn-active: #e8eaef;
+    --btn-line: #8f93a1;
+    --btn-dead-line: #e3e4e9;
+    --accent: #2563eb; --on-accent: #ffffff;
+    --chip-bg: #eef0f4; --chip-line: #c9ccd6; --chip-text: #4b4e58;
+    /* Status vocabulary: ok green, warn amber, bad red, off grey, info blue. `--x`
+       paints dots and bars; each chip has its own background, line and text token so
+       status text stays AA on the chip rather than pastel-on-pastel. */
+    --ok: #1f9d4d; --warn: #c97a00; --bad: #d92d24; --off: #8a8d97; --info: #2563eb;
+    --ok-text: #0e6b2e; --ok-bg: #e6f5eb; --ok-line: #b4dfc2;
+    --warn-text: #7a4a00; --warn-bg: #fff3da; --warn-line: #efd293;
+    --bad-text: #8f1d18; --bad-bg: #fdeaea; --bad-line: #f2b8b5;
+    --info-text: #144a9e; --info-bg: #e8f0ff; --info-line: #b9cdf5;
+    --off-text: #4f525c; --off-bg: #f0f1f4; --off-line: #d6d8df;
+    /* Segmented control: a neutral track with a raised thumb. */
+    --seg-track: #e8eaf0;
+    --seg-thumb: #ffffff;
+    --seg-thumb-line: #c9ccd6;
     --seg-shadow: 0 1px 2px rgba(0, 0, 0, .14);
+    --shadow-menu: 0 6px 20px rgba(0, 0, 0, .16);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --ok: #30d158; --warn: #ff9f0a; --bad: #ff453a; --off: #98989d; --info: #0a84ff;
-      --ok-text: color-mix(in srgb, #30d158 60%, #fff);
-      --warn-text: color-mix(in srgb, #ff9f0a 60%, #fff);
-      --bad-text: color-mix(in srgb, #ff453a 60%, #fff);
-      --info-text: color-mix(in srgb, #0a84ff 60%, #fff);
-      --seg-track: color-mix(in srgb, CanvasText 10%, Canvas);
-      --seg-thumb: color-mix(in srgb, CanvasText 26%, Canvas);
-      --seg-thumb-line: color-mix(in srgb, CanvasText 14%, Canvas);
-      --seg-shadow: 0 1px 2px rgba(0, 0, 0, .5);
+      --bg: #0c0d11; --side: #17181e; --panel: #1a1b21; --panel2: #14151a;
+      --line: #363944; --line-strong: #6b6f7d;
+      --text: #eceef3; --dim: #a8abb6; --tertiary: #878a95;
+      --btn: #262830;
+      --btn-hover: #30323b;
+      --btn-active: #22242b;
+      --btn-line: #6b6f7d;
+      --btn-dead-line: #26282f;
+      --chip-bg: #24262e; --chip-line: #3a3d47; --chip-text: #c6c9d2;
+      --ok: #37d167; --warn: #ffb340; --bad: #ff6b61; --off: #9b9ea8; --info: #7aa8ff;
+      --ok-text: #8ae6a8; --ok-bg: #122a1b; --ok-line: #245f38;
+      --warn-text: #ffd28f; --warn-bg: #2b2009; --warn-line: #5c451c;
+      --bad-text: #ffb4af; --bad-bg: #2d1312; --bad-line: #602724;
+      --info-text: #b3ccff; --info-bg: #111d36; --info-line: #29456f;
+      --off-text: #c6c9d2; --off-bg: #1f2128; --off-line: #3a3d47;
+      --seg-track: #131419;
+      --seg-thumb: #30333c;
+      --seg-thumb-line: #3d404a;
+      --seg-shadow: 0 1px 2px rgba(0, 0, 0, .45);
+      --shadow-menu: 0 6px 20px rgba(0, 0, 0, .55);
     }
   }
   * { box-sizing: border-box; }
@@ -112,8 +132,8 @@
     filter: none;
   }
   input[type=text], input[type=password], input[type=number], select {
-    background: color-mix(in srgb, CanvasText 4%, Canvas); color: var(--text);
-    border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line-strong);
     border-radius: var(--r-ctl); padding: var(--s6) var(--s8); font-size: 13px; width: 100%;
     line-height: 1.3;
   }
@@ -182,9 +202,11 @@
   .chip[aria-pressed="true"]:active:not(:disabled) { background: var(--accent); filter: brightness(.94); }
   .chip .n {
     font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dim);
-    padding: 0 var(--s6); border-radius: var(--r-pill); background: color-mix(in srgb, CanvasText 8%, Canvas);
+    padding: 0 var(--s6); border-radius: var(--r-pill); background: var(--panel);
+    border: 1px solid var(--chip-line);
   }
-  .chip[aria-pressed="true"] .n { color: inherit; background: color-mix(in srgb, Canvas 22%, transparent); }
+  .chip[aria-pressed="true"] .n { color: inherit; background: color-mix(in srgb, var(--on-accent) 22%, transparent);
+    border-color: transparent; }
   .controls label.check.inline { margin: 0; }
   .controls select { width: auto; min-width: 0; }
   .ctl { display: inline-flex; align-items: center; gap: var(--s6); }
@@ -258,13 +280,13 @@
   .cat { color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
   .badge {
     display: inline-block; font-size: 11px; font-weight: 600; line-height: 1.5; padding: 0 var(--s8);
-    border-radius: var(--r-pill); border: 1px solid var(--line);
-    color: var(--dim); white-space: nowrap;
+    border-radius: var(--r-pill); border: 1px solid var(--chip-line);
+    color: var(--chip-text); background: var(--chip-bg); white-space: nowrap;
   }
-  .badge.ok { color: var(--ok-text); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 14%, transparent); }
-  .badge.warn { color: var(--warn-text); border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 14%, transparent); }
-  .badge.bad { color: var(--bad-text); border-color: color-mix(in srgb, var(--bad) 35%, transparent); background: color-mix(in srgb, var(--bad) 14%, transparent); }
-  .badge.info { color: var(--info-text); border-color: color-mix(in srgb, var(--info) 35%, transparent); background: color-mix(in srgb, var(--info) 14%, transparent); }
+  .badge.ok { color: var(--ok-text); border-color: var(--ok-line); background: var(--ok-bg); }
+  .badge.warn { color: var(--warn-text); border-color: var(--warn-line); background: var(--warn-bg); }
+  .badge.bad { color: var(--bad-text); border-color: var(--bad-line); background: var(--bad-bg); }
+  .badge.info { color: var(--info-text); border-color: var(--info-line); background: var(--info-bg); }
   .desc { color: var(--dim); font-size: 12px; padding: 0 var(--s16) var(--s12); }
   /* The heading over a group of provider cards on the Providers tab: what they serve, and how
      many are under it. A rule above it, because a heading that floats between two cards reads as
@@ -296,7 +318,7 @@
   th:last-child, td:last-child { padding-right: var(--s12); }
   th.num, td.num { text-align: right; }
   tbody tr:last-child td { border-bottom: 0; }
-  tbody tr:hover { background: color-mix(in srgb, CanvasText 5%, Canvas); }
+  tbody tr:hover { background: var(--hover); }
   tbody tr.on { background: color-mix(in srgb, var(--ok) 10%, transparent); }
   .mid { font-family: ui-monospace, monospace; font-size: 12px; color: var(--dim); }
   /* `overflow-x: auto` is the last resort for a table whose cells cannot wrap any
@@ -320,7 +342,7 @@
     padding: var(--s4) var(--s12); font-size: 12px; color: var(--text);
   }
   .tabs button:hover:not(:disabled):not([aria-pressed="true"]):not([aria-selected="true"]) {
-    background: color-mix(in srgb, CanvasText 6%, transparent);
+    background: var(--hover);
   }
   .tabs button[aria-pressed="true"], .tabs button[aria-selected="true"],
   .tabs button[aria-pressed="true"]:hover:not(:disabled), .tabs button[aria-selected="true"]:hover:not(:disabled) {
@@ -330,8 +352,8 @@
   /* A kind pill. One glance should say what a pack *is* without reading its title. */
   .pill {
     display: inline-block; padding: 0 var(--s8); border-radius: var(--r-pill); font-size: 11px;
-    font-weight: 600; white-space: nowrap; color: var(--dim);
-    border: 1px solid var(--line); background: color-mix(in srgb, CanvasText 4%, Canvas);
+    font-weight: 600; white-space: nowrap; color: var(--chip-text);
+    border: 1px solid var(--chip-line); background: var(--chip-bg);
   }
   .pill-row { display: flex; flex-wrap: wrap; gap: var(--s6); align-items: center; margin: 0 0 var(--s12); }
   .pill-row button { border-radius: var(--r-pill); padding: var(--s4) var(--s12); font-size: 12px; }
@@ -355,8 +377,8 @@
   #view-providers .pane { background: none; border: 0; border-radius: 0; padding: 0; }
   #view-providers .pane > h2 { margin: 0 0 var(--s4); }
   textarea {
-    background: color-mix(in srgb, CanvasText 4%, Canvas); color: var(--text);
-    border: 1px solid var(--line); border-radius: var(--r-ctl); padding: var(--s8);
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line-strong); border-radius: var(--r-ctl); padding: var(--s8);
     font-size: 13px; width: 100%; resize: vertical; font-family: inherit;
   }
   textarea:focus { border-color: var(--accent); }
@@ -389,7 +411,7 @@
   .shell.in-app { display: block; }
   #web-nav {
     position: sticky; top: 0; align-self: start; height: 100vh; overflow: auto; z-index: 10;
-    padding: var(--s8); background: var(--panel2); border-right: 1px solid var(--line);
+    padding: var(--s8); background: var(--side); border-right: 1px solid var(--line);
   }
   #web-nav[hidden] { display: none; }
   .nav-bar { display: none; align-items: center; gap: var(--s8); }
@@ -405,7 +427,7 @@
     padding: var(--s4) var(--s8); border: 0; background: transparent;
     border-radius: var(--r-ctl); font-size: 13px; color: var(--text); text-align: left;
   }
-  .nav-row:hover:not(:disabled) { background: color-mix(in srgb, CanvasText 7%, transparent); }
+  .nav-row:hover:not(:disabled) { background: var(--hover); }
   .nav-row[aria-current="page"] { background: color-mix(in srgb, var(--accent) 20%, transparent); }
   .nav-row svg { flex: 0 0 auto; width: 15px; height: 15px; color: var(--accent); }
   .nav-row .nav-note { margin-left: auto; font-size: 10px; color: var(--tertiary); }
@@ -503,13 +525,13 @@
      becomes a block of labelled lines rather than scrolling sideways. */
   #fleet-controls { gap: var(--s12); align-items: center; margin: 0 0 var(--s12); flex-wrap: wrap; }
   #fleet-controls label { display: inline-flex; gap: var(--s6); align-items: center; font-size: 12px;
-    color: color-mix(in srgb, CanvasText 70%, Canvas); }
+    color: var(--dim); }
   #fleet-controls select { width: auto; min-width: 130px; }
   #fleet-search { flex: 1 1 220px; min-width: 0; }
   #fleet-status { margin: 0 0 var(--s12); overflow-wrap: anywhere; }
   .fleet-pane[hidden] { display: none; }
   #fleet-threshold { gap: var(--s8); align-items: center; margin: 0 0 var(--s12); font-size: 12px;
-    color: color-mix(in srgb, CanvasText 70%, Canvas); }
+    color: var(--dim); }
   #fleet-threshold select { width: auto; min-width: 64px; }
   #fleet-threshold-note { font-size: 12px; color: var(--dim); }
   #fleet-summary { gap: var(--s12); margin: 0 0 var(--s12); }
@@ -552,7 +574,7 @@
   .ftable td.ft-lead .ft-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   .ftable td .ft-sub.nowrap { white-space: nowrap; }
   .meter { height: 4px; border-radius: 2px; margin-top: 4px; width: 100%; max-width: 96px;
-    background: color-mix(in srgb, CanvasText 12%, Canvas); overflow: hidden; }
+    background: var(--line); overflow: hidden; }
   .meter i { display: block; height: 100%; border-radius: 2px; }
   .fleet-empty { color: var(--dim); font-size: 13px; padding: var(--s24); text-align: center; }
   @media (max-width: 760px) {
@@ -619,7 +641,7 @@
   .more-menu { position: absolute; z-index: 30; top: calc(100% + 4px); right: 0; min-width: 220px;
     display: flex; flex-direction: column; gap: var(--s4); padding: var(--s8);
     background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card);
-    box-shadow: 0 6px 20px color-mix(in srgb, CanvasText 18%, transparent); }
+    box-shadow: var(--shadow-menu); }
   .more-menu[hidden] { display: none; }
   .more-menu button { text-align: left; }
   .card-head .overflow { position: relative; }
