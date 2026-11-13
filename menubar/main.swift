@@ -1477,6 +1477,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--test-mode") {
+            // The headless entry: no window, no activation, no gateway launch.
+            return
+        }
         AppearanceMode.current.apply()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -1954,10 +1958,14 @@ if !duplicates.isEmpty {
     exit(0)
 }
 
+// **A headless entry for tests** (`--test-mode`): the app runs with no window and no Dock icon,
+// so an acceptance or smoke run never takes the owner's desktop. The gateway itself is not
+// started here; a test points GATEWAY_APP_SUPPORT at its own throwaway data dir.
+let testMode = CommandLine.arguments.contains("--test-mode")
 // A gateway that exits before the owner-console secret is written must not kill this app with SIGPIPE.
 signal(SIGPIPE, SIG_IGN)
 let application = NSApplication.shared
 let delegate = AppDelegate()
 application.delegate = delegate
-application.setActivationPolicy(.regular)
+application.setActivationPolicy(testMode ? .accessory : .regular)
 application.run()

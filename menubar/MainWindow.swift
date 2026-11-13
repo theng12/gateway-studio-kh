@@ -703,7 +703,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         pill.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         for (button, symbol, action, tooltip) in [
-            (updateButton, "arrow.clockwise", #selector(checkForUpdates), "Check for Updates"),
+            (updateButton, "arrow.clockwise", #selector(checkUpdateAvailability), "Check for Updates"),
             (availableButton, "arrow.down.circle", #selector(openLauncher), ""),
         ] {
             button.target = self
@@ -964,7 +964,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         alert.closeOnEscape()
         alert.runModal()
     }
-    @objc private func checkForUpdates() {
+    @objc private func checkUpdateAvailability() {
         UpdateChecker.shared.check { [weak self] _ in self?.updateStatusLine() }
         updateStatusLine()
     }

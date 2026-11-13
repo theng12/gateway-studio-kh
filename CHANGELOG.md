@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.256 — 2026-11-13
+
+- **Fleet's Machines table keeps its name column narrow at 768.** The one-line details under each Mac's name now wrap inside the pinned column, so more of the row's state and data is visible beside it while the table scrolls.
+
+---
+
 ## 0.2.255 — 2026-11-13
 
 - **Fleet gets the same frame.** One status line, one Refresh action, one search field with the filters in a Filters menu that shows how many are on; each Mac or site card keeps its name, state and likely cause on the surface and puts its 7-day history and device facts behind Details.

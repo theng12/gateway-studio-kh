@@ -442,6 +442,10 @@
      to their content: a chip or a date is never clipped mid-word at 768. */
   @media (max-width: 900px) {
     #fleet-machines-wrap .ftable, #fleet-locations-wrap .ftable { table-layout: auto; }
+    /* The pinned name column stays narrow: its one-line meta wraps instead of widening it. */
+    .fleet-pane .ftable th:first-child { width: 160px; }
+    .fleet-pane .ftable td.ft-lead .ft-name,
+    .fleet-pane .ftable td.ft-lead .ft-sub { white-space: normal; overflow-wrap: anywhere; }
   }
   #fleet-machines-wrap .ftable th:nth-child(1) { width: 12%; }
   #fleet-machines-wrap .ftable th:nth-child(2) { width: 11%; }
