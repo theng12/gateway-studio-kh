@@ -434,12 +434,30 @@
     white-space: nowrap; }
   .fleet-card-actions { display: flex; gap: var(--s6); justify-content: flex-end; }
   .fleet-pane .ftable { min-width: 1020px; }
-  /* The row's actions stay at the right edge while the wide table scrolls under them,
-     so a button is never off-screen behind a horizontal scroll. */
-  .fleet-pane .ftable th:last-child, .fleet-pane .ftable td[data-label="Actions"] {
-    position: sticky; right: 0; background: var(--panel); z-index: 2;
-    border-left: 1px solid var(--line);
-  }
+  @media (max-width: 900px) { .fleet-pane .ftable th:first-child, .fleet-pane .ftable td:first-child { position: static; } }
+  /* The two Fleet tables share the box instead of running past its edge: fixed widths, content
+     wraps inside its own cell. At 768 they still scroll in their box (min-width). */
+  #fleet-machines-wrap .ftable, #fleet-locations-wrap .ftable { table-layout: fixed; width: 100%; }
+  #fleet-machines-wrap .ftable th:nth-child(1) { width: 13%; }
+  #fleet-machines-wrap .ftable th:nth-child(2) { width: 8%; }
+  #fleet-machines-wrap .ftable th:nth-child(3) { width: 7%; }
+  #fleet-machines-wrap .ftable th:nth-child(4) { width: 7%; }
+  #fleet-machines-wrap .ftable th:nth-child(5) { width: 12%; }
+  #fleet-machines-wrap .ftable th:nth-child(6) { width: 14%; }
+  #fleet-machines-wrap .ftable th:nth-child(7) { width: 6%; }
+  #fleet-machines-wrap .ftable th:nth-child(8) { width: 9%; }
+  #fleet-machines-wrap .ftable th:nth-child(9) { width: 7%; }
+  #fleet-machines-wrap .ftable th:nth-child(10) { width: 6%; }
+  #fleet-machines-wrap .ftable th:nth-child(11) { width: 11%; }
+  #fleet-locations-wrap .ftable th:nth-child(1) { width: 14%; }
+  #fleet-locations-wrap .ftable th:nth-child(2) { width: 8%; }
+  #fleet-locations-wrap .ftable th:nth-child(3) { width: 16%; }
+  #fleet-locations-wrap .ftable th:nth-child(4) { width: 8%; }
+  #fleet-locations-wrap .ftable th:nth-child(5) { width: 8%; }
+  #fleet-locations-wrap .ftable th:nth-child(6) { width: 9%; }
+  #fleet-locations-wrap .ftable th:nth-child(7) { width: 8%; }
+  #fleet-locations-wrap .ftable th:nth-child(8) { width: 14%; }
+  #fleet-locations-wrap .ftable th:nth-child(9) { width: 15%; }
   .ftable td[data-label="Actions"], .ftable td[data-label="Batch"] { white-space: nowrap; }
   .ftable td[data-label="Actions"] > .row { flex-wrap: nowrap; }
   .ftable td[data-label="Likely cause"], .ftable td[data-label="Status"] { max-width: 300px; }
@@ -7295,13 +7313,13 @@ function fleetLocationRow(L) {
       ${status.sub ? `<div class="ft-sub">${esc(status.sub)}</div>` : ''}</div></td>
     <td data-label="Actions"><div class="row">
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
-      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
-      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'${L.paused_at != null ? 'resume' : 'pause'}')">${L.paused_at != null ? 'Resume' : 'Pause'}</button>
-      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationCredentials(this)">Credentials…</button>
       <span class="overflow">
       <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
         data-menu="loc-more-${esc(L.id)}" onclick="toggleCardMenuFor(this)">More…</button>
       <div class="more-menu" id="pmenu-loc-more-${esc(L.id)}" hidden>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'${L.paused_at != null ? 'resume' : 'pause'}')">${L.paused_at != null ? 'Resume' : 'Pause'}</button>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationCredentials(this)">Credentials…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAddress(this)">Address…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationNetwork(this)">Network…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationRefresh(this)">Refresh models</button>
@@ -7789,10 +7807,15 @@ function fleetMachineActionCell(m) {
   // one broke out of a quoted argument. The ids ride in `data-*` attributes and the handler reads
   // `this.dataset`, where a decoded quote is just data.
   const ids = ` data-lid="${esc(m.location_id)}" data-mid="${esc(m.machine)}"`;
-  const buttons = fleetStartupActions(m).map(([key, title]) =>
+  // **One action on the row** (frame rule 6): the first startup action that applies right now;
+  // every other action — including the rest of the startup list — is in More….
+  const startup = fleetStartupActions(m);
+  const buttons = startup.slice(0, 1).map(([key, title]) =>
     `<button type="button" class="sm"${ids} data-key="${esc(key)}"`
     + ` onclick="fleetMachineStartup(this, this.dataset.lid, this.dataset.mid, this.dataset.key)">${esc(title)}</button>`);
-  const more = [];
+  const more = startup.slice(1).map(([key, title]) =>
+    `<button type="button" class="sm"${ids} data-key="${esc(key)}"`
+    + ` onclick="fleetMachineStartup(this, this.dataset.lid, this.dataset.mid, this.dataset.key)">${esc(title)}</button>`);
   if (m.reachable === true) {
     more.push(`<button type="button"${ids} onclick="fleetMachineRename(this, this.dataset.lid, this.dataset.mid)">Rename…</button>`);
   }
