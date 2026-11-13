@@ -186,7 +186,8 @@ final class SettingsSection: NSObject, AppSection {
         releaseIdentityStatus.preferredMaxLayoutWidth = 520
         let updateKeyHelp = PageKit.help(
             "Signs Studio Hub and Story Studio updates so each Mac knows an update really came from "
-            + "this Gateway. Safe to share — it is not a password."
+            + "this Gateway. Gateway Studio KH's own updates are installed by Studio Launcher KH and "
+            + "never use this key. Safe to share — it is not a password."
         )
         // This page can be resized after its labels measured at a wider width.
         // Zero makes AppKit use the width Auto Layout actually gives the label,
