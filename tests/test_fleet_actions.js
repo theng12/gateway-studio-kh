@@ -586,35 +586,18 @@ test('the Jobs tab stops a whole batch by id and retries one failed item by inde
   assert.deepEqual(JSON.parse(retry.opts.body), { modality: 'tts' });
 });
 
-test('every Story Mac can be updated now, and a release published, from the web page', async () => {
+test('the Story tab lists checked-in Macs and offers no update controls', async () => {
+  // Owner rule 2026-11-13: only Studio Launcher KH installs updates. The Story tab is a report:
+  // version, queue and last check-in — no Update Now, no release publish.
   const instances = [
-    { instance_id: 's1', machine: 'Studio 1', status: 'update_available', version: '1.4.360',
-      update_requested_at: null, next_check_by: null, queue: {} },
-    { instance_id: 's2', machine: 'Studio 2', status: 'up_to_date', version: '1.4.363', queue: {} },
+    { instance_id: 's1', machine: 'Studio 1', status: 'online', version: '1.4.360', queue: {} },
+    { instance_id: 's2', machine: 'Studio 2', status: 'offline', version: '1.4.363', queue: {} },
   ];
-  const ctx = context(payload([]), {
-    respond: route => {
-      if (route === '/story/instances') return { instances, release: { version: '1.4.363', filename: 'Story.dmg' } };
-      if (route.endsWith('/update')) return { instance: { instance_id: 's1', next_check_by: Date.now() / 1000 + 600 } };
-      if (route === '/story/release/publish') return { descriptor: { version: '1.4.363' } };
-      return {};
-    },
-  });
+  const ctx = context(payload([]), { respond: route => (route === '/story/instances' ? { instances } : {}) });
   await ctx.loadFleetStory();
   const html = node(ctx, 'fleet-story-wrap').innerHTML;
-  assert.match(html, /fleetStoryUpdate\(this\)/);
-  assert.equal((html.match(/fleetStoryUpdate\(this\)/g) || []).length, 1, 'only a Mac that can update gets the button');
-
-  await ctx.fleetStoryUpdate({ disabled: false, dataset: { id: 's1' } });
-  const update = writes(ctx.calls).find(call => call.route === '/story/instances/s1/update');
-  assert.ok(update);
-  assert.match(node(ctx, 'fleet-story-note').textContent, /Studio 1 updates at its next check/);
-
-  node(ctx, 'fleet-story-path').value = '/Users/owner/Story Studio KH-1.4.363.dmg';
-  await ctx.fleetPublishStory({ disabled: false });
-  const publish = writes(ctx.calls).find(call => call.route === '/story/release/publish');
-  assert.deepEqual(JSON.parse(publish.opts.body), { artifact_path: '/Users/owner/Story Studio KH-1.4.363.dmg' });
-  assert.match(node(ctx, 'fleet-story-note').textContent, /Published Story Studio 1\.4\.363/);
+  assert.doesNotMatch(html, /fleetStoryUpdate|Update Now|Publish/);
+  assert.match(node(ctx, 'fleet-story-status').textContent, /2 Story Macs · 1 checked in/);
 });
 
 test('Story queue counts and pause state are labelled as a dated report, including unknown age', async () => {
@@ -639,69 +622,6 @@ test('Story queue counts and pause state are labelled as a dated report, includi
   assert.match(cells[2], /Report age unknown/);
   assert.doesNotMatch(cells[2], /just now/);
   assert.deepEqual(ctx.calls, [{ route: '/story/instances', opts: undefined }]);
-});
-
-test('release forms show the live Gateway staging folder without changing typed filenames', async () => {
-  const data = payload([machine()]);
-  data.release = { artifact_directory: '/custom Gateway profile/releases' };
-  const ctx = context(data);
-  node(ctx, 'fleet-release-path').value = 'Hub Studio KH.dmg';
-  node(ctx, 'fleet-story-path').value = 'Story Studio KH.dmg';
-  await ctx.loadFleet();
-  for (const id of ['fleet-release-staging', 'fleet-story-staging']) {
-    assert.match(node(ctx, id).textContent, /\/custom Gateway profile\/releases/);
-    assert.match(node(ctx, id).textContent, /Downloads paths are refused/);
-  }
-  assert.equal(node(ctx, 'fleet-release-path').value, 'Hub Studio KH.dmg');
-  assert.equal(node(ctx, 'fleet-story-path').value, 'Story Studio KH.dmg');
-  ctx.renderFleetRelease({ release: {} });
-  assert.match(node(ctx, 'fleet-release-staging').textContent, /has not been reported/);
-});
-
-test('a Studio Hub release is published with every override, and the rollout can be stopped and resumed', async () => {
-  const ctx = context(payload([machine()]), {
-    respond: route => {
-      if (route === '/fleet') return payload([machine()]);
-      if (route === '/release/publish') return { rollout: { state: 'running', version: '0.6.50', summary: 'Rolling out to 1 controller' } };
-      if (route.startsWith('/release/rollout/')) return { rollout: { state: 'stopped', version: '0.6.50', summary: 'Stopped at Blue Room' } };
-      return {};
-    },
-  });
-  await ctx.loadFleet();
-  node(ctx, 'fleet-release-path').value = '/Users/owner/StudioHub-0.6.50-abc1234.dmg';
-  node(ctx, 'fleet-release-version').value = '0.6.50';
-  node(ctx, 'fleet-release-build').value = 'abc1234';
-  node(ctx, 'fleet-release-all').checked = true;
-  node(ctx, 'fleet-release-full').checked = true;
-  await ctx.fleetPublishRelease({ disabled: false });
-  const publish = writes(ctx.calls).find(call => call.route === '/release/publish');
-  assert.deepEqual(JSON.parse(publish.opts.body), {
-    artifact_path: '/Users/owner/StudioHub-0.6.50-abc1234.dmg', version: '0.6.50', build: 'abc1234',
-    filename: 'StudioHub-0.6.50-abc1234.dmg', mode: 'all_at_once', force_full: true,
-  });
-  assert.match(node(ctx, 'fleet-release-note').textContent, /Rolling out 0\.6\.50/);
-
-  await ctx.fleetRollout({ disabled: false }, 'stop');
-  const stop = writes(ctx.calls).find(call => call.route === '/release/rollout/stop');
-  assert.ok(stop);
-  await ctx.fleetRollout({ disabled: false }, 'resume');
-  assert.ok(writes(ctx.calls).find(call => call.route === '/release/rollout/resume'));
-});
-
-test('the rollout panel offers Stop while running and Resume once stopped', async () => {
-  const base = payload([machine()]);
-  base.release.rollout = { state: 'running', version: '0.6.50', order: ['L1'],
-    steps: { L1: { label: 'Blue Room', state: 'sending' } }, summary: 'Rolling out to 1 controller' };
-  const ctx = context(base);
-  await ctx.loadFleet();
-  assert.match(node(ctx, 'fleet-rollout').innerHTML, /Stop Rollout/);
-  assert.doesNotMatch(node(ctx, 'fleet-rollout').innerHTML, /Resume Rollout/);
-
-  base.release.rollout = { state: 'stopped', version: '0.6.50', order: ['L1'], reason: 'owner asked',
-    steps: { L1: { label: 'Blue Room', state: 'skipped', detail: 'stopped' } }, summary: 'Stopped' };
-  ctx.renderFleetRelease(base);
-  assert.match(node(ctx, 'fleet-rollout').innerHTML, /Resume Rollout/);
-  assert.match(node(ctx, 'fleet-rollout').innerHTML, /Stopped: owner asked/);
 });
 
 test('Remote final rendering lists each Mac and sends one switch per Mac', async () => {

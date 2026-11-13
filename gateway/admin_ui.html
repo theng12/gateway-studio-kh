@@ -278,8 +278,7 @@
   .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: var(--s12); }
   label { display: block; font-size: 12px; color: var(--dim); margin-bottom: var(--s4); }
   .hint { font-size: 12px; color: var(--dim); margin-top: var(--s4); }
-  #fleet-release-staging, #fleet-story-staging { overflow-wrap: anywhere; }
-  .actions { display: flex; gap: var(--s8); margin-top: var(--s12); flex-wrap: wrap; align-items: center; }
+    .actions { display: flex; gap: var(--s8); margin-top: var(--s12); flex-wrap: wrap; align-items: center; }
   .msg { font-size: 12px; }
   .msg.ok { color: var(--ok-text); } .msg.bad { color: var(--bad-text); }
   .msg.warn { color: var(--warn-text); } .msg.info { color: var(--info-text); }
@@ -687,31 +686,6 @@
       <div id="fleet-location-action-note" role="status" aria-live="polite"></div>
       <div class="tablewrap" id="fleet-locations-wrap"></div>
       <div id="fleet-issues"></div>
-      <!-- The Studio Hub app release this gateway signs and rolls out to its controllers. -->
-      <details class="card" id="fleet-release-card">
-        <summary>Release: publish a Studio Hub build and roll it out</summary>
-        <div class="stat" id="fleet-release-status"></div>
-        <div id="fleet-rollout"></div>
-        <p class="hint">"Held" is what each controller reports it has now — not what was pushed. A refusal is
-          the controller's own sentence, quoted exactly.</p>
-        <p class="hint" id="fleet-release-staging"></p>
-        <div class="row" id="fleet-release-form">
-          <label>File name or path on the Gateway Mac
-            <input id="fleet-release-path" placeholder="Hub Studio KH.dmg"></label>
-          <label>Version <input id="fleet-release-version" placeholder="0.6.50"></label>
-          <label>Build <input id="fleet-release-build" placeholder="abc1234"></label>
-          <label>File name <input id="fleet-release-filename" placeholder="StudioHub-0.6.50-abc1234.dmg"></label>
-        </div>
-        <div class="row">
-          <label class="check"><input type="checkbox" id="fleet-release-downgrade"> Publish over a newer release</label>
-          <label class="check"><input type="checkbox" id="fleet-release-all"> All at once (emergency): every controller now</label>
-          <label class="check"><input type="checkbox" id="fleet-release-full"> Send the whole app (not just the changed files)</label>
-          <button type="button" onclick="fleetPublishRelease(this)">Publish release</button>
-        </div>
-        <p class="hint">The version and build are asked for, not taken from the file name: they are what the
-          gateway signs, and a wrong one is signed exactly like a right one.</p>
-        <div id="fleet-release-note" role="status" aria-live="polite"></div>
-      </details>
     </div>
 
     <!-- Models: what each Hub location offers, pooled by model. -->
@@ -773,18 +747,6 @@
       <div class="stat" id="fleet-story-status"></div>
       <div id="fleet-story-note" role="status" aria-live="polite"></div>
       <div class="tablewrap" id="fleet-story-wrap"></div>
-      <details class="card" id="fleet-story-publish">
-        <summary>Publish a Story Studio release</summary>
-        <p class="hint">Signed with the same App Update Key as Studio Hub releases. A Story Mac checks in
-          every 30 minutes, so Update Now applies at that Mac's next check (30 minutes at most); a Mac that
-          has been silent for over 75 minutes shows as Offline.</p>
-        <p class="hint" id="fleet-story-staging"></p>
-        <div class="row">
-          <label>File name or path on the Gateway Mac
-            <input id="fleet-story-path" placeholder="Story Studio KH.dmg"></label>
-          <button type="button" onclick="fleetPublishStory(this)">Publish</button>
-        </div>
-      </details>
     </div>
   </section>
   <!-- One dialog, filled by the action that opened it. The native page used a sheet per action
@@ -8376,145 +8338,6 @@ function fleetIsNewer(held, target) {
   return false;
 }
 
-function fleetDowngrades(version) {
-  return (lastFleetPayload?.locations || []).filter(location =>
-    location.local !== true && location.reachable !== false
-    && location.release && fleetIsNewer(location.release.version, version));
-}
-
-function fleetRolloutStepText(step, version) {
-  const detail = String(step && step.detail || '').trim();
-  let text;
-  switch (step && step.state) {
-    case 'sending': text = 'sending the release…'; break;
-    case 'sent': text = 'sent; finishing its current work, then installing'; break;
-    case 'installing': text = 'installing and restarting'; break;
-    case 'updated': text = 'updated'; break;
-    case 'failed': text = detail || `did not come back on ${version}`; break;
-    case 'skipped': text = 'skipped' + (detail ? `: ${detail}` : ''); break;
-    default: text = detail ? `waiting: ${detail}` : 'waiting'; break;
-  }
-  if (Number(step.nodes_total) > 0 && ['sent', 'installing', 'updated'].includes(step.state)) {
-    text += ` · ${step.nodes_updated ?? 0} of ${step.nodes_total} Macs on ${version}`;
-  }
-  return text;
-}
-
-function renderFleetRelease(d) {
-  const release = (d && d.release) || {};
-  for (const id of ['fleet-release-staging', 'fleet-story-staging']) {
-    const hint = document.getElementById(id);
-    if (hint) hint.textContent = release.artifact_directory
-      ? `Place the release file in this folder on the Gateway Mac: ${release.artifact_directory}. Then enter its file name. Downloads paths are refused.`
-      : 'The Gateway release folder has not been reported. Refresh Fleet before publishing. Downloads paths are refused.';
-  }
-  const status = document.getElementById('fleet-release-status');
-  if (status) {
-    const identity = release.identity || null;
-    const push = release.last_push || null;
-    const bits = [];
-    if (identity && identity.fingerprint) bits.push(`This gateway's publisher key: ${identity.fingerprint}`);
-    else if (release.error) bits.push(`Publisher key unavailable — ${release.error}`);
-    if (push && push.release && push.release.version) {
-      bits.push(`Last push: ${push.release.version} (${push.release.build || 'build not stated'})`);
-    } else {
-      bits.push('No release has been pushed from this gateway yet.');
-    }
-    status.textContent = bits.join(' · ');
-  }
-  const box = document.getElementById('fleet-rollout');
-  if (!box) return;
-  const rollout = release.rollout || null;
-  if (!rollout) { box.innerHTML = ''; return; }
-  const version = rollout.version || 'the release';
-  const running = rollout.state === 'running';
-  const canResume = rollout.state === 'stopped' || rollout.state === 'failed';
-  const steps = (rollout.order || []).map(id => {
-    const step = (rollout.steps || {})[id];
-    if (!step) return '';
-    return `<div class="stat">${esc(step.label || id)} — ${esc(fleetRolloutStepText(step, version))}</div>`;
-  }).join('');
-  box.innerHTML = `<div class="card"><div class="row"><b>Rollout of ${esc(version)}: ${esc(rollout.summary || rollout.state || '')}</b>
-    ${running ? '<button type="button" class="sm" onclick="fleetRollout(this,\'stop\')">Stop Rollout</button>' : ''}
-    ${canResume ? '<button type="button" class="sm" onclick="fleetRollout(this,\'resume\')">Resume Rollout</button>' : ''}</div>
-    ${!running && rollout.reason ? `<div class="stat">Stopped: ${esc(rollout.reason)}</div>` : ''}
-    ${steps}</div>`;
-}
-
-function fleetPushSentence(answer, version, build) {
-  if (answer && answer.rollout) {
-    return `Rolling out ${version} (${build}) — ${answer.rollout.summary || 'one location at a time; progress is below.'}`;
-  }
-  const outcomes = Object.values((answer && answer.locations) || {});
-  if (!outcomes.length) return `Published ${version} (${build}); the answer named no controllers.`;
-  const refusals = outcomes.filter(outcome => !outcome || outcome.ok !== true);
-  if (!refusals.length) {
-    return `Published ${version} (${build}) to all ${outcomes.length} controller${outcomes.length === 1 ? '' : 's'}; `
-      + 'each read back the same release.';
-  }
-  return `Published ${version} (${build}) to ${outcomes.length - refusals.length} of ${outcomes.length} controllers. Refused: `
-    + refusals.map(outcome => `${(outcome && outcome.label) || '?'} (${(outcome && (outcome.detail || outcome.code)) || 'no reason given'})`).join('; ') + '.';
-}
-
-async function fleetPublishRelease(button) {
-  const value = id => String(document.getElementById(id)?.value ?? '').trim();
-  const artifactPath = value('fleet-release-path');
-  const version = value('fleet-release-version');
-  const build = value('fleet-release-build');
-  const filename = value('fleet-release-filename') || artifactPath.split('/').pop();
-  const allAtOnce = document.getElementById('fleet-release-all')?.checked === true;
-  const forceFull = document.getElementById('fleet-release-full')?.checked === true;
-  if (!artifactPath) {
-    fleetNote('fleet-release-note', 'Enter the release file name from the Gateway folder shown above, or a full path outside Downloads.');
-    return;
-  }
-  if (!version || !build) {
-    fleetNote('fleet-release-note', 'A version and a build are required. Enter both, then publish again. Nothing was pushed.');
-    return;
-  }
-  let allowDowngrade = document.getElementById('fleet-release-downgrade')?.checked === true;
-  const older = fleetDowngrades(version);
-  if (older.length && !allowDowngrade) {
-    const lines = older.map(location => `• ${location.label || location.id} holds ${location.release.version}`).join('\n');
-    if (!confirm(`Publish ${version} over a newer release?\n\nThese controllers already hold a newer version:\n${lines}\n\n`
-      + `Publishing ${version} would take them backwards. Continue only if that is what you want.`)) return;
-    allowDowngrade = true;
-  }
-  if (!confirm(`Publish ${filename}?\n\nThis gateway signs the DMG and rolls it out one location at a time: this `
-    + `Mac's Studio Hub, then each controller in turn, waiting for each to come back on the new version. Each `
-    + `Mac then updates itself after finishing its current work.`
-    + (allAtOnce ? '\n\nAll at once: every controller is sent it now, in parallel.' : ''))) return;
-  const body = { artifact_path: artifactPath, version, build, filename };
-  if (allowDowngrade) body.allow_downgrade = true;
-  if (allAtOnce) body.mode = 'all_at_once';
-  if (forceFull) body.force_full = true;
-  button.disabled = true;
-  fleetNote('fleet-release-note', `Signing and pushing ${filename}…`);
-  try {
-    const answer = await api('/release/publish', fleetPayload(body));
-    fleetNote('fleet-release-note', fleetPushSentence(answer, version, build));
-    await loadFleet();
-  } catch (e) {
-    fleetNote('fleet-release-note', `Could not publish the release — ${e.message}`);
-  } finally { button.disabled = false; }
-}
-
-async function fleetRollout(button, action) {
-  const verb = action === 'stop' ? 'Stop' : 'Resume';
-  if (!confirm(`${verb} the rollout?\n\n` + (action === 'stop'
-    ? 'The push in flight finishes; nothing already done is undone, and Resume carries on from here.'
-    : 'It carries on from the controller it stopped at.'))) return;
-  button.disabled = true;
-  try {
-    const answer = await api(`/release/rollout/${action}`, fleetPayload());
-    const summary = answer && answer.rollout ? (answer.rollout.summary || '') : '';
-    fleetNote('fleet-release-note', `Rollout ${action === 'stop' ? 'stopped' : 'resumed'}${summary ? ' — ' + summary : '.'}`);
-    await loadFleet();
-  } catch (e) {
-    fleetNote('fleet-release-note', `Could not ${action} the rollout — ${e.message}`);
-  } finally { button.disabled = false; }
-}
-
 // ---- Hiding whole kinds of warning ----------------------------------------
 
 // Hiding a kind is saved on the gateway (`PUT /settings/fleet-warnings`) and is never done silently:
@@ -8815,16 +8638,12 @@ async function fleetRetryItem(button) {
 // ---- Story Studio ----------------------------------------------------------
 
 let fleetStoryRows = null;
-let fleetStoryRelease = null;
 
 function fleetStoryStatusText(instance) {
+  // Only what this Gateway knows: a Mac that checked in recently, or one that went quiet.
+  // App updates are Studio Launcher KH's business (owner rule 2026-11-13).
   switch (instance.status) {
-    case 'up_to_date': return { text: 'Up to date', health: 'ok' };
-    case 'update_available': return { text: 'Update available', health: 'warn' };
-    case 'updating': return { text: (instance.update && instance.update.phase) === 'draining'
-      ? 'Updating… (waiting for jobs)' : 'Updating…', health: 'info' };
-    case 'failed': return { text: (instance.update && instance.update.phase) === 'rolled_back'
-      ? 'Update rolled back' : 'Update failed', health: 'bad' };
+    case 'online': return { text: 'Checked in', health: 'ok' };
     case 'offline': return { text: 'Offline', health: '' };
     default: return { text: instance.status || '—', health: '' };
   }
@@ -8834,31 +8653,23 @@ function renderFleetStory() {
   const wrap = document.getElementById('fleet-story-wrap');
   const status = document.getElementById('fleet-story-status');
   if (status) {
-    const release = fleetStoryRelease;
+    const rows = fleetStoryRows || [];
+    const online = rows.filter(row => row.status === 'online').length;
     status.textContent = fleetStoryRows == null ? 'Reading Story Studio…'
-      : release && release.version ? `Published: Story Studio ${release.version}${release.filename ? ` (${release.filename})` : ''}.`
-      : 'No Story Studio release is published yet.';
+      : `${rows.length} Story Mac${rows.length === 1 ? '' : 's'} · ${online} checked in within the last 75 minutes`;
   }
   if (!wrap) return;
   if (fleetStoryRows == null) { wrap.innerHTML = '<div class="fleet-empty">Reading Story Studio…</div>'; return; }
   wrap.innerHTML = fleetStoryRows.length
     ? `<table class="ftable"><thead><tr><th>Mac</th><th>Version</th><th>Status</th><th>Channels</th>
-       <th>Last reported queue</th><th>Checked in</th><th>Actions</th></tr></thead><tbody>${fleetStoryRows.map(instance => {
+       <th>Last reported queue</th><th>Checked in</th></tr></thead><tbody>${fleetStoryRows.map(instance => {
         const state = fleetStoryStatusText(instance);
         const queue = instance.queue || {};
         const count = value => (value == null ? '—' : value);
-        const update = instance.update || {};
-        // "Next check by ~HH:MM" while an Update Now is waiting for the Mac's next 30-minute check-in.
-        const nextCheck = instance.update_requested_at != null && instance.next_check_by > Date.now() / 1000
-          ? 'Next check by ~' + new Date(instance.next_check_by * 1000)
-            .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-        const caption = update.error || nextCheck;
-        const actionable = instance.status === 'update_available' || instance.status === 'failed';
         return `<tr>
           <td class="ft-lead" data-label="Mac"><div class="ft-name">${esc(instance.machine || instance.instance_id || '—')}</div></td>
           <td class="nowrap" data-label="Version">${esc(instance.version || '—')}</td>
-          <td data-label="Status" title="${esc(caption || '')}">${
-            fleetBadge(state.text, state.health)}${caption ? `<div class="ft-sub">${esc(caption)}</div>` : ''}</td>
+          <td data-label="Status">${fleetBadge(state.text, state.health)}</td>
           <td data-label="Channels">${count(instance.channels)}</td>
           <td data-label="Last reported queue">${count(queue.running)} running · ${count(queue.queued)} queued${
             queue.held ? ' · paused' : ''}<div class="ft-sub">${instance.age_seconds != null
@@ -8866,64 +8677,17 @@ function renderFleetStory() {
               : 'Report age unknown'}</div></td>
           <td data-label="Checked in">${esc(fleetSeenText(instance.age_seconds != null
             ? Date.now() / 1000 - instance.age_seconds : null))}</td>
-          <td data-label="Actions">${actionable ? `<button type="button" class="sm"`
-            + ` data-id="${esc(instance.instance_id)}" onclick="fleetStoryUpdate(this)">Update Now</button>` : '—'}</td>
         </tr>`;
       }).join('')}</tbody></table>`
     : '<div class="fleet-empty">No Story Studio Mac has checked in yet.</div>';
-}
-
-// "Update now": the Mac installs on its next check-in (at most 30 minutes away), after draining.
-async function fleetStoryUpdate(button) {
-  const id = button.dataset.id;
-  const instance = (fleetStoryRows || []).find(row => String(row.instance_id) === String(id)) || {};
-  const machine = instance.machine || id;
-  button.disabled = true;
-  fleetNote('fleet-story-note', `Asking ${machine} to update…`);
-  try {
-    const answer = await api(`/story/instances/${fleetSeg(id)}/update`, fleetPayload());
-    const by = (answer && answer.instance && answer.instance.next_check_by) || null;
-    const when = by && by > Date.now() / 1000
-      ? `at its next check (within 30 minutes), ~${new Date(by * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-      : 'at its next check (within 30 minutes)';
-    fleetNote('fleet-story-note', `${machine} updates ${when}; it pauses its queue, waits for running jobs, installs and restarts.`);
-    await loadFleetStory();
-  } catch (e) {
-    fleetNote('fleet-story-note', `Could not ask ${machine} to update — ${e.message}`);
-  } finally { button.disabled = false; }
-}
-
-// Publishing never pushes: each Mac fetches on its next check-in, verifies the signature, and installs
-// once its queue has drained. The file is on the Gateway's own Mac, so its path is typed here.
-async function fleetPublishStory(button) {
-  const path = String(document.getElementById('fleet-story-path')?.value ?? '').trim();
-  if (!path) {
-    fleetNote('fleet-story-note', 'Enter the release file name from the Gateway folder shown above, or a full path outside Downloads.');
-    return;
-  }
-  const filename = path.split('/').pop();
-  if (!confirm(`Publish ${filename} to every Story Studio Mac?\n\nThe version is read from the app inside. `
-    + 'Each Mac installs it after its queue drains, unless its owner turned automatic updates off.')) return;
-  button.disabled = true;
-  fleetNote('fleet-story-note', `Signing ${filename}…`);
-  try {
-    const answer = await api('/story/release/publish', fleetPayload({ artifact_path: path }));
-    const version = (answer && answer.descriptor && answer.descriptor.version) || '?';
-    fleetNote('fleet-story-note', `Published Story Studio ${version}. Each Story Mac picks it up at its next check-in, within 30 minutes.`);
-    await loadFleetStory();
-  } catch (e) {
-    fleetNote('fleet-story-note', `Could not publish the Story Studio release — ${e.message}`);
-  } finally { button.disabled = false; }
 }
 
 async function loadFleetStory() {
   try {
     const answer = await api('/story/instances');
     fleetStoryRows = answer.instances || [];
-    fleetStoryRelease = answer.release || null;
   } catch (e) {
     fleetStoryRows = [];
-    fleetStoryRelease = null;
     const wrap = document.getElementById('fleet-story-wrap');
     if (wrap) wrap.innerHTML = `<div class="fleet-empty">Could not read Story Studio: ${esc(e.message)}</div>`;
     return;
@@ -9384,7 +9148,6 @@ function renderFleet(d) {
   renderFleetMachines(d);
   renderFleetWarningSettings(d);
   renderFleetLocations(d);
-  renderFleetRelease(d);
   renderFleetModels(d);
   renderFleetInstalls(d);
   renderFleetJobs(d);

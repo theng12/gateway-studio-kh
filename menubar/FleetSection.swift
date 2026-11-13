@@ -55,7 +55,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     /// A publish is in flight. The button is disabled until the gateway answers,
     /// because the body carries the whole artifact and the gateway then pushes it
     /// to every controller.
-    private var publishing = false
     /// The default JSON timeout is 15 s — an answer, not a gigabyte in flight. The
     /// gateway holds the whole base64 artifact in one body and pushes it to each
     /// controller sequentially, each with its own 600 s ceiling, so the wait can
@@ -90,7 +89,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private let macTrashBar = FleetMacTrashBar(frame: .zero)
     private lazy var modelsTab = FleetModelsTab(frame: .zero)
     private lazy var jobsTab = FleetJobsTab(frame: .zero)
-    private lazy var storyTab = FleetStoryTab(frame: .zero)
 
     lazy var view: NSView = buildContent()
 
@@ -262,7 +260,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         case .machines: return machinesTab
         case .models: return modelsTab
         case .jobs: return jobsTab
-        case .story: return storyTab
         }
     }
 
@@ -294,9 +291,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         locationsTab.onAddLocation = { [weak self] label, url, token in
             self?.addLocation(label: label, url: url, token: token)
         }
-        locationsTab.onPublishRelease = { [weak self] in self?.beginPublishRelease() }
-        locationsTab.onStopRollout = { [weak self] in self?.rolloutAction("stop") }
-        locationsTab.onResumeRollout = { [weak self] in self?.rolloutAction("resume") }
         locationsTab.onTest = { [weak self] location in self?.testController(location) }
         locationsTab.onRename = { [weak self] location in self?.renameController(location) }
         locationsTab.onNetwork = { [weak self] location in FleetNetwork.editLocation(location) { self?.reload() } }
@@ -313,7 +307,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         jobsTab.onRefresh = { [weak self] in self?.refreshEverything() }
         jobsTab.onCancel = { [weak self] job in self?.cancelJob(job) }
         jobsTab.onRetry = { [weak self] job, item in self?.retryJobItem(job, item: item) }
-        storyTab.report = { [weak self] kind, title, detail in self?.report(kind, title: title, detail: detail) }
     }
 
     // MARK: Tabs
@@ -331,7 +324,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         // The location and search filter narrows the three tables; Groups and Locations have no use for it
         // (Groups has its own search).
         filterRowHolder.isHidden = ![.machines, .models, .jobs].contains(tab)
-        if tab == .story { storyTab.reload() }
     }
 
     /// Locations tab: add a location through the form (used by the render harness).
@@ -523,7 +515,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         FleetNetwork.names = Set(snapshot.locations.compactMap(\.network) + snapshot.machines.compactMap(\.network)).sorted()
         // A successful read replaces whatever the status line said before (an old
         // error, "Loading…", "Refreshed N locations.") with how fresh the picture is.
-        if !adding && !publishing && !refreshing {
+        if !adding && !refreshing {
             setStatus(snapshot.generatedAt.map { "As of \(GatewayAPI.clock($0))" } ?? "")
         }
 
@@ -535,8 +527,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
         groupsTab.update(snapshot: snapshot)
         locationsTab.update(locations: snapshot.locations, machines: snapshot.machines)
-        locationsTab.updateRelease(locations: snapshot.locations, state: snapshot.release)
-        if !publishing { locationsTab.setRolloutRunning(snapshot.release?.rollout?.isRunning == true) }
         rebuildLocationPopup()
         applyFilter()
     }
@@ -556,10 +546,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         locations = []
         groupsTab.showError(error)
         locationsTab.update(locations: [])
-        locationsTab.updateRelease(
-            locations: [], state: nil,
-            unavailable: "The release status could not be read; the Fleet read failed."
-        )
         machinesTab.update(machines: [], studios: [:], filter: filter)
         startupBar.update(machines: [])
         macTrashBar.update(machines: [])
@@ -617,7 +603,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             filter: filter, installs: snapshot.modelInstalls)
         followSpread(snapshot.modelInstalls)
         jobsTab.update(snapshot: snapshot, filter: filter)
-        if selectedTab == .story { storyTab.reload() }
     }
 
     /// While an "Install on every Mac" runs, re-read the (cached) fleet every few seconds so its card moves; this
@@ -814,260 +799,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         }
     }
 
-    // MARK: Release publishing
-
-    struct PublishReleaseSheetForm {
-        let view: NSView
-        let versionField: NSTextField
-        let buildField: NSTextField
-        let allAtOnce: NSButton
-        let forceFull: NSButton
-        let forceFullHint: NSTextField
-
-        init(version: String, build: String, filename: String) {
-            versionField = NSTextField(string: version)
-            versionField.placeholderString = "0.6.50"
-            versionField.widthAnchor.constraint(equalToConstant: 220).isActive = true
-
-            buildField = NSTextField(string: build)
-            buildField.placeholderString = "abc1234"
-            buildField.widthAnchor.constraint(equalToConstant: 220).isActive = true
-
-            let hint = PageKit.help(
-                "Read from \(filename) — check both. They are signed and "
-                + "cannot be corrected without another push."
-            )
-            hint.preferredMaxLayoutWidth = 320
-            hint.widthAnchor.constraint(equalToConstant: 320).isActive = true
-
-            allAtOnce = NSButton(
-                checkboxWithTitle: "All at once (emergency): every controller now",
-                target: nil, action: nil
-            )
-
-            forceFull = NSButton(
-                checkboxWithTitle: "Send the whole app (not just the changed files)",
-                target: nil, action: nil
-            )
-            forceFull.state = .off
-
-            forceFullHint = PageKit.help("Use when a Mac is too far behind for a files-only update.")
-            forceFullHint.preferredMaxLayoutWidth = 320
-            forceFullHint.widthAnchor.constraint(equalToConstant: 320).isActive = true
-
-            let stack = NSStackView(views: [
-                PageKit.formRow("Version", versionField),
-                PageKit.formRow("Build", buildField),
-                hint,
-                allAtOnce,
-                forceFull,
-                forceFullHint,
-            ])
-            stack.orientation = .vertical
-            stack.alignment = .leading
-            stack.spacing = DS.Space.m
-            stack.frame = NSRect(x: 0, y: 0, width: 340, height: 240)
-            self.view = stack
-        }
-    }
-
-    /// Pick a `.dmg`, name its version and build, then sign and push it.
-    ///
-    /// The version and build are **asked for**, not taken from the filename: they
-    /// are what the gateway signs, a wrong one is signed exactly like a right one,
-    /// and the filename is only a hint. It pre-fills what can be read and leaves
-    /// the rest blank rather than guessing a version.
-    private func beginPublishRelease() {
-        guard !publishing else { return }
-
-        let panel = NSOpenPanel()
-        panel.title = "Choose a Studio Hub release"
-        panel.prompt = "Choose"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        // `allowedContentTypes` is the modern spelling, but it needs the
-        // UniformTypeIdentifiers framework and a newer deployment target; this app
-        // targets macOS 11. `ponytail:` swap it when the floor rises.
-        panel.allowedFileTypes = ["dmg"]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        let guessed = parseReleaseName(url.lastPathComponent)
-        let sheet = PublishReleaseSheetForm(version: guessed.version, build: guessed.build, filename: url.lastPathComponent)
-
-        let alert = NSAlert()
-        alert.messageText = "Publish \(url.lastPathComponent)?"
-        alert.informativeText =
-            "This gateway signs the DMG and rolls it out one location at a time: this Mac's Studio Hub, "
-            + "then each controller in turn, waiting for each to come back on the new version. Each "
-            + "group's Macs then update themselves one by one, after finishing their current work."
-        alert.accessoryView = sheet.view
-        alert.addButton(withTitle: "Publish")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = sheet.versionField
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        let version = sheet.versionField.stringValue.trimmingCharacters(in: .whitespaces)
-        let build = sheet.buildField.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !version.isEmpty, !build.isEmpty else {
-            report(
-                .error,
-                title: "A version and a build are required",
-                detail: "Enter both, then publish again. Nothing was pushed."
-            )
-            return
-        }
-
-        // Warn *before* a 1.1 GB push when a controller already holds something
-        // newer. Studio Hub's updater has no ordering, so it would take the older
-        // build; the gateway refuses that too, but catching it here saves the
-        // round trip and lets the owner decide with the labels in front of them.
-        let older = downgrades(of: version)
-        if !older.isEmpty {
-            let lines = older.map { "• \($0.label) holds \($0.held)" }.joined(separator: "\n")
-            let confirm = NSAlert()
-            confirm.messageText = "Publish \(version) over a newer release?"
-            confirm.informativeText =
-                "These controllers already hold a newer version:\n\(lines)\n\n"
-                + "Publishing \(version) would take them backwards. Continue only if "
-                + "that is what you want."
-            confirm.alertStyle = .warning
-            confirm.addButton(withTitle: "Publish Anyway")
-            confirm.addButton(withTitle: "Cancel")
-            guard confirm.runModal() == .alertFirstButtonReturn else { return }
-            publishRelease(
-                path: url.path, version: version, build: build,
-                filename: url.lastPathComponent, allowDowngrade: true,
-                allAtOnce: sheet.allAtOnce.state == .on,
-                forceFull: sheet.forceFull.state == .on
-            )
-            return
-        }
-
-        publishRelease(
-            path: url.path, version: version, build: build, filename: url.lastPathComponent,
-            allAtOnce: sheet.allAtOnce.state == .on, forceFull: sheet.forceFull.state == .on
-        )
-    }
-
-    /// The controllers that already hold a **newer** version than `version`.
-    ///
-    /// Mirrors `gateway/release_publisher.py::is_downgrade`: the backend guard is
-    /// the enforcement, and this only powers the warning. A version with no
-    /// dotted-number order is never treated as a downgrade — refusing on a guess
-    /// would be worse than not refusing.
-    private func downgrades(of version: String) -> [(label: String, held: String)] {
-        locations.compactMap { location in
-            guard location.local != true, location.reachable != false else { return nil }
-            guard let held = location.release?.version, isNewer(held, than: version) else { return nil }
-            return (label: location.label ?? location.id ?? "Controller", held: held)
-        }
-    }
-
-    /// `1.2.3` as comparable numbers, or `nil` when it is not dotted numbers.
-    private func versionParts(_ version: String?) -> [Int]? {
-        let text = (version ?? "").trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty else { return nil }
-        var numbers: [Int] = []
-        for part in text.split(separator: ".", omittingEmptySubsequences: false) {
-            guard !part.isEmpty, part.allSatisfy(\.isNumber), let value = Int(part) else { return nil }
-            numbers.append(value)
-        }
-        return numbers
-    }
-
-    private func isNewer(_ candidate: String?, than version: String) -> Bool {
-        guard let held = versionParts(candidate), let target = versionParts(version) else { return false }
-        let count = max(held.count, target.count)
-        let paddedHeld = held + Array(repeating: 0, count: count - held.count)
-        let paddedTarget = target + Array(repeating: 0, count: count - target.count)
-        // `[Int]` is not Comparable; lexicographic order is the same comparison.
-        // True when the target is below what is held, i.e. the held one is newer.
-        return paddedTarget.lexicographicallyPrecedes(paddedHeld)
-    }
-
-    /// `StudioHub-0.6.50-abc1234.dmg` → version `0.6.50`, build `abc1234`.
-    ///
-    /// Conservative on purpose: anything that does not clearly fit leaves both
-    /// fields blank. A wrong version is signed exactly like a right one, so a
-    /// guess here is worse than an empty field.
-    private func parseReleaseName(_ name: String) -> (version: String, build: String) {
-        let stem = (name as NSString).deletingPathExtension
-        let parts = stem.split(separator: "-").map(String.init)
-        guard parts.count >= 3 else { return ("", "") }
-        let version = parts[1]
-        let build = parts[2]
-        let versionLooksRight = version.contains(where: \.isNumber)
-            && version.allSatisfy { $0.isNumber || $0 == "." }
-        let buildLooksRight = !build.isEmpty
-            && build.allSatisfy { $0.isLetter || $0.isNumber }
-        guard versionLooksRight, buildLooksRight else { return ("", "") }
-        return (version, build)
-    }
-
-    private func controllerCountDescription() -> String {
-        let count = locations.filter { $0.local != true }.count
-        guard count > 0 else { return "no controllers" }
-        return "\(count) controller\(count == 1 ? "" : "s")"
-    }
-
-    private func publishRelease(
-        path: String, version: String, build: String, filename: String,
-        allowDowngrade: Bool = false, allAtOnce: Bool = false, forceFull: Bool = false
-    ) {
-        publishing = true
-        locationsTab.setPublishing(
-            true,
-            message: allAtOnce
-                ? "Signing \(filename) and pushing it to \(controllerCountDescription()) at once. "
-                    + "This can take a while."
-                : "Starting the rollout of \(filename)…"
-        )
-        setStatus("Signing and pushing \(filename)…")
-        var body: [String: Any] = [
-            "artifact_path": path,
-            "version": version,
-            "build": build,
-            "filename": filename,
-        ]
-        // Only sent when the owner chose to override the newer-version guard.
-        if allowDowngrade { body["allow_downgrade"] = true }
-        if allAtOnce { body["mode"] = "all_at_once" }
-        if forceFull { body["force_full"] = true }
-        GatewayAPI.post(
-            "/admin/api/release/publish",
-            body: body,
-            timeout: Self.publishTimeout
-        ) { [weak self] result in
-            guard let self else { return }
-            self.publishing = false
-            self.locationsTab.setPublishing(false, message: "")
-            switch result {
-            case .failure(let error):
-                self.report(
-                    .error,
-                    title: "Could not publish the release",
-                    detail: error.localizedDescription
-                )
-                self.setStatus("The release could not be published.", colour: Health.bad.text)
-            case .success(let payload):
-                if let rollout = (payload["rollout"] as? [String: Any]).flatMap(FleetRollout.from) {
-                    self.report(
-                        .success,
-                        title: "Rolling out \(version) (\(build))",
-                        detail: rollout.summary ?? "One location at a time; the progress is shown below."
-                    )
-                    self.setStatus("Rolling out \(version) (\(build)), one location at a time.")
-                } else {
-                    self.reportPublish(payload, version: version, build: build)
-                }
-            }
-            // The held-release column is what a controller reports now, so it is
-            // re-read after the push rather than filled from the push's own answer.
-            self.reload()
-        }
-    }
-
     /// The Machines tab's "Reset Job Counters…": every Mac counts done/failed from now on. A baseline the
     /// Gateway keeps and every Hub counts from; no Hub's job history is touched.
     @objc private func resetCounters() {
@@ -1090,74 +821,6 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
                 self.reload(force: true)
             }
         }
-    }
-
-    /// Stop or resume the paced rollout. Stopping lets a push in flight finish; nothing is undone.
-    private func rolloutAction(_ action: String) {
-        GatewayAPI.post("/admin/api/release/rollout/\(action)", body: [:]) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .failure(let error):
-                self.report(.error, title: "Could not \(action) the rollout", detail: error.localizedDescription)
-            case .success(let payload):
-                let rollout = (payload["rollout"] as? [String: Any]).flatMap(FleetRollout.from)
-                self.report(.success, title: action == "stop" ? "Rollout stopped" : "Rollout resumed",
-                            detail: rollout?.summary ?? "")
-            }
-            self.reload()
-        }
-    }
-
-    private func reportPublish(_ payload: [String: Any], version: String, build: String) {
-        guard let push = FleetPushReport.from(payload) else {
-            report(
-                .warning,
-                title: "The release was pushed, but its answer could not be read",
-                detail: "Reload the page to see what each controller holds."
-            )
-            return
-        }
-        let total = push.outcomes.count
-        let refusals = push.refusals
-        let accepted = total - refusals.count
-        if total == 0 {
-            report(
-                .warning,
-                title: "Signed \(version) (\(build)) — no controllers to send it to",
-                detail: "Add a location, then publish again."
-            )
-            setStatus("Signed \(version) (\(build)); no controllers to send it to.", colour: Health.warn.text)
-            return
-        }
-        if push.allAccepted {
-            report(
-                .success,
-                title: "Published \(version) (\(build))",
-                detail: "All \(total) controller\(total == 1 ? "" : "s") accepted it and read back "
-                    + "the same release."
-            )
-            setStatus("Published \(version) (\(build)) to \(total) controller\(total == 1 ? "" : "s").")
-            return
-        }
-        // Each controller's own sentence, verbatim, one per refusal. A 409 already
-        // carries the App Update Key public-key path and comparison fingerprint.
-        let details = refusals.map { refusal -> String in
-            let name = refusal.outcome.label
-                ?? locations.first { $0.id == refusal.id }?.label
-                ?? refusal.id
-            let detail = (refusal.outcome.detail ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return detail.isEmpty ? "\(name): refused without a reason" : "\(name): \(detail)"
-        }.joined(separator: "\n")
-        report(
-            .warning,
-            title: "Published to \(accepted) of \(total) controller\(total == 1 ? "" : "s")",
-            detail: details
-        )
-        setStatus(
-            "Published \(version) (\(build)) to \(accepted) of \(total) controllers.",
-            colour: Health.warn.text
-        )
     }
 
     // MARK: Banner
@@ -1755,9 +1418,7 @@ final class FleetBanner: NSView {
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailLabel.font = TextRole.secondary.font
         detailLabel.textColor = .secondaryLabelColor
-        // Up to six lines so a publish can name each refusing controller in its
-        // own sentence. The Release section below carries every refusal in full,
-        // so a fleet larger than the banner can show is never silently dropped.
+        // Up to six lines, so a fleet-wide result can name each Mac that needs the owner.
         detailLabel.maximumNumberOfLines = 6
         detailLabel.lineBreakMode = .byWordWrapping
         detailLabel.preferredMaxLayoutWidth = 0

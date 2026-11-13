@@ -304,7 +304,7 @@ for page in pageNames where !["fleet-rename", "fleet-workstation", "fleet-add", 
                     while !done && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
                     if let failure { print("fleet tab \(tab) did not apply: \(failure)") }
                     spin(1.2)
-                } else if let number = ["groups": 0, "locations": 1, "machines": 2, "models": 3, "jobs": 4, "story": 5][tab],
+                } else if let number = ["groups": 0, "locations": 1, "machines": 2, "models": 3, "jobs": 4][tab],
                           let kind = FleetTab(rawValue: number) {
                     FleetSection.shared.select(kind)
                 }

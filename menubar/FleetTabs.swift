@@ -15,7 +15,7 @@ import AppKit
 // MARK: - Tabs
 
 enum FleetTab: Int, CaseIterable {
-    case groups, locations, machines, models, jobs, story
+    case groups, locations, machines, models, jobs
 
     var title: String {
         switch self {
@@ -24,7 +24,6 @@ enum FleetTab: Int, CaseIterable {
         case .machines: return "Machines"
         case .models: return "Local Models"
         case .jobs: return "Jobs / Generations"
-        case .story: return "Story Studio"
         }
     }
 
@@ -36,7 +35,6 @@ enum FleetTab: Int, CaseIterable {
         case .machines: return "Machines"
         case .models: return "Models"
         case .jobs: return "Jobs"
-        case .story: return "Story Studio"
         }
     }
 }
@@ -542,14 +540,6 @@ final class FleetLocationsTab: FleetTabView {
     var onRefresh: (() -> Void)?
     var onRetryFailed: (() -> Void)?
     var onAddLocation: ((String, String, String) -> Void)?
-    /// Asks the shell to run the publish flow — the open panel, the version/build
-    /// alert and the network all belong there, not in a tab that a layout test
-    /// builds without a gateway.
-    var onPublishRelease: (() -> Void)?
-    /// Stop or resume the paced rollout (`/admin/api/release/rollout/stop|resume`).
-    var onStopRollout: (() -> Void)?
-    var onResumeRollout: (() -> Void)?
-
     private lazy var controller = FleetTableController(columns: columns(), rowHeight: 44)
     /// Location id -> "1 Mac on A" under its Network (`update(locations:machines:)`).
     private var networkNotes: [String: String] = [:]
@@ -560,17 +550,6 @@ final class FleetLocationsTab: FleetTabView {
         }
         button.isHidden = true
         return button
-    }()
-    /// The per-controller release report, rebuilt on every fleet read.
-    private let releaseStack = NSStackView()
-    private let releaseStatus = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
-    /// This gateway's own publisher fingerprint, so a controller that trusts it
-    /// reads "this gateway" rather than an opaque hex string.
-    private var identityFingerprint: String?
-    private lazy var publishButton: PrimaryButton = {
-        PrimaryButton(title: "Publish a Studio Hub Release…", regular: true) { [weak self] in
-            self?.onPublishRelease?()
-        }
     }()
     private let labelField = NSTextField(string: "")
     private let urlField = NSTextField(string: "")
@@ -603,31 +582,6 @@ final class FleetLocationsTab: FleetTabView {
         page.addArrangedSubview(controller.container)
         fullWidth(controller.container)
 
-        // ---- Release
-        //
-        // What the controllers *hold*, beside what the last push did with it. The
-        // two are different facts: a controller accepting a push is not the same as
-        // a controller that stored it, and only the controller's own read-back
-        // answers the second. A refusal is quoted word for word.
-        addSection("Release")
-        page.addArrangedSubview(PageKit.help(
-            "The Studio Hub app release this gateway signs and pushes to your controllers. "
-            + "“Held” is what each controller reports it has now — not what was pushed. "
-            + "A refusal below is the controller's own sentence, quoted exactly."
-        ))
-        let publishRow = PageKit.row([publishButton, NSView()])
-        page.addArrangedSubview(publishRow)
-        fullWidth(publishRow)
-        releaseStatus.preferredMaxLayoutWidth = 520
-        releaseStatus.isHidden = true
-        page.addArrangedSubview(releaseStatus)
-        releaseStack.orientation = .vertical
-        releaseStack.alignment = .leading
-        releaseStack.spacing = DS.Space.m
-        let releaseCard = CardView()
-        releaseCard.hold(releaseStack, inset: NSEdgeInsets(top: DS.Space.m, left: DS.Space.l, bottom: DS.Space.m, right: DS.Space.l))
-        page.addArrangedSubview(releaseCard)
-        fullWidth(releaseCard)
 
         addSection("Add a location")
         page.addArrangedSubview(PageKit.help(
@@ -793,34 +747,12 @@ final class FleetLocationsTab: FleetTabView {
             ),
             FleetColumn(
                 id: "lhub", title: "Hub", width: 120, minWidth: 100, sortable: false,
-                // **The version, against the newest release this Gateway published** — not against the
-                // release this build was compiled for, which called every controller "newer" the day after
-                // a release. `versionStatus` is the controller's own Mac (fleet.stamp_controller_versions).
+                // **The version this controller reports.** There is no "latest" comparison: Gateway no
+                // longer publishes app releases (owner rule 2026-11-13: only Studio Launcher KH installs
+                // updates), so it has no target version to rate a Mac against.
                 text: { row in
                     guard let row = location(row) else { return "—" }
-                    let stated = FleetFormat.text(row.version)
-                    switch row.versionStatus {
-                    case "latest": return "\(stated) · Latest"
-                    case "updating": return "\(stated) · Updating…"
-                    case "behind": return "\(stated) · Behind"
-                    default: return stated
-                    }
-                },
-                colour: { row in
-                    switch location(row)?.versionStatus {
-                    case "behind": return Health.warn.text
-                    case "updating": return Health(state: "updating").text
-                    default: return .labelColor
-                    }
-                },
-                tooltip: { row in
-                    switch location(row)?.versionStatus {
-                    case "latest": return "The newest Studio Hub this Gateway has published."
-                    case "updating": return "The controller holds the newest release and installs it as soon as it is idle."
-                    case "behind": return "Behind the newest release, and not updating by itself. Open Studio Hub on "
-                        + "that Mac, or publish the release to this group."
-                    default: return "Nothing has been published from this Gateway to compare with."
-                    }
+                    return FleetFormat.text(row.version)
                 }
             ),
             FleetColumn(
@@ -857,23 +789,6 @@ final class FleetLocationsTab: FleetTabView {
                 },
                 sortValue: { row in .number(Double(location(row).flatMap { models($0).offered } ?? 0)) },
                 tooltip: { _ in "Models offered, of the models discovered." }
-            ),
-            FleetColumn(
-                id: "lrelease", title: "Release", width: 112, minWidth: 90, hideBelow: 720,
-                text: { row in location(row)?.release?.versionBuild ?? "—" },
-                sortValue: { row in
-                    guard let release = location(row)?.release else { return .none }
-                    return .text(release.versionBuild)
-                },
-                tooltip: { row in
-                    guard let release = location(row)?.release else { return nil }
-                    var parts: [String] = []
-                    if let filename = release.filename, !filename.isEmpty { parts.append(filename) }
-                    if let sha = release.sha256, !sha.isEmpty { parts.append("sha256 \(sha)") }
-                    if let key = release.publisherKeyId, !key.isEmpty { parts.append("signed by \(key)") }
-                    if let key = release.controllerKeyId, !key.isEmpty { parts.append("countersigned by \(key)") }
-                    return parts.isEmpty ? nil : parts.joined(separator: "\n")
-                }
             ),
             FleetColumn(
                 id: "lstatus", title: "Status", width: 220, minWidth: 120, flex: 4, sortable: false,
@@ -992,251 +907,6 @@ final class FleetLocationsTab: FleetTabView {
         // **Every location in view, up to twelve.** A fixed 240 pt showed five rows, so with the owner's
         // eight the location just added — appended last — was below the fold and read as missing.
         tableHeight.constant = 40 + 44 * CGFloat(min(max(locations.count, 4), 12))
-    }
-
-    /// The Release section: what each configured controller holds now, and what
-    /// the last push did with it.
-    ///
-    /// `state` is the top-level `release` object from the fleet read. A gateway
-    /// that sends none leaves the rows saying so; a controller the last push
-    /// never reached says "not pushed from here yet" rather than borrowing
-    /// another controller's outcome. `unavailable` is for the case the *read*
-    /// failed: "I could not read the answer" must not look like "there is none".
-    func updateRelease(
-        locations: [FleetLocation], state: FleetReleaseState?, unavailable: String? = nil
-    ) {
-        for view in releaseStack.arrangedSubviews {
-            releaseStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-        if let unavailable, !unavailable.isEmpty {
-            addReleaseLine(unavailable, colour: Health.warn.text)
-            return
-        }
-        let report = state?.lastPush
-        let reportKnown = state != nil
-        identityFingerprint = state?.identity?.fingerprint
-        if let error = state?.error, !error.isEmpty {
-            addReleaseLine(error, colour: Health.warn.text)
-        }
-        if let rollout = state?.rollout {
-            addRollout(rollout)
-        }
-        if let report, let updated = report.updatedAt {
-            addReleaseLine(
-                "Last push from this gateway: \(report.release?.versionBuild ?? "—"), "
-                + "\(FleetFormat.relative(updated)).",
-                colour: .secondaryLabelColor
-            )
-        } else if reportKnown {
-            addReleaseLine(
-                "This gateway has not pushed a release yet.", colour: .secondaryLabelColor
-            )
-        } else {
-            addReleaseLine(
-                "This gateway did not report a release status.", colour: Health.warn.text
-            )
-        }
-        // The local Mac is a location but not a controller: releases are pushed to
-        // configured controllers only, so it has no row here.
-        let controllers = locations.filter { $0.local != true }
-        guard !controllers.isEmpty else {
-            addReleaseLine("No controllers are configured yet.", colour: .secondaryLabelColor)
-            return
-        }
-        // **One line when every controller says the same thing about its trusted publisher** ("the Hub did not
-        // report one", three times over, said nothing the first did not).
-        let trusts = Set(controllers.map { trustedPublisherText(for: $0) })
-        let sharedTrust = trusts.count == 1 && controllers.count > 1 ? controllers.first : nil
-        if let sharedTrust {
-            addReleaseLine(trustedPublisherText(for: sharedTrust), colour: trustedPublisherColour(for: sharedTrust))
-        }
-        for controller in controllers {
-            let outcome = report?.outcomes[controller.id ?? ""]
-            let row = releaseRow(for: controller, outcome: outcome, reportKnown: reportKnown,
-                                 showTrust: sharedTrust == nil)
-            releaseStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: releaseStack.widthAnchor).isActive = true
-        }
-    }
-
-    /// Disable the publish button while a push is in flight and say what it is
-    /// doing, because a 1.1 GB artifact in one base64 body is a long wait.
-    /// One rollout at a time: the gateway refuses a second, so the button says so before it is pressed.
-    func setRolloutRunning(_ running: Bool) {
-        publishButton.isEnabled = !running
-        publishButton.toolTip = running ? "A rollout is running. Stop it first, or wait for it to finish." : nil
-    }
-
-    func setPublishing(_ publishing: Bool, message: String) {
-        publishButton.isEnabled = !publishing
-        releaseStatus.isHidden = !publishing
-        releaseStatus.stringValue = publishing ? message : ""
-    }
-
-    /// The paced rollout: its one line with Stop or Resume beside it, why it stopped, then each location
-    /// in order — its state and, once the release reached it, how many of its Macs run the new version
-    /// (they update themselves, one at a time).
-    private func addRollout(_ rollout: FleetRollout) {
-        let version = rollout.version ?? "the release"
-        let headline = PageKit.label(
-            "Rollout of \(version): \(rollout.summary ?? rollout.state ?? "")", .rowTitle, wrapping: true
-        )
-        headline.preferredMaxLayoutWidth = 520
-        var views: [NSView] = [headline, NSView()]
-        if rollout.isRunning {
-            views.append(FleetClosureButton(title: "Stop Rollout") { [weak self] in self?.onStopRollout?() })
-        } else if rollout.canResume {
-            views.append(FleetClosureButton(title: "Resume Rollout") { [weak self] in self?.onResumeRollout?() })
-        }
-        let head = PageKit.row(views)
-        releaseStack.addArrangedSubview(head)
-        head.widthAnchor.constraint(equalTo: releaseStack.widthAnchor).isActive = true
-        if let reason = rollout.reason, !reason.isEmpty, !rollout.isRunning {
-            addReleaseLine("Stopped: \(reason).", colour: (rollout.state == "failed" ? Health.bad : Health.warn).text)
-        }
-        for (_, step) in rollout.orderedSteps {
-            let (text, health) = step.panelText(version: version)
-            addReleaseLine("\(step.label ?? "—") — \(text)", colour: health.map(\.text) ?? .secondaryLabelColor)
-        }
-    }
-
-    private func addReleaseLine(_ text: String, colour: NSColor) {
-        let label = PageKit.label(text, .secondary, colour: colour, wrapping: true)
-        label.preferredMaxLayoutWidth = 620
-        releaseStack.addArrangedSubview(label)
-        label.widthAnchor.constraint(equalTo: releaseStack.widthAnchor).isActive = true
-    }
-
-    private func releaseRow(
-        for location: FleetLocation, outcome: FleetPushOutcome?, reportKnown: Bool, showTrust: Bool = true
-    ) -> NSView {
-        let name = PageKit.label(
-            location.label ?? location.id ?? "Controller", .rowTitle
-        )
-        name.lineBreakMode = .byTruncatingTail
-        name.setContentHuggingPriority(.required, for: .horizontal)
-        name.widthAnchor.constraint(equalToConstant: 170).isActive = true
-
-        let heldText = location.release.map { "held \($0.versionBuild)" } ?? "held none"
-        let held = PageKit.label(
-            heldText, .secondary,
-            colour: location.release == nil ? .secondaryLabelColor : .labelColor
-        )
-        held.lineBreakMode = .byTruncatingTail
-        let top = PageKit.row([name, held, NSView()])
-
-        let outcomeLabel = PageKit.label(
-            releaseOutcomeText(outcome, for: location, reportKnown: reportKnown),
-            .secondary, colour: releaseOutcomeColour(outcome, reportKnown: reportKnown),
-            wrapping: true
-        )
-        outcomeLabel.preferredMaxLayoutWidth = 620
-
-        // What the controller trusts decides whether a push will be accepted at
-        // all, so it is shown beside what it holds — before the push, not only
-        // after a refusal.
-        let trustLabel = PageKit.label(
-            trustedPublisherText(for: location),
-            .secondary, colour: trustedPublisherColour(for: location), wrapping: true
-        )
-        trustLabel.preferredMaxLayoutWidth = 620
-
-        let stack = NSStackView(views: showTrust ? [top, trustLabel, outcomeLabel] : [top, outcomeLabel])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = DS.Space.xs
-        stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return stack
-    }
-
-    /// What the controller says it trusts. `reported == false` is "this Hub does
-    /// not carry the field" (older than 0.6.51), which is **not** the same answer
-    /// as an installed `null` — that one means it trusts nobody and a push will
-    /// be refused until the gateway's raw public key is installed.
-    private func trustedPublisherText(for location: FleetLocation) -> String {
-        guard let trust = location.trustedPublisher, trust.reported == true else {
-            return "App Update Key: the Hub did not report one."
-        }
-        let fingerprint = (trust.fingerprint ?? "").trimmingCharacters(in: .whitespaces)
-        guard !fingerprint.isEmpty else {
-            return "App Update Key: none installed yet — copy it from Gateway → Settings → App Update Key "
-                + "into Hub → Connections → App updates, then compare the first eight characters."
-        }
-        let who = (trust.publisherId ?? "").trimmingCharacters(in: .whitespaces)
-        let short = String(fingerprint.prefix(12))
-        let named = fingerprint == identityFingerprint ? "this gateway" : (who.isEmpty ? "unnamed" : who)
-        return "App Update Key (fingerprint): \(named) \(short)…"
-    }
-
-    private func trustedPublisherColour(for location: FleetLocation) -> NSColor {
-        guard let trust = location.trustedPublisher, trust.reported == true else {
-            return .secondaryLabelColor
-        }
-        let fingerprint = (trust.fingerprint ?? "").trimmingCharacters(in: .whitespaces)
-        guard !fingerprint.isEmpty else { return Health.warn.text }
-        return fingerprint == identityFingerprint ? Health.ok.text : Health.warn.text
-    }
-
-    /// The last push's outcome for one controller. A refusal is the gateway's or
-    /// the controller's own sentence, kept exactly — a 409 already names the App
-    /// Update Key public-key path and comparison fingerprint.
-    private func releaseOutcomeText(
-        _ outcome: FleetPushOutcome?, for location: FleetLocation, reportKnown: Bool
-    ) -> String {
-        guard let outcome else {
-            return reportKnown ? "Not pushed from here yet." : "No push outcome was reported."
-        }
-        if outcome.auto == true {
-            let at = outcome.at.map { " at \(Self.shortTime($0))" } ?? ""
-            if outcome.pending == true { return "Catching up… sending the newest release automatically." }
-            if outcome.ok == true {
-                let readBack = outcome.release?.versionBuild ?? location.release?.versionBuild ?? "—"
-                return "Sent automatically\(at) — it read back \(readBack)."
-            }
-            let why = (outcome.detail ?? outcome.code ?? "no reason given")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if outcome.skipped == true { return "Not sent automatically — \(why)" }
-            let stop = why.hasSuffix(".") ? "" : "."
-            let retry = outcome.retryAt.map { "\(stop) Next try at \(Self.shortTime($0))." } ?? ""
-            return "Automatic send failed\(at) — \(why)\(retry)"
-        }
-        if outcome.ok == true {
-            let readBack = outcome.release?.versionBuild ?? location.release?.versionBuild
-            if let readBack, readBack != "—" {
-                return "Last push accepted — it read back \(readBack)."
-            }
-            return "Last push accepted — it read back no release."
-        }
-        let detail = (outcome.detail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !detail.isEmpty { return "Last push refused — \(detail)" }
-        if let code = outcome.code, !code.isEmpty {
-            return "Last push refused — \(code)"
-        }
-        return "Last push refused — the controller gave no reason."
-    }
-
-    private static func shortTime(_ epoch: Double) -> String {
-        DateFormatter.localizedString(
-            from: Date(timeIntervalSince1970: epoch), dateStyle: .none, timeStyle: .short
-        )
-    }
-
-    /// 409 is the actionable "no trusted publisher key yet" case, so it stays
-    /// orange; anything else is a harder failure and reads red.
-    private func releaseOutcomeColour(
-        _ outcome: FleetPushOutcome?, reportKnown: Bool
-    ) -> NSColor {
-        guard let outcome else {
-            return reportKnown ? .secondaryLabelColor : Health.warn.text
-        }
-        if outcome.pending == true { return .secondaryLabelColor }
-        if outcome.ok == true { return Health.ok.text }
-        if outcome.skipped == true { return Health.warn.text }
-        // A refused downgrade is a decision for the owner, not a failure: orange,
-        // and the detail says what it holds and how to publish anyway.
-        if outcome.downgrade == true { return Health.warn.text }
-        return outcome.status == 409 ? Health.warn.text : Health.bad.text
     }
 
     func setStatus(_ text: String, colour: NSColor = .secondaryLabelColor) {
@@ -1472,7 +1142,7 @@ final class FleetMachinesTab: NSView {
             ),
             FleetColumn(
                 id: "version", title: "Version", width: 116, minWidth: 100, hideBelow: 640,
-                // Studio Hub on this Mac against the newest release this Gateway published.
+                // The version this Mac reports; Gateway publishes no release to compare against.
                 text: { [weak self] any in
                     guard let row = machine(any) else { return "—" }
                     return row.versionBadge(latest: self?.summary?.hubLatest)?.text ?? row.hubVersion ?? "—"

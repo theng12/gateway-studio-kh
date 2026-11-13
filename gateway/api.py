@@ -777,10 +777,6 @@ async def lifespan(_: FastAPI):
     fleet.start_refresher()
     # Catalogue reads are memory copies from here on; the rebuild runs behind them.
     catalog.start_refresher()
-    # A Studio Hub rollout the last run was in the middle of carries on (`release_rollout`).
-    from . import release_rollout
-
-    release_rollout.resume_on_startup()
     # An "Install on every Mac" the last run was in the middle of carries on (`model_share`).
     from . import model_share
 
@@ -2796,109 +2792,18 @@ def credit_activity(
 
 
 # ---------------------------------------------------------------------------
-# Story Studio releases (`story_releases`): the signed release, its file, and each Story Mac's
-# check-in. Same bearer key as every other call Story makes, so no second credential exists.
+# Story Macs check in here (`story_instances`): version, channels, queue and the Content Packs they
+# were asked to remove. **Gateway serves no Story app release** (owner rule 2026-11-13: only Studio
+# Launcher KH installs updates), so the old answer keys stay empty for older Story builds.
 # ---------------------------------------------------------------------------
-def _story_offer(call: Any) -> Any:
-    from . import release_publisher, story_releases
-    try:
-        return call()
-    except story_releases.StoryReleaseError as exc:
-        raise GatewayError(exc.status, exc.message, exc.code) from exc
-    except release_publisher.ReleaseError as exc:
-        raise GatewayError(exc.status, exc.message, exc.code) from exc
-
-
-@app.get("/v1/apps/story/release", dependencies=[Depends(require_auth)])
-def story_release() -> Any:
-    from . import story_releases
-    return _story_offer(story_releases.offer)
-
-
-@app.get("/v1/apps/story/release/file", dependencies=[Depends(require_auth)])
-def story_release_file(
-    range_header: str | None = Header(default=None, alias="Range"),
-    if_range: str | None = Header(default=None, alias="If-Range"),
-) -> Any:
-    """Serve the offered release file.
-
-    HTTP range (RFC 9110 §14): a caller may send `Range: bytes=N-` to resume a partial
-    transfer of the ~240 MB artifact. `bytes=N-M` (a closed range) is honoured too, with
-    its inclusive end clamped to the last byte. The offer is immutable while published,
-    but a NEW publish replaces it, so an `If-Range` whose value is not THIS descriptor's
-    sha256 is answered with the full 200 body (the spec's behaviour for a changed
-    validator), never a mixed 206. Deliberately supported is the single-range form only:
-    a suffix range (`bytes=-N`), a reversed or unsatisfiable-inner range, multiple ranges,
-    any non-`bytes` unit, and any malformed spec are all IGNORED with the full 200 — a
-    consistent explicit fallback, never a partial guess. A start at or past the end of the
-    file answers 416 with `Content-Range: bytes */<total>`. Every accepted bound is parsed
-    strictly ASCII-digit and length-capped so a huge or Unicode-digit header can neither
-    raise nor allocate; a caller without Range gets exactly the old full-body response.
-    """
-    from fastapi.responses import StreamingResponse
-    from . import story_releases
-    opened = story_releases.open_artifact()
-    if opened is None:
-        raise GatewayError(404, "No Story Studio release is published.", "STORY_RELEASE_NONE")
-    handle, descriptor = opened
-    total = descriptor["bytes"]
-
-    def ascii_digits(text: str) -> bool:
-        # `str.isdigit()` accepts Unicode digits (e.g. "٥", "５") that int() would parse
-        # into surprising values, and a header can carry thousands of digits whose int()
-        # conversion itself costs time; accept only plain ASCII and bound the length.
-        return 0 < len(text) <= 20 and all("0" <= c <= "9" for c in text)
-
-    start, end_inclusive = 0, total - 1
-    ranged = False
-    if range_header is not None:
-        units, _, spec = range_header.partition("=")
-        first, dash, last = spec.strip().partition("-")
-        if (units.strip().lower() == "bytes" and dash
-                and ascii_digits(first) and (last == "" or ascii_digits(last))):
-            # Exactly one range, no list: a second comma means we ignore the header.
-            if "," not in spec:
-                first_n, last_n = int(first), int(last) if last else None
-                if last_n is not None and last_n < first_n:
-                    pass  # reversed bounds: ignored, full 200 below
-                else:
-                    # A stale If-Range means the partial belongs to a REPLACED artifact, so the
-                    # contract answer is the full 200 — even past the new file's end. Only a
-                    # range that survives its validator may 416.
-                    stale = if_range is not None and if_range.strip() != descriptor["sha256"]
-                    if not stale:
-                        if first_n >= total:
-                            handle.close()
-                            return Response(status_code=416, headers={"Content-Range": f"bytes */{total}"})
-                        start = first_n
-                        end_inclusive = total - 1 if last_n is None else min(last_n, total - 1)
-                        ranged = True
-
-    length = end_inclusive - start + 1
-
-    def chunks() -> Any:
-        if start:
-            handle.seek(start)
-        remaining = length
-        with handle:
-            while remaining > 0 and (block := handle.read(min(1 << 20, remaining))):
-                remaining -= len(block)
-                yield block
-
-    headers = {"Accept-Ranges": "bytes",
-               "Content-Disposition": f'attachment; filename="{descriptor["filename"]}"',
-               "Content-Length": str(length)}
-    if ranged:
-        headers["Content-Range"] = f"bytes {start}-{end_inclusive}/{total}"
-        return StreamingResponse(chunks(), status_code=206, media_type="application/octet-stream",
-                                 headers=headers)
-    return StreamingResponse(chunks(), media_type="application/octet-stream", headers=headers)
-
-
 @app.post("/v1/apps/story/checkin", dependencies=[Depends(require_auth)])
 def story_checkin(payload: dict[str, Any]) -> Any:
-    from . import story_releases
-    return _story_offer(lambda: story_releases.checkin(payload))
+    from . import story_instances
+
+    try:
+        return story_instances.checkin(payload)
+    except story_instances.StoryCheckinError as exc:
+        raise GatewayError(exc.status, exc.message, exc.code) from exc
 
 
 # ---------------------------------------------------------------------------

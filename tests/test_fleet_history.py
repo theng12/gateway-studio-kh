@@ -799,7 +799,6 @@ class TheSnapshotCarriesIt(HistoryCase):
         self.advance(60)
         self.observe([machine(up=False, reach_reason="no_hub")])
         with mock.patch.object(fleet, "snapshot", lambda **_: cached), \
-                mock.patch.object(admin.release_rollout, "status", lambda *a, **k: {}), \
                 mock.patch.object(admin.model_share, "stamp_networks", lambda *a, **k: None), \
                 mock.patch.object(admin.store, "stats", lambda: {"by_state": {}, "background": 0}):
             client = TestClient(api.app, client=("127.0.0.1", 1234))

@@ -49,7 +49,6 @@ from . import price_evidence
 from . import pricing
 from .pricing import row_price
 from . import qualification
-from . import release_publisher, release_rollout
 from . import admin_session, model_share, render_optin, startup_control
 from . import orphans
 from .config import is_loopback, request_is_loopback
@@ -130,35 +129,6 @@ def require_admin(
     if not _key_matches(authorization[7:].strip()):
         raise AdminError(403, "Invalid API key.")
 
-
-def require_release_origin(request: Request) -> None:
-    """A publisher names its target; an authenticated local default is not intent."""
-    origins = request.headers.getlist("x-gateway-origin") or request.headers.getlist("origin")
-    if len(origins) != 1 or not origins[0].strip():
-        raise AdminError(422, "Bind KH_GATEWAY_URL explicitly and send X-Gateway-Origin, "
-                         "or publish from this Gateway's console.", "GATEWAY_ORIGIN_REQUIRED")
-    source = origins[0].strip()
-    try:
-        parsed = urlsplit(source)
-        if (parsed.scheme not in ("http", "https") or not parsed.hostname
-                or parsed.username is not None or parsed.password is not None
-                or parsed.path not in ("", "/") or "?" in source or "#" in source
-                or any(char.isspace() or ord(char) < 32 for char in source)):
-            raise ValueError
-        if parsed.port is not None and parsed.port < 1:
-            raise ValueError
-        declared = (parsed.scheme, parsed.hostname, parsed.port or
-                    (443 if parsed.scheme == "https" else 80))
-        target = request.url
-        actual = (target.scheme, target.hostname, target.port or
-                  (443 if target.scheme == "https" else 80))
-    except ValueError:
-        raise AdminError(422, "Gateway origin must be an HTTP(S) origin without credentials, "
-                         "a path, query or fragment.", "GATEWAY_ORIGIN_INVALID") from None
-    if declared != actual:
-        raise AdminError(409, "The bound Gateway origin does not match this Gateway. "
-                         "Reconcile the target before publishing or requesting an update.",
-                         "GATEWAY_ORIGIN_MISMATCH")
 
 
 def bearer_guest(request: Request) -> dict[str, Any] | None:
@@ -4194,9 +4164,9 @@ def content_shelf() -> dict[str, Any]:
     """The shelf, plus what each Story Mac last said it did with a removal ask.
 
     The shelf and the Story Macs are two authorities, so the merge happens here rather than in
-    either module: `content_delivery` owns the packs, `story_releases` owns the Macs.
+    either module: `content_delivery` owns the packs, `story_instances` owns the Macs.
     """
-    from . import content_delivery, story_releases
+    from . import content_delivery, story_instances
     data = content_delivery.status()
     asked: dict[str, float] = {}
     for row in data.get("releases") or []:
@@ -4206,7 +4176,7 @@ def content_shelf() -> dict[str, Any]:
             # ask: a report from before the newest request must not read as a current answer.
             asked[row["pack_id"]] = max(asked.get(row["pack_id"], 0.0), float(stamp))
     # Nothing asked about → nothing read: the Story Macs file is only opened when it can answer.
-    reports = story_releases.pack_removal_report(asked) if asked else {}
+    reports = story_instances.pack_removal_report(asked) if asked else {}
     for row in data.get("releases") or []:
         # Only a pack the owner actually asked about carries a report, so every other row is
         # exactly the shape it was before this feature existed.
@@ -4684,20 +4654,6 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
         str(row.get("location_id")) for row in out["machines"] if row.get("last_known") is True})
     # Read live, never from the cache: hiding a warning kind must show on the next read.
     out["fleet_warnings"] = fleet.warnings_setting()
-    # **What the fleet should hold, and what it does.** The publisher identity and
-    # the last push travel with the fleet read so the page has one source for both
-    # halves of the report — the version that was signed and the version each
-    # controller read back. `identity()` creates the key on first use; a failure is
-    # reported rather than hidden, because the page then has to say why there is no
-    # App Update Key public key and comparison fingerprint to show.
-    push = release_publisher.last_push()
-    try:
-        out["release"] = {"identity": release_publisher.identity(), "last_push": push,
-                          "artifact_directory": str(release_publisher.artifact_directory())}
-    except release_publisher.ReleaseError as exc:
-        out["release"] = {"identity": None, "last_push": push, "error": exc.message}
-    # The paced rollout, live: which controller is updating, and each group's Macs on the new version.
-    out["release"]["rollout"] = release_rollout.status(data)
     # LAN model sharing (2026-10-05): each row's network, and every "Install on every Mac" in progress, live.
     model_share.stamp_networks(out)
     out["model_installs"] = model_share.status()
@@ -5676,150 +5632,22 @@ def fleet_startup_auto_stops(days: float = 7, limit: int = 200) -> dict[str, Any
     """
     return startup_control.recent_stops(days=days, limit=limit)
 
-
 # ---------------------------------------------------------------------------
-# App releases — the Studio Hub app pushed from this gateway
-#
-# The gateway is the source of truth: it signs a release descriptor with its own
-# Ed25519 publisher key and offers it to each controller, which verifies the
-# signature against the key its owner installed and countersigns. The gateway then
-# **reads back** what the controller holds; "the request was accepted" is not the
-# answer to "what does it hold".
+# Story Macs — check-ins and Content Pack removal reports only. Gateway signs and serves no app
+# release (owner rule 2026-11-13: only Studio Launcher KH installs updates).
 # ---------------------------------------------------------------------------
-
-@router.get("/api/release/identity", dependencies=[Depends(require_admin)])
-def release_identity() -> Any:
-    """The publisher public key and fingerprint, plus the last push.
-
-    This is the only place the owner can read the App Update Key public key to
-    install on a controller and its comparison fingerprint. The private half is
-    never part of the answer.
-    """
-    try:
-        return {
-            "identity": release_publisher.identity(),
-            "last_push": release_publisher.last_push(),
-            "artifact_directory": str(release_publisher.artifact_directory()),
-        }
-    except release_publisher.ReleaseError as exc:
-        return _error(exc.status, exc.message, exc.code)
-
-
-@router.post("/api/release/publish", dependencies=[Depends(require_admin), Depends(require_release_origin)])
-def release_publish(payload: dict[str, Any]) -> Any:
-    """Sign one artifact and offer it to every configured controller.
-
-    The artifact is the DMG exactly as built — never repackaged, never re-signed
-    after the fact — and the answer is per controller: the release it **read back**
-    after storing, or the controller's own refusal sentence verbatim.
-
-    A controller that already holds a **newer** version is refused
-    (`RELEASE_DOWNGRADE`) unless `allow_downgrade` is true: the Hub's updater has
-    no ordering, so only this side can stop a rollback.
-
-    **Paced by default** (`release_rollout`): this Mac's Hub, then one controller at a
-    time, each waited for until it reports the new version. The answer is the rollout
-    (`{"rollout": …}`) and the pushes run in the background. `"mode": "all_at_once"`
-    is the emergency path: every controller now, in parallel, answered when done (it
-    stops a running rollout first). Naming `controller_ids` pushes to exactly those, now.
-
-    **`"force_full": true` sends the whole image even to a controller that advertises
-    `delta`.** A controller on an older Hub can take the capability and still refuse the
-    stage — Hub 0.6.201 refuses a delta that is more than half the image
-    (`MAX_DELTA_FRACTION` 0.5; the 0.6.201→0.6.203 delta is 50.44%) and then asks for a
-    disk image a files-only release never had. The full push is the path that works.
-    """
-    artifact = str(payload.get("artifact_path") or "").strip()
-    if not artifact:
-        return _error(422, "expected {'artifact_path', 'version', 'build'}")
-    filename = payload.get("filename")
-    mode = str(payload.get("mode") or "paced")
-    if mode not in ("paced", "all_at_once"):
-        return _error(422, "mode is 'paced' (the default) or 'all_at_once'")
-    try:
-        if mode == "paced" and not isinstance(payload.get("controller_ids"), list):
-            return {"rollout": release_rollout.start(
-                artifact_path=artifact, version=str(payload.get("version") or ""),
-                build=str(payload.get("build") or ""), filename=str(filename) if filename else None,
-                allow_downgrade=bool(payload.get("allow_downgrade")),
-                force_full=bool(payload.get("force_full")))}
-        if mode == "all_at_once":
-            release_rollout.stop("replaced by an all-at-once publish")
-        return release_publisher.publish(
-            artifact_path=artifact,
-            version=str(payload.get("version") or ""),
-            build=str(payload.get("build") or ""),
-            filename=str(filename) if filename else None,
-            allow_downgrade=bool(payload.get("allow_downgrade")),
-            force_full=bool(payload.get("force_full")),
-            controller_ids=([str(c) for c in payload["controller_ids"]]
-                            if isinstance(payload.get("controller_ids"), list) else None),
-        )
-    except release_publisher.ReleaseError as exc:
-        return _error(exc.status, exc.message, exc.code)
-
-
-@router.get("/api/release/rollout", dependencies=[Depends(require_admin)])
-def release_rollout_status() -> Any:
-    return {"rollout": release_rollout.status(fleet.snapshot())}
-
-
-@router.post("/api/release/rollout/stop", dependencies=[Depends(require_admin)])
-def release_rollout_stop() -> Any:
-    """Stop after the push in flight (if any); nothing is undone, and Resume carries on."""
-    release_rollout.stop()
-    return {"rollout": release_rollout.status(fleet.snapshot())}
-
-
-@router.post("/api/release/rollout/resume", dependencies=[Depends(require_admin)])
-def release_rollout_resume() -> Any:
-    release_rollout.resume()
-    return {"rollout": release_rollout.status(fleet.snapshot())}
-
-
-# ---------------------------------------------------------------------------
-# Story Studio releases — the same publisher key, offered to Story Macs on their
-# own check-in (`story_releases`). Publishing never pushes: each Story Mac fetches,
-# verifies and installs when its queue is drained.
-# ---------------------------------------------------------------------------
-
-def _story_call(call: Any) -> Any:
-    from . import story_releases
-    try:
-        return call()
-    except story_releases.StoryReleaseError as exc:
-        return _error(exc.status, exc.message, exc.code)
-    except release_publisher.ReleaseError as exc:
-        return _error(exc.status, exc.message, exc.code)
-
-
-@router.post("/api/story/release/publish", dependencies=[Depends(require_admin), Depends(require_release_origin)])
-def story_release_publish(payload: dict[str, Any]) -> Any:
-    """Sign a Story DMG or .zip (version and build read from the bundle) and offer it."""
-    from . import story_releases
-    artifact = str(payload.get("artifact_path") or "").strip()
-    if not artifact:
-        return _error(422, "expected {'artifact_path'}")
-    return _story_call(lambda: story_releases.publish(artifact))
-
 
 @router.get("/api/story/instances", dependencies=[Depends(require_admin)])
 def story_instances() -> Any:
-    """Every Story Mac, its version against the release, and its jobs on this Gateway."""
-    from . import story_releases
+    """Every Story Mac that checked in, its version and its jobs on this Gateway."""
+    from . import story_instances as story_macs
+
     counts = store.active_counts_by_caller()
-    out = story_releases.instances()
+    out = story_macs.instances()
     for row in out["instances"]:
         row["gateway_jobs"] = counts.get(f"story-studio@{row['instance_id']}",
                                          {"waiting": 0, "running": 0})
     return out
-
-
-@router.post("/api/story/instances/{instance}/update", dependencies=[Depends(require_admin), Depends(require_release_origin)])
-def story_instance_update(instance: str) -> Any:
-    """"Update now": the Mac installs on its next check-in (at most 30 minutes away), after draining."""
-    from . import story_releases
-    return _story_call(lambda: {"instance": story_releases.request_update(instance)})
 
 
 # ---------------------------------------------------------------------------

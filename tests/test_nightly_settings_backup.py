@@ -34,7 +34,7 @@ class NightlySettingsTests(unittest.TestCase):
             self.addCleanup(p.stop)
         (self.root / "fleet.json").write_text(json.dumps({"controllers": [{"id": "site", "url": "http://site:8787"}]}))
         (self.root / "retention.json").write_text('{"days": 3}')
-        for name in ("credentials.json", "telegram.json", "release-publisher.pem"):
+        for name in ("credentials.json", "telegram.json"):
             (self.root / name).write_text('KNOWN_SECRET_VALUE_987654321')
         (self.root / ".env").write_text('KNOWN_SECRET_VALUE_987654321')
 

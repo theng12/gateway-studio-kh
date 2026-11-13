@@ -2909,47 +2909,15 @@ def _version_key(version: object) -> tuple[int, ...] | None:
 
 
 def latest_hub_release(rows: list[dict], push: dict | None = None) -> dict | None:
-    """The newest Studio Hub release **this Gateway has published**: `{version, published_at}`.
+    """Always `None`: this Gateway no longer publishes Studio Hub app releases.
 
-    "Latest" is what the owner can install, not a constant compiled into this build (the old
-    `SUPPORTED_STUDIO_HUB_VERSION` comparison called every controller "newer" one release after the
-    Gateway was built). Two sources, newest wins: the publisher's own record of its last push
-    (`release_publisher.last_push()`, only the controllers named in that push), and the release each
-    controller reads back as holding — counted only when this Gateway's key signed it, because a
-    controller can hold a release from elsewhere. `None` when nothing was ever published here.
+    Owner rule 2026-11-13 — only Studio Launcher KH installs updates, for every app — removed the
+    release publisher and its signed descriptors, so "the newest Hub this Gateway published" no
+    longer exists to compare a Mac against. `version_status` answers `None` and the Fleet shows each
+    Mac's own reported version without a latest/behind claim. The Launcher feed is the only source
+    of update truth.
     """
-    if push is None:
-        try:
-            from . import release_publisher
-            push = release_publisher.last_push()
-        except Exception:  # noqa: BLE001 - the page must render without a publisher
-            push = {}
-    push = push if isinstance(push, dict) else {}
-    fingerprint = str(push.get("fingerprint") or "")
-    candidates: list[tuple[tuple[int, ...], str, float | None]] = []
-
-    def add(release: object, at: object) -> None:
-        if not isinstance(release, dict):
-            return
-        key = _version_key(release.get("version"))
-        if key is not None:
-            candidates.append((key, str(release["version"]).strip(), _num(at)))
-
-    add(push.get("release"), push.get("updated_at"))
-    for row in rows:
-        held = row.get("release")
-        if not isinstance(held, dict):
-            continue
-        signer = str(held.get("publisher_key_id") or "")
-        if (signer and signer == fingerprint) or (not fingerprint and held.get("publisher_id") == "gatewaykh"):
-            add(held, held.get("published_at"))
-    if not candidates:
-        return None
-    best = max(candidate[0] for candidate in candidates)
-    times = [at for key, _, at in candidates if key == best and at is not None]
-    version = next(text for key, text, _ in candidates if key == best)
-    return {"version": version, "published_at": min(times) if times else None}
-
+    return None
 
 def version_status(version: object, latest: dict | None, *, reachable: object = True,
                    controller_holds_latest: bool = False, busy: bool = False,
@@ -6261,13 +6229,6 @@ def start_refresher(interval: float = 15.0) -> None:
                 except Exception:  # noqa: BLE001 - discovery must not kill the poller
                     pass
                 # A controller added after a release, or offline during it, is sent it here.
-                # The push runs on its own thread, one at a time, so this pass never waits on it.
-                try:
-                    from . import release_publisher
-
-                    release_publisher.catch_up(value.get("locations") or [])
-                except Exception:  # noqa: BLE001 - catch-up must not kill the poller
-                    pass
                 # Each Mac's image-pool model (Auto by RAM, or the owner's pin) is sent where its Hub
                 # reports a different one: a new Mac, one that was offline, or a mapping just changed.
                 try:

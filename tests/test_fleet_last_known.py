@@ -224,7 +224,6 @@ class OnlyASlowSiteIsCarriedTest(_Case):
 class TheFleetRouteCarriesThemOnlyOnItsCopiesTest(_Case):
     def _route(self, value: dict) -> dict:
         with patch.object(fleet, "snapshot", lambda **_: value), \
-                patch.object(admin.release_rollout, "status", lambda *a, **k: {}), \
                 patch.object(admin.model_share, "stamp_networks", lambda *a, **k: None), \
                 patch.object(admin.store, "stats", lambda: {"by_state": {}, "background": 0}):
             return admin.fleet_snapshot()

@@ -83,8 +83,6 @@ EVENTS: tuple[Event, ...] = (
           "A Mac's disk is red or stopped, or jobs keep being handed back for lack of memory.", False),
     Event("jobs_trouble", "Jobs failing or stuck",
           "A burst of failures, a stalled job, or the queue waiting too long.", False),
-    Event("release", "Release rollout",
-          "A Studio Hub release finished pushing to the controllers, or was blocked.", False),
     Event("backup", "Backup",
           "A nightly backup finished or failed.", False),
     Event("holds", "Jobs held for review",
@@ -94,10 +92,8 @@ EVENTS: tuple[Event, ...] = (
     Event("gateway_restart", "Gateway restarted",
           "The Gateway app started, after an update or a crash.", False),
     Event("fleet_watchdog", "Something in the fleet is quietly stuck",
-          "A Mac more than six hours behind the published Studio Hub, a site whose Macs cannot "
-          "run a model it offers, or a lane with work waiting and nothing running.", True),
-    Event("story_update", "Story Studio updates",
-          "A Story Mac whose update failed, or has not moved, for over two hours.", True),
+          "A site whose Macs cannot run a model it offers, or a lane with work waiting and "
+          "nothing running.", True),
     Event("gateway_health", "Gateway not responding",
           "Sent by the menu bar app when the Gateway's own /health stops answering for two "
           "minutes — the one fault the Gateway cannot report about itself. Needs the app running.",
@@ -810,43 +806,6 @@ class Notifier:
                     icon="🖥", open_after=SITE_NO_MACHINE_S))
         return out
 
-    def story_conditions(self, now: float) -> list[Condition]:
-        """A Story Mac whose update failed, or stopped moving, on the release it is fetching.
-
-        Read from `story_releases` — the same rows `/admin/api/story/instances` serves. A newer
-        release being published moves the target, so the clock only ever runs on *this* release.
-        `ready` and `draining` are left out on purpose: waiting for the queue to empty before
-        installing is the updater working, not stalling.
-        """
-        from . import story_releases
-
-        data = story_releases.instances()
-        target = str((data.get("release") or {}).get("version") or "")
-        out: list[Condition] = []
-        for row in data.get("instances") or []:
-            if row.get("status") == "offline":
-                continue
-            update = row.get("update") or {}
-            phase = str(update.get("phase") or "")
-            if phase not in ("downloading", "installing", "failed", "rolled_back"):
-                continue
-            version = str(update.get("version") or "")
-            if target and version and version != target:
-                continue  # a newer release was published: no longer the same release
-            since = row.get("update_progress_at")
-            if not isinstance(since, (int, float)) or now - since < STORY_STUCK_S:
-                continue
-            name = str(row.get("machine") or row.get("instance_id") or "a Story Mac")
-            error = str(update.get("error") or "").strip()
-            what = "failed its update" if phase in ("failed", "rolled_back") else "has not moved"
-            out.append(Condition(
-                f"story:{row.get('instance_id')}", "story_update",
-                f"{name} {what} to Story {version or target or 'the release'}"
-                f" {int((now - since) // 3600)} h ago" + (f": {error[:140]}" if error else ""),
-                back=f"{name}'s Story update is no longer stuck",
-                icon="📱", open_after=OPEN_AFTER_S))
-        return out
-
     def lane_conditions(self, now: float) -> list[Condition]:
         """A lane with work waiting and **nothing in flight** for `LANE_STUCK_S`.
 
@@ -956,8 +915,6 @@ class Notifier:
                 self._job_conditions = self.job_conditions(now)
                 if events["fleet_watchdog"]:
                     self._job_conditions += self.lane_conditions(now)
-                if events["story_update"]:
-                    self._job_conditions += self.story_conditions(now)
             except Exception as exc:  # noqa: BLE001 - one bad query must not stop the fleet checks
                 log.warning("job checks failed: %s", type(exc).__name__)
         out += [c for c in self._job_conditions if events.get(c.event)]
@@ -1324,24 +1281,6 @@ def _top_reasons(rows: list[dict], count: int) -> str:
     ranked = sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[:count]
     return ", ".join(f"{reason} ×{n}" for reason, n in ranked)
 
-
-def release_message(state: dict) -> str:
-    """One sentence-and-a-bit about a finished release push (`release_publisher.publish`'s result)."""
-    version = (state.get("release") or {}).get("version") or "?"
-    results = [r for r in (state.get("locations") or {}).values() if isinstance(r, dict)]
-    ok = [r for r in results if r.get("ok")]
-    blocked = [r for r in results if not r.get("ok")]
-    if not results:
-        return f"⚠️ Release {version}: there are no controllers to push to."
-    if not blocked:
-        return f"🚀 Release {version} reached all {len(ok)} controller{'s' if len(ok) != 1 else ''}."
-    lines = [f"⚠️ Release {version}: {len(ok)} of {len(results)} controllers took it."]
-    for r in blocked[:5]:
-        why = str(r.get("detail") or r.get("code") or "refused")
-        lines.append(f"• {r.get('label') or 'A controller'}: {why[:140]}")
-    if len(blocked) > 5:
-        lines.append(f"…and {len(blocked) - 5} more")
-    return "\n".join(lines)
 
 
 #: The process-wide notifier. Other modules call `notifier.notify(...)` (below) and never build one.

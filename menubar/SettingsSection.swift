@@ -39,12 +39,6 @@ final class SettingsSection: NSObject, AppSection {
     private var pairingCheck: NSButton!
     private var pairingStatus: NSTextField!
     private var statusLabel: NSTextField!
-    private var publisherKeyHexLabel: NSTextField!
-    /// The whole key, kept beside the label so Copy can hand over exactly what is shown and never
-    /// a truncated line.
-    private var publisherKeyHex: String?
-    private var publisherKeyHintLabel: NSTextField!
-    private var releaseIdentityStatus: NSTextField!
     private let telegram = TelegramSettings()
     private let alerts = AlertsSettings()
     private let browserPassword = BrowserPasswordSettings()
@@ -161,47 +155,12 @@ final class SettingsSection: NSObject, AppSection {
             ),
         ], in: root)
 
-        // ---- Studio Hub app releases
-        //
-        // **One number, and it is the one that gets pasted.** This page used to show three — a
-        // fingerprint first, then the base64 key, then the hex key with its middle truncated — and
-        // a Mac stayed broken for days because the fingerprint went into Studio Hub's App Update
-        // Key field, which takes the hex public key. A person cannot be asked to tell three long
-        // numbers apart. Base64 and the fingerprint are gone from here; the only other number left
-        // is the eight-character prefix the owner compares against, derived from the key above it.
-        //
-        // The value is public material and read-only here: the private half never leaves the
-        // gateway, and this page never asks for it.
-        publisherKeyHexLabel = PageKit.label("Reading the App Update Key…", .mono, wrapping: true)
-        publisherKeyHexLabel.isSelectable = true
-        publisherKeyHexLabel.lineBreakMode = .byCharWrapping
-        publisherKeyHexLabel.maximumNumberOfLines = 0
-        publisherKeyHexLabel.preferredMaxLayoutWidth = Self.fieldWidth
-        publisherKeyHexLabel.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
-        publisherKeyHintLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
-        publisherKeyHintLabel.preferredMaxLayoutWidth = 520
-        releaseIdentityStatus = PageKit.label(
-            "", .secondary, colour: .secondaryLabelColor, wrapping: true
-        )
-        releaseIdentityStatus.preferredMaxLayoutWidth = 520
-        let updateKeyHelp = PageKit.help(
-            "Signs Studio Hub and Story Studio updates so each Mac knows an update really came from "
-            + "this Gateway. Gateway Studio KH's own updates are installed by Studio Launcher KH and "
-            + "never use this key. Safe to share — it is not a password."
-        )
-        // This page can be resized after its labels measured at a wider width.
-        // Zero makes AppKit use the width Auto Layout actually gives the label,
-        // so its intrinsic height grows again at the 860 pt window size.
-        updateKeyHelp.preferredMaxLayoutWidth = 0
-        section("App Update Key", [
-            updateKeyHelp,
-            PageKit.formRow("Paste this into each Mac (Studio Hub → Connections → App Update Key)", [
-                publisherKeyHexLabel,
-                PageKit.button("Copy", target: self, action: #selector(copyUpdateKey)),
-            ] as [NSView]),
-            publisherKeyHintLabel,
-            releaseIdentityStatus,
-        ], in: root)
+        // ---- updates
+        // Owner rule 2026-11-13: only Studio Launcher KH installs updates, for every app. Gateway
+        // signs and serves no app release, so there is no key, fingerprint or trust control here.
+        let updatesHelp = PageKit.help("Updates are installed by Studio Launcher KH.")
+        updatesHelp.preferredMaxLayoutWidth = 0
+        section("Updates", [updatesHelp], in: root)
 
         // ---- received artifacts
         //
@@ -356,7 +315,6 @@ final class SettingsSection: NSObject, AppSection {
         dataLabel?.stringValue = AppPaths.data.path
         statusLabel?.stringValue = "Config: \(ConfigStore.shared.configPath)"
         loadRetention()
-        loadReleaseIdentity()
         telegram.load()
         alerts.load()
         browserPassword.load()
@@ -423,49 +381,6 @@ final class SettingsSection: NSObject, AppSection {
         if let last = written[id], get() != last { return }
         set(value)
         written[id] = value
-    }
-
-    /// Read the publisher identity from the gateway. It is public material and
-    /// read-only here; nothing private is ever requested or drawn.
-    private func loadReleaseIdentity() {
-        GatewayAPI.get("/admin/api/release/identity") { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .failure(let error):
-                self.showReleaseIdentity(nil, error: error.localizedDescription)
-            case .success(let payload):
-                let state = FleetReleaseState.from(payload)
-                self.showReleaseIdentity(state?.identity, error: state?.error)
-            }
-        }
-    }
-
-    private func showReleaseIdentity(_ identity: FleetReleaseIdentity?, error: String?) {
-        let hex = (identity?.publicKeyHex ?? "").trimmingCharacters(in: .whitespaces)
-        publisherKeyHex = hex.isEmpty ? nil : hex
-        guard let hex = publisherKeyHex else {
-            publisherKeyHexLabel?.stringValue = "Unavailable"
-            publisherKeyHintLabel?.stringValue = ""
-            if let error, !error.isEmpty {
-                releaseIdentityStatus?.stringValue =
-                    "Could not read the App Update Key — \(error)"
-            } else {
-                releaseIdentityStatus?.stringValue =
-                    "The gateway has not published a signing identity yet."
-            }
-            return
-        }
-        publisherKeyHexLabel?.stringValue = hex
-        // The one other number on the page, and it is not a second thing to copy: it is the first
-        // eight characters of the key above, which is what a Mac's own App Update Key starts with.
-        publisherKeyHintLabel?.stringValue =
-            "To check a Mac: its App Update Key should start with \(hex.prefix(8))."
-        var parts: [String] = []
-        if let algorithm = identity?.algorithm, !algorithm.isEmpty {
-            parts.append("\(algorithm) signing key")
-        }
-        parts.append("Paste the whole line above — nothing shorter is the key.")
-        releaseIdentityStatus?.stringValue = parts.joined(separator: " · ")
     }
 
     /// The limits live in the gateway, not in this app, so they are read from it.
@@ -638,16 +553,6 @@ final class SettingsSection: NSObject, AppSection {
     }
 
     /// Copies the whole hex key, exactly as shown — the one value a Mac takes.
-    @objc private func copyUpdateKey() {
-        guard let key = publisherKeyHex, !key.isEmpty else {
-            statusLabel.stringValue = "No App Update Key to copy yet."
-            return
-        }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(key, forType: .string)
-        statusLabel.stringValue =
-            "App Update Key copied — paste it into Studio Hub → Connections → App Update Key."
-    }
 
     @objc private func copyKey() {
         NSPasteboard.general.clearContents()

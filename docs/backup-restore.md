@@ -9,7 +9,6 @@ Only what cannot be recreated (about 186 MB today, 178 MB as the archive; almost
 | In the archive | On this Mac |
 |---|---|
 | `gateway/.env` | `~/Library/Application Support/gateway-kh/.env` (the API key Story Studio uses) |
-| `gateway/data/release-publisher.pem` | Hub release signing key — every Hub pinned its fingerprint |
 | `gateway/data/content-delivery/` | Content Pack shelf identity (`signing-key.pem`, `authority.json`, `initialized`) |
 | `gateway/data/content-library/` | the Content Packs: every released `<sha256>/archive.sspack` with its `metadata.json` (the shelf cannot serve a release without them) |
 | `gateway/data/credentials.json` | provider API keys and the controllers' fleet tokens |

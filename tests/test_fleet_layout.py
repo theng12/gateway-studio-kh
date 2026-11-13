@@ -26,44 +26,11 @@ FIXTURE = {
         "jobs_failed": 1, "running_jobs": 1, "local_models_total": 2,
         "models_available": 3, "workers_total": 4, "workers_ready": 3, "issues": 2,
     },
-    # The App Update Key identity and the last push. The refusal carries the raw
-    # public-key path and comparison fingerprint, which the page quotes verbatim.
-    "release": {
-        "identity": {
-            "algorithm": "ed25519",
-            "public_key_base64": "A" * 44,
-            "public_key_hex": "ab" * 32,
-            "fingerprint": "cd" * 32,
-            "publisher_id": "gatewaykh",
-        },
-        "last_push": {
-            "updated_at": 1790000000,
-            "fingerprint": "cd" * 32,
-            "release": {
-                "version": "0.6.50", "build": "abc1234",
-                "filename": "StudioHub-0.6.50-abc1234.dmg",
-                "bytes": 1234, "sha256": "ef" * 32, "signature": "sig",
-            },
-            "locations": {
-                "ctrl-1": {
-                    "ok": False, "status": 409, "code": "PUBLISHER_NOT_TRUSTED",
-                    "detail": "no trusted gateway key is installed. Copy this Gateway's App Update Key "
-                              "public key from Gateway → Settings → App Update Key "
-                              "into Hub → Connections → App updates, then compare fingerprints "
-                              "(this Gateway: " + "cd" * 32 + ").",
-                    "label": "Blue Room", "release": None,
-                },
-            },
-        },
-    },
     "locations": [
         {
             "id": "local", "label": "This Mac", "local": True, "reachable": True,
             "role": "agent", "version": "0.6.47", "provider_id": "studio-hub-local",
             "models_discovered": 5, "models_enabled": 4, "models_publishable": 2,
-            "release": None,
-            # An older Hub that does not carry the field: "did not report".
-            "trusted_publisher": {"reported": False, "publisher_id": None, "fingerprint": None},
             "machines": [{"machine": "local", "label": "This Mac", "reachable": True}],
             "workers": [
                 {"id": "voice", "studio": "voice", "modality": "voice", "machine": "local",
@@ -94,15 +61,6 @@ FIXTURE = {
             "paused_at": 1790000500, "unreachable_since": 1789000000,
             "pause_reason": "unreachable since 2026-09-01 — paused after 7 days. Routing skips "
                             "it; nothing was removed. Bring the Mac back, or resume it from the Fleet page.",
-            # What the controller holds now: older than the pushed 0.6.50.
-            "release": {
-                "version": "0.6.49", "build": "deadbee",
-                "filename": "StudioHub-0.6.49-deadbee.dmg", "sha256": "12" * 32,
-                "publisher_key_id": "cd" * 32, "controller_key_id": "34" * 32,
-                "controller_signature": "countersig",
-            },
-            # Hub 0.6.51 says it trusts nobody — the 409 state, not an unknown.
-            "trusted_publisher": {"reported": True, "publisher_id": None, "fingerprint": None},
             # **The joined roster, and the controller's own count of it.** This is the
             # data the page never decoded (audit H10/M20/M21): a Mac that is reachable
             # with a last-seen stamp, and one that answered and refused this
@@ -319,7 +277,6 @@ enum GatewayAPI {
 
         let locations = FleetLocationsTab(frame: .zero)
         locations.update(locations: snapshot.locations, machines: snapshot.machines)
-        locations.updateRelease(locations: snapshot.locations, state: snapshot.release)
         _ = layout("Locations", locations, rows: 2)
 
         // **The members of a controller, decoded and drawn** (audit H10/M20/M21). The
@@ -375,39 +332,6 @@ enum GatewayAPI {
                "the Members column did not draw the reachable count and the refusal")
         assert((controller?.membersTooltip ?? "").contains("re-join it with the current Fleet Token"),
                "the Members tooltip did not quote the controller's sentence")
-
-        // The publisher identity and the controller-held descriptor decode, and
-        // the refusal is quoted verbatim — raw-public-key path and comparison
-        // fingerprint. A page that paraphrased it could lose the required action.
-        assert(snapshot.release?.identity?.fingerprint == String(repeating: "cd", count: 32),
-               "the publisher fingerprint did not decode")
-        assert(snapshot.release?.identity?.publicKeyHex == String(repeating: "ab", count: 32),
-               "the publisher public key did not decode")
-        assert(snapshot.locations.first(where: { $0.id == "ctrl-1" })?.release?.versionBuild
-               == "0.6.49 (deadbee)",
-               "the controller-held release did not decode")
-        let outcome = snapshot.release?.lastPush?.outcomes["ctrl-1"]
-        assert(outcome?.status == 409, "the push status did not decode")
-        assert(outcome?.ok == false, "the push outcome did not decode as a refusal")
-        assert((outcome?.detail ?? "").contains("App Update Key public key"),
-               "the refusal detail did not decode verbatim")
-        let texts = descendants(locations).compactMap { ($0 as? NSTextField)?.stringValue }
-        assert(texts.contains(where: { $0.contains("held 0.6.49 (deadbee)") }),
-               "the Release section did not show what the controller holds")
-        // The trusted publisher decides whether a push will be accepted at all, so
-        // "trusts nobody" and "did not say" must not draw the same sentence.
-        assert(snapshot.locations.first(where: { $0.id == "ctrl-1" })?.trustedPublisher?.reported == true,
-               "the controller's trusted-publisher field did not decode")
-        assert(snapshot.locations.first(where: { $0.id == "local" })?.trustedPublisher?.reported == false,
-               "the local Hub's missing trusted-publisher field did not decode as unreported")
-        assert(texts.contains(where: { $0.contains("App Update Key: none installed yet") }),
-               "the Release section did not say no trusted publisher is installed")
-        assert(texts.contains(where: {
-                   $0.contains("Last push refused")
-                       && $0.contains("App Update Key public key")
-                       && $0.contains("then compare fingerprints")
-               }),
-               "the Release section did not quote the refusal verbatim")
 
         let machines = FleetMachinesTab(frame: .zero)
         machines.update(machines: snapshot.machines, studios: snapshot.studiosByMachine,

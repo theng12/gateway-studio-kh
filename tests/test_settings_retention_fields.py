@@ -34,10 +34,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 
-#: The key the stub publishes. The same constant is in `tests/settings_page_harness.swift`.
-STUB_KEY = "e6b9eece5ec6b3f4a1d0c9b8a7f6e5d4c3b2a1908f7e6d5c4b3a291807f6e5d4"
-STUB_KEY_BASE64 = "5rnu7l7Gs/Sh0Mm4p/bm1MOyCQGPg25cS1s5GAfW5dQ="
-
 LIMITS = {"max_age_days": 3.0, "max_bytes": 8589934592,
           "trash_days": 7.0, "trash_cap_bytes": 21474836480}
 
@@ -66,14 +62,6 @@ class _Stub(BaseHTTPRequestHandler):
             # The walk. Slow enough that nothing on the page can be waiting for it.
             time.sleep(60)
             self._send(200, {"usage": {"files": 3, "bytes": 1024.0}})
-        elif path == "/admin/api/release/identity":
-            self._send(200, {"identity": {
-                "algorithm": "ed25519",
-                "public_key_base64": STUB_KEY_BASE64,
-                "public_key_hex": STUB_KEY,
-                "fingerprint": "a08f9d79008d53fafe0aa5afa594d866017e99cc5af0df0b8b8878cf33777618",
-                "publisher_id": "gatewaykh",
-            }, "last_push": None})
         else:
             self._send(404, {"detail": "no such route"})
 
@@ -87,7 +75,7 @@ def _free_port() -> int:
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("xcrun"),
                      "needs macOS and the Swift toolchain")
 class SettingsPage(unittest.TestCase):
-    def test_limits_load_without_the_usage_walk_and_one_key_is_shown(self) -> None:
+    def test_limits_load_without_the_usage_walk_and_updates_are_one_sentence(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _Stub)
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -149,10 +137,11 @@ class RoutesSayWhatTheyCost(unittest.TestCase):
         settings = (ROOT / "menubar" / "SettingsSection.swift").read_text()
         self.assertIn('GatewayAPI.get("/admin/api/settings/retention")', settings)
         self.assertIn('GatewayAPI.get("/admin/api/settings/retention/usage"', settings)
-        # A copy of the whole key, from the value shown — never from a truncated label.
-        copy = settings.split("func copyUpdateKey()")[1].split("@objc")[0]
-        self.assertIn("publisherKeyHex", copy)
-        self.assertIn("setString(key, forType: .string)", copy)
+        # Updates are one sentence; the app no longer reads or draws an update key (owner rule
+        # 2026-11-13: only Studio Launcher KH installs updates).
+        self.assertIn('Updates are installed by Studio Launcher KH.', settings)
+        self.assertNotIn("/admin/api/release/identity", settings)
+        self.assertNotIn("App Update Key", settings)
 
 
 if __name__ == "__main__":

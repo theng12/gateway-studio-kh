@@ -134,7 +134,7 @@ class SettingsAndSecret(Base):
         for key in ("disk_memory", "jobs_trouble", "release", "backup", "holds", "credentials", "gateway_restart"):
             self.assertFalse(events[key], key)
         # The watchdog is on by default: every one of these faults went unnoticed for hours.
-        for key in ("fleet_watchdog", "story_update", "gateway_health"):
+        for key in ("fleet_watchdog", "gateway_health"):
             self.assertTrue(events[key], key)
         pub = self.n.public_settings()
         self.assertFalse(pub["quiet_hours"]["enabled"])
@@ -633,60 +633,11 @@ class FleetWatchdog(Base):
         # Every default except the daily summary: these windows run for hours, so a test that
         # crosses 08:00 would collect a summary it is not asking about.
         self.configure(events={"daily_summary": False})
-        from gateway import story_releases
+        from gateway import story_instances
 
-        path = story_releases._instances_file()  # shared by the whole module: clear it per test
+        path = story_instances._instances_file()  # shared by the whole module: clear it per test
         path.unlink(missing_ok=True)
         self.addCleanup(lambda: path.unlink(missing_ok=True))
-
-    # ---- 2. a Mac behind the published Studio Hub
-
-    def behind(self, name: str = "Mini A", **over) -> dict:
-        return machine(name, version_status="behind", hub_version="0.6.180", **over)
-
-    def test_a_mac_behind_the_hub_alerts_only_after_six_hours(self) -> None:
-        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, 60, nt.HUB_BEHIND_S - 120)
-        self.assertEqual(self.transport.sent, [])
-        self.run_ticks(nt.HUB_BEHIND_S + 60)
-        self.assertIn("Mini A (Studio 1) is on Studio Hub 0.6.180, not 0.6.186", self.transport.sent[0])
-
-    def test_the_hubs_own_reason_for_a_stopped_update_is_quoted(self) -> None:
-        self.snapshot = snap([self.behind(startup={"last_update_error": {
-            "phase": "installing", "reason": "The app is not in /Applications."}})], summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
-        self.assertIn("the update stopped while installing: The app is not in /Applications.",
-                      self.transport.sent[0])
-
-    def test_an_updating_mac_and_a_latest_one_are_not_alerts(self) -> None:
-        self.snapshot = snap([machine("Mini A", version_status="updating", hub_version="0.6.180"),
-                              machine("Mini B", version_status="latest", hub_version="0.6.186"),
-                              machine("Mini C", version_status="unknown", hub_version=None,
-                                      location_reachable=False, reachable=False)],
-                             summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
-        self.assertEqual(self.transport.sent, [])
-
-    def test_the_mac_behind_comes_back_and_the_message_says_so(self) -> None:
-        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, nt.HUB_BEHIND_S + 60)
-        self.snapshot = snap([machine("Mini A", version_status="latest", hub_version="0.6.186")],
-                             summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, 61)
-        self.assertIn("is on the newest Studio Hub again", self.transport.sent[-1])
-
-    def test_the_six_hour_window_survives_a_restart(self) -> None:
-        """A Gateway update must not restart the clock on the Mac it is watching."""
-        self.snapshot = snap([self.behind()], summary={"hub_latest": "0.6.186"})
-        self.run_ticks(0, 60)
-        restarted = nt.Notifier(
-            transport=self.transport, clock=self.clock, sleep=lambda s: None,
-            settings_path=self.dir / "telegram.json", state_path=self.dir / "state.json", sync=True,
-            snapshot=lambda: self.snapshot, store=self.store, disk_status=lambda: self.disk)
-        self.clock.now += nt.HUB_BEHIND_S
-        restarted.tick()
-        self.assertEqual(len(self.transport.sent), 1)
-        self.assertIn("is on Studio Hub 0.6.180", self.transport.sent[0])
 
     # ---- 4. a site with no Mac for a model it offers
 
@@ -779,64 +730,6 @@ class FleetWatchdog(Base):
         self.run_ticks(0, 61, 122, 183)
         self.assertIn("The image lane is moving again", self.transport.sent[-1])
 
-    # ---- 3. a Story Mac whose updater failed or stopped moving
-
-    def story(self, name: str = "mini", *, phase: str = "downloading", version: str = "1.4.326",
-              ago: float = 3 * 3600, error: str | None = None, **over) -> None:
-        from gateway import story_releases
-
-        path = story_releases._instances_file()
-        rows = json.loads(path.read_text()) if path.exists() else {}
-        row = {"instance_id": name, "machine": name, "version": "1.4.320", "channels": 1, "queue": {},
-               "update": {"phase": phase, "version": version, "error": error}, "server_mode": False,
-               "last_seen": time.time(), "update_progress_at": self.clock.now - ago}
-        row.update(over)
-        rows[name] = row
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(rows))
-
-    def test_a_story_updater_that_failed_two_hours_ago(self) -> None:
-        self.story(phase="failed", error="The download was refused (403).")
-        self.run_ticks(0, 61)
-        self.assertIn("mini failed its update to Story 1.4.326 3 h ago: The download was refused (403).",
-                      self.transport.sent[0])
-
-    def test_a_download_that_has_not_moved_for_two_hours(self) -> None:
-        self.story(phase="downloading")
-        self.run_ticks(0, 61)
-        self.assertIn("has not moved to Story 1.4.326 3 h ago", self.transport.sent[0])
-
-    def test_an_updater_inside_its_two_hours_is_quiet(self) -> None:
-        self.story(phase="downloading", ago=1800)
-        self.run_ticks(0, 61)
-        self.assertEqual(self.transport.sent, [])
-
-    def test_waiting_for_the_queue_to_drain_is_not_stalling(self) -> None:
-        """`ready` and `draining` are the updater working, however long the queue takes."""
-        self.story(phase="draining")
-        self.story("mini-2", phase="ready")
-        self.run_ticks(0, 61)
-        self.assertEqual(self.transport.sent, [])
-
-    def test_a_newer_release_moves_the_target_and_restarts_the_clock(self) -> None:
-        from gateway import story_releases
-
-        self.story(phase="downloading", version="1.4.326")
-        with patch.object(story_releases, "current", lambda: {"version": "1.4.330"}):
-            self.run_ticks(0, 61)
-        self.assertEqual(self.transport.sent, [])
-
-    def test_a_byte_count_that_moved_is_not_a_stall(self) -> None:
-        """`update_progress_at` is what the Gateway's own check-in writes; a moving download resets it."""
-        self.story(phase="downloading", ago=600)
-        self.run_ticks(0, 61)
-        self.assertEqual(self.transport.sent, [])
-
-    def test_an_offline_story_mac_is_not_a_stall(self) -> None:
-        self.story(phase="failed", last_seen=time.time() - 3 * 3600)
-        self.run_ticks(0, 61)
-        self.assertEqual(self.transport.sent, [])
-
     # ---- the Alerts list and the switches
 
     def test_the_alerts_list_shows_what_is_open_and_what_cleared(self) -> None:
@@ -867,15 +760,6 @@ class FleetWatchdog(Base):
 
 
 class ReleaseAndApi(Base):
-    def test_release_sentences(self) -> None:
-        ok = {"release": {"version": "0.6.127"}, "locations": {"a": {"ok": True}, "b": {"ok": True}}}
-        self.assertEqual(nt.release_message(ok), "🚀 Release 0.6.127 reached all 2 controllers.")
-        bad = {"release": {"version": "0.6.127"}, "locations": {
-            "a": {"ok": True}, "b": {"ok": False, "label": "Studio 2", "detail": "holds a newer version"}}}
-        text = nt.release_message(bad)
-        self.assertIn("1 of 2", text)
-        self.assertIn("Studio 2: holds a newer version", text)
-
     def test_other_modules_use_notify(self) -> None:
         self.configure(events={"backup": True})
         with patch.object(nt, "notifier", self.n):

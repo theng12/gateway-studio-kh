@@ -182,8 +182,7 @@ test('the page really calls the routes this release added', () => {
     '/fleet/controllers/*/credential', '/fleet/controllers/*/hub-token', '/fleet/controllers/*/address',
     '/fleet/controllers/*/network', '/fleet/controllers/*/test', '/fleet/controllers/*/pause',
     '/fleet/controllers/*/resume', '/fleet/controllers/*',
-    '/release/publish', '/release/rollout/*',
-    '/story/instances', '/story/instances/*/update', '/story/release/publish',
+    '/story/instances',
     '/settings/fleet-health', '/settings/fleet-warnings', '/providers/*/refresh',
   ];
   const missing = routes.filter(route => !called.some(candidate => matcher(route).test(candidate)));

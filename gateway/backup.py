@@ -2,8 +2,9 @@
 
 **What** - only the files whose loss costs more than a reinstall:
 
-* the two signing identities: `release-publisher.pem` (every Hub pinned its fingerprint) and
-  `content-delivery/` (the Content Pack shelf identity Story Studio trusts);
+* the Content Pack shelf identity: `content-delivery/` (Story Studio trusts it). The Hub/Story
+  app-release signing key is gone with Gateway's release publisher (owner rule 2026-11-13: only
+  Studio Launcher KH installs updates);
 * the Content Packs themselves: `content-library/` holds the released `.sspack` bytes (and each
   one's `metadata.json`). The shelf cannot serve a release without them, so a backup of the
   identity alone would look like a recovery point and not be one (~160 MB today);
@@ -119,7 +120,6 @@ def sources() -> list[tuple[str, Path]]:
     data = Path(config.DATA_DIR)
     return [
         ("gateway/.env", Path(config.ENV_PATH)),
-        ("gateway/data/release-publisher.pem", data / "release-publisher.pem"),
         ("gateway/data/content-delivery", data / "content-delivery"),
         ("gateway/data/content-library", data / "content-library"),
         ("gateway/data/credentials.json", Path(config.CREDENTIALS_PATH)),

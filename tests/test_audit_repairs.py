@@ -22,7 +22,7 @@ def preserve():
     shutil.move(_SANDBOX.name, target)
 atexit.register(preserve)
 
-from gateway import api, config, fleet, pools, pool_cooldowns, story_releases, worker
+from gateway import api, config, fleet, pools, pool_cooldowns, worker
 from gateway.adapters.base import BackendError, BackendRequest, BackendResult, note_request_started
 from gateway.adapters.pool import PoolBackend
 from gateway.providers.definitions import ProviderDefinition
@@ -174,43 +174,6 @@ class AuditRepairs(unittest.TestCase):
         self.assertEqual(one['total'], 52)
         self.assertEqual([len(p['items']) for p in (one, two, last, huge)], [20,20,12,0])
         self.assertTrue({p['id'] for p in one['items']}.isdisjoint({p['id'] for p in two['items']}))
-
-    def test_manual_request_is_acknowledged_only_by_its_actual_attempt(self):
-        release = {'version': '1.4.258'}
-        with patch.object(story_releases, 'current', return_value=release), \
-             patch.object(story_releases, 'offer', return_value={}):
-            for phase in ('rolled_back', 'failed'):
-                with self.subTest(phase=phase):
-                    report = {'instance_id': phase, 'version': '1.4.257', 'update':
-                        {'phase': phase, 'version': '1.4.258', 'error': 'health check', 'request_id': 'old'}}
-                    story_releases.checkin(report)
-                    pending = story_releases.request_update(phase).get('update_request_id')
-                    self.assertIsNotNone(pending, 'Update Now must name the requested attempt')
-                    for old_id in ('old', None, 'different', None):
-                        # The old/lost response cannot acknowledge a new attempt, even after restart.
-                        old = {**report, 'update': {**report['update'], 'request_id': old_id}}
-                        result = story_releases.checkin(old)
-                        self.assertTrue(result['update_now'])
-                        self.assertEqual(result['update_request_id'], pending)
-                        stored = story_releases._read_json(story_releases._instances_file())[phase]
-                        self.assertEqual(stored['update_request_id'], pending)
-                    failed = {**report, 'update': {**report['update'], 'request_id': pending}}
-                    self.assertFalse(story_releases.checkin(failed)['update_now'])
-                    self.assertFalse(story_releases.checkin(failed)['update_now'])
-                    second = story_releases.request_update(phase)['update_request_id']
-                    self.assertNotEqual(second, pending)
-                    self.assertTrue(story_releases.checkin(failed)['update_now'])
-                    self.assertFalse(story_releases.checkin({**failed, 'version': '1.4.258'})['update_now'])
-
-    def test_legacy_manual_retry_preserves_first_old_report_and_stops_next_failure(self):
-        with patch.object(story_releases, 'current', return_value={'version': '1.4.258'}), \
-             patch.object(story_releases, 'offer', return_value={}):
-            report = {'instance_id': 'legacy', 'version': '1.4.257', 'update':
-                {'phase': 'rolled_back', 'version': '1.4.258', 'error': 'health check'}}
-            story_releases.checkin(report)
-            story_releases.request_update('legacy')
-            self.assertTrue(story_releases.checkin(report)['update_now'])
-            self.assertFalse(story_releases.checkin(report)['update_now'])
 
     def test_malformed_startup_phase_fails_closed(self):
         for phase in ([], {}, 1, True):

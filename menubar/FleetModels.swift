@@ -25,10 +25,6 @@ struct FleetSnapshot: Decodable {
     /// A flat model list, if the gateway also publishes one. The rows normally
     /// arrive nested under their location; both are read and merged.
     var models: [FleetLocalModel] = []
-    /// The app-release publisher identity and the last push, when the gateway
-    /// publishes them. Optional so a gateway from before this section still fills
-    /// every other table on the page.
-    var release: FleetReleaseState?
     /// The warning kinds the owner hid; `nil` from a gateway that predates the setting.
     var fleetWarnings: FleetWarningSetting?
     /// Every "Install on every Mac that can run it", newest first (`FleetModelSpread.swift`); `[]` from an older gateway.
@@ -73,7 +69,6 @@ struct FleetSnapshot: Decodable {
         running = lenientArray(c, forKey: .running)
         issues = lenientArray(c, forKey: .issues)
         models = lenientArray(c, forKey: .models)
-        release = try? c.decode(FleetReleaseState.self, forKey: .release)
         fleetWarnings = try? c.decode(FleetWarningSetting.self, forKey: .fleetWarnings)
         modelInstalls = lenientArray(c, forKey: .modelInstalls)
         gatewayQueue = try? c.decode(FleetGatewayQueue.self, forKey: .gatewayQueue)
@@ -231,13 +226,6 @@ struct FleetLocation: Decodable {
     var modelsDiscovered: Int?
     var modelsEnabled: Int?
     var modelsPublishable: Int?
-    /// The Studio Hub app release this controller **holds**, read from the
-    /// controller itself — never what was pushed. `nil` is "it holds none", or a
-    /// controller with no release route; it is not a version of zero.
-    var release: FleetReleaseDescriptor?
-    /// The release publisher this controller has installed (Hub 0.6.51+), read
-    /// from the same answer. `nil` means the gateway sent no such field.
-    var trustedPublisher: FleetTrustedPublisher?
     /// **Who has joined this controller** — the Hub's `fleet/nodes` roster, one row
     /// per Mac, passed through by the gateway unchanged.
     ///
@@ -281,7 +269,7 @@ struct FleetLocation: Decodable {
         case id, label, url, local, reachable, error, role, version, hubVersionRelation, versionStatus
         case providerId, latencyMs
         case machines, workers, localModels, modelHealth, machineSummary, runningJobs
-        case modelsDiscovered, modelsEnabled, modelsPublishable, release, trustedPublisher
+        case modelsDiscovered, modelsEnabled, modelsPublishable
         case nodes, nodeSummary
         case pausedAt, pausedBy, pauseReason, unreachableSince
         case history, causes
@@ -330,8 +318,6 @@ struct FleetLocation: Decodable {
         modelsDiscovered = try? c.decode(Int.self, forKey: .modelsDiscovered)
         modelsEnabled = try? c.decode(Int.self, forKey: .modelsEnabled)
         modelsPublishable = try? c.decode(Int.self, forKey: .modelsPublishable)
-        release = try? c.decode(FleetReleaseDescriptor.self, forKey: .release)
-        trustedPublisher = try? c.decode(FleetTrustedPublisher.self, forKey: .trustedPublisher)
     }
 }
 
@@ -467,225 +453,6 @@ struct FleetNodeSummary: Decodable {
     /// Macs evicted from the group. They cannot re-join by themselves — a person has
     /// to re-admit one — so the count is worth showing beside the roster.
     var removed: Int?
-}
-
-// MARK: - App release
-
-/// This gateway's Ed25519 release-publisher identity.
-///
-/// Only public material is published here: the fingerprint is the lowercase hex
-/// sha256 of the raw public key — the string the owner installs on a controller
-/// with `POST /api/hub/release/trust` — and the private half never leaves the
-/// gateway's data directory. Nothing in this file may ask for or draw it.
-struct FleetReleaseIdentity: Decodable {
-    var algorithm: String?
-    var publicKeyBase64: String?
-    var publicKeyHex: String?
-    var fingerprint: String?
-    var publisherId: String?
-}
-
-/// One app-release descriptor: the gateway-signed one that was pushed, or the
-/// copy a controller stores and countersigns.
-///
-/// The controller's copy adds `controller_key_id` and `controller_signature`;
-/// the signed original carries neither, so both are optional. `nil` from any
-/// field stays "not stated" rather than becoming a zero or a blank version.
-struct FleetReleaseDescriptor: Decodable {
-    var version: String?
-    var build: String?
-    var filename: String?
-    var bytes: Int?
-    var sha256: String?
-    /// The gateway's signature over the canonical descriptor bytes.
-    var signature: String?
-    /// The publisher fingerprint the descriptor was signed by.
-    var publisherKeyId: String?
-    /// The controller's own countersignature, on a held copy only.
-    var controllerKeyId: String?
-    var controllerSignature: String?
-    var publishedAt: Double?
-    var schema: String?
-    var schemaVersion: Int?
-
-    /// `0.6.50 (abc1234)`, or whichever half the gateway actually stated. Never
-    /// invents the missing half; a descriptor with neither reads "—".
-    var versionBuild: String {
-        let version = (version ?? "").trimmingCharacters(in: .whitespaces)
-        let build = (build ?? "").trimmingCharacters(in: .whitespaces)
-        if !version.isEmpty, !build.isEmpty { return "\(version) (\(build))" }
-        if !version.isEmpty { return version }
-        if !build.isEmpty { return build }
-        return "—"
-    }
-}
-
-/// What a controller says it has installed as a release publisher, from Hub
-/// 0.6.51's `trusted_publisher` beside `release`.
-///
-/// `reported` keeps two absences apart: a Hub that answers `trusted_publisher:
-/// null` is saying it trusts nobody (the state that makes a push answer 409),
-/// while a Hub with no such field said nothing at all. Flattening both to `nil`
-/// would draw the same sentence for "install my key" and "the Hub is too old".
-struct FleetTrustedPublisher: Decodable {
-    /// `false` when the gateway reports the Hub did not carry the field.
-    var reported: Bool?
-    var publisherId: String?
-    var fingerprint: String?
-}
-
-/// What one controller answered to a push.
-///
-/// `detail` is the controller's (or the gateway's) own sentence and is shown
-/// **verbatim**: a 409 already carries the App Update Key public-key path and
-/// comparison fingerprint. `release` is what the
-/// controller **read back** after storing — `nil` on any refusal.
-struct FleetPushOutcome: Decodable {
-    var ok: Bool?
-    /// The controller's HTTP status, or `nil` when it could not be reached.
-    var status: Int?
-    var code: String?
-    var detail: String?
-    /// The controller's label, attached by the gateway for the page.
-    var label: String?
-    var release: FleetReleaseDescriptor?
-    /// The gateway refused this controller because it already holds a newer
-    /// version; the owner can choose to publish anyway.
-    var downgrade: Bool?
-    /// Sent by the Gateway's automatic catch-up (a controller that missed the publish), at `at`.
-    var auto: Bool?
-    var at: Double?
-    /// The catch-up push is in flight.
-    var pending: Bool?
-    /// The catch-up did not push, and `detail` says why (an untrusted key, a missing file).
-    var skipped: Bool?
-    /// After a failed catch-up, when it is tried again.
-    var retryAt: Double?
-}
-
-/// The result of one `POST /admin/api/release/publish` — also the shape of
-/// `last_push` on the fleet read: the descriptor that was signed, the fingerprint
-/// that signed it, and one outcome per configured controller.
-struct FleetPushReport: Decodable {
-    var updatedAt: Double?
-    var fingerprint: String?
-    var release: FleetReleaseDescriptor?
-    /// Keyed by controller id. Wrapped in `Lenient` so one controller's malformed
-    /// outcome is dropped alone rather than blanking every other controller's
-    /// report. Optional so a report that omits it still decodes.
-    var locations: [String: Lenient<FleetPushOutcome>]?
-
-    var outcomes: [String: FleetPushOutcome] {
-        (locations ?? [:]).compactMapValues { $0.value }
-    }
-
-    /// Every controller that did not accept, labelled and id-sorted so a banner
-    /// lists them in a stable order between two identical pushes.
-    var refusals: [(id: String, outcome: FleetPushOutcome)] {
-        outcomes
-            .sorted { ($0.value.label ?? $0.key) < ($1.value.label ?? $1.key) }
-            .map { (id: $0.key, outcome: $0.value) }
-            .filter { $0.outcome.ok != true }
-    }
-
-    var allAccepted: Bool {
-        !outcomes.isEmpty && outcomes.values.allSatisfy { $0.ok == true }
-    }
-
-    static func from(_ payload: [String: Any]) -> FleetPushReport? {
-        fleetDecode(payload)
-    }
-}
-
-/// The top-level `release` object on `/admin/api/fleet`, and the body of
-/// `/admin/api/release/identity`: the publisher identity, the last push, and the
-/// gateway's own sentence when the signer is unavailable.
-struct FleetReleaseState: Decodable {
-    var identity: FleetReleaseIdentity?
-    var lastPush: FleetPushReport?
-    var error: String?
-    /// The paced rollout (`gateway/release_rollout.py`), `nil` when none was started here.
-    var rollout: FleetRollout?
-
-    private enum CodingKeys: String, CodingKey { case identity, lastPush, error, rollout }
-
-    /// Each part decodes on its own: a malformed last push must not blank the
-    /// fingerprint the owner still has to read off the Settings page, and a
-    /// missing identity must not cost the last push.
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        identity = try? c.decode(FleetReleaseIdentity.self, forKey: .identity)
-        lastPush = try? c.decode(FleetPushReport.self, forKey: .lastPush)
-        error = try? c.decode(String.self, forKey: .error)
-        rollout = try? c.decode(FleetRollout.self, forKey: .rollout)
-    }
-
-    static func from(_ payload: [String: Any]) -> FleetReleaseState? {
-        fleetDecode(payload)
-    }
-}
-
-/// A paced Studio Hub rollout: this Mac's Hub, then one controller at a time, each waited for until it
-/// reports the new version. `summary` is the gateway's own line ("Updating 1200 (3 of 6) · 1100 done ·
-/// 1300–1600 waiting"); the page draws it as given rather than recomputing it.
-struct FleetRollout: Decodable {
-    /// `running`, `finished`, `stopped` (by the owner) or `failed` (a controller did not come back).
-    var state: String?
-    var version: String?
-    var build: String?
-    var reason: String?
-    var summary: String?
-    var order: [String]?
-    var steps: [String: Lenient<FleetRolloutStep>]?
-
-    var isRunning: Bool { state == "running" }
-    var canResume: Bool { state == "stopped" || state == "failed" }
-
-    /// The steps in rollout order.
-    var orderedSteps: [(id: String, step: FleetRolloutStep)] {
-        (order ?? []).compactMap { id in steps?[id]?.value.map { (id: id, step: $0) } }
-    }
-
-    static func from(_ payload: [String: Any]) -> FleetRollout? {
-        fleetDecode(payload)
-    }
-}
-
-/// One location in a rollout: `waiting`, `sending`, `sent`, `installing`, `updated`, `failed` or `skipped`.
-struct FleetRolloutStep: Decodable {
-    var label: String?
-    var state: String?
-    var detail: String?
-    /// The group's Macs on the new version, from the fleet read (`nil` when it has none to count).
-    var nodesUpdated: Int?
-    var nodesTotal: Int?
-    /// Why this controller's update to the rollout's build failed, from its own Mac's report; `nil` when none.
-    var updateError: FleetUpdateError?
-
-    /// The step's line in the paced-rollout panel, e.g. "waiting · Update failed while downloading: HTTP 404".
-    func panelText(version: String) -> (text: String, health: Health?) {
-        let detail = (self.detail ?? "").trimmingCharacters(in: .whitespaces)
-        var text: String
-        switch state {
-        case "sending": text = "sending the release…"
-        case "sent": text = "sent; finishing its current work, then installing"
-        case "installing": text = "installing and restarting"
-        case "updated": text = "updated"
-        case "failed": text = detail.isEmpty ? "did not come back on \(version)" : detail
-        case "skipped": text = "skipped" + (detail.isEmpty ? "" : ": \(detail)")
-        default: text = detail.isEmpty ? "waiting" : "waiting: \(detail)"
-        }
-        var health: Health? = Health(state: state ?? "waiting")
-        if let total = nodesTotal, total > 0, let on = nodesUpdated,
-           ["sent", "installing", "updated"].contains(state ?? "") {
-            text += " · \(on) of \(total) Mac\(total == 1 ? "" : "s") on \(version)"
-        }
-        if let error = updateError {
-            text += " · " + FleetUpdateFailure.sentence(error)
-            health = max(health ?? .off, .warn)
-        }
-        return (text, health)
-    }
 }
 
 /// Re-serialise an admin payload and decode it with the gateway's snake_case

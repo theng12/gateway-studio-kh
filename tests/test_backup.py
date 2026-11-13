@@ -40,7 +40,6 @@ class BackupTests(unittest.TestCase):
         data = self.live / "data"
         self.files = {
             "gateway/.env": self.live / ".env",
-            "gateway/data/release-publisher.pem": data / "release-publisher.pem",
             "gateway/data/content-delivery/signing-key.pem": data / "content-delivery/signing-key.pem",
             "gateway/data/content-delivery/authority.json": data / "content-delivery/authority.json",
             "gateway/data/content-library/" + "a" * 64 + "/archive.sspack": data / "content-library" / ("a" * 64) / "archive.sspack",
@@ -65,7 +64,6 @@ class BackupTests(unittest.TestCase):
         # voices.json is absent on purpose: it must be reported missing, not fail the backup.
         roles = [
             ("gateway/.env", self.live / ".env"),
-            ("gateway/data/release-publisher.pem", data / "release-publisher.pem"),
             ("gateway/data/content-delivery", data / "content-delivery"),
             ("gateway/data/content-library", data / "content-library"),
             ("gateway/data/credentials.json", data / "credentials.json"),
@@ -211,7 +209,7 @@ class BackupTests(unittest.TestCase):
         backup.run()
         archive = next(p for p in self._archives() if p.parent.name == "_backups")
         originals = {name: path.read_bytes() for name, path in self.files.items()}
-        key = self.files["gateway/data/release-publisher.pem"]
+        key = self.files["gateway/data/credentials.json"]
         key.write_bytes(b"a key someone regenerated")
         self.files["hub/voice/voices/abc/reference.wav"].unlink()
         pack = self.files["gateway/data/content-library/" + "a" * 64 + "/archive.sspack"]
@@ -229,7 +227,7 @@ class BackupTests(unittest.TestCase):
         self.assertEqual((result["written"], result["moved_to_trash"]), (3, 1))
         safety = Path(result["safety_copy"])
         self.assertEqual(safety.parent, self.root / "trash")
-        self.assertEqual((safety / "gateway/data/release-publisher.pem").read_bytes(), b"a key someone regenerated")
+        self.assertEqual((safety / "gateway/data/credentials.json").read_bytes(), b"a key someone regenerated")
         # A second restore of the same backup changes nothing.
         again = backup.restore(archive)
         self.assertEqual((again["written"], again["moved_to_trash"]), (0, 0))

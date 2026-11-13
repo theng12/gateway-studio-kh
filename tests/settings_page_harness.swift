@@ -1,4 +1,4 @@
-// Settings, offscreen: the four Received-artifacts limits, and the one App Update Key value.
+// Settings, offscreen: the four Received-artifacts limits, and the one-line update statement.
 //
 // Compiled by `tests/test_settings_retention_fields.py` as the entry point of a throwaway copy of
 // the app (see `menubar/render/patch_sources.py`), against a stub gateway whose limits read answers
@@ -12,9 +12,6 @@ let launchWindow: String? = nil
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
 GatewayController.shared.state = .running(providers: 4, models: 9)
-
-/// The key the stub gateway publishes. The same constant is in the Python test beside this file.
-let stubKey = "e6b9eece5ec6b3f4a1d0c9b8a7f6e5d4c3b2a1908f7e6d5c4b3a291807f6e5d4"
 
 var failures: [String] = []
 
@@ -72,46 +69,28 @@ if let inUse = texts().first(where: { $0.stringValue == "In use" }),
     }
 }
 
-// ---- the App Update Key: one value, whole, and it is the hex key
-let keyLabels = texts().filter { $0.stringValue.count == 64 && $0.stringValue.allSatisfy { $0.isHexDigit } }
-guard let key = keyLabels.first else {
-    failures.append("the App Update Key is not on the page as a 64-character hex value")
-    print(failures.map { "FAIL: \($0)" }.joined(separator: "\n")); exit(1)
+// ---- updates: one sentence, and no key, fingerprint or trust control on the page
+let sentence = "Updates are installed by Studio Launcher KH."
+if texts().first(where: { $0.stringValue == sentence }) == nil {
+    failures.append("the Updates section does not carry \"\(sentence)\"")
 }
-if key.stringValue != stubKey {
-    failures.append("the App Update Key reads \(key.stringValue), not the key the gateway published")
-}
-if !key.isSelectable {
-    failures.append("the App Update Key is not selectable, so it cannot be copied by hand")
-}
-if key.lineBreakMode == .byTruncatingMiddle || key.lineBreakMode == .byTruncatingTail
-    || key.stringValue.contains("…") {
-    failures.append("the App Update Key is truncated on screen")
-}
-// The second long value is what put the wrong string into a Mac in the first place. One is allowed.
-let longValues = texts().filter {
+let hexValues = texts().filter {
     $0.stringValue.count >= 40 && $0.stringValue.allSatisfy { $0.isHexDigit }
 }
-if longValues.count != 1 {
-    failures.append("the page shows \(longValues.count) long key values; it must show one")
+if !hexValues.isEmpty {
+    failures.append("the page shows \(hexValues.count) long hex value(s); no update key belongs here")
 }
-if texts().contains(where: { $0.stringValue == "Fingerprint" || $0.stringValue == "Public key (base64)"
-    || $0.stringValue == "Technical details" || $0.stringValue == "Public key (hex)" }) {
-    failures.append("a second App Update Key value is still labelled on the page")
-}
-let caption = "Paste this into each Mac (Studio Hub → Connections → App Update Key)"
-if !texts().contains(where: { $0.stringValue == caption }) {
-    failures.append("the App Update Key is not labelled with where it is pasted")
-}
-let expectedHint = "To check a Mac: its App Update Key should start with \(stubKey.prefix(8))."
-if !texts().contains(where: { $0.stringValue == expectedHint }) {
-    failures.append("the compare line is not \"\(expectedHint)\"")
+if texts().contains(where: {
+    $0.stringValue.contains("App Update Key") || $0.stringValue.contains("Fingerprint")
+        || $0.stringValue.contains("Public key")
+}) {
+    failures.append("the page still presents an App Update Key, fingerprint or public key")
 }
 if descendants(content).compactMap({ $0 as? NSButton })
-    .first(where: { $0.action == NSSelectorFromString("copyUpdateKey") }) == nil {
-    failures.append("the App Update Key Copy button is missing")
+    .contains(where: { $0.action == NSSelectorFromString("copyUpdateKey") }) {
+    failures.append("a key Copy control is still on the page")
 }
 
-if failures.isEmpty { print("PASS: the limits load without the usage walk and one key is shown") }
+if failures.isEmpty { print("PASS: the limits load without the usage walk and updates are one sentence") }
 else { failures.forEach { print("FAIL: \($0)") }; exit(1) }
 exit(0)

@@ -287,5 +287,4 @@ Ponytail/Graphify apply here and to delegated workers.
 [job retry policy](docs/job-retry-policy.md) ·
 [backup and restore](docs/backup-restore.md) ·
 [developer mode](docs/developer-mode.md) ·
-[release origin and staging](docs/release-origin.md), [release staging](docs/release-staging.md) ·
 [fleet deployment notes](docs/fleet-deployment-notes.md)

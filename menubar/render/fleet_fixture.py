@@ -113,7 +113,7 @@ def location(lid, label, url, *, local=False, reachable=True, role="controller",
         "activity": {"pulse": {}, "machines": list(activities), "observed_at": NOW - 5},
         "by_machine": {}, "matrix": [], "jobs_total": 240, "site_id": lid, "controller_id": lid, "ready": reachable,
         "drained": False, "capacity": {}, "latency_ms": 38 if reachable else None, "model_supply": {},
-        "local_models": list(models), "model_health": [], "release": None, "trusted_publisher": None,
+        "local_models": list(models), "model_health": [],
         "workers": list(workers), "hub_workers": [], "probe_machines_hidden": 0,
         "models_discovered": len({m["model"] for m in models}), "models_enabled": len({m["model"] for m in models}),
         "models_publishable": len({m["model"] for m in models if m["available"]}),
@@ -206,7 +206,7 @@ LATEST = "0.6.132"
 FIVE = ("voice", "transcription", "chat", "music", "image")
 
 
-def health(flavour: str) -> tuple[list, dict]:
+def health(flavour: str) -> list:
     """GATEWAY_RENDER_FIXTURE=health-idle|health-mixed|health-problem: the live 2026-10-02 fleet shape.
 
     Every node still carries the `video` worker its controller recorded at join (offline, never seen), its
@@ -281,11 +281,7 @@ def health(flavour: str) -> tuple[list, dict]:
                               "publisher_key_id": "cd" * 32})
     for row in local["activity"]["machines"]:
         row.update(limitation=None, limitation_code=None, limitation_reason=None, limitation_affects=None)
-    push_at = NOW - (300 if flavour == "health-mixed" else 6 * HOUR)
-    push = {"updated_at": push_at, "fingerprint": "cd" * 32,
-            "release": {"version": LATEST, "build": "e6a8b80", "filename": f"StudioHub-{LATEST}-e6a8b80.dmg",
-                        "bytes": 1_372_776_123, "sha256": "ef" * 32, "signature": "sig"},
-            "locations": {}}
+
     # 1401 never answers (its old stop belongs to an earlier outage); 1402 answers with no Hub, and its Mac
     # recorded a force-quit after the controller last saw it; 1403 has no Hub and an older crash; 1404 is up.
     why_offline = dict(
@@ -312,32 +308,10 @@ def health(flavour: str) -> tuple[list, dict]:
                      versions={"local": "0.6.131", "terranash-1302-m2-8-256": "0.6.126",
                                **{f"terranash-13{i:02d}-m2-8-256": "0.6.131" for i in (1, 3, 4, 5)}})]
     elif flavour == "health-catchup":
-        # Automatic catch-up (fix/release-catchup): 1600 joined after the publish and was sent it by the
-        # Gateway, 1500 is being sent it now, 1400 trusts another key, 1300's push failed and backs off.
-        trusted = {"reported": True, "publisher_id": "gatewaykh", "fingerprint": "cd" * 32}
+        # A controller that joined later than the others: its rows still render; nothing is pushed.
         rows = [local, site("c1100", "terranash-1100", 4), site("c1600", "terranash-1600", 3),
-                site("c1500", "terranash-1500", 3, held="0.6.131", versions={"local": "0.6.131"}),
-                site("c1400", "terranash-1400", 3, held="0.6.131", versions={"local": "0.6.131"}),
-                site("c1300", "terranash-1300", 3, held="0.6.131", versions={"local": "0.6.131"}),
-                site("c1200", "terranash-1200", 4)]
-        for row in rows[1:]:
-            row["trusted_publisher"] = trusted
-        rows[4]["trusted_publisher"] = {**trusted, "fingerprint": "9f" * 32}
-        auto = {"auto": True, "status": None, "code": None, "detail": None, "release": None}
-        push["locations"] = {
-            "c1100": {"ok": True, "status": 200, "release": rows[1]["release"]},
-            "c1200": {"ok": True, "status": 200, "release": rows[6]["release"]},
-            "c1300": {**auto, "ok": False, "at": NOW - 40 * MIN, "retry_at": NOW + 20 * MIN,
-                      "code": "LOCATION_UNREACHABLE",
-                      "detail": "could not reach the controller at http://100.64.3.1:47873 (ConnectTimeout)"},
-            "c1400": {**auto, "ok": False, "skipped": True, "at": NOW - 2 * MIN, "code": "CATCHUP_SKIPPED",
-                      "detail": "it doesn't trust this Gateway's App Update Key (it trusts 9f9f9f9f9f9f…); copy this Gateway's "
-                                "App Update Key public key from Gateway → Settings → App Update Key "
-                                "into Hub → Connections → App updates, then compare fingerprints (this Gateway: "
-                                + "cd" * 32 + ")"},
-            "c1500": {**auto, "ok": None, "pending": True, "at": NOW - 30},
-            "c1600": {**auto, "ok": True, "status": 200, "at": NOW - 25 * MIN, "release": rows[2]["release"]},
-        }
+                site("c1500", "terranash-1500", 3), site("c1400", "terranash-1400", 3),
+                site("c1300", "terranash-1300", 3), site("c1200", "terranash-1200", 4)]
     elif flavour == "health-problem":
         rows = [local,
                 site("c1100", "terranash-1100", 10, crashed={("terranash-1104-m2-8-256", "voice")},
@@ -380,41 +354,17 @@ def health(flavour: str) -> tuple[list, dict]:
         rows = [local, site("c1100", "terranash-1100", 10), site("c1200", "terranash-1200", 8),
                 site("c1300", "terranash-1300", 9), site("c1400", "terranash-1400", 8),
                 site("c1500", "terranash-1500", 3)]
-    return rows, push
+    return rows
 
-
-def rollout(snapshot: dict, flavour: str) -> dict | None:
-    """The rollout block `admin.fleet` adds, from the real `release_rollout.status` over a written state."""
-    from gateway import release_rollout
-
-    failed = flavour.endswith("failed")
-    order = ["local", "c1100", "c1200", "c1300", "c1400", "c1500", "c1600"]
-    labels = {"local": "This Mac", **{cid: f"terranash-{cid[1:]}" for cid in order[1:]}}
-    states = ({"local": "updated", "c1100": "sent"} if flavour == "health-rollout-errors" else
-              {"local": "updated", "c1100": "updated", "c1200": "failed" if failed else "installing"})
-    release_rollout._write({
-        "mode": "paced", "state": "failed" if failed else "running", "version": LATEST, "build": "e6a8b80",
-        "order": order, "started_at": NOW - 40 * MIN, "finished_at": NOW if failed else None,
-        "reason": "terranash-1200 did not come back on 0.6.132 within 30 min, so the rollout stopped there"
-                  if failed else None,
-        "steps": {cid: {"label": labels[cid], "state": states.get(cid, "waiting"),
-                        **({"detail": "did not come back on 0.6.132 within 30 min"} if states.get(cid) == "failed"
-                           else {})} for cid in order}})
-    return release_rollout.status(snapshot)
-
-
-def assemble(rows: list, push: dict) -> dict:
-    """The snapshot exactly as `fleet._refresh` assembles it, plus the release block `admin.fleet` adds."""
-    fleet.stamp_latest(rows, push)
+def assemble(rows: list) -> dict:
+    """The snapshot exactly as `fleet._refresh` assembles it."""
+    fleet.stamp_latest(rows)
     machines = fleet.machines_flat(rows)
     fleet.stamp_controller_versions(rows, machines)
     return {
         "locations": rows, "machines": machines, "running": fleet.running_flat(rows),
         "summary": fleet._summarise(rows), "issues": fleet._issues(rows), "generated_at": NOW,
         "fleet_warnings": {"hidden": ["macos_updates"], "hideable": []},
-        "release": {"identity": {"algorithm": "ed25519", "public_key_base64": "A" * 44, "public_key_hex": "ab" * 32,
-                                 "fingerprint": "cd" * 32, "publisher_id": "gatewaykh"},
-                    "last_push": push},
     }
 
 
@@ -537,10 +487,7 @@ def build() -> dict:
     flavour = os.environ.get("GATEWAY_RENDER_FIXTURE", "")
     networks()
     if flavour.startswith("health"):
-        snapshot = assemble(*health(flavour))
-        if flavour.startswith("health-rollout"):
-            snapshot["release"]["rollout"] = rollout(snapshot, flavour)
-        return snapshot
+        return assemble(health(flavour))
     local = location(
         "local", "This Mac", "http://127.0.0.1:47873", local=True, role="controller",
         machines=[machine("local", "This Mac", "Apple M2 Max", 32.0, 18.4, 61.0, disk_total=460.0,
@@ -657,8 +604,7 @@ def build() -> dict:
         render_add = {"controller": shops_row, "location": fleet.pending_location(shops_row),
                       "credential": {"scope": "fleet", "detail": "This is the Fleet token — the right one."},
                       "discovered": 7, "discovery_error": None, "enable_seed": None}
-    fleet.stamp_latest(rows, {"fingerprint": "cd" * 32, "updated_at": NOW - 3 * HOUR,
-                              "release": {"version": "0.6.126"}})
+    fleet.stamp_latest(rows)
     machines = fleet.machines_flat(rows)
     fleet.stamp_controller_versions(rows, machines)
     for row in machines:
@@ -682,16 +628,6 @@ def build() -> dict:
         "summary": fleet._summarise(rows),
         "issues": fleet._issues(rows),
         "generated_at": NOW,
-        "release": {
-            "identity": {"algorithm": "ed25519", "public_key_base64": "A" * 44, "public_key_hex": "ab" * 32,
-                         "fingerprint": "cd" * 32, "publisher_id": "gatewaykh"},
-            "last_push": {"updated_at": NOW - 3 * HOUR, "fingerprint": "cd" * 32,
-                          "release": {"version": "0.6.126", "build": "a1b2c3d", "filename": "StudioHub-0.6.126.dmg",
-                                      "bytes": 4_400_000_000, "sha256": "ef" * 32, "signature": "sig"},
-                          "locations": {"ctrl-blue": {"ok": True, "status": 200},
-                                        "ctrl-studio2": {"ok": False, "status": 409, "code": "PUBLISHER_NOT_TRUSTED",
-                                                         "detail": "no trusted gateway key is installed."}}},
-        },
     }
 
 
