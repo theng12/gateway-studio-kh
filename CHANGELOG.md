@@ -10,6 +10,16 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.254 — 2026-11-13
+
+- **Providers reads as an app now.** Four tabs — Providers, SFX, Workers and Capacity — replace the seven that made you hunt; The queue, measured numbers and pools are sections of Capacity.
+- **One search field, one Add, and a More menu.** "1 without a key" is a chip you can click to filter; Re-discover all and Import Price Research moved behind More; each card's Re-discover is in its ⋯ menu.
+- **Price research is one sentence** — prices on file and when they were last researched — with the per-provider rows behind Show details.
+- **Cards show what matters at a glance.** The id, kind and address are behind Configure, "no key" is a button that opens the key field, and one status line says what is down, why, and opens Fleet.
+- **Version and What's New moved to the bottom-left pill**, where the app's own footer puts them.
+
+---
+
 ## 0.2.253 — 2026-11-13
 
 - **Update opens Studio Launcher KH.** Gateway no longer signs or serves other apps' updates, and Settings says updates are installed by the Launcher.
