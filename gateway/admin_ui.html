@@ -438,6 +438,7 @@
      so a button is never off-screen behind a horizontal scroll. */
   .fleet-pane .ftable th:last-child, .fleet-pane .ftable td[data-label="Actions"] {
     position: sticky; right: 0; background: var(--panel); z-index: 2;
+    border-left: 1px solid var(--line);
   }
   .ftable td[data-label="Actions"], .ftable td[data-label="Batch"] { white-space: nowrap; }
   .ftable td[data-label="Actions"] > .row { flex-wrap: nowrap; }
@@ -7292,7 +7293,7 @@ function fleetLocationRow(L) {
       style="${status.bad ? 'color:var(--warn-text)' : 'color:var(--dim)'}">
       <div><div>${esc(status.main || '—')}</div>
       ${status.sub ? `<div class="ft-sub">${esc(status.sub)}</div>` : ''}</div></td>
-    <td data-label="Actions" style="position:relative"><div class="row">
+    <td data-label="Actions"><div class="row">
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'${L.paused_at != null ? 'resume' : 'pause'}')">${L.paused_at != null ? 'Resume' : 'Pause'}</button>
@@ -7812,7 +7813,7 @@ function fleetMachineActionCell(m) {
       && m.reachable === true && m.startup.stale !== true) {
     more.push(`<button type="button"${ids} onclick="fleetMacTrashOn(this, this.dataset.lid, this.dataset.mid)">Turn on macOS Trash</button>`);
   }
-  return `<td data-label="Actions" style="position:relative"><div class="row">${buttons.join('')}
+  return `<td data-label="Actions"><div class="row">${buttons.join('')}
     <span class="overflow">
       <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
         data-menu="mac-more-${esc(m.location_id)}-${esc(m.machine)}" onclick="toggleCardMenuFor(this)">More…</button>
@@ -9017,17 +9018,16 @@ function renderFleetJobs(d) {
   if (status) status.textContent = fleetQueueLine(d);
   if (wrap) {
     wrap.innerHTML = rows.length
-      ? `<table class="ftable"><thead><tr><th>Location</th><th>Type</th><th>Model</th><th>Batch</th>
+      ? `<table class="ftable"><thead><tr><th>Location</th><th>Type</th><th>Model</th>
          <th>Progress</th><th>State</th><th>Actions</th></tr></thead><tbody>${rows.map(job => {
           const state = fleetJobState(job);
           // A batch is stopped on the Hub that holds it: the location's id and the Hub's batch id are
           // what the route addresses — a label is not an identity.
           const stoppable = job.location_id != null && job.batch_id != null;
-          return `<tr>
+          return `<tr title="${esc(job.batch_id ? 'batch ' + job.batch_id : '')}">
             <td class="ft-lead" data-label="Location"><div class="ft-name">${esc(job.location || job.location_id || '—')}</div></td>
             <td data-label="Type">${esc(job.modality ? (job.modality === 'tts' ? 'TTS' : job.modality) : '—')}</td>
             <td data-label="Model">${esc(job.label || job.model || '—')}</td>
-            <td data-label="Batch" title="${esc(job.label || '')}">${esc(job.batch_id || '—')}</td>
             <td data-label="Progress">${esc(fleetJobProgress(job))}
               ${job.no_progress_s > 0 ? `<div class="ft-sub">no progress for ${esc(fleetDuration(job.no_progress_s))}</div>` : ''}</td>
             <td class="nowrap" data-label="State">${fleetBadge(state.text, state.health)}</td>
