@@ -242,7 +242,6 @@ _OPTIONAL_PROBES: tuple[tuple[str, object], ...] = (
     ("/api/hub/workers", {}),
     ("/api/hub/model-packages", {}),
     ("/api/hub/model-health", {}),
-    ("/api/hub/release", {}),
     ("/api/hub/fleet/nodes/local/work-policy", {}),
 )
 
@@ -1222,7 +1221,6 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
             workers_payload = optional["/api/hub/workers"]
             packages_payload = optional["/api/hub/model-packages"]
             health_payload = optional["/api/hub/model-health"]
-            release_payload = optional["/api/hub/release"]
             policy_payload = optional["/api/hub/fleet/nodes/local/work-policy"]
             policy = policy_payload.get("work_policy") if isinstance(policy_payload, dict) else None
             enabled = policy.get("machine_enabled") if isinstance(policy, dict) else None
@@ -1394,18 +1392,6 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         # The Hub's own per-(machine, model) verdict, with its reason. The Models
         # tab shows this instead of assembling a story from four other fields.
         "model_health": _model_health_rows(health_payload),
-        # The app release this controller holds, read from the controller itself.
-        # `None` is "it holds none" or "it has no release route" — the page draws
-        # both the same way rather than inventing a version.
-        "release": (
-            release_payload.get("release")
-            if isinstance(release_payload.get("release"), dict)
-            else None
-        ),
-        # The App Update Key fingerprint this controller reports, when its Hub
-        # reports it (0.6.51+). `reported` is separate from the fingerprint so
-        # "it says it trusts nobody" and "it did not tell us" stay distinct.
-        "trusted_publisher": _trusted_publisher(release_payload),
         # The Machines tab: capabilities' worker roster, falling back to the
         # node list's studios.
         "workers": _worker_roster(capabilities, node_rows),
@@ -1417,28 +1403,6 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         "latency_ms": int((time.time() - started) * 1000),
     })
     return location
-
-
-def _trusted_publisher(payload: Any) -> dict[str, Any]:
-    """A controller's installed release trust, from its own `/api/hub/release` answer.
-
-    `reported` keeps the two absences apart: Hub 0.6.51 answers
-    `trusted_publisher: null` when it trusts nobody (the state that makes a push
-    answer 409), while a controller with no such field answered nothing at all.
-    Both used to look identical once flattened to `None`.
-    """
-    if not isinstance(payload, dict) or "trusted_publisher" not in payload:
-        return {"reported": False, "publisher_id": None, "fingerprint": None}
-    value = payload.get("trusted_publisher")
-    if not isinstance(value, dict):
-        return {"reported": True, "publisher_id": None, "fingerprint": None}
-    publisher_id = value.get("publisher_id")
-    fingerprint = value.get("fingerprint")
-    return {
-        "reported": True,
-        "publisher_id": publisher_id if isinstance(publisher_id, str) else None,
-        "fingerprint": fingerprint if isinstance(fingerprint, str) else None,
-    }
 
 
 def _version_from(overview: dict) -> str | None:
