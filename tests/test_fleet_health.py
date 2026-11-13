@@ -119,13 +119,15 @@ def loud(issues: list[dict]) -> list[str]:
 
 
 class AHealthyIdleFleetIsGreen(unittest.TestCase):
-    def test_no_warning_no_needs_attention_every_mac_on_latest(self) -> None:
+    def test_no_warning_no_needs_attention(self) -> None:
+        # Gateway publishes no Hub release (owner rule 2026-11-13: only Studio Launcher KH
+        # installs updates), so there is no latest/behind verdict to assert — only that a
+        # healthy idle fleet is quiet.
         flat, issues, summary = read(group())
         self.assertEqual(loud(issues), [], issues)
         self.assertEqual(summary["issues"], 0)
         self.assertEqual({m["state"] for m in flat.values()}, {"long_idle"})
-        self.assertEqual({m["version_status"] for m in flat.values()}, {"latest"})
-        self.assertEqual((summary["on_latest"], summary["version_known"], summary["hub_latest"]), (4, 4, LATEST))
+        self.assertEqual({m["version_status"] for m in flat.values()}, {None})
 
     def test_the_phantom_video_worker_and_its_partial_read_are_not_reported(self) -> None:
         flat, issues, _ = read(group())
@@ -204,8 +206,7 @@ class RealProblemsStillShowByName(unittest.TestCase):
                                 "catalog_error": "[Errno 61] Connection refused"}]
         flat, issues, summary = read(row)
         self.assertEqual(loud(issues), ["machine_offline"], issues)
-        self.assertEqual(flat["node-2"]["version_status"], "unknown")
-        self.assertEqual((summary["on_latest"], summary["hub_unknown"]), (2, 1))
+        self.assertIsNone(flat["node-2"]["version_status"])
 
     def test_a_refused_credential_disk_red_and_startup_off(self) -> None:
         row = group(3)
@@ -290,68 +291,6 @@ class EveryAttentionReasonCarriesItsCode(unittest.TestCase):
     def test_a_mac_reading_healthy_has_neither(self) -> None:
         got = self.row(group())
         self.assertEqual((got["attention"], got["attention_code"]), (None, None))
-
-
-class VersionBadges(unittest.TestCase):
-    def test_behind_and_not_updating_is_a_warning_naming_the_mac_and_its_version(self) -> None:
-        row = group(2)
-        row["nodes"][1]["version"] = "0.6.126"
-        row["machines"][2]["startup"] = startup(*STUDIOS, version="0.6.126")
-        flat, issues, summary = read(row)
-        self.assertEqual(flat["node-2"]["hub_version"], "0.6.126")
-        self.assertEqual(flat["node-2"]["version_status"], "behind",
-                         "its controller has held 0.6.132 for six hours: it is not getting there")
-        behind = [i for i in issues if i["code"] == "hub_behind"]
-        self.assertEqual(len(behind), 1)
-        self.assertIn("node-2 (0.6.126)", behind[0]["message"])
-        self.assertIn("Update this Mac", behind[0]["action"])
-        self.assertEqual((summary["on_latest"], summary["version_known"], summary["hub_behind"]), (2, 3, 1))
-
-    def test_updating_inside_the_install_window_is_not_a_warning(self) -> None:
-        row = group(1)
-        row["nodes"][0]["version"] = "0.6.131"
-        fresh = {**PUSH, "updated_at": NOW - 300, "release": {"version": "0.6.133"}}
-        row["release"].update(version="0.6.133", published_at=NOW - 300)
-        flat, issues, summary = read(row, push=fresh)
-        self.assertEqual(flat["node-1"]["version_status"], "updating")
-        self.assertEqual(flat["local"]["version_status"], "updating", "the controller holds it, not installed yet")
-        self.assertEqual(loud(issues), [])
-        self.assertEqual(summary["hub_updating"], 2)
-
-    def test_a_busy_mac_past_the_window_is_still_updating(self) -> None:
-        self.assertEqual(fleet.version_status("0.6.131", {"version": LATEST, "published_at": NOW - 7200},
-                                              controller_holds_latest=True, busy=True, now=NOW), "updating")
-        self.assertEqual(fleet.version_status("0.6.131", {"version": LATEST, "published_at": NOW - 7200},
-                                              controller_holds_latest=True, busy=False, now=NOW), "behind")
-
-    def test_a_controller_that_lacks_the_release_is_behind_and_says_publish(self) -> None:
-        row = group(1, held="0.6.131")
-        row["version"] = "0.6.131"
-        row["machines"][0]["startup"] = startup(*STUDIOS, version="0.6.131")
-        flat, issues, _ = read(row)
-        self.assertEqual(flat["local"]["version_status"], "behind")
-        behind = next(i for i in issues if i["code"] == "hub_behind")
-        self.assertIn("publish the release to this group", behind["message"])
-
-    def test_latest_is_the_newest_published_release_from_either_source(self) -> None:
-        pilot = group(1, held="0.6.133")
-        pilot["release"]["published_at"] = NOW - 60
-        other = group(1)
-        self.assertEqual(fleet.latest_hub_release([pilot, other], PUSH)["version"], "0.6.133",
-                         "a pilot publish to one controller is still the newest release")
-        foreign = group(1, held="0.9.0")
-        foreign["release"]["publisher_key_id"] = "cd" * 32
-        self.assertEqual(fleet.latest_hub_release([foreign], PUSH)["version"], LATEST,
-                         "a release another publisher signed is not ours to call latest")
-        self.assertIsNone(fleet.latest_hub_release([group(1, held="")], {}))
-
-    def test_nothing_published_gives_no_verdict(self) -> None:
-        row = group(1)
-        row["release"] = None
-        flat, issues, summary = read(row, push={})
-        self.assertIsNone(flat["node-1"]["version_status"])
-        self.assertIsNone(summary["hub_latest"])
-        self.assertNotIn("hub_behind", [i["code"] for i in issues])
 
 
 class TheHeadlineSaysMacsAndWorkersSeparately(unittest.TestCase):
