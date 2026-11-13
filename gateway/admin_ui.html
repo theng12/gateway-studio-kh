@@ -444,7 +444,25 @@
        column with three blank grey tracks filling the rest of a 1440 row. */
     display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr));
     gap: 1px; background: var(--line); border-top: 1px solid var(--line);
+    align-items: stretch;
   }
+  /* A card view owns its pane: the table's box and its sideways scroller are not part of it. */
+  .tablewrap.fleet-cards { background: none; border: 0; border-radius: 0; overflow: visible; }
+  .tablewrap.fleet-cards .fleet-macs { border: 1px solid var(--line); border-radius: var(--r-card); }
+  .fleet-mac { display: flex; flex-direction: column; }
+  .fleet-mac .fleet-card-actions { margin-top: auto; padding-top: var(--s8); }
+  .fleet-view-switch { margin: 0; }
+  .fleet-warn-group { border-top: 1px solid var(--line); }
+  .fleet-warn-group:first-of-type { border-top: 0; }
+  .fleet-warn-group summary { display: flex; gap: var(--s8); align-items: flex-start; padding: var(--s8) 0;
+    font-weight: 600; cursor: pointer; }
+  .fleet-warn-detail { padding: 0 0 var(--s4) 21px; color: var(--dim); font-size: 12px; }
+  .fleet-warn-banner { padding: var(--s8) var(--s12); }
+  .fleet-warn { display: flex; gap: var(--s8); padding: var(--s6) 0; align-items: flex-start; }
+  .fleet-model-issues { margin-top: var(--s8); font-size: 12px; }
+  .fleet-model-issues summary { color: var(--dim); cursor: pointer; }
+  .ft-detail td { background: var(--panel2); }
+  .fleet-list-narrow { max-width: 1100px; margin-inline: auto; }
   .fleet-mac { background: var(--panel); padding: var(--s8) var(--s16); min-width: 0; }
   .fleet-mac .name { font-size: 13px; }
   .fleet-mac .cat, .fleet-mac .hint { overflow-wrap: anywhere; }
@@ -801,7 +819,15 @@
     <div class="row" id="fleet-controls" style="flex-wrap:wrap;position:relative">
       <input type="search" id="fleet-search" placeholder="Filter machines, models, jobs…"
              autocomplete="off" aria-label="Filter machines, models, jobs">
+      <div class="tabs fleet-view-switch" id="fleet-view" role="group" aria-label="View"></div>
       <div class="spacer"></div>
+      <button type="button" class="sm" id="fleet-bulk-btn" aria-haspopup="true" aria-expanded="false"
+        onclick="toggleCardMenu(this, 'fleet-bulk')">Bulk actions…</button>
+      <div class="more-menu" id="pmenu-fleet-bulk" hidden>
+        <button type="button" class="sm" onclick="fleetEnableAutostartEverywhere(this)">Enable Auto-Start on all Macs</button>
+        <button type="button" class="sm" onclick="fleetEnableMacTrashEverywhere(this)">Turn on macOS Trash on all Macs that are off</button>
+        <button type="button" class="sm" onclick="fleetResetCounters(this)">Reset job counters…</button>
+      </div>
       <button type="button" class="sm" id="fleet-filters-btn" aria-haspopup="true" aria-expanded="false"
         onclick="toggleFleetFilters()">Filters <span id="fleet-filter-count" class="badge" hidden></span></button>
       <div class="more-menu" id="fleet-filters" hidden style="left:auto;right:0;top:calc(100% + 4px)">
@@ -829,17 +855,6 @@
         <span>or more drops in 24 hours</span>
         <span id="fleet-threshold-note" role="status" aria-live="polite"></span>
       </div>
-      <!-- The native page's bulk bar, for the two settings it can change on every Mac at once. -->
-      <div class="row" id="fleet-machine-bulk" style="position:relative">
-        <span class="hint" style="margin:0">Fleet-wide changes:</span>
-        <button type="button" class="sm" id="fleet-bulk-btn" aria-haspopup="true" aria-expanded="false"
-          onclick="toggleCardMenu(this, 'fleet-bulk')">Bulk actions…</button>
-        <div class="more-menu" id="pmenu-fleet-bulk" hidden>
-          <button type="button" class="sm" onclick="fleetEnableAutostartEverywhere(this)">Enable Auto-Start on all Macs</button>
-          <button type="button" class="sm" onclick="fleetEnableMacTrashEverywhere(this)">Turn on macOS Trash on all Macs that are off</button>
-          <button type="button" class="sm" onclick="fleetResetCounters(this)">Reset job counters…</button>
-        </div>
-      </div>
       <div id="fleet-machine-action-note" role="status" aria-live="polite"></div>
       <details class="card" id="fleet-bulk-priority">
         <summary>Apply one work order to several Macs</summary>
@@ -864,16 +879,22 @@
     <!-- Locations: the roster and its owner controls. -->
     <div class="fleet-pane" id="fleet-pane-locations" hidden>
       <div class="stat" id="fleet-locations-status"></div>
-      <details class="card"><summary>Add a location</summary>
-        <div>
-          <label>Name <input id="fleet-add-label" autocomplete="off"></label>
-          <label>Address <input id="fleet-add-url" type="url" required placeholder="http://10.0.0.5:47873"></label>
-          <label>Fleet token <span class="secret"><input id="fleet-add-token" type="password" autocomplete="new-password"><button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>
-          <button type="button" onclick="addFleetLocation(this)">Add location</button>
-        </div>
-      </details>
+      <div class="row" style="justify-content:flex-end;margin:0 0 var(--s12)">
+        <button type="button" class="primary sm" onclick="openAddLocation()">+ Add location</button>
+      </div>
       <div id="fleet-location-action-note" role="status" aria-live="polite"></div>
       <div class="tablewrap" id="fleet-locations-wrap"></div>
+      <dialog id="fleet-add-location" aria-labelledby="fleet-add-location-title">
+        <h2 id="fleet-add-location-title">Add a location</h2>
+        <p class="hint">A controller on your network running Studio Hub. The token is that Mac's fleet token.</p>
+        <label>Name <input id="fleet-add-label" autocomplete="off"></label>
+        <label>Address <input id="fleet-add-url" type="url" required placeholder="http://10.0.0.5:47873"></label>
+        <label>Fleet token <span class="secret"><input id="fleet-add-token" type="password" autocomplete="new-password"><button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span></label>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" type="button" onclick="addFleetLocation(this)">Add location</button>
+          <button type="button" onclick="closeAddLocation()">Cancel</button>
+        </div>
+      </dialog>
       <div id="fleet-issues"></div>
     </div>
 
@@ -889,7 +910,7 @@
     <div class="fleet-pane" id="fleet-pane-jobs" hidden>
       <div class="stat" id="fleet-jobs-status"></div>
       <div id="fleet-jobs-note" role="status" aria-live="polite"></div>
-      <div class="tablewrap" id="fleet-jobs-wrap"></div>
+      <div class="tablewrap" id="fleet-jobs-wrap" class="fleet-list-narrow"></div>
       <!-- A Hub batch still running at a site for work that already finished. -->
       <div id="fleet-orphans"></div>
       <!-- Two separate switches on one door. Both start off: an automatic stop is the owner's
@@ -918,10 +939,8 @@
            An automatic stop nobody can see afterwards is worse than none. -->
       <details class="card" id="fleet-auto-stops-card">
         <summary id="fleet-auto-stops-summary">Recent automatic stops</summary>
-        <p class="hint">Every Hub batch this Gateway stopped on its own: the copy it replaced after a
-          site went silent, and an orphan the switch above covered. A Stop you pressed is listed
-          too, marked <b>manual</b>. The reason is what the guard proved before it asked, and
-          “asked to stop, not yet confirmed” is the Hub being told — not a worker that has stopped.</p>
+        <p class="hint">Stops this Gateway made on its own, and manual stops, with the guard's reason.
+          “Asked to stop” is the Hub being told, not a worker that has stopped.</p>
         <div class="row"><button type="button" onclick="loadAutoStops(true)">Refresh the list</button></div>
         <div id="fleet-auto-stops"><div class="empty">Read the list to see the last 7 days.</div></div>
       </details>
@@ -935,7 +954,7 @@
     <div class="fleet-pane" id="fleet-pane-story" hidden>
       <div class="stat" id="fleet-story-status"></div>
       <div id="fleet-story-note" role="status" aria-live="polite"></div>
-      <div class="tablewrap" id="fleet-story-wrap"></div>
+      <div class="tablewrap" id="fleet-story-wrap" class="fleet-list-narrow"></div>
     </div>
   </section>
   <!-- One dialog, filled by the action that opened it. The native page used a sheet per action
@@ -6357,6 +6376,38 @@ let fleetQuery = '';
 // Groups, Locations and the Machines table alike; a Machines column header takes over that table.
 let fleetSort = 'issues';   // issues | offline | problematic | site | lastseen | drops | name
 let fleetTab = 'groups';    // groups | locations | machines | models | jobs | story
+// **One view per tab, remembered per tab.** The owner, 2026-11-13: machines showed a metric
+// strip and a card wall, models duplicate rows above a table. A tab draws exactly one of its
+// views; the choice survives a reload.
+const FLEET_VIEW_DEFAULT = { groups: 'cards', locations: 'cards', machines: 'table',
+  models: 'table', jobs: 'list', story: 'list' };
+const FLEET_VIEW_TABS = new Set(['groups', 'locations', 'machines', 'models']);
+function fleetViewFor(tab = fleetTab) {
+  if (FLEET_VIEW_TABS.has(tab)) {
+    try {
+      const saved = localStorage.getItem('gatewayFleetView.' + tab);
+      if (saved === 'table' || saved === 'cards') return saved;
+    } catch (e) { /* storage unavailable: the default still reads */ }
+  }
+  return FLEET_VIEW_DEFAULT[tab] || 'table';
+}
+function fleetSetView(view) {
+  if (!FLEET_VIEW_TABS.has(fleetTab)) return;
+  try { localStorage.setItem('gatewayFleetView.' + fleetTab, view); } catch (e) { /* best effort */ }
+  renderFleetViewSwitch();
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
+}
+function renderFleetViewSwitch() {
+  const box = document.getElementById('fleet-view');
+  if (!box) return;
+  const supported = FLEET_VIEW_TABS.has(fleetTab);
+  box.hidden = !supported;
+  if (!supported) { box.innerHTML = ''; return; }
+  const current = fleetViewFor();
+  box.innerHTML = [['table', 'Table'], ['cards', 'Cards']].map(([key, title]) =>
+    `<button type="button" data-view="${key}" aria-pressed="${key === current}"
+       onclick="fleetSetView('${key}')">${title}</button>`).join('');
+}
 let machineSort = { key: null, ascending: true };   // a header click starts the sort
 // The last read, kept so changing a control re-sorts what is already on screen instead of asking
 // the Gateway again (and so the poll never loses the owner's choice).
@@ -6684,7 +6735,7 @@ function fleetMac(m) {
   // now, and it is never counted as down.
   if (m.last_known === true) {
     return `<div class="fleet-mac fleet-last-known">
-      <div class="row"><span class="name">${esc(m.label || m.machine)}</span>
+      <div class="row"><span class="name" title="${esc(m.label || m.machine)}">${esc(m.label || m.machine)}</span>
         <span class="badge">${esc(m.state_text || 'Last report')}</span></div>
       <div class="hint">${esc([m.location ? 'Site: ' + m.location : '',
         'shown from its last answer', 'not counted as online — its site did not answer this read']
@@ -6732,10 +6783,13 @@ function fleetMac(m) {
       m.history && m.history.problematic === true
         ? `<span class="badge warn" title="${esc(m.history.problematic_basis || '')}">Problematic</span>` : ''}</div>
       <div class="fleet-card-actions">
-        <button class="sm" type="button" data-open-kind="machine" data-open-id="${esc(m.machine || '')}"
+        <button class="sm primary" type="button" data-open-kind="machine" data-open-id="${esc(m.machine || '')}"
           data-open-label="${esc(m.label || m.machine || '')}" onclick="fleetOpenFromButton(this)">Open</button>
-        <button class="sm" type="button" data-fleet-key="${esc(detailKey)}"
-          aria-expanded="${detailOpen}" onclick="toggleFleetDetail(this)">${detailOpen ? 'Hide' : 'Details'}</button>
+        <span class="overflow"><button class="sm" type="button" aria-haspopup="true" aria-expanded="false"
+          data-menu="card-${esc(detailKey)}" onclick="toggleCardMenuFor(this)">More…</button>
+          <div class="more-menu" id="pmenu-card-${esc(detailKey)}" hidden>
+            <button type="button" data-fleet-key="${esc(detailKey)}" onclick="fleetCardDetails(this)">${detailOpen ? 'Hide details' : 'Details'}</button>
+          </div></span>
       </div>
     </div>
     ${doing ? `<div class="cat">${esc(doing)}</div>` : ''}
@@ -6763,13 +6817,16 @@ function fleetSite(L) {
   const detailOpen = fleetOpenDetails.has(detailKey);
   return `<div class="fleet-mac" data-fleet-card="${esc(detailKey)}">
     <div class="fleet-card-head">
-      <div class="fleet-card-title"><span class="name">${esc(L.label || L.id)}</span><span class="badge">Site</span>${badge}${
+      <div class="fleet-card-title"><span class="name" title="${esc(L.label || L.id)}">${esc(L.label || L.id)}</span><span class="badge">Site</span>${badge}${
       L.history && L.history.problematic === true
         ? `<span class="badge warn" title="${esc(L.history.problematic_basis || '')}">Problematic</span>` : ''}</div>
       <div class="fleet-card-actions">
-        <button class="sm" type="button" data-open-kind="site" data-open-id="${esc(L.id || '')}" onclick="fleetOpenFromButton(this)">Open</button>
-        <button class="sm" type="button" data-fleet-key="${esc(detailKey)}"
-          aria-expanded="${detailOpen}" onclick="toggleFleetDetail(this)">${detailOpen ? 'Hide' : 'Details'}</button>
+        <button class="sm primary" type="button" data-open-kind="site" data-open-id="${esc(L.id || '')}" onclick="fleetOpenFromButton(this)">Open</button>
+        <span class="overflow"><button class="sm" type="button" aria-haspopup="true" aria-expanded="false"
+          data-menu="card-${esc(detailKey)}" onclick="toggleCardMenuFor(this)">More…</button>
+          <div class="more-menu" id="pmenu-card-${esc(detailKey)}" hidden>
+            <button type="button" data-fleet-key="${esc(detailKey)}" onclick="fleetCardDetails(this)">${detailOpen ? 'Hide details' : 'Details'}</button>
+          </div></span>
       </div>
     </div>
     ${L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
@@ -7329,18 +7386,24 @@ function renderFleetMachines(d) {
   if (warnings) warnings.innerHTML = fleetOrphanWarning(d) + fleetWarningsBox(d.machines || []);
   if (!wrap) return;
   const read = (d.machines || []).length;
+  const empty = read === 0
+    ? '<div class="fleet-empty">No Macs have joined yet — add a location or start Studio Hub on a Mac. '
+      + '<button class="sm" type="button" onclick="selectFleetTab(\'locations\')">Locations</button></div>'
+    : `<div class="fleet-empty">No machine matches this filter — ${read} were read. `
+      + '<button class="sm" type="button" onclick="fleetClearFilters()">Show all</button></div>';
+  if (fleetViewFor('machines') === 'cards') {
+    wrap.classList.add('fleet-cards');
+    wrap.innerHTML = rows.length ? `<div class="fleet-macs">${rows.map(fleetMac).join('')}</div>` : empty;
+    return;
+  }
+  wrap.classList.remove('fleet-cards');
   wrap.innerHTML = rows.length
     ? `<table class="ftable">
        <thead><tr>${FLEET_MACHINE_COLUMNS.map(([key, title]) => fleetSortHeader(key, title)).join('')}
        <th scope="col">Actions</th></tr></thead>
        <tbody>${rows.map(fleetMachineRow).join('')}</tbody></table>`
-    : read === 0
-      ? '<div class="fleet-empty">No Macs have joined yet — add a location or start Studio Hub on a Mac. '
-        + '<button class="sm" type="button" onclick="selectFleetTab(\'locations\')">Locations</button></div>'
-      : `<div class="fleet-empty">No machine matches this filter — ${read} were read. `
-        + '<button class="sm" type="button" onclick="fleetClearFilters()">Show all</button></div>';
+    : empty;
 }
-
 // "8 machines. On latest 5/7 (Studio Hub 0.6.126) · 2 behind · 1 not answering."
 function fleetStatusLine(rows, machines) {
   const count = rows.length === machines.length
@@ -7395,11 +7458,12 @@ function fleetWarningsBox(machines) {
   const lines = fleetWarningLines(machines);
   if (!lines.length) return '';
   const worst = lines.some(l => l.health === 'bad') ? 'bad' : 'warn';
-  return `<div class="card" style="border-color:color-mix(in srgb, var(--${worst}) 35%, var(--line));background:color-mix(in srgb, var(--${worst}) 8%, var(--panel))">
-    ${lines.map(l => `<div class="fleet-warn">${fleetWarnIcon(l.health)}`
-      + `<span>${esc(l.text)}</span></div>`).join('')}</div>`;
+  return `<div class="card fleet-warn-banner" style="border-color:var(--${worst}-line);background:var(--${worst}-bg)">
+    ${lines.map(l => l.details
+      ? `<details class="fleet-warn-group"><summary>${fleetWarnIcon(l.health)}<span>${esc(l.text)}</span></summary>
+          <div>${l.details.map(d => `<div class="fleet-warn-detail">${esc(d)}</div>`).join('')}</div></details>`
+      : `<div class="fleet-warn">${fleetWarnIcon(l.health)}<span>${esc(l.text)}</span></div>`).join('')}</div>`;
 }
-
 // The native banner's own icon: a red octagon for an error, an amber triangle for a warning.
 function fleetWarnIcon(health) {
   const bad = health === 'bad';
@@ -7432,22 +7496,26 @@ function fleetWarningLines(machines) {
       // A Hub's own low-disk sentence restates the disk line already drawn for this Mac.
       if (m.disk && ['stop', 'red', 'amber'].includes(String(m.disk.state || '').toLowerCase())
           && item.kind === 'disk_space') continue;
-      const key = `${item.kind}|${item.text}`;
-      if (!groups.has(key)) groups.set(key, { kind: item.kind, text: item.text, who: [] });
+      const key = item.kind || 'warning';
+      if (!groups.has(key)) groups.set(key, { kind: item.kind, texts: [], who: [] });
       const group = groups.get(key);
       const who = fleetMachineName(m);
-      if (!group.who.includes(who)) group.who.push(who);
+      if (!group.who.includes(who)) { group.who.push(who); group.texts.push(item.text); }
     }
   }
   const extra = [...groups.values()].map(group => {
-    const sentence = String(group.text || '').replace(/\.$/, '');
+    const texts = group.texts.map(text => String(text || '').replace(/\.$/, ''));
+    // One header per kind: five Macs with the same trash warning are one fact with a count,
+    // expanded to name each Mac — not five near-identical lines.
+    const head = texts.every(text => text === texts[0]) ? texts[0] : String(group.kind || 'warning').replace(/_/g, ' ');
     return {
       health: 'warn',
       count: group.who.length,
-      text: group.who.length === 1 ? `${group.who[0]}: ${sentence}` : `${group.who.length} Macs: ${sentence}`,
+      text: `${group.who.length} Mac${group.who.length === 1 ? '' : 's'} · ${head}`,
+      details: group.who.map((who, i) => `${who}: ${texts[i] || head}`),
     };
   }).sort((a, b) => b.count - a.count || a.text.localeCompare(b.text));
-  return out.concat(extra.map(({ health, text }) => ({ health, text })));
+  return out.concat(extra);
 }
 
 // ---- Locations -------------------------------------------------------------
@@ -7515,11 +7583,14 @@ function fleetLocationRow(L) {
       <div><div>${esc(status.main || '—')}</div>
       ${status.sub ? `<div class="ft-sub">${esc(status.sub)}</div>` : ''}</div></td>
     <td data-label="Actions"><div class="row">
-      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
+      <button type="button" class="sm primary" data-open-kind="site" data-open-id="${esc(L.id || '')}"
+        data-open-label="${esc(L.label || L.id || '')}" onclick="fleetOpenFromButton(this)">Open</button>
       <span class="overflow">
       <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
         data-menu="loc-more-${esc(L.id)}" onclick="toggleCardMenuFor(this)">More…</button>
       <div class="more-menu" id="pmenu-loc-more-${esc(L.id)}" hidden>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
+      <button type="button" class="sm" data-fleet-key="s:${esc(L.id || '')}" onclick="fleetShowDetails(this)">Details</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'${L.paused_at != null ? 'resume' : 'pause'}')">${L.paused_at != null ? 'Resume' : 'Pause'}</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationCredentials(this)">Credentials…</button>
@@ -7537,6 +7608,20 @@ function fleetLocationNote(text) {
   if (note) note.textContent = text;
 }
 
+function openAddLocation() {
+  const dialog = document.getElementById('fleet-add-location');
+  if (!dialog) return;
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', '');
+}
+
+function closeAddLocation() {
+  const dialog = document.getElementById('fleet-add-location');
+  if (!dialog) return;
+  if (typeof dialog.close === 'function') dialog.close();
+  else dialog.removeAttribute('open');
+}
+
 async function addFleetLocation(button) {
   const label = document.getElementById('fleet-add-label').value.trim();
   const url = document.getElementById('fleet-add-url').value.trim();
@@ -7552,6 +7637,7 @@ async function addFleetLocation(button) {
     const discovery = result.discovery_error ? ` Its models could not be read yet — ${result.discovery_error}`
       : result.discovered != null ? ` Discovered ${result.discovered} models.` : '';
     fleetLocationNote(`Added ${label || url}. ${detail}${discovery} ${result.enable_seed?.sentence || result.enable_seed?.error || ''}`);
+    closeAddLocation();
     await loadFleet();
   } catch (e) { fleetLocationNote(`Could not add the location — ${e.message}`); }
   finally { button.disabled = false; }
@@ -8013,10 +8099,10 @@ function fleetMachineActionCell(m) {
   // **One action on the row** (frame rule 6): the first startup action that applies right now;
   // every other action — including the rest of the startup list — is in More….
   const startup = fleetStartupActions(m);
-  const buttons = startup.slice(0, 1).map(([key, title]) =>
-    `<button type="button" class="sm"${ids} data-key="${esc(key)}"`
-    + ` onclick="fleetMachineStartup(this, this.dataset.lid, this.dataset.mid, this.dataset.key)">${esc(title)}</button>`);
-  const more = startup.slice(1).map(([key, title]) =>
+  const buttons = [`<button type="button" class="sm primary"${ids} data-open-kind="machine"`
+    + ` data-open-id="${esc(m.machine || '')}" data-open-label="${esc(fleetMachineName(m))}"`
+    + ` onclick="fleetOpenFromButton(this)">Open</button>`];
+  const more = startup.map(([key, title]) =>
     `<button type="button" class="sm"${ids} data-key="${esc(key)}"`
     + ` onclick="fleetMachineStartup(this, this.dataset.lid, this.dataset.mid, this.dataset.key)">${esc(title)}</button>`);
   if (m.reachable === true) {
@@ -8039,6 +8125,7 @@ function fleetMachineActionCell(m) {
       && m.reachable === true && m.startup.stale !== true) {
     more.push(`<button type="button"${ids} onclick="fleetMacTrashOn(this, this.dataset.lid, this.dataset.mid)">Turn on macOS Trash</button>`);
   }
+  more.unshift(`<button type="button"${ids} data-fleet-key="m:${esc(m.machine || '')}" onclick="fleetShowDetails(this)">Details</button>`);
   return `<td data-label="Actions"><div class="row">${buttons.join('')}
     <span class="overflow">
       <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
@@ -9134,6 +9221,14 @@ function renderFleetLocations(d) {
       : `${rows.length} of ${all} locations match the filter.`;
   }
   if (wrap) {
+    if (fleetViewFor('locations') === 'cards') {
+      wrap.classList.add('fleet-cards');
+      wrap.innerHTML = rows.length
+        ? `<div class="fleet-macs">${rows.map(fleetSite).join('')}</div>`
+        : '<div class="fleet-empty">No location matches this filter.</div>';
+      return;
+    }
+    wrap.classList.remove('fleet-cards');
     wrap.innerHTML = rows.length
       ? `<table class="ftable">
          <thead><tr><th>Location</th><th>Health</th><th>Likely cause</th>
@@ -9158,7 +9253,9 @@ function fleetModelRows(d) {
   const by = new Map();
   for (const L of d.locations || []) {
     for (const m of L.local_models || []) {
-      const key = m.model || m.model_id;
+      // Dedupe by the name the owner reads: different Hubs can name the same model differently
+      // by id, and five Qwen rows with one model each is the duplicate list the owner called out.
+      const key = String(m.label || m.model || m.model_id || '').trim();
       if (!key) continue;
       if (!by.has(key)) {
         by.set(key, { model: key, label: m.label || key, studio: m.studio || m.modality || '—',
@@ -9181,37 +9278,69 @@ function fleetModelRows(d) {
   return [...by.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
+function fleetModelDetail(button) {
+  const row = button.closest('tr');
+  const detail = row && row.nextElementSibling;
+  if (!detail) return;
+  const open = detail.hidden;
+  detail.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+  button.textContent = open ? 'Hide' : 'Details';
+}
+
 function renderFleetModels(d) {
   const wrap = document.getElementById('fleet-models-wrap');
   const status = document.getElementById('fleet-models-status');
+  const locations = d.locations || [];
   const rows = fleetModelRows(d).filter(row =>
     fleetMatchesSearch([row.label, row.model, row.studio], fleetQuery)
     && (fleetLocation === 'all' || row.locations.includes(
-      String(((d.locations || []).find(L => String(L.id) === fleetLocation) || {}).label || ''))));
+      String((locations.find(L => String(L.id) === fleetLocation) || {}).label || ''))));
   if (status) {
     const s = d.summary || {};
     status.innerHTML = `${s.local_models_total ?? '—'} local model${s.local_models_total === 1 ? '' : 's'} `
       + `across the fleet · <b>${s.models_available ?? '—'}</b> available now.`;
   }
   if (!wrap) return;
+  const total = Math.max(1, locations.length);
+  const empty = '<div class="fleet-empty">No Hub location is reporting local models.</div>';
+  if (fleetViewFor('models') === 'cards') {
+    wrap.classList.add('fleet-cards');
+    wrap.innerHTML = rows.length ? `<div class="fleet-macs">${rows.map(row => `<div class="fleet-mac">
+      <div class="fleet-card-head"><div class="fleet-card-title">
+        <span class="name" title="${esc(row.label)}">${esc(row.label)}</span>
+        <span class="badge">${esc(row.studio)}</span></div></div>
+      <div class="ft-sub" title="${esc(row.model)}">${esc(row.model)}</div>
+      <div class="row" style="gap:8px;align-items:center;margin-top:6px">${fleetMeter(row.locations.length / total, '')}
+        <span class="hint" title="${esc(row.locations.join(', '))}">${row.locations.length} location${row.locations.length === 1 ? '' : 's'}</span></div>
+      <div class="hint">${row.serving} of ${row.reporting} serving · memory floor ${esc(row.memoryFloor != null ? fleetGb(row.memoryFloor) : '—')}</div>
+      <details class="fleet-model-issues"><summary>${row.issues ? `${row.issues} issue${row.issues === 1 ? '' : 's'}` : 'No issues'}</summary>
+        <div class="hint">${esc(row.dispatch ? row.dispatch.replace(/_/g, ' ') : 'Dispatch not stated')} · ${esc(row.locations.join(', ') || 'no location named')}</div></details>
+    </div>`).join('')}</div>` : empty;
+    return;
+  }
+  wrap.classList.remove('fleet-cards');
   wrap.innerHTML = rows.length
     ? `<table class="ftable"><thead><tr><th>Model</th><th>Studio</th><th>Locations</th><th>Serving</th>
-       <th>Best fit</th><th>Memory floor</th><th>Dispatch</th><th>Issues</th></tr></thead>
+       <th>Best fit</th><th>Memory floor</th><th>Dispatch</th><th>Actions</th></tr></thead>
        <tbody>${rows.map(row => `<tr>
-         <td class="ft-lead" data-label="Model"><div class="ft-name">${esc(row.label)}</div>
-           <div class="ft-sub">${esc(row.model)}</div></td>
+         <td class="ft-lead" data-label="Model"><div class="ft-name" title="${esc(row.label)}">${esc(row.label)}</div>
+           <div class="ft-sub" title="${esc(row.model)}">${esc(row.model)}</div></td>
          <td data-label="Studio">${esc(row.studio)}</td>
-         <td data-label="Locations" title="${esc(row.locations.join(', '))}">${row.locations.length}</td>
+         <td data-label="Locations" title="${esc(row.locations.join(', '))}">
+           <div class="row" style="gap:8px;align-items:center">${fleetMeter(row.locations.length / total, '')}
+           <span>${row.locations.length}</span></div></td>
          <td data-label="Serving" title="Machines that can serve this model right now, of the machines that report it."
            style="${row.serving > 0 ? '' : 'color:var(--warn-text)'}">${row.serving} of ${row.reporting}</td>
          <td data-label="Best fit">${esc(row.bestFit || '—')}</td>
          <td data-label="Memory floor">${esc(row.memoryFloor != null ? fleetGb(row.memoryFloor) : '—')}</td>
          <td data-label="Dispatch">${esc(row.dispatch ? row.dispatch.replace(/_/g, ' ') : '—')}</td>
-         <td data-label="Issues" style="${row.issues > 0 ? 'color:var(--bad-text)' : ''}">${row.issues}</td>
-       </tr>`).join('')}</tbody></table>`
-    : '<div class="fleet-empty">No Hub location is reporting local models.</div>';
+         <td data-label="Actions"><button type="button" class="sm" aria-expanded="false" onclick="fleetModelDetail(this)">Details</button></td>
+       </tr><tr class="ft-detail" hidden><td colspan="8">
+         <div class="hint">${row.issues ? `${row.issues} Hub catalog error${row.issues === 1 ? '' : 's'}` : 'No issues reported'} · ${esc(row.locations.join(', ') || 'no location named')} · ${esc(row.model)}</div>
+       </td></tr>`).join('')}</tbody></table>`
+    : empty;
 }
-
 // ---- Jobs ------------------------------------------------------------------
 
 function fleetQueueLine(d) {
@@ -9530,6 +9659,7 @@ function selectFleetTab(tab) {
   if (!FLEET_TABS.some(([key]) => key === tab)) tab = 'groups';
   fleetTab = tab;
   renderFleetTabs();
+  renderFleetViewSwitch();
   document.querySelectorAll('.fleet-pane').forEach(pane => {
     pane.hidden = pane.id !== 'fleet-pane-' + tab;
   });
@@ -9543,6 +9673,7 @@ function renderFleetTabs() {
   box.innerHTML = FLEET_TABS.map(([key, title]) =>
     `<button type="button" data-tab="${esc(key)}" aria-pressed="${key === fleetTab}"
        onclick="selectFleetTab('${esc(key)}')">${esc(title)}</button>`).join('');
+  renderFleetViewSwitch();
 }
 
 async function saveFleetThreshold() {
@@ -9830,18 +9961,75 @@ async function loadAutoStops(force) {
   renderAutoStops(fleetAutoStops);
 }
 
+// A table row for one Groups item: the same facts as its card, in the columns the other Fleet
+// tables use. The row's one primary action is Open; Details lives in the overflow.
+function fleetGroupRow(item) {
+  const row = item.row || {};
+  const site = item.kind === 'site';
+  const name = site ? (row.label || row.id || '—') : fleetMachineName(row);
+  const state = site
+    ? (row.reachable === true ? 'Online' : row.reachable === false ? 'Unreachable' : 'Not read')
+    : fleetStateLabel(row);
+  const health = site
+    ? (row.reachable === true ? 'ok' : row.reachable === false ? 'bad' : '')
+    : fleetBadgeHealth(row);
+  const verdict = fleetVerdict(row.history, site ? row.reachable === false : fleetOfflineMachine(row));
+  const cause = fleetCauseLine(row.causes) || '—';
+  const key = `${site ? 's' : 'm'}:${row.machine || row.id || row.label || ''}`;
+  const openId = site ? (row.id || '') : (row.machine || '');
+  return `<tr>
+    <td class="ft-lead" data-label="${site ? 'Site' : 'Machine'}"><div class="ft-name" title="${esc(name)}">${esc(name)}</div>
+      ${!site && row.location ? `<div class="ft-sub" title="${esc(row.location)}">${esc(row.location)}</div>` : ''}</td>
+    <td class="nowrap" data-label="State">${fleetBadge(state, health)}</td>
+    <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">${fleetBadge(verdict.text, verdict.health)}</td>
+    <td data-label="Likely cause" title="${esc(fleetCauseTooltip(row.causes))}"
+      style="${fleetCauseStyle(fleetCauseHealth(row.causes, row))}">${esc(cause)}</td>
+    <td data-label="Drops · 7 days">${site ? esc(fleetShortSummary(row.history)) : fleetStrip(row.history)}</td>
+    <td data-label="Actions"><div class="row">
+      <button type="button" class="sm primary" data-open-kind="${site ? 'site' : 'machine'}"
+        data-open-id="${esc(openId)}" data-open-label="${esc(name)}" onclick="fleetOpenFromButton(this)">Open</button>
+      <span class="overflow"><button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
+        data-menu="group-${esc(key)}" onclick="toggleCardMenuFor(this)">More…</button>
+        <div class="more-menu" id="pmenu-group-${esc(key)}" hidden>
+          <button type="button" data-fleet-key="${esc(key)}" onclick="fleetShowDetails(this)">Details</button>
+        </div></span></div></td></tr>`;
+}
+
+// Details from a table row: show the same item as a card, with its detail panel open.
+function fleetShowDetails(button) {
+  closeMenus();
+  const key = button.dataset.fleetKey;
+  if (!key) return;
+  fleetOpenDetails.add(key);
+  try { localStorage.setItem('gatewayFleetView.groups', 'cards'); } catch (e) { /* best effort */ }
+  if (fleetTab !== 'groups') selectFleetTab('groups');
+  renderFleetViewSwitch();
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
+}
+
+function fleetCardDetails(button) {
+  toggleFleetDetail(button);
+  closeMenus();
+}
+
 function renderFleetGroups(d) {
   const items = fleetItems(d);
   const visible = fleetVisible(items);
   const body = document.getElementById('fleet-body');
   if (body) {
     const read = `${items.length} machine${items.length === 1 ? '' : 's'} and site${items.length === 1 ? '' : 's'}`;
-    body.innerHTML = visible.length ? `<div class="fleet-macs">${visible.map(fleetCard).join('')}</div>`
-      : items.length === 0
-        ? '<div class="empty">No Macs or sites have been added yet. '
-          + '<button class="sm" type="button" onclick="selectFleetTab(\'locations\')">Add a location</button></div>'
-        : `<div class="empty">Nothing matches “${esc((FLEET_FILTERS.find(f => f[0] === fleetFilter) || [])[1] || fleetFilter)}”
-           — ${read} were read. <button class="sm" type="button" onclick="fleetClearFilters()">Show all</button></div>`;
+    const empty = items.length === 0
+      ? '<div class="empty">No Macs or sites have been added yet. '
+        + '<button class="sm" type="button" onclick="selectFleetTab(\'locations\')">Add a location</button></div>'
+      : `<div class="empty">Nothing matches “${esc((FLEET_FILTERS.find(f => f[0] === fleetFilter) || [])[1] || fleetFilter)}”
+         — ${read} were read. <button class="sm" type="button" onclick="fleetClearFilters()">Show all</button></div>`;
+    body.innerHTML = visible.length
+      ? (fleetViewFor('groups') === 'table'
+        ? `<div class="tablewrap"><table class="ftable"><thead><tr><th>Machine or site</th><th>State</th>
+           <th>Health</th><th>Likely cause</th><th>Drops · 7 days</th><th>Actions</th></tr></thead>
+           <tbody>${visible.map(fleetGroupRow).join('')}</tbody></table></div>`
+        : `<div class="fleet-macs">${visible.map(fleetCard).join('')}</div>`)
+      : empty;
   }
   const summary = document.getElementById('fleet-summary');
   if (!summary) return;
