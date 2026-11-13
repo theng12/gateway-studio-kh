@@ -438,6 +438,11 @@
      wraps inside its own cell. At 768 they still scroll in their box (min-width). */
   #fleet-machines-wrap .ftable, #fleet-locations-wrap .ftable { table-layout: fixed; width: 100%; }
   .fleet-pane .ftable td { overflow: hidden; }
+  /* Below the desktop widths the table already scrolls in its box, so let the columns size
+     to their content: a chip or a date is never clipped mid-word at 768. */
+  @media (max-width: 900px) {
+    #fleet-machines-wrap .ftable, #fleet-locations-wrap .ftable { table-layout: auto; }
+  }
   #fleet-machines-wrap .ftable th:nth-child(1) { width: 12%; }
   #fleet-machines-wrap .ftable th:nth-child(2) { width: 11%; }
   #fleet-machines-wrap .ftable th:nth-child(3) { width: 8%; }
