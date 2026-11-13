@@ -81,17 +81,18 @@ class EveryAlertClosesOnEscapeTest(unittest.TestCase):
 
 
 class WebViewPanelsAnswerThePageTest(unittest.TestCase):
-    def test_every_javascript_panel_the_page_uses_is_implemented(self):
-        """A panel the delegate does not implement is a dead control: the page gets null."""
+    def test_the_page_asks_every_question_in_app(self):
+        """Owner rule 2026-11-13: no native confirm/alert/prompt. The delegate must not quietly
+        make them work again; the only panel the page still needs is the file picker."""
         source = (MENUBAR / "MainWindow.swift").read_text()
+        self.assertIn("runOpenPanelWith", source, "the console's Import button has no picker")
         for panel in ["runJavaScriptAlertPanelWithMessage",
                       "runJavaScriptConfirmPanelWithMessage",
-                      "runJavaScriptTextInputPanelWithPrompt",
-                      "runOpenPanelWith"]:
-            self.assertIn(panel, source, f"{panel} missing: that control is dead in the app")
-        # The text panel keeps the page's default text and answers null on Cancel, which is Escape.
-        self.assertIn("field.stringValue : nil", source)
-        self.assertIn("alert.window.initialFirstResponder = field", source)
+                      "runJavaScriptTextInputPanelWithPrompt"]:
+            self.assertNotIn(panel, source,
+                             f"{panel}: a native dialog is banned; the page owns its questions")
+        self.assertNotRegex(PAGE, r"(?<![A-Za-z0-9_])(confirm|alert|prompt)\(",
+                            "a native panel call came back into the console")
 
 
 class WebPageClosesAndClearsOnEscapeTest(unittest.TestCase):

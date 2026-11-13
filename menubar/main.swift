@@ -1424,6 +1424,8 @@ enum MainMenuBuilder {
 // MARK: - App delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    /// Retained while `--test-mode` is running, so SIGTERM keeps reaching the handler.
+    private var testSignalSource: DispatchSourceSignal?
     private var statusItem: NSStatusItem!
     private var menu: NSMenu!
     private var studioHubItem: NSMenuItem!
@@ -2012,5 +2014,4 @@ let application = NSApplication.shared
 let delegate = AppDelegate()
 application.delegate = delegate
 application.setActivationPolicy(testMode ? .accessory : .regular)
-var testSignalSource: DispatchSourceSignal?
 application.run()
