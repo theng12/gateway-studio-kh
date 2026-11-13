@@ -102,8 +102,6 @@ enum GatewayAPI {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let rows = try! decoder.decode([String: FleetMachine].self,
                                        from: try! Data(contentsOf: URL(fileURLWithPath: dir + "/rows.json")))
-        let rollout = try! decoder.decode(FleetRollout.self,
-                                          from: try! Data(contentsOf: URL(fileURLWithPath: dir + "/rollout.json")))
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let now = Date(timeIntervalSince1970: \(NOW))
@@ -118,25 +116,17 @@ enum GatewayAPI {
         expect(line("ctl"), "Update failed while downloading: HTTP 404 · 13:53", "a controller, same day, time only")
         expect(line("nophase"), "Update failed: it stopped · 14:03", "no phase, no 'while'")
         expect(line("old"), nil, "a failure more than 24 hours old is history")
-        expect(line("latest"), nil, "a Mac on the newest release is past any failed attempt")
         expect(line("notime"), nil, "no time, no claim it is recent")
         expect(line("none"), nil, "no failure")
         expect(FleetUpdateFailure.sentence(FleetUpdateError(phase: "verifying", reason: nil, build: nil, at: nil)),
                "Update failed while verifying", "no reason")
 
         // The group header.
-        let all = ["node", "ctl", "nophase", "old", "latest", "notime", "none"].map { rows[$0]! }
+        let all = ["node", "ctl", "nophase", "old", "notime", "none"].map { rows[$0]! }
         expect(FleetUpdateFailure.countText(all, now: now), "3 Macs' updates failed", "three recent failures")
         expect(FleetUpdateFailure.countText([rows["ctl"]!], now: now), "1 Mac's update failed", "one failure, singular")
         expect(FleetUpdateFailure.countText([rows["old"]!, rows["none"]!], now: now), nil, "none to count")
 
-        // The paced-rollout panel.
-        let steps = Dictionary(uniqueKeysWithValues: rollout.orderedSteps.map { ($0.id, $0.step) })
-        expect(steps["c12"]!.panelText(version: "0.6.152").text,
-               "installing and restarting · Update failed while downloading: HTTP 404 for the image",
-               "a step whose controller reported an error shows it")
-        expect(steps["c13"]!.panelText(version: "0.6.152").text, "waiting", "a step without an error is unchanged")
-        expect(steps["c11"]!.panelText(version: "0.6.152").text, "updated · 4 of 4 Macs on 0.6.152", "an updated step")
         print("PASS: update failures read in plain English")
     }
 }
@@ -152,24 +142,14 @@ class UpdateErrorSwiftTests(unittest.TestCase):
             _mac("ctl", {"phase": "downloading", "reason": "HTTP 404", "build": "e6a8b80", "at": NOW - 20 * 60}),
             _mac("nophase", {"phase": "gremlins", "reason": "it stopped", "at": NOW - 600}),
             _mac("old", {**ERROR, "at": NOW - 25 * 3600}),
-            _mac("latest", ERROR),
             _mac("notime", {**ERROR, "at": None}),
             _mac("none", None),
         ]
         rows = _snapshot(machines)
-        rows["latest"]["version_status"] = "latest"
-        rollout = {"state": "running", "version": "0.6.152", "build": "e6a8b80", "order": ["c11", "c12", "c13"],
-                   "steps": {"c11": {"label": "1100", "state": "updated", "nodes_updated": 4, "nodes_total": 4,
-                                     "update_error": None},
-                             "c12": {"label": "1200", "state": "installing",
-                                     "update_error": {"phase": "downloading", "reason": "HTTP 404 for the image",
-                                                      "build": "e6a8b80", "at": NOW - 60}},
-                             "c13": {"label": "1300", "state": "waiting", "update_error": None}}}
         with tempfile.TemporaryDirectory(prefix="gateway-update-errors-") as directory:
             work = Path(directory)
             (work / "check.swift").write_text(SWIFT.replace("\\(NOW)", repr(NOW)))
             (work / "rows.json").write_text(json.dumps(rows))
-            (work / "rollout.json").write_text(json.dumps(rollout))
             built = subprocess.run(
                 ["swiftc", "-swift-version", "5", "-framework", "AppKit", "menubar/PageKit.swift",
                  "menubar/FleetModels.swift", "menubar/FleetStartupModel.swift", "menubar/FleetLastStop.swift",

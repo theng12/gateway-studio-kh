@@ -56,11 +56,12 @@ enum FleetUpdateFailure {
     }
 
     /// The failure to show on this Mac's row: one under 24 hours old whose build is not the one now running.
-    /// The gateway cannot see a Mac's running build, so "now running it" is read from the version status:
-    /// a Mac on the newest published release is past any failed attempt (the Hub also clears it on success).
+    /// A recent failure is shown as it was reported. There is no "it is on the newest release" way to be
+    /// past it any more — Gateway publishes no app release (owner rule 2026-11-13), and the Hub clears the
+    /// field on success itself.
     static func shown(_ machine: FleetMachine, now: Date = Date()) -> FleetUpdateError? {
         guard let error = machine.startup?.lastUpdateError, let at = error.at,
-              now.timeIntervalSince1970 - at < recentFor, machine.versionStatus != "latest" else { return nil }
+              now.timeIntervalSince1970 - at < recentFor else { return nil }
         return error
     }
 
