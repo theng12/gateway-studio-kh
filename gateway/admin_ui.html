@@ -6194,14 +6194,9 @@ function createRequiredProblem() {
 }
 
 function updateCreateGate() {
-  const problem = createRequiredProblem();
-  const button = document.getElementById('cf-go');
-  if (button) button.disabled = !!problem;
-  const note = document.getElementById('cf-gate');
-  if (note) {
-    note.className = problem ? 'hint bad' : 'hint';
-    note.textContent = problem;
-  }
+  // **Normalise the controls first, then judge.** The check used to run before the
+  // instrumental box hid and cleared its checkbox, so a model that does not declare
+  // instrumental could still be judged against a stale tick for one pass.
   const row = createModelRow(document.getElementById('cf-model')?.value || '');
   const instrumental = document.getElementById('cf-instrumental');
   const instrumentalBox = document.getElementById('cf-instrumental-box');
@@ -6214,6 +6209,14 @@ function updateCreateGate() {
     const vocals = !!(row.supports_vocals === true || row.requires_lyrics === true) && !(instrumental && instrumental.checked);
     lyricsBox.style.display = vocals ? '' : 'none';
     if (!vocals) { const lyrics = document.getElementById('cf-lyrics'); if (lyrics) lyrics.value = ''; }
+  }
+  const problem = createRequiredProblem();
+  const button = document.getElementById('cf-go');
+  if (button) button.disabled = !!problem;
+  const note = document.getElementById('cf-gate');
+  if (note) {
+    note.className = problem ? 'hint bad' : 'hint';
+    note.textContent = problem;
   }
   const lyrics = document.getElementById('cf-lyrics');
   const count = document.getElementById('cf-lyrics-count');
