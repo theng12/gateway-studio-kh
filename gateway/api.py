@@ -5022,6 +5022,49 @@ def footage_quota() -> dict[str, Any]:
     return _footage.quota_status()
 
 
+# -- stock connectors (M3) ---------------------------------------------------
+@app.get("/v1/footage/sources", dependencies=[Depends(require_auth)])
+def footage_sources() -> dict[str, Any]:
+    """Every stock source, its licence/cost line, and whether it is switched on."""
+    from .stock_sources import describe_all
+    return {"sources": describe_all(_registry.credentials)}
+
+
+@app.post("/v1/footage/sources/{source_id}/enable", dependencies=[Depends(require_auth)])
+def footage_source_enable(source_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Switch one source on or off. A keyed source is refused without its key, naming it."""
+    from .stock_sources import StockSourceError, set_enabled
+    try:
+        return set_enabled(source_id, bool(payload.get("enabled")), _registry.credentials)
+    except StockSourceError as exc:
+        raise GatewayError(exc.status, str(exc), exc.code)
+    except ValueError as exc:
+        raise GatewayError(404, str(exc), "SOURCE_NOT_FOUND")
+
+
+@app.post("/v1/footage/generate", dependencies=[Depends(require_auth)])
+def footage_generate(payload: dict[str, Any]) -> dict[str, Any]:
+    """Generate a clip on the owner's Macs through the t2v lane and file it in the library.
+
+    A paid model is refused by name before anything is queued. The copy happens in a
+    bounded background thread, so this answer is the job envelope plus
+    `"footage": {"library": true}` — the request never waits for the render.
+    """
+    from .stock_sources import StockSourceError, assert_free_model, start_generation
+
+    model_id = str(payload.get("model_id") or payload.get("model") or "")
+    try:
+        assert_free_model(model_id)
+    except StockSourceError as exc:
+        raise GatewayError(exc.status, str(exc), exc.code)
+    params = {key: value for key, value in payload.items()
+              if key not in ("model_id", "model", "idempotency_key")}
+    key = str(payload.get("idempotency_key") or uuid.uuid4().hex)
+    job, _created = _submit("video", model_id, params, key)
+    start_generation(job["id"], model_id)
+    return {**_job_envelope(job), "footage": {"library": True}}
+
+
 # ---------------------------------------------------------------------------
 # Admin UI
 # ---------------------------------------------------------------------------
