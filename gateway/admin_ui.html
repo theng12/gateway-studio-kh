@@ -6112,7 +6112,7 @@ function renderCreateForm() {
   const picker = rows.length
     ? `<div style="margin-bottom:12px"><label>Model</label>
          <select id="cf-model" onchange="createModelChanged(this.value)">${rows.map(m =>
-           `<option value="${esc(m.id)}">${esc(m.provider_name)} — ${esc(m.display_name)}${m.free_lane ? ' · free' : ''}</option>`
+           `<option value="${esc(m.id)}">${esc(m.provider_id === 'studio-hub' ? 'Hub Studio KH (local)' : m.provider_name)} — ${esc(m.display_name)}${m.free_lane ? ' · free' : ''}</option>`
          ).join('')}</select></div>`
     : `<div class="msg bad" style="margin-bottom:12px">${
         (typeof GUEST !== 'undefined' && GUEST) ? 'No free or local model is switched on for this lane. A guest account may use free and local models only — ask the owner to allow paid models for you.'
