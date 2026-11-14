@@ -10,6 +10,20 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.257 — 2026-11-15
+
+- **Models answers "what have I got?" first.** It opens on **Your models** — a card per kind (Image, LLM, Voice/TTS, Music, Video, Transcription) with how many are offered, how many are installed on this Mac, and the models themselves. **Discover** holds the full catalogue with the filters, search and bulk actions.
+- **A model is one row, wherever it runs.** The Macs are a count (`7 of 7`) and **Show locations** in the row's … menu; each Mac keeps its own switch. The provider filter now lists providers, with **Hub Studio KH (local)** as one entry, and the Macs are a separate Locations filter.
+- **Voices names the real provider** (ElevenLabs, Fish Audio, Hub Studio KH (local)) and says how many locations can serve a local voice, with tone, best-for, sample length and the id behind Details.
+- **Create asks only what the chosen model can answer.** Image offers its own aspect ratios and sizes with the price beside the size; Video offers its own durations, resolutions and shapes; Music shows a lyrics counter and an Instrumental switch where the model supports one; Audio asks **Saved voice or Provider voice ID**, one choice at a time. Generate is disabled with one line naming anything missing.
+- **A stock footage library lives in the Gateway.** Clips are kept once by content (sha256), measured (length, size, frame rate, licence), and Story Studio reads and downloads them without ever changing them. The folder is chosen with a picker — mounted volumes and folders, no typed paths.
+- **Free stock is on, paid stock is off.** Wikimedia Commons works with no key; Pexels and Pixabay stay off until their key is saved and their switch is on, and each shows its cost before anything is fetched. Clips your own Macs generate land in the same library, marked as AI-generated.
+- **The video catalogue is ready for Studio.** Every video model publishes its kinds, durations, resolutions and ratios with where each fact came from, its price evidence, and whether a reachable Mac can run it now — never a made-up number.
+- **A job nothing can run now fails in seconds, with the reason.** Every Mac that cannot take the work is listed with why ("offline, last seen 7d", paused, no free slot, model not installed), instead of a job waiting for hours with no explanation.
+- **Retrying a cancelled job makes a new job.** The cancelled one keeps its place and its cause, and the retry carries that cause instead of answering "cancelled at the Gateway".
+- **Image pools publish only the sizes they can actually render**, with one recommended size, so choosing a fleet never silently produces a square image.
+- **Settings groups what it shows** — this Gateway, what it is doing — in wrapping rows instead of one run-on list.
+
 ## 0.2.256 — 2026-11-13
 
 - **Fleet's Machines table keeps its name column narrow at 768.** The one-line details under each Mac's name now wrap inside the pinned column, so more of the row's state and data is visible beside it while the table scrolls.
