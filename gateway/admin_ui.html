@@ -40,7 +40,7 @@
     --btn: #eceef2;
     --btn-hover: #e2e4ea;
     --btn-active: #e8eaef;
-    --btn-line: #8f93a1;
+    --btn-line: #838794;
     --btn-dead-line: #e3e4e9;
     --accent: #2563eb; --on-accent: #ffffff;
     --chip-bg: #eef0f4; --chip-line: #c9ccd6; --chip-text: #4b4e58;
@@ -68,7 +68,7 @@
       --btn: #262830;
       --btn-hover: #30323b;
       --btn-active: #22242b;
-      --btn-line: #6b6f7d;
+      --btn-line: #747887;
       --btn-dead-line: #26282f;
       --chip-bg: #24262e; --chip-line: #3a3d47; --chip-text: #c6c9d2;
       --ok: #37d167; --warn: #ffb340; --bad: #ff6b61; --off: #9b9ea8; --info: #7aa8ff;
@@ -1417,21 +1417,6 @@
 
     </div>
 
-    <div class="pack-panel" id="packs-panel-shelved">
-    <section class="card shelf-section" aria-labelledby="received-heading">
-      <div class="body">
-        <h2 id="received-heading">Add a pack someone sent you</h2>
-        <p>Choose a <code>.sspack</code> file and it is added to this shelf and available to Story Studio.
-        The file carries its own name, description, kind and identity, so nothing else is asked for, and it is
-        published under this gateway's own signing identity — the sender's is not needed and not shared.</p>
-        <label for="received-pack-files">Pack file (.sspack, up to 50 MiB each)</label>
-        <input id="received-pack-files" type="file" accept=".sspack" multiple>
-        <div class="row" style="margin-top:12px">
-          <button id="received-pack-add" class="primary" onclick="addReceivedPack(this)">Add to Shelf</button>
-        </div>
-        <div id="received-pack-message" class="msg" role="status" aria-live="polite"></div>
-      </div>
-    </section>
     <section class="card shelf-section" id="footage-section" aria-labelledby="footage-heading">
       <div class="body">
         <div class="shelf-meta"><h2 id="footage-heading">Footage library</h2>
@@ -1466,6 +1451,21 @@
       </div>
       <div id="footage-root-msg" class="msg" role="status" aria-live="polite"></div>
     </dialog>
+    <div class="pack-panel" id="packs-panel-shelved">
+    <section class="card shelf-section" aria-labelledby="received-heading">
+      <div class="body">
+        <h2 id="received-heading">Add a pack someone sent you</h2>
+        <p>Choose a <code>.sspack</code> file and it is added to this shelf and available to Story Studio.
+        The file carries its own name, description, kind and identity, so nothing else is asked for, and it is
+        published under this gateway's own signing identity — the sender's is not needed and not shared.</p>
+        <label for="received-pack-files">Pack file (.sspack, up to 50 MiB each)</label>
+        <input id="received-pack-files" type="file" accept=".sspack" multiple>
+        <div class="row" style="margin-top:12px">
+          <button id="received-pack-add" class="primary" onclick="addReceivedPack(this)">Add to Shelf</button>
+        </div>
+        <div id="received-pack-message" class="msg" role="status" aria-live="polite"></div>
+      </div>
+    </section>
     <section class="card shelf-section" aria-labelledby="shelf-heading">
       <div class="body">
         <h2 id="shelf-heading">Shelved</h2>
@@ -3019,7 +3019,10 @@ function renderVoiceTags() {
     // voice's Macs are a count — `N of M locations` — not a row each (owner, 0.2.257).
     const meta = document.createElement('div'); meta.className = 'hint';
     const where = voice.locations_total
-      ? ` · ${voice.locations_enabled} of ${voice.locations_total} locations` : '';
+      ? (voice.locations_total === 1
+          ? ' · 1 location'
+          : ` · ${voice.locations_enabled} of ${voice.locations_total} locations`)
+      : '';
     const howLong = Number.isFinite(voice.duration_seconds) ? ` · sample 0:${String(Math.round(voice.duration_seconds)).padStart(2, '0')}` : '';
     meta.textContent = `${voice.provider || 'provider not recorded'}${voice.language ? ' · ' + voice.language : ''}${where}${howLong}`;
     const sampleStatus = document.createElement('span'); sampleStatus.className = 'hint';
