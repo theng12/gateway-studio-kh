@@ -1432,6 +1432,40 @@
         <div id="received-pack-message" class="msg" role="status" aria-live="polite"></div>
       </div>
     </section>
+    <section class="card shelf-section" id="footage-section" aria-labelledby="footage-heading">
+      <div class="body">
+        <div class="shelf-meta"><h2 id="footage-heading">Footage library</h2>
+          <span id="footage-quota" class="badge">Reading…</span></div>
+        <p>Stock footage and clips your Macs generate, kept once by content (sha256) so a clip is
+          never fetched or rendered twice. Story Studio reads this library and downloads on pick;
+          it cannot change it.</p>
+        <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+          <span class="hint" id="footage-root">Folder: reading…</span>
+          <button class="sm" type="button" onclick="openFootageRoot()">Choose folder</button>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <input id="footage-search" type="search" placeholder="Search the library and free stock…" style="flex:1">
+          <button class="sm" type="button" onclick="searchFootage(this)">Search</button>
+        </div>
+        <div id="footage-msg" class="msg" role="status" aria-live="polite"></div>
+        <div id="footage-rows"><div class="empty">Reading the library…</div></div>
+        <h3 style="margin:18px 0 8px">Stock sources</h3>
+        <p class="hint">Free sources are on by default. A source that needs a key is off until its key is saved
+          and its switch is on; the cost line is shown before anything is fetched.</p>
+        <div id="footage-sources"><div class="empty">Reading sources…</div></div>
+      </div>
+    </section>
+    <!-- The folder picker: browse, then choose. No typed path exists anywhere (owner, 0.2.257). -->
+    <dialog id="footage-root-dialog" aria-labelledby="footage-root-heading">
+      <h2 id="footage-root-heading">Choose the footage library folder</h2>
+      <p class="hint" id="footage-root-path">Mounted folders</p>
+      <div id="footage-root-list" style="max-height:320px;overflow:auto;margin:8px 0"></div>
+      <div class="row" style="margin-top:8px">
+        <button class="primary sm" type="button" id="footage-root-use" onclick="useFootageFolder()">Use this folder</button>
+        <button class="sm" type="button" onclick="document.getElementById('footage-root-dialog').close()">Cancel</button>
+      </div>
+      <div id="footage-root-msg" class="msg" role="status" aria-live="polite"></div>
+    </dialog>
     <section class="card shelf-section" aria-labelledby="shelf-heading">
       <div class="body">
         <h2 id="shelf-heading">Shelved</h2>
@@ -2018,7 +2052,7 @@ function setView(view) {
   else if (view === 'voices') loadVoiceTags();
   else if (view === 'models') { loadModels(); loadFreshness(); }
   else if (view === 'providers') { loadProviders(); loadConcurrency(); loadMeasured(); loadQueue(); }
-  else if (view === 'packs') { loadContentShelf(); loadPreservedArchives(); }
+  else if (view === 'packs') { loadContentShelf(); loadPreservedArchives(); loadFootage(); }
   else if (view === 'fleet') loadFleet();
   else if (view === 'settings') loadSettingsPage();
   else if (view === 'jobs') loadJobs();
@@ -2492,6 +2526,194 @@ async function loadContentShelf() {
 }
 async function refreshContentPacks() {
   await loadContentShelf();
+  loadFootage();
+}
+
+/* ------------------------------ footage library ---------------------------- */
+// The authoritative stock store (M2/M3 inside 0.2.257). One row per clip, deduped by
+// sha256; the folder is chosen with the picker below and never typed.
+let footageFolder = '';
+
+//: Measured sizes only. A missing byte count reads "not recorded", never "0 B".
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return 'not recorded';
+  if (value < 1024) return `${value} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = value / 1024;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  const shown = size >= 10 ? size.toFixed(0) : size.toFixed(1).replace(/\.0$/, '');
+  return `${shown} ${units[unit]}`;
+}
+
+function footageBadge(clip) {
+  return clip.ai_generated === true ? '<span class="badge">AI generated</span>' : '';
+}
+function footageDuration(seconds) {
+  if (!Number.isFinite(Number(seconds)) || Number(seconds) <= 0) return 'length not recorded';
+  const total = Math.round(Number(seconds));
+  return `0:${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+async function loadFootage() {
+  const quota = document.getElementById('footage-quota');
+  const root = document.getElementById('footage-root');
+  try {
+    const data = await api('/footage');
+    if (quota) {
+      const q = data.quota || {};
+      quota.textContent = `${q.files ?? 0} clips · ${formatBytes(q.bytes ?? 0)}`;
+    }
+    if (root) {
+      root.textContent = `Folder: ${data.root}${data.using_default ? ' (default)' : ''} · ${formatBytes(data.quota?.free_bytes ?? 0)} free`;
+    }
+    renderFootageRows(data.clips || []);
+    renderFootageSources(data.sources || []);
+  } catch (error) {
+    if (quota) quota.textContent = 'Could not read';
+    const msg = document.getElementById('footage-msg');
+    if (msg) msg.className = 'msg bad', msg.textContent = `Could not read the footage library: ${error.message}`;
+  }
+}
+
+function renderFootageRows(clips) {
+  const host = document.getElementById('footage-rows');
+  if (!host) return;
+  if (!clips.length) {
+    host.innerHTML = '<div class="empty">No clips yet. Search the free stock above, or generate one on your Macs.</div>';
+    return;
+  }
+  host.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Clip</th><th>Length</th><th>Size</th><th>Licence</th><th>Source</th><th></th></tr></thead><tbody>` +
+    clips.map(clip => `<tr>
+      <td><div class="m-name">${esc(clip.title || 'Untitled clip')}</div>
+        ${clip.width && clip.height ? `<div class="hint">${clip.width}×${clip.height}${clip.fps ? ' · ' + clip.fps + ' fps' : ''}</div>` : '<div class="hint">picture size not recorded</div>'}
+        ${footageBadge(clip)}</td>
+      <td>${esc(footageDuration(clip.duration_seconds))}</td>
+      <td>${clip.filesize_bytes == null ? 'not recorded' : esc(formatBytes(clip.filesize_bytes))}</td>
+      <td>${esc(clip.licence || 'not recorded')}</td>
+      <td>${esc(clip.source || 'not recorded')}</td>
+      <td><a class="sm" href="/admin/api/footage/file/${esc(clip.sha256)}" target="_blank" rel="noreferrer">Open</a></td>
+    </tr>`).join('') + '</tbody></table></div>';
+}
+
+function renderFootageSources(sources) {
+  const host = document.getElementById('footage-sources');
+  if (!host) return;
+  if (!sources.length) { host.innerHTML = '<div class="empty">No stock sources.</div>'; return; }
+  host.innerHTML = sources.map(source => `<div class="card-head" style="padding:8px 0;border-bottom:1px solid var(--line)">
+    <div class="card-main">
+      <div class="name">${esc(source.label)}
+        ${source.free ? '<span class="badge ok">free</span>' : '<span class="badge warn">paid</span>'}
+        ${source.enabled ? '' : '<span class="badge">off</span>'}</div>
+      <div class="hint">${esc(source.cost || '')}${source.needs_key && !source.configured ? ' · key needed' : ''}
+        ${source.key_masked ? ` · key ${esc(source.key_masked)}` : ''}</div>
+    </div>
+    <div class="row" style="gap:6px;align-items:center">
+      ${source.needs_key && !source.configured ? `<input type="password" id="footage-key-${esc(source.id)}" placeholder="${esc(source.key_label)}" style="width:160px" autocomplete="off">
+        <button class="sm" type="button" onclick="saveFootageKey('${esc(source.id)}', '${esc(source.key_field || 'api_key')}')">Save key</button>` : ''}
+      <button class="sm" type="button" onclick="toggleFootageSource('${esc(source.id)}', ${source.enabled ? 'false' : 'true'})">${source.enabled ? 'Turn off' : 'Turn on'}</button>
+    </div>
+  </div>`).join('') + '<div id="footage-source-msg" class="msg" role="status" aria-live="polite"></div>';
+}
+
+async function toggleFootageSource(id, enabled) {
+  const msg = document.getElementById('footage-source-msg');
+  try {
+    await api(`/footage/sources/${encodeURIComponent(id)}/enable`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }) });
+    loadFootage();
+  } catch (error) { if (msg) { msg.className = 'msg bad'; msg.textContent = error.message; } }
+}
+
+async function saveFootageKey(id, keyField) {
+  const field = document.getElementById(`footage-key-${id}`);
+  const msg = document.getElementById('footage-source-msg');
+  if (!field || !field.value.trim()) { if (msg) msg.textContent = 'Enter the key first.'; return; }
+  try {
+    await api(`/footage/sources/${encodeURIComponent(id)}/key`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [keyField || 'api_key']: field.value.trim() }) });
+    field.value = '';
+    loadFootage();
+  } catch (error) { if (msg) { msg.className = 'msg bad'; msg.textContent = error.message; } }
+}
+
+async function searchFootage(button) {
+  const query = (document.getElementById('footage-search')?.value || '').trim();
+  const msg = document.getElementById('footage-msg');
+  if (button) button.disabled = true;
+  try {
+    const data = await api('/footage/search?q=' + encodeURIComponent(query));
+    const hits = data.library || [];
+    renderFootageRows(hits);
+    if (msg) {
+      msg.className = data.note ? 'msg bad' : 'msg';
+      const found = hits.length + (data.results || []).length;
+      msg.textContent = data.note || `${found} clip${found === 1 ? '' : 's'}.`;
+    }
+    // Upstream hits carry a fetch button: downloading into the library is the one action.
+    if ((data.results || []).length) {
+      const host = document.getElementById('footage-rows');
+      if (host) host.insertAdjacentHTML('beforeend',
+        `<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">${data.results.map(hit =>
+          `<button class="sm" type="button" onclick="fetchFootageClip('${esc(hit.source)}','${esc(hit.source_id)}', this)">Add “${esc(hit.title || 'clip')}”</button>`).join('')}</div>`);
+    }
+  } catch (error) {
+    if (msg) { msg.className = 'msg bad'; msg.textContent = `Search failed: ${error.message}`; }
+  } finally { if (button) button.disabled = false; }
+}
+
+async function fetchFootageClip(source, sourceId, button) {
+  const msg = document.getElementById('footage-msg');
+  if (button) button.disabled = true;
+  try {
+    await api('/footage/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, source_id: sourceId }) });
+    if (msg) { msg.className = 'msg ok'; msg.textContent = 'Added to the library.'; }
+    loadFootage();
+  } catch (error) { if (msg) { msg.className = 'msg bad'; msg.textContent = error.message; } }
+  finally { if (button) button.disabled = false; }
+}
+
+function openFootageRoot() {
+  footageFolder = '';
+  const dialog = document.getElementById('footage-root-dialog');
+  if (!dialog) return;
+  dialog.showModal();
+  browseFootage('');
+}
+
+async function browseFootage(path) {
+  const list = document.getElementById('footage-root-list');
+  const label = document.getElementById('footage-root-path');
+  const msg = document.getElementById('footage-root-msg');
+  if (!list) return;
+  try {
+    const data = await api('/footage/browse' + (path ? '?path=' + encodeURIComponent(path) : ''));
+    footageFolder = data.path || '';
+    if (label) label.textContent = data.path || 'Mounted folders and Home';
+    if (msg) msg.textContent = '';
+    const parts = [];
+    if (data.parent) parts.push(`<button class="sm" type="button" onclick="browseFootage('${esc(data.parent)}')">↑ Up</button>`);
+    (data.places || []).forEach(place =>
+      parts.push(`<button class="sm" type="button" style="display:block;text-align:left;margin:4px 0;width:100%" onclick="browseFootage('${esc(place.path)}')">${esc(place.name)}</button>`));
+    list.innerHTML = parts.join('') || '<div class="empty">No folders here.</div>';
+  } catch (error) {
+    if (msg) { msg.className = 'msg bad'; msg.textContent = error.message; }
+  }
+}
+
+async function useFootageFolder() {
+  const msg = document.getElementById('footage-root-msg');
+  if (!footageFolder) { if (msg) msg.textContent = 'Open a folder first.'; return; }
+  try {
+    await api('/footage/root', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: footageFolder }) });
+    document.getElementById('footage-root-dialog').close();
+    loadFootage();
+  } catch (error) { if (msg) { msg.className = 'msg bad'; msg.textContent = error.message; } }
 }
 async function setupContentShelf() {
   const data = shelfState.data;

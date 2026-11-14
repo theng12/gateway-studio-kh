@@ -271,5 +271,40 @@ class CancellationTests(_Base):
         self.assertIsNone(answer["selected_machine"])
 
 
+class SubmitRetryTests(_Base):
+    def test_a_cancelled_key_mints_a_fresh_job_and_keeps_the_cause(self) -> None:
+        from gateway import api
+
+        definition = types.SimpleNamespace(id="openrouter", kind="openai_compat",
+                                           display_name="OpenRouter", base_url="")
+        model = {"model_id": "some/chat-model", "raw": {}}
+        with patch.object(api, "store", self.store), \
+                patch.object(api.catalog, "resolve", lambda *a, **k: (definition, model)), \
+                patch.object(api, "_refuse_when_the_queue_is_full", lambda *a, **k: None), \
+                patch.object(api, "_refuse_when_the_disk_is_low", lambda *a, **k: None), \
+                patch.object(api, "_refuse_a_request_that_cannot_fit", lambda *a, **k: None):
+            first, created = api._submit("chat", "openrouter::some/chat-model",
+                                         {"messages": []}, "retry-1")
+            self.assertTrue(created)
+            self.store.cancel(first["id"], by="Story Studio", reason="wrong tone",
+                              origin="api")
+            second, created_again = api._submit("chat", "openrouter::some/chat-model",
+                                                {"messages": []}, "retry-1")
+            self.assertTrue(created_again, "a cancelled key must mint a fresh job")
+            self.assertNotEqual(second["id"], first["id"])
+            self.assertEqual(second["previous_job_id"], first["id"])
+            self.assertEqual(json.loads(second["previous_cancel_json"])["cancel_reason"],
+                             "wrong tone")
+            self.assertEqual(self.store.get(first["id"])["state"], "cancelled",
+                             "the cancelled row is immutable")
+            # A second replay now finds the live job, not a third one.
+            third, created_third = api._submit("chat", "openrouter::some/chat-model",
+                                               {"messages": []}, "retry-1")
+            self.assertFalse(created_third)
+            self.assertEqual(third["id"], second["id"])
+            self.assertEqual(self.store.find_by_idempotency_key("retry-1")["id"],
+                             second["id"])
+
+
 if __name__ == "__main__":
     unittest.main()

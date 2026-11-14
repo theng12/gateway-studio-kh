@@ -2168,6 +2168,8 @@ def _submit(
         raise GatewayError(403, "Only the owner's API key can target a measurement Mac.",
                            "MEASUREMENT_OWNER_REQUIRED")
     scope = idempotency_scope(requester)
+    #: The cancelled job this submission replaces, when it is a retry (0.2.257).
+    retried_from: dict[str, Any] | None = None
     if idempotency_key:
         idempotency_key = scoped_idempotency_key(scope, idempotency_key)
     # **A replay is not a new submission, so it is answered before anything can refuse it.** A
@@ -2194,7 +2196,20 @@ def _submit(
                 _refuse_changed_image_target(already, params)
             if modality == "video":
                 _refuse_changed_video_request(already, params)
-            return already, False
+            if str(already.get("state") or "") == "cancelled":
+                # **A retry of a cancelled job is a fresh job** (0.2.257). Story re-POSTs the
+                # same key to retry; returning the cancelled row was the defect that answered
+                # "image job was cancelled at the Gateway" without doing anything. The old row
+                # is immutable and keeps its id; it gives the key up so this request can become
+                # the job the caller asked for, and the new row carries the original cause.
+                release = getattr(store, "release_idempotency_key", None)
+                if release is not None and release(
+                        already["id"], key=f"{idempotency_key}:cancelled:{already['id']}"):
+                    retried_from = already
+                else:
+                    return already, False  # the key could not be freed; the cause is on the row
+            else:
+                return already, False
     _refuse_when_the_queue_is_full(priority == BACKGROUND)
     _refuse_when_the_disk_is_low()
     from . import pools as _pools
@@ -2303,6 +2318,13 @@ def _submit(
         requested_by=requester,
         job_group=job_group,
         priority=priority,
+        previous_job_id=retried_from["id"] if retried_from else None,
+        previous_cancel=(
+            {"cancelled_by": retried_from.get("cancelled_by"),
+             "cancel_reason": retried_from.get("cancel_reason"),
+             "cancel_origin": retried_from.get("cancel_origin"),
+             "cancelled_at": retried_from.get("cancelled_at")}
+            if retried_from else None),
     )
     if modality == "video" and not created:
         _refuse_changed_video_request(job, params)
@@ -3119,7 +3141,9 @@ def get_chat_response(job_id: str) -> dict[str, Any]:
 @app.post("/v1/chat/responses/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_chat_response(job_id: str) -> dict[str, Any]:
     job = _load_job(job_id, "chat")
-    store.cancel(job_id)
+    # **Who and from where, stored with the stop** (0.2.257), so a retry and Story can
+    # show the original cause instead of "cancelled at the Gateway".
+    store.cancel(job_id, by="Story Studio", origin="api")
     _cancel_upstream(job)
     return _job_envelope(store.get(job_id))
 
@@ -3611,7 +3635,8 @@ def create_image(
     # upload window closed — and if the references it now names are a different set, that is a
     # different render and a 409 rather than the earlier job's image.
     already = store.find_by_idempotency_key(key)
-    if already is not None and already["modality"] == "image":
+    if (already is not None and already["modality"] == "image"
+            and str(already.get("state") or "") != "cancelled"):
         _refuse_changed_image_target(already, payload)
         _refuse_changed_references(already, reference_ids or [])
         return _replay_marked(_job_envelope(already), False)
@@ -3704,7 +3729,9 @@ def get_image_file(job_id: str) -> Response:
 @app.post("/v1/images/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_image_job(job_id: str) -> dict[str, Any]:
     job = _load_job(job_id, "image")
-    store.cancel(job_id)
+    # **Who and from where, stored with the stop** (0.2.257), so a retry and Story can
+    # show the original cause instead of "cancelled at the Gateway".
+    store.cancel(job_id, by="Story Studio", origin="api")
     _cancel_upstream(job)
     return _job_envelope(store.get(job_id))
 
@@ -4139,7 +4166,8 @@ def create_video(
     # its own staged copies, so a caller whose 202 was lost gets its job back even after the
     # 15-minute upload window closed — unless it is now naming a different request.
     already = store.find_by_idempotency_key(key)
-    if already is not None and already["modality"] == "video":
+    if (already is not None and already["modality"] == "video"
+            and str(already.get("state") or "") != "cancelled"):
         _refuse_changed_video_request(already, payload)
         return _replay_marked(_job_envelope(already), False)
     job, created = _submit("video", model_id, _stage_video_reference(payload), key, caller=caller)
@@ -4171,7 +4199,9 @@ def get_video_file(job_id: str) -> Response:
 @app.post("/v1/videos/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_video_job(job_id: str) -> dict[str, Any]:
     job = _load_job(job_id, "video")
-    store.cancel(job_id)
+    # **Who and from where, stored with the stop** (0.2.257), so a retry and Story can
+    # show the original cause instead of "cancelled at the Gateway".
+    store.cancel(job_id, by="Story Studio", origin="api")
     _cancel_upstream(job)
     return _job_envelope(store.get(job_id))
 
@@ -4338,7 +4368,9 @@ def get_job_output(job_id: str, asset_id: str) -> Response:
 @app.post("/v1/jobs/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_tts_job(job_id: str) -> dict[str, Any]:
     job = _load_job(job_id, "tts")
-    store.cancel(job_id)
+    # **Who and from where, stored with the stop** (0.2.257), so a retry and Story can
+    # show the original cause instead of "cancelled at the Gateway".
+    store.cancel(job_id, by="Story Studio", origin="api")
     _cancel_upstream(job)
     return _job_envelope(store.get(job_id))
 
@@ -4385,7 +4417,9 @@ def get_music_output(job_id: str, asset_id: str) -> Response:
 @app.post("/v1/music/jobs/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_music_job(job_id: str) -> dict[str, Any]:
     job = _load_job(job_id, "music")
-    store.cancel(job_id)
+    # **Who and from where, stored with the stop** (0.2.257), so a retry and Story can
+    # show the original cause instead of "cancelled at the Gateway".
+    store.cancel(job_id, by="Story Studio", origin="api")
     _cancel_upstream(job)
     return _job_envelope(store.get(job_id))
 
@@ -4656,7 +4690,9 @@ def get_transcription_srt(job_id: str) -> Response:
 @app.post("/v1/transcriptions/{job_id}/cancel", dependencies=[Depends(require_auth)])
 def cancel_transcription_job(job_id: str) -> dict[str, Any]:
     job = _load_job(job_id, "transcription")
-    store.cancel(job_id)
+    # **Who and from where, stored with the stop** (0.2.257), so a retry and Story can
+    # show the original cause instead of "cancelled at the Gateway".
+    store.cancel(job_id, by="Story Studio", origin="api")
     _cancel_upstream(job)
     return _job_envelope(store.get(job_id))
 

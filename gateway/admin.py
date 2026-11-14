@@ -2735,6 +2735,234 @@ def upstream_job_trace(job_id: str) -> Any:
     }
 
 
+# ---------------------------------------------------------------------------
+# Footage library (M2/M3 inside 0.2.257) — the console's door onto /v1/footage.
+#
+# The page cannot call `/v1` (it holds no gateway key), so these wrap the same
+# functions the customer routes call. The root is **chosen with a picker**: the page
+# asks `browse` for directories and posts one of them; no text field takes a path.
+# ---------------------------------------------------------------------------
+
+@router.get("/api/footage", dependencies=[Depends(require_admin)])
+def footage_overview() -> dict[str, Any]:
+    from . import footage_library as footage
+    from .stock_sources import describe_all
+
+    root = footage.get_root()
+    return {
+        "clips": [footage.describe(clip) for clip in footage.list_clips()],
+        "quota": footage.quota_status(),
+        "sources": describe_all(registry.credentials),
+        "root": str(root),
+        "default_root": str(footage.default_root()),
+        "using_default": root == footage.default_root(),
+    }
+
+
+#: The top of the folder picker. Mounted volumes (the NAS arrives here) and the two
+#: places a library realistically lives — never the whole filesystem as a list.
+_FOOTAGE_BROWSE_ROOTS = ("/Volumes", "~")
+
+
+@router.get("/api/footage/browse", dependencies=[Depends(require_admin)])
+def footage_browse(path: str | None = None) -> Any:
+    """The folder picker's own read: **directories only**, one level at a time.
+
+    No typed paths anywhere (owner, 0.2.257): the page draws what this answers and posts
+    a chosen folder back. A path that does not exist or cannot be read is refused with the
+    reason, never silently replaced by somewhere else.
+    """
+    from . import footage_library as footage
+
+    chosen = str(path or "").strip()
+    if not chosen:
+        places = []
+        for top in _FOOTAGE_BROWSE_ROOTS:
+            base = Path(top).expanduser()
+            if not base.is_dir():
+                continue
+            if str(base) == str(Path.home()):
+                places.append({"name": "Home", "path": str(base)})
+                continue
+            try:
+                places.extend(
+                    {"name": item.name, "path": str(item)} for item in sorted(base.iterdir())
+                    if item.is_dir() and not item.name.startswith(".")
+                )
+            except OSError as exc:
+                places.append({"name": f"{base} (could not read: {exc.strerror or exc})",
+                               "path": str(base)})
+        return {"path": "", "parent": None,
+                "places": places,
+                "current_root": str(footage.get_root())}
+    target = Path(chosen).expanduser()
+    if not target.is_dir():
+        return _error(404, f"Not a folder: {target}")
+    entries: list[dict[str, Any]] = []
+    try:
+        for item in sorted(target.iterdir()):
+            if item.name.startswith(".") or not item.is_dir():
+                continue
+            entries.append({"name": item.name, "path": str(item)})
+            if len(entries) >= 200:
+                break
+    except OSError as exc:
+        return _error(403, f"Could not read {target}: {exc.strerror or exc}")
+    parent = str(target.parent) if target.parent != target else None
+    return {"path": str(target), "parent": parent, "places": entries,
+            "current_root": str(footage.get_root())}
+
+
+@router.post("/api/footage/root", dependencies=[Depends(require_admin)])
+def footage_set_root(payload: dict[str, Any]) -> Any:
+    """Choose the library's root — a folder the picker offered, never a bare path field."""
+    from . import footage_library as footage
+
+    chosen = payload.get("path")
+    if not isinstance(chosen, str) or not chosen.strip():
+        return _error(422, "Choose a folder for the footage library.")
+    try:
+        root = footage.set_root(chosen)
+    except ValueError as exc:
+        return _error(422, str(exc))
+    return {"root": str(root)}
+
+
+@router.post("/api/footage/sources/{source_id}/enable", dependencies=[Depends(require_admin)])
+def footage_source_enable(source_id: str, payload: dict[str, Any]) -> Any:
+    from .stock_sources import StockSourceError, set_enabled
+
+    try:
+        return set_enabled(source_id, bool(payload.get("enabled")), registry.credentials)
+    except StockSourceError as exc:
+        return _error(exc.status, str(exc), exc.code)
+    except ValueError as exc:
+        return _error(404, str(exc), "SOURCE_NOT_FOUND")
+
+
+@router.post("/api/footage/sources/{source_id}/key", dependencies=[Depends(require_admin)])
+def footage_source_key(source_id: str, payload: dict[str, Any]) -> Any:
+    """Store one stock source's API key. The value is never echoed back."""
+    from .providers.credentials import mask
+    from .stock_sources import definition as stock_definition
+
+    declared = stock_definition(source_id)
+    if declared is None:
+        return _error(404, "No such stock source.", "SOURCE_NOT_FOUND")
+    value = payload.get(declared.key_field)
+    if not isinstance(value, str) or not value.strip():
+        return _error(422, f"Enter the {declared.key_label}.")
+    try:
+        registry.credentials.set_values_for(declared.store_id,
+                                            {declared.key_field: value.strip()},
+                                            {declared.key_field})
+    except ValueError as exc:
+        return _error(422, str(exc))
+    return {"source": source_id, "saved": True,
+            "key_masked": mask(value.strip())}
+
+
+@router.get("/api/footage/search", dependencies=[Depends(require_admin)])
+def footage_search(q: str = "", tag: str | None = None) -> dict[str, Any]:
+    """Search the enabled stock connectors and the Gateway's own library."""
+    from . import footage_library as footage
+    from .stock_sources import all_sources
+
+    results: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = []
+    failed = False
+    for source in all_sources(registry.credentials):
+        if not source.is_available():
+            continue
+        try:
+            results.extend(hit.to_dict() for hit in source.search(q, limit=10))
+            reports.append({"id": source.id, "ok": True})
+        except Exception as exc:  # noqa: BLE001 - a dead source is reported, not fatal
+            failed = True
+            reports.append({"id": source.id, "ok": False, "error": str(exc)})
+    answer: dict[str, Any] = {
+        "results": results,
+        "library": [footage.describe(clip) for clip in footage.search_library(q, tag=tag)],
+        "sources": reports,
+    }
+    if failed:
+        answer["note"] = ("Could not reach "
+                          + ", ".join(r["id"] for r in reports if not r["ok"])
+                          + "; the Gateway's own library still answers.")
+    return answer
+
+
+#: A clip id is its sha256, in hex — the same guard the customer route uses, so no path
+#: can be built out of a request.
+_FOOTAGE_CLIP_ID = re.compile(r"^[0-9a-f]{64}$")
+
+
+@router.get("/api/footage/file/{sha256}", dependencies=[Depends(require_admin)])
+def footage_file(sha256: str) -> Any:
+    """Serve one library clip's bytes so the console can play what it lists."""
+    from . import footage_library as footage
+
+    if _FOOTAGE_CLIP_ID.fullmatch(sha256.lower()) is None:
+        return _error(400, "Not a sha256 clip id.", "INVALID_CLIP_ID")
+    path = footage.clip_path(sha256.lower())
+    if path is None:
+        return _error(404, "No such clip in the library.", "CLIP_NOT_FOUND")
+    from .api import stream_file
+    return stream_file(path, footage.clip_media_type(path))
+
+
+@router.post("/api/footage/add", dependencies=[Depends(require_admin)])
+def footage_add(payload: dict[str, Any]) -> Any:
+    """Fetch one connector clip into the library (licence re-read, commercial-safe only)."""
+    from . import footage_library as footage
+
+    source, source_id = payload.get("source"), payload.get("source_id")
+    if not source or not source_id:
+        return _error(422, "source and source_id are required.")
+    try:
+        return footage.download_into_library(str(source), str(source_id),
+                                             registry.credentials)
+    except Exception as exc:  # noqa: BLE001 - the refusal's own status and code travel
+        return _error(getattr(exc, "status", 400), str(exc), getattr(exc, "code", None))
+
+
+@router.post("/api/footage/retire", dependencies=[Depends(require_admin)])
+def footage_retire(payload: dict[str, Any]) -> Any:
+    """Retire one clip recoverably (moved to `_trash`, never deleted)."""
+    from . import footage_library as footage
+
+    sha = str(payload.get("sha256") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        return _error(422, "Not a sha256 clip id.", "INVALID_CLIP_ID")
+    try:
+        destination = footage.retire(sha)
+    except ValueError as exc:
+        return _error(404, str(exc), "CLIP_NOT_FOUND")
+    return {"retired": sha, "moved_to": str(destination)}
+
+
+@router.post("/api/footage/generate", dependencies=[Depends(require_admin)])
+def footage_generate_admin(payload: dict[str, Any]) -> Any:
+    """Free AI stock on the owner's Macs, filed in the library — the console's copy."""
+    from .api import _job_envelope, _submit
+    from .stock_sources import StockSourceError, assert_free_model, start_generation
+
+    model_id = str(payload.get("model_id") or "")
+    try:
+        assert_free_model(model_id)
+    except StockSourceError as exc:
+        return _error(exc.status, str(exc), exc.code)
+    params = {key: value for key, value in payload.items()
+              if key not in ("model_id", "idempotency_key")}
+    try:
+        job, _created = _submit("video", model_id, params,
+                                str(payload.get("idempotency_key") or uuid4().hex))
+    except Exception as exc:  # noqa: BLE001 - GatewayError carries its own status
+        return _error(getattr(exc, "status", 400), str(exc), getattr(exc, "code", None))
+    start_generation(job["id"], model_id)
+    return {**_job_envelope(job, native=True), "footage": {"library": True}}
+
+
 _REVIEW_NO_STORE = {"Cache-Control": "no-store, private, max-age=0", "Pragma": "no-cache",
                     "X-Content-Type-Options": "nosniff"}
 
@@ -2810,7 +3038,7 @@ def create_cancel(request: Request, job_id: str) -> Any:
     job = store.get(job_id)
     if job is None or not _guest_owns(request, job):
         return _no_such_job(job_id)
-    store.cancel(job_id)
+    store.cancel(job_id, by=requested_by_label(job), origin="console")
     # **Reach the work, not just the row.** This is the route the menu-bar Jobs window and the
     # Create page both call, and it only stamped the cancel locally: a job already dispatched to a
     # Hub kept rendering there while the app said "cancelling". The public `/v1/.../cancel` routes
