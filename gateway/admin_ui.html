@@ -2611,7 +2611,7 @@ function renderFootageSources(sources) {
         ${source.key_masked ? ` · key ${esc(source.key_masked)}` : ''}</div>
     </div>
     <div class="row" style="gap:6px;align-items:center">
-      ${source.needs_key && !source.configured ? `<input type="password" id="footage-key-${esc(source.id)}" placeholder="${esc(source.key_label)}" style="width:160px" autocomplete="off">
+      ${source.needs_key && !source.configured ? `<span class="secret" style="max-width:200px"><input type="password" id="footage-key-${esc(source.id)}" placeholder="${esc(source.key_label)}" autocomplete="off"><button type="button" class="eye" title="Show" aria-label="Show" onclick="toggleSecret(this)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button></span>
         <button class="sm" type="button" onclick="saveFootageKey('${esc(source.id)}', '${esc(source.key_field || 'api_key')}')">Save key</button>` : ''}
       <button class="sm" type="button" onclick="toggleFootageSource('${esc(source.id)}', ${source.enabled ? 'false' : 'true'})">${source.enabled ? 'Turn off' : 'Turn on'}</button>
     </div>

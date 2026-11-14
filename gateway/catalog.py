@@ -298,20 +298,18 @@ def _local_image_shape(raw: dict[str, Any]) -> dict[str, Any] | None:
     )
     if not ratios:
         return None
-    # **A ratio nobody stated pixels for is not published.** The picker reads `aspect_ratios`
-    # and renders the matching option's width; the two lists disagreeing is exactly the live
-    # `standard-image-fleet` bug (declared 16:9, published only a 1:1 option), so the declaration
-    # is narrowed to what has a size. A lane that states no pixels at all states nothing usable
-    # here; `shortcut: falls back to the cloud table, upgrade when a Hub states ratios only`.
+    # **A ratio nobody stated pixels for is not published** (owner rule, 0.2.257): the picker
+    # reads `aspect_ratios` and renders the matching option's width, so the two lists disagreeing
+    # is exactly the live `standard-image-fleet` bug. A lane that states no usable pixels at all
+    # publishes no ratios and no options — never our cloud table's generic pixels, which is how a
+    # missing geometry used to become an invented 1536x1024.
     sizes = _hub_image_sizes(raw)
     ratios = [ratio for ratio in ratios if ratio in sizes]
-    if not ratios:
-        return None
     stated_default = declared.get("default")
     default_ratio = (
         stated_default.strip()
         if isinstance(stated_default, str) and stated_default.strip() in ratios
-        else ratios[0]
+        else (ratios[0] if ratios else None)
     )
     resolution_param = _hub_declared_parameter(contract, "resolution")
     resolution = None

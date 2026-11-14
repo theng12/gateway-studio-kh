@@ -86,7 +86,11 @@ class UpstreamTraceTest(unittest.TestCase):
             local=False,
         )
         self.assertEqual(set(answer), {
-            "job_id", "state", "selected_machine", "dispatch_trace"
+            "job_id", "state", "selected_machine", "dispatch_trace",
+            # 0.2.257: the same fields answer for a job with no Hub batch, and a cancelled
+            # job's cause travels with its trace.
+            "error_code", "error_detail", "failed_at", "origin", "candidates",
+            "selection", "cancellation", "previous_cancellation",
         })
         self.assertEqual(answer["job_id"], self.job["id"])
         self.assertEqual(answer["state"], "done")
@@ -98,9 +102,12 @@ class UpstreamTraceTest(unittest.TestCase):
         }])
         serialized = json.dumps(answer)
         for forbidden in (
-            "top-secret-token", "site-a.internal", "worker.invalid", "private prompt", "detail"
+            "top-secret-token", "site-a.internal", "worker.invalid", "private prompt"
         ):
             self.assertNotIn(forbidden, serialized)
+        self.assertIsNone(answer["error_code"])
+        self.assertEqual(answer["candidates"], [])
+        self.assertIsNone(answer["cancellation"])
 
     def test_projection_rejects_oversized_numerics_and_enforces_final_byte_bound(self) -> None:
         huge = 10 ** 4000
@@ -132,12 +139,38 @@ class UpstreamTraceTest(unittest.TestCase):
         self.assertNotIn("item_index", trace["selected"])
         self.assertTrue(trace["truncated"])
 
-    def test_rejects_unknown_non_hub_and_unaccepted_jobs(self) -> None:
+    def test_an_unaccepted_job_still_answers_with_its_dispatch_evidence(self) -> None:
+        """A job the Gateway never sent has an answer too (0.2.257): why not, and who stopped it."""
+        row = {
+            **self.job, "upstream_job_id": "", "state": "failed",
+            "error_code": "DISPATCH_NO_ELIGIBLE_MACHINE",
+            "error_detail": "No reachable Mac can run it — a: offline, last seen 7d",
+            "finished_at": 123.0, "caller": "Story Studio",
+            "result_json": json.dumps({"payload": {"dispatch": {
+                "code": "DISPATCH_NO_ELIGIBLE_MACHINE",
+                "checked_at": 120.0, "candidates": [
+                    {"location_id": "a", "provider_id": "studio-hub-a", "label": "A",
+                     "machine": None, "reason": "offline", "detail": "not answering",
+                     "last_seen_at": 10.0}],
+                "selected": None,
+            }}}),
+        }
+        with patch.object(admin.store, "get", return_value=row), \
+                patch.object(admin.registry, "definition", return_value=self.definition):
+            answer = admin.upstream_job_trace("gateway-job-1")
+        self.assertEqual(answer["state"], "failed")
+        self.assertEqual(answer["error_code"], "DISPATCH_NO_ELIGIBLE_MACHINE")
+        self.assertEqual(answer["failed_at"], 123.0)
+        self.assertEqual(answer["candidates"][0]["reason"], "offline")
+        self.assertIsNone(answer["selected_machine"])
+        self.assertIsNone(answer["dispatch_trace"])
+        self.assertIsNone(answer["cancellation"])
+
+    def test_rejects_unknown_non_hub_jobs(self) -> None:
         cases = (
             (None, self.definition, 404),
             (self.job, None, 409),
             (self.job, SimpleNamespace(kind="openai_compat", base_url=""), 409),
-            ({**self.job, "upstream_job_id": ""}, self.definition, 409),
         )
         for row, definition, status in cases:
             with self.subTest(row=row, definition=definition), \

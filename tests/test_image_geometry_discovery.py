@@ -60,11 +60,15 @@ class ModelGeometryDiscoveryTests(unittest.TestCase):
                 self.assertEqual((landscape["width"], landscape["height"]), (1024, 576))
 
     def test_explicit_empty_or_invalid_geometry_never_invents_generic_pixels(self):
+        # **No stated pixels means no published choice** (owner rule, 0.2.257): the ratio list
+        # and the option list are one offer, so a lane with no usable geometry publishes neither
+        # rather than a ratio the picker cannot render.
         for sizes in ([], None, {}, [{"id": "16:9", "width": False, "height": 576}]):
             with self.subTest(sizes=sizes):
                 _, row = self.row("model", sizes)
                 self.assertEqual(row["output_options"], [])
-                self.assertEqual(row["aspect_ratios"], ["16:9", "1:1", "9:16"])
+                self.assertEqual(row["aspect_ratios"], [])
+                self.assertIsNone(row["default_aspect_ratio"])
 
     def test_absent_size_declaration_preserves_legacy_hub_compatibility(self):
         _, row = self.row("legacy-model", None, declared=False)

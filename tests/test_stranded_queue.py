@@ -220,12 +220,15 @@ class MacsGoneOfflineTests(unittest.TestCase):
         rows = [_group("a", local_drained=False, node_paused=False, models=[])]
         self.assertFalse(self._read(rows))
 
-    def test_offline_is_not_how_paused_reads_so_routing_and_catalog_are_unchanged(self) -> None:
+    def test_offline_is_not_how_paused_reads_and_routing_skips_the_site(self) -> None:
         row = self._site(online=[False, False])
         self.assertFalse(fleet.no_free_mac(row, MODEL),
                          "an offline Mac is not a paused one; catalog's 'you paused' must not claim it")
+        # 0.2.257: an all-offline site is no longer offered as a routing candidate — it was
+        # the 1204 seven-days-gone case that produced a four-hour pending job. The stranded
+        # door below still withdraws anything already bound to it.
         self.assertEqual(_candidates([row, _group("b", local_drained=False, node_paused=False)]),
-                         ["a", "b"], "routing's own rule still offers the site; the door is the fix")
+                         ["b"], "an offline site is not a candidate; the door still withdraws")
 
     def test_a_queued_item_there_is_withdrawn_at_once_not_left_to_the_queue_ceiling(self) -> None:
         # The ceiling is the bound the 2026-10-31 jobs actually waited on (55 minutes of a 3-hour

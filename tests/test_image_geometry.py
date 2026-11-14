@@ -196,9 +196,10 @@ class HubImageGeometryTests(unittest.TestCase):
     def test_the_hubs_stated_size_list_is_the_whole_answer(self) -> None:
         """When the Hub states `image_sizes`, our copy of its table is not consulted.
 
-        A ratio it states without usable pixels still publishes — the caller is told the
-        lane takes it — and gets no option row, because there is no size to publish and
-        none may be invented.
+        **A ratio with no stated pixels is not offered** (owner rule, 0.2.257): the picker
+        renders the matching option's width, so every published ratio must have one. The
+        stated default `7:5` has no size here, so the first sized ratio becomes the default
+        and our table's 1024x1024 is never substituted for a missing geometry.
         """
         contract = {"parameters": [
             {"name": "aspect_ratio", "enum": ["16:9", "7:5", "1:1"], "default": "7:5"},
@@ -208,14 +209,14 @@ class HubImageGeometryTests(unittest.TestCase):
                "image_sizes": [{"id": "16:9", "width": 640, "height": 360},
                                {"id": "7:5", "width": None, "height": None}]}
         row = image_row(HUB_DEFINITION, raw)
-        self.assertEqual(row["aspect_ratios"], ["16:9", "7:5", "1:1"])
-        self.assertEqual(row["default_aspect_ratio"], "7:5")
+        self.assertEqual(row["aspect_ratios"], ["16:9"])
+        self.assertEqual(row["default_aspect_ratio"], "16:9")
         self.assertEqual(row["default_resolution"], "2K")
         self.assertEqual([(o["aspect_ratio"], o["width"], o["height"])
                           for o in row["output_options"]], [("16:9", 640, 360)])
-        # `1:1` is a ratio the lane states and the size list omits entirely: offered, with
-        # no geometry — and the table's 1024x1024 is not silently substituted for it.
-        self.assertIn("1:1", row["aspect_ratios"])
+        # `1:1` is a ratio the lane states and the size list omits entirely: withheld, and
+        # the table's 1024x1024 is not silently substituted for it.
+        self.assertNotIn("1:1", row["aspect_ratios"])
         self.assertNotIn("1:1", [o["aspect_ratio"] for o in row["output_options"]])
 
     def test_the_hub_preset_table_is_the_documented_hub_geometry(self) -> None:
