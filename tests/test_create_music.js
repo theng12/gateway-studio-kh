@@ -54,6 +54,9 @@ test('required lyrics fail locally; lyrics submit without an undeclared language
   assert.match(nodes.get('cf-msg').textContent, /needs lyrics/);
   assert.equal(calls.length, 0);
   nodes.get('cf-lyrics').value = '[Verse]\nពន្លឺថ្ងៃ\n[Chorus]\nពន្លឺ';
+  // Typing fires the page's gate; a direct value assignment must do the same for the button
+  // to be pressable again after the first refusal disabled it.
+  vm.runInContext('updateCreateGate()', context);
   await context.submitCreate(button);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].body.params.lyrics, nodes.get('cf-lyrics').value);

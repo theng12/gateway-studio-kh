@@ -3149,7 +3149,8 @@ def _voice_attribution(row: dict[str, Any]) -> dict[str, Any]:
         local_id = fleet.provider_id_for(fleet.LOCAL_ID)
         locations = [
             {"provider_id": definition.id,
-             "label": "This Mac" if definition.id == local_id else definition.display_name,
+             "label": ("Hub Studio KH (local) · this Mac" if definition.id == local_id
+                      else definition.display_name),
              "enabled": registry.credentials.is_enabled(definition.id)}
             for definition in registry.definitions() if definition.kind == "studio_hub"
         ]

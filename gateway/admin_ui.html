@@ -232,6 +232,9 @@
   #m-rows tr.m-machine td { padding-top: var(--s4); padding-bottom: var(--s4); border: 0; overflow-wrap: anywhere; }
   #m-rows tr.m-machine .m-machine-name { color: var(--dim); padding-left: var(--s16); }
   #m-rows .m-machines .badge { margin-left: var(--s4); }
+  /* A narrow window scrolls the Discover table inside its box rather than crushing the
+     Model and Price columns to 50/44 px (0.2.257 critic). */
+  #models-discover .tablewrap table { min-width: 820px; }
   /* The `…` detail row: the Macs and the ids, on request, under the one model row. */
   #m-rows tr.m-details td { background: var(--panel2); }
   .m-detail-wrap { display: flex; flex-wrap: wrap; gap: var(--s16); padding: var(--s8) var(--s12); }
@@ -695,7 +698,7 @@
   .nav-pill-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   /* Settings is a read-only facts page: give it a readable measure and let the facts sit in two
      columns on a wide window instead of stretching one narrow table across the card. */
-  #view-settings .card { max-width: 900px; }
+  #view-settings .card { width: 100%; max-width: none; }
   #settings-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); column-gap: 24px; align-items: start; }
   /* The Settings layout system: a titled group of label/value rows, wrapping rather than
      truncating, used for every fact on the page. */
@@ -2669,13 +2672,19 @@ async function searchFootage(button) {
 async function fetchFootageClip(source, sourceId, button) {
   const msg = document.getElementById('footage-msg');
   if (button) button.disabled = true;
+  // A stock download can take a minute; say it is running rather than looking frozen.
+  if (msg) { msg.className = 'msg'; msg.textContent = 'Fetching the clip into the library…'; }
   try {
     await api('/footage/add', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source, source_id: sourceId }) });
     if (msg) { msg.className = 'msg ok'; msg.textContent = 'Added to the library.'; }
     loadFootage();
-  } catch (error) { if (msg) { msg.className = 'msg bad'; msg.textContent = error.message; } }
-  finally { if (button) button.disabled = false; }
+  } catch (error) {
+    if (msg) {
+      msg.className = 'msg bad';
+      msg.textContent = `The Gateway did not finish the fetch — nothing was added (${error.message}).`;
+    }
+  } finally { if (button) button.disabled = false; }
 }
 
 function openFootageRoot() {
@@ -6067,7 +6076,7 @@ function renderCreateForm() {
           <button type="button" class="chip" id="cf-voice-mode-manual" aria-pressed="false"
                   onclick="setVoiceMode('manual')">Provider voice ID</button>
         </div>
-        <div class="row" style="flex-wrap:wrap"><select style="min-width:0;max-width:100%" id="cf-${f.k}" onchange="createVoiceChoice(this); updateCreateGate()"></select>
+        <div class="row" id="cf-voice-saved-row" style="flex-wrap:wrap"><select style="min-width:0;max-width:100%" id="cf-${f.k}" onchange="createVoiceChoice(this); updateCreateGate()"></select>
         <button type="button" class="sm" id="cf-voice-play" disabled onclick="playSelectedVoice()">No sample</button></div>
         <div class="hint" id="cf-voice-play-status" aria-live="polite"></div>
         ${typeof GUEST !== 'undefined' && GUEST ? `<details style="margin-top:8px"><summary>Add voice</summary>
@@ -6115,12 +6124,13 @@ function renderCreateForm() {
   // ever (review 2026-10-29e, finding 1).
   const voiceLane = fields.some(f => f.type === 'voice');
   const notReady = (createCatalogue && createCatalogue.not_ready && createCatalogue.not_ready[t.modality]) || 0;
+  const keyNote = ' A model on a provider without its key stays hidden until that key is saved in Providers.';
   const emptyWhy = notReady
     ? `${notReady} model${notReady === 1 ? ' is' : 's are'} switched on for this lane, but `
       + `${notReady === 1 ? 'its' : 'their'} provider has no key yet. Add the key on Providers and it appears here.`
     : ((typeof GUEST !== 'undefined' && GUEST)
         ? 'No free or local model is switched on for this lane. A guest account may use free and local models only — ask the owner to allow paid models for you.'
-        : 'No model is switched on for this lane. Enable one on the Models page and it appears here.');
+        : `No model is switched on for this lane. Enable one on the Models page and it appears here.${keyNote}`);
   const picker = rows.length
     ? `<div style="margin-bottom:12px"><label>Model</label>
          <select id="cf-model" onchange="createModelChanged(this.value)">${rows.map(m =>
@@ -6538,6 +6548,10 @@ function syncVoiceModeChips(mode) {
   const manual = document.getElementById('cf-voice-mode-manual');
   if (saved && saved.setAttribute) saved.setAttribute('aria-pressed', String(mode === 'saved'));
   if (manual && manual.setAttribute) manual.setAttribute('aria-pressed', String(mode === 'manual'));
+  // **One decision, one visible control.** The provider-id box no longer sits beside the
+  // saved-voice selector while the chips say Provider voice ID (0.2.257 critic).
+  const row = document.getElementById('cf-voice-saved-row');
+  if (row) row.style.display = mode === 'manual' ? 'none' : '';
 }
 
 function createVoiceChoice(select) {
@@ -6786,7 +6800,13 @@ async function submitCreate(btn) {
     if (e.ambiguous) btn.textContent = 'Retry Same Request';
     else pendingCreateAttempt = null;
   } finally {
-    btn.disabled = false;
+    if (pendingCreateAttempt) {
+      btn.disabled = false;  // an uncertain request stays retryable
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Generate';
+      if (typeof updateCreateGate === 'function') updateCreateGate();
+    }
   }
 }
 
