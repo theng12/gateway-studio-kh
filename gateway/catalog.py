@@ -126,8 +126,10 @@ _CAPABILITY_OPERATION = {
 
 #: The cloud fallback ratio list, and **only** that: a `studio_hub` row builds its own
 #: from the lane contract (see `_local_image_shape`) because the lane that renders owns the
-#: numbers. Kept exactly as it was for every other kind — see `IMAGE_SIZE_BY_RATIO`.
-_IMAGE_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
+#: numbers. **The labels are the pixels really sent** (0.2.257): the OpenAI-family size
+#: 1536x1024 is 3:2, so publishing it as 16:9 told Story one shape and handed it another.
+#: `IMAGE_SIZE_BY_RATIO` keeps the legacy names for clients that still send one.
+_IMAGE_RATIOS = ["3:2", "1:1", "2:3"]
 
 
 def encode_model_id(provider_id: str, model_id: str) -> str:
@@ -430,7 +432,7 @@ def _image_row(model_id: str, definition: ProviderDefinition, model: dict[str, A
         # The cloud lane: unchanged, and deliberately so — what is offered here is what
         # `image_size_for` sends, which is why the two share `IMAGE_SIZE_BY_RATIO`.
         aspect_ratios = _IMAGE_RATIOS
-        default_aspect_ratio = "16:9"
+        default_aspect_ratio = "3:2"
         default_resolution = "1K"
         options = []
         for index, ratio in enumerate(_IMAGE_RATIOS):

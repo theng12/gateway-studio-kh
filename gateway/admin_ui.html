@@ -3019,9 +3019,7 @@ function renderVoiceTags() {
     // voice's Macs are a count — `N of M locations` — not a row each (owner, 0.2.257).
     const meta = document.createElement('div'); meta.className = 'hint';
     const where = voice.locations_total
-      ? (voice.locations_total === 1
-          ? ' · 1 location'
-          : ` · ${voice.locations_enabled} of ${voice.locations_total} locations`)
+      ? ` · ${voice.locations_enabled} of ${voice.locations_total} location${voice.locations_total === 1 ? '' : 's'}`
       : '';
     const howLong = Number.isFinite(voice.duration_seconds) ? ` · sample 0:${String(Math.round(voice.duration_seconds)).padStart(2, '0')}` : '';
     meta.textContent = `${voice.provider || 'provider not recorded'}${voice.language ? ' · ' + voice.language : ''}${where}${howLong}`;
@@ -5956,6 +5954,10 @@ const CREATE_FIELDS = {
     { k: 'prompt', label: 'Prompt', type: 'textarea', rows: 6, placeholder: 'Describe the image…' },
     { k: 'n', label: 'How many', type: 'number', value: 1, min: 1, max: 10,
       hint: 'A provider that answers several variations returns all of them.' },
+    // Every image row declares `supports_seed`; leaving this blank sends no seed, and the
+    // same seed with the same prompt repeats the picture.
+    { k: 'seed', label: 'Seed', type: 'number', value: '', min: 0,
+      hint: 'Optional. Repeat the same seed and prompt for the same picture.' },
   ],
   music: [
     { k: 'prompt', label: 'Describe the music', type: 'textarea', rows: 5, placeholder: 'calm piano, late night…' },
@@ -6101,7 +6103,7 @@ function renderCreateForm() {
 
   const upload = t.modality === 'transcription'
     ? `<div style="margin-bottom:12px"><label>Recording</label>
-         <input type="file" id="cf-file" accept="audio/*,video/*">
+         <input type="file" id="cf-file" accept="audio/*,video/*" onchange="updateCreateGate()">
          <div class="hint" id="cf-upload-limit"></div></div>
        <div style="margin-bottom:12px"><label>Language</label>
          <input type="text" id="cf-language" placeholder="leave blank to detect"></div>`
@@ -6112,14 +6114,19 @@ function renderCreateForm() {
   // when the lane had a voice field left its limit note showing the first model's number for
   // ever (review 2026-10-29e, finding 1).
   const voiceLane = fields.some(f => f.type === 'voice');
+  const notReady = (createCatalogue && createCatalogue.not_ready && createCatalogue.not_ready[t.modality]) || 0;
+  const emptyWhy = notReady
+    ? `${notReady} model${notReady === 1 ? ' is' : 's are'} switched on for this lane, but `
+      + `${notReady === 1 ? 'its' : 'their'} provider has no key yet. Add the key on Providers and it appears here.`
+    : ((typeof GUEST !== 'undefined' && GUEST)
+        ? 'No free or local model is switched on for this lane. A guest account may use free and local models only — ask the owner to allow paid models for you.'
+        : 'No model is switched on for this lane. Enable one on the Models page and it appears here.');
   const picker = rows.length
     ? `<div style="margin-bottom:12px"><label>Model</label>
          <select id="cf-model" onchange="createModelChanged(this.value)">${rows.map(m =>
            `<option value="${esc(m.id)}">${esc(m.provider_id === 'studio-hub' ? 'Hub Studio KH (local)' : m.provider_name)} — ${esc(m.display_name)}${m.free_lane ? ' · free' : ''}</option>`
          ).join('')}</select></div>`
-    : `<div class="msg bad" style="margin-bottom:12px">${
-        (typeof GUEST !== 'undefined' && GUEST) ? 'No free or local model is switched on for this lane. A guest account may use free and local models only — ask the owner to allow paid models for you.'
-              : 'No model is switched on for this lane. Enable one on the Models page and it appears here.'}</div>`;
+    : `<div class="msg bad" style="margin-bottom:12px">${emptyWhy}</div>`;
 
   // **The model's own geometry and length, where it is chosen.** The options come from the
   // catalogue row — never a list here — so the form cannot offer a ratio or a duration the
@@ -6139,6 +6146,12 @@ function renderCreateForm() {
       <label for="cf-video-variant">Duration, resolution and shape</label>
       <select id="cf-video-variant" onchange="updateCreateGate()"></select>
       <div class="hint" id="cf-video-options-note"></div>
+    </div>`
+    : t.key === 'audio' ? `
+    <div id="cf-temperature-box" style="display:none;margin-bottom:12px">
+      <label for="cf-temperature">Temperature</label>
+      <input type="number" id="cf-temperature" step="0.05" style="width:110px">
+      <div class="hint" id="cf-temperature-help"></div>
     </div>`
     : t.key === 'music' ? `
     <label class="check" id="cf-instrumental-box" style="display:none;margin-bottom:12px">
@@ -6254,6 +6267,33 @@ function applyCreateModelControls() {
     language.disabled = options.length === 0;
     document.getElementById('cf-vocal_language-box').style.display = options.length ? '' : 'none';
   }
+  // **A declared control gets a control.** Cloud TTS rows publish a temperature with its own
+  // range and default; it was invisible, so the page offered fewer controls than the row
+  // declared (0.2.257 critic). Limits are the model's; a blank box sends nothing.
+  const tempBox = document.getElementById('cf-temperature-box');
+  if (tempBox) {
+    const temperature = createControl(selected ? selected.value : '', 'temperature');
+    tempBox.style.display = temperature ? '' : 'none';
+    const input = document.getElementById('cf-temperature');
+    if (temperature && input) {
+      input.min = temperature.minimum ?? '';
+      input.max = temperature.maximum ?? '';
+      input.step = temperature.step ?? 'any';
+      input.placeholder = temperature.default != null ? String(temperature.default) : '';
+      const tempHelp = document.getElementById('cf-temperature-help');
+      if (tempHelp) {
+        tempHelp.textContent = [
+          temperature.minimum != null && temperature.maximum != null
+            ? `${temperature.minimum}–${temperature.maximum}` : '',
+          temperature.default != null ? `default ${temperature.default}` : '',
+          'leave blank to use the model\'s default',
+        ].filter(Boolean).join(' · ');
+      }
+    } else if (input) {
+      input.value = '';
+    }
+  }
+
   const box = document.getElementById('cf-delivery_instruction-box');
   if (!box) return;
   const modelEl = document.getElementById('cf-model');
@@ -6415,6 +6455,10 @@ function createRequiredProblem() {
   }
   if ((CREATE_FIELDS[tab.key] || []).some(f => f.type === 'voice') && !createVoiceValue()) {
     return 'Choose a saved voice, or a provider voice ID.';
+  }
+  if (tab.modality === 'transcription') {
+    const file = document.getElementById('cf-file');
+    if (!file || !file.files || !file.files.length) return 'Choose a recording first.';
   }
   return '';
 }
@@ -6679,6 +6723,11 @@ async function submitCreate(btn) {
         if (f.type === 'number') params[f.k] = parseInt(v, 10);
         else params[f.k] = v;
       });
+      const tempBox = document.getElementById('cf-temperature-box');
+      if (tempBox && tempBox.style.display !== 'none') {
+        const temperature = cfValue('temperature');
+        if (temperature !== '') params.temperature = parseFloat(temperature);
+      }
       const missing = createRequiredProblem();
       if (missing) throw new Error(missing);
       // The geometry and length the form drew are the ones that travel; a model with no

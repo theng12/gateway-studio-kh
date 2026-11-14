@@ -233,12 +233,17 @@ class HubImageGeometryTests(unittest.TestCase):
 
 
 class CloudImageGeometryIsUntouchedTests(unittest.TestCase):
-    """(c) The cloud table stays exactly as it is for every non-`studio-hub` kind."""
+    """(c) A cloud row publishes the pixels its adapter sends — and the ratio they really are.
+
+    0.2.257 critic: 1536x1024 was published as 16:9 (3:2), so Story composed one shape and
+    received another. The labels are now geometry-true; the legacy names still resolve to the
+    same pixels for a client that sends one.
+    """
 
     def test_a_cloud_row_keeps_the_cloud_table(self) -> None:
         row = image_row(CLOUD_DEFINITION, {})
-        self.assertEqual(row["aspect_ratios"], ["16:9", "9:16", "1:1", "4:3", "3:4"])
-        self.assertEqual(row["default_aspect_ratio"], "16:9")
+        self.assertEqual(row["aspect_ratios"], ["3:2", "1:1", "2:3"])
+        self.assertEqual(row["default_aspect_ratio"], "3:2")
         self.assertEqual(
             [(o["aspect_ratio"], o["width"], o["height"]) for o in row["output_options"]],
             [(ratio, *IMAGE_SIZE_BY_RATIO[ratio]) for ratio in catalog._IMAGE_RATIOS],

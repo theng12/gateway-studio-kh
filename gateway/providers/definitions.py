@@ -194,6 +194,11 @@ IMAGE_REFERENCE_CAPABLE_KINDS: frozenset[str] = frozenset({KIND_STUDIO_HUB})
 #: sent as 3:2. Upgrade path — a per-model size table read from the provider,
 #: which is also what would let a lane that accepts more ratios offer them.
 IMAGE_SIZE_BY_RATIO: dict[str, tuple[int, int]] = {
+    # **Ratio labels match the pixels sent** (0.2.257 critic): 1536x1024 is 3:2, not 16:9, and
+    # the catalogue now publishes the label the geometry really is. The legacy names stay so a
+    # client that still sends one gets the same pixels — the adapter honours orientation only.
+    "3:2": (1536, 1024),
+    "2:3": (1024, 1536),
     "16:9": (1536, 1024),
     "4:3": (1536, 1024),
     "1:1": (1024, 1024),

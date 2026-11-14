@@ -45,6 +45,8 @@ READERS = {
     "variants": "syncCreateVideoOptions",
     "upload_limit_bytes": "showUploadLimit",
     "controls": "applyCreateModelControls",
+    # The seed is a CREATE_FIELDS number rather than a function; the page literal is the reader.
+    "supports_seed": "seed control",
 }
 
 #: Capabilities with no control in the console **on purpose**, and why. An exception is
@@ -105,8 +107,12 @@ class CoverageTests(unittest.TestCase):
             for key in row:
                 if key in READERS:
                     reader = READERS[key]
-                    self.assertIn(f"function {reader}", PAGE,
-                                  f"{modality} row publishes `{key}` but the page has no {reader}()")
+                    if reader == "seed control":
+                        self.assertIn("k: 'seed'", PAGE,
+                                      f"{modality} row publishes `{key}` but the form has no seed field")
+                    else:
+                        self.assertIn(f"function {reader}", PAGE,
+                                      f"{modality} row publishes `{key}` but the page has no {reader}()")
                     checked += 1
                 elif key in EXCEPTIONS:
                     self.assertTrue(EXCEPTIONS[key], f"`{key}` has an empty exception reason")
@@ -117,7 +123,10 @@ class CoverageTests(unittest.TestCase):
         for key, reader in READERS.items():
             if key in ("upload_limit_bytes",):
                 continue  # transcription's row, not one of these three builders
-            self.assertIn(f"function {reader}", PAGE)
+            if reader == "seed control":
+                self.assertIn("k: 'seed'", PAGE)
+            else:
+                self.assertIn(f"function {reader}", PAGE)
             self.assertIn(key, published,
                           f"the page draws `{key}` but no row builder here publishes it — "
                           "a control reading a field the catalogue stopped sending is dead")

@@ -2255,9 +2255,23 @@ def create_models(request: Request) -> dict[str, Any]:
                 by_modality[modality].append({**row, **metadata[row["id"]]})
     for rows in by_modality.values():
         rows.sort(key=lambda m: (m["provider_name"].lower(), m["model_id"]))
+    # **Why a lane can be ticked and still empty.** A model switched on at a provider with no
+    # key never reaches this list; the page says so instead of "enable one on the Models page",
+    # which the owner already did (0.2.257 critic: music was enabled and Create stayed empty).
+    not_ready: dict[str, int] = {modality: 0 for modality in wanted}
+    for definition in registry.definitions():
+        if (registry.credentials.is_configured(definition.id)
+                or not registry.credentials.is_enabled(definition.id)):
+            continue
+        for model in registry.models.models_for(definition.id, include_disabled=True):
+            modality = str(model.get("modality") or "")
+            if (modality in not_ready and model.get("enabled")
+                    and registry.models.can_publish(definition, model)):
+                not_ready[modality] += 1
     return {
         "by_modality": by_modality,
         "counts": {k: len(v) for k, v in by_modality.items()},
+        "not_ready": not_ready,
         "paid_models": paid,
     }
 
@@ -3132,8 +3146,10 @@ def _voice_attribution(row: dict[str, Any]) -> dict[str, Any]:
     local = (str(row.get("source") or "") == SOURCE_LOCAL
              or provider_id.startswith(fleet.PROVIDER_PREFIX))
     if local:
+        local_id = fleet.provider_id_for(fleet.LOCAL_ID)
         locations = [
-            {"provider_id": definition.id, "label": definition.display_name,
+            {"provider_id": definition.id,
+             "label": "This Mac" if definition.id == local_id else definition.display_name,
              "enabled": registry.credentials.is_enabled(definition.id)}
             for definition in registry.definitions() if definition.kind == "studio_hub"
         ]

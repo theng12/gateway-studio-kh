@@ -184,6 +184,57 @@ test('a missing voice disables Generate and names what is missing', () => {
   assert.equal(nodes['cf-gate'].textContent, '');
 });
 
+test('a declared temperature control appears with the model\'s own limits', () => {
+  const nodes = {
+    'cf-model': element({ value: 'cloud::tts' }),
+    'cf-temperature-box': element({ style: { display: 'none' } }),
+    'cf-temperature': element(),
+    'cf-temperature-help': element(),
+    'cf-delivery_instruction-box': element({ style: { display: 'none' } }),
+    'cf-delivery_instruction': element(),
+  };
+  const { context } = harness(nodes);
+  vm.runInContext(`createTab = 'audio'; createCatalogue = ${JSON.stringify({ by_modality: { tts: [{
+    id: 'cloud::tts', display_name: 'TTS', modality: 'tts',
+    controls: [{ name: 'temperature', type: 'number', minimum: 0.1, maximum: 2,
+                 default: 0.7, step: 0.05 }],
+  }] } })};`, context);
+  vm.runInContext('applyCreateModelControls();', context);
+  assert.equal(nodes['cf-temperature-box'].style.display, '',
+    'a declared capability has a control');
+  assert.equal(nodes['cf-temperature'].min, 0.1);
+  assert.equal(nodes['cf-temperature'].max, 2);
+  assert.match(nodes['cf-temperature-help'].textContent, /0\.1–2/);
+  assert.match(nodes['cf-temperature-help'].textContent, /default 0\.7/);
+
+  vm.runInContext('createCatalogue.by_modality.tts[0].controls = []; applyCreateModelControls();', context);
+  assert.equal(nodes['cf-temperature-box'].style.display, 'none',
+    'a model that declares none keeps no temperature field');
+});
+
+test('the subtitle form refuses to generate without a recording', () => {
+  const nodes = {
+    'cf-model': element({ value: 'cloud::whisper' }),
+    'cf-file': element({ files: [] }),
+    'cf-gate': element(),
+    'cf-go': element(),
+  };
+  const { context } = harness(nodes);
+  vm.runInContext("createTab = 'subtitle'; updateCreateGate();", context);
+  assert.equal(nodes['cf-go'].disabled, true);
+  assert.match(nodes['cf-gate'].textContent, /Choose a recording first/);
+  nodes['cf-file'].files = [{}];
+  vm.runInContext('updateCreateGate();', context);
+  assert.equal(nodes['cf-go'].disabled, false);
+});
+
+test('the image seed field is optional and the empty lane names a missing key', () => {
+  assert.match(SECTION, /k: 'seed'/);
+  assert.match(SECTION, /Optional\. Repeat the same seed/);
+  assert.match(SECTION, /provider has no key yet/,
+    'an enabled model on an unconfigured provider explains itself instead of a dead end');
+});
+
 test('the Saved voice / Provider voice ID decision is one exclusive control', () => {
   const nodes = {
     'cf-voice-mode-saved': element({ attrs: {} }),
