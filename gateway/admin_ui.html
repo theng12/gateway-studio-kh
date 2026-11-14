@@ -6426,8 +6426,8 @@ function createVideoParams() {
 function setVoiceMode(mode) {
   const saved = document.getElementById('cf-voice-mode-saved');
   const manual = document.getElementById('cf-voice-mode-manual');
-  if (saved) saved.setAttribute('aria-pressed', String(mode === 'saved'));
-  if (manual) manual.setAttribute('aria-pressed', String(mode === 'manual'));
+  if (saved && saved.setAttribute) saved.setAttribute('aria-pressed', String(mode === 'saved'));
+  if (manual && manual.setAttribute) manual.setAttribute('aria-pressed', String(mode === 'manual'));
   const select = document.getElementById('cf-voice_id');
   const input = document.getElementById('cf-voice_id_manual');
   if (select) {
@@ -6530,6 +6530,16 @@ function createVoiceLabel(v) {
   return [name, gender, provider && provider !== name ? provider : ''].filter(Boolean).join(' · ') + state;
 }
 
+//: Which voice source is chosen, in the segmented control. Callers that show or hide the
+//: manual field must call this too, or the chips and the fields disagree (0.2.257 critic:
+//: "Saved voice" pressed beside a visible provider-id box).
+function syncVoiceModeChips(mode) {
+  const saved = document.getElementById('cf-voice-mode-saved');
+  const manual = document.getElementById('cf-voice-mode-manual');
+  if (saved && saved.setAttribute) saved.setAttribute('aria-pressed', String(mode === 'saved'));
+  if (manual && manual.setAttribute) manual.setAttribute('aria-pressed', String(mode === 'manual'));
+}
+
 function createVoiceChoice(select) {
   const button = document.getElementById('cf-voice-play');
   const voice = createVoices.rows.find(v => v.id === select.value);
@@ -6538,11 +6548,8 @@ function createVoiceChoice(select) {
   if (status) status.textContent = voice && voice.guest_status && voice.guest_status !== 'ready' ? `${voice.guest_status}${voice.guest_error ? ': ' + voice.guest_error : ''}` : '';
   // The segmented control follows the select whichever way it was changed — including the
   // manual option the select itself still carries for older habits.
-  const savedChip = document.getElementById('cf-voice-mode-saved');
-  const manualChip = document.getElementById('cf-voice-mode-manual');
   const typing = select.value === '__manual__';
-  if (savedChip) savedChip.setAttribute('aria-pressed', String(!typing));
-  if (manualChip) manualChip.setAttribute('aria-pressed', String(typing));
+  syncVoiceModeChips(typing ? 'manual' : 'saved');
   const manual = document.getElementById('cf-voice_id_manual');
   if (manual) {
     manual.style.display = typing ? '' : 'none';
@@ -6630,12 +6637,14 @@ function fillCreateVoices(rows, error) {
   if (error) {
     select.innerHTML = '<option value="__manual__">Enter a voice id…</option>';
     if (manual) manual.style.display = '';
+    syncVoiceModeChips('manual');
     say(`Could not read this model's voices: ${error}. Type an id instead.`, true);
     return;
   }
   if (!rows.length) {
     select.innerHTML = '<option value="__manual__">Enter a voice id…</option>';
     if (manual) manual.style.display = '';
+    syncVoiceModeChips('manual');
     say('No voice in the library can be used with this model. Type an id if you know one.');
     return;
   }
@@ -6644,6 +6653,7 @@ function fillCreateVoices(rows, error) {
     rows.map(v => `<option value="${esc(v.id)}">${esc(createVoiceLabel(v))}</option>`).join('') +
     '<option value="__manual__">Enter a voice id…</option>';
   if (manual) manual.style.display = 'none';
+  syncVoiceModeChips('saved');
   say(`${rows.length} voice${rows.length === 1 ? '' : 's'} this model can use.`);
 }
 
