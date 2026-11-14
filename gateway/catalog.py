@@ -298,6 +298,15 @@ def _local_image_shape(raw: dict[str, Any]) -> dict[str, Any] | None:
     )
     if not ratios:
         return None
+    # **A ratio nobody stated pixels for is not published.** The picker reads `aspect_ratios`
+    # and renders the matching option's width; the two lists disagreeing is exactly the live
+    # `standard-image-fleet` bug (declared 16:9, published only a 1:1 option), so the declaration
+    # is narrowed to what has a size. A lane that states no pixels at all states nothing usable
+    # here; `shortcut: falls back to the cloud table, upgrade when a Hub states ratios only`.
+    sizes = _hub_image_sizes(raw)
+    ratios = [ratio for ratio in ratios if ratio in sizes]
+    if not ratios:
+        return None
     stated_default = declared.get("default")
     default_ratio = (
         stated_default.strip()
@@ -319,10 +328,59 @@ def _local_image_shape(raw: dict[str, Any]) -> dict[str, Any] | None:
             resolution = allowed[0] if allowed else None
     return {
         "aspect_ratios": ratios,
-        "sizes": _hub_image_sizes(raw),
+        "sizes": sizes,
         "default_aspect_ratio": default_ratio,
         "resolution": resolution,
     }
+
+
+def _pool_geometry(member_rows: list[dict[str, Any]]) -> tuple[list[str], str | None, list[dict[str, Any]]]:
+    """The ratios, default and output options a pool may publish.
+
+    **An option, not a declared ratio, is what a request can name.** The live
+    `standard-image-fleet` alias declared 16:9 because the ratio lists intersected, while its
+    only published option was 1K 1:1 — a scene render that chose the fleet silently produced a
+    square image. Two rules fix it and they are the same rule: the advertised ratios are the
+    ratios that have a published option, and exactly one of those options is the default.
+
+    The options are the **union** of the members', deduped by `(ratio, width, height)` in the
+    first member's order, because any member may answer. The default prefers the ratio every
+    member agrees on, then the first member's own `is_default` option, then the first published
+    option — always one of the ratios actually published, so `default_aspect_ratio` can never
+    name a ratio with no option again.
+    """
+    order: list[str] = []
+    options: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    for row in member_rows:
+        for option in row.get("output_options") or []:
+            if not isinstance(option, dict):
+                continue
+            ratio = option.get("aspect_ratio")
+            width, height = option.get("width"), option.get("height")
+            if not isinstance(ratio, str) or type(width) is not int or type(height) is not int:
+                continue  # a sizeless option is not a choice a caller can render
+            key = (ratio, width, height)
+            if key in options:
+                continue
+            options[key] = {**option, "is_default": False}
+            if ratio not in order:
+                order.append(ratio)
+    first = member_rows[0] if member_rows else {}
+    defaults = [row.get("default_aspect_ratio") for row in member_rows]
+    common = defaults[0] if defaults and all(value == defaults[0] for value in defaults) else None
+    candidates = [common, first.get("default_aspect_ratio")]
+    candidates += [option.get("aspect_ratio") for option in first.get("output_options") or []
+                   if isinstance(option, dict) and option.get("is_default")]
+    default_ratio = next((ratio for ratio in candidates
+                          if isinstance(ratio, str) and ratio in order),
+                         order[0] if order else None)
+    out = list(options.values())
+    chosen = False
+    for option in out:
+        if not chosen and default_ratio is not None and option.get("aspect_ratio") == default_ratio:
+            option["is_default"] = True
+            chosen = True
+    return order, default_ratio, out
 
 
 def _output_formats(definition: ProviderDefinition, raw: dict[str, Any]) -> dict[str, list[str]]:
@@ -2543,28 +2601,8 @@ class Catalog:
                 if not member_rows:
                     continue
                 first_row = member_rows[0][1]
-                # intersection of aspect ratios
-                ratio_sets = [set(r.get("aspect_ratios") or []) for _, r in member_rows]
-                common_ratios = set.intersection(*ratio_sets) if ratio_sets else set()
-                # preserve first member order
-                ordered_common = [r for r in (first_row.get("aspect_ratios") or []) if r in common_ratios]
-                # output options intersection by (ratio,width,height)
-                option_map = {}
-                for member, r in member_rows:
-                    opts = r.get("output_options") or []
-                    keys = set()
-                    for o in opts:
-                        keys.add((o.get("aspect_ratio"), o.get("width"), o.get("height")))
-                    option_map[member] = keys
-                common_option_keys = set.intersection(*[v for v in option_map.values()]) if option_map else set()
-                # build options from first member matching common keys
-                new_options = []
-                for o in (first_row.get("output_options") or []):
-                    if (o.get("aspect_ratio"), o.get("width"), o.get("height")) in common_option_keys:
-                        new_options.append(dict(o))
-                default_ratio = first_row.get("default_aspect_ratio")
-                if default_ratio not in common_ratios:
-                    default_ratio = ordered_common[0] if ordered_common else first_row.get("default_aspect_ratio")
+                ordered_common, default_ratio, new_options = _pool_geometry(
+                    [r for _, r in member_rows])
                 supports_seed = all(bool(r.get("supports_seed")) for _, r in member_rows)
                 # **A pool alias is a menu of models, so what it publishes must hold for every
                 # member** — the member that answers is chosen at routing, not by the caller. That
