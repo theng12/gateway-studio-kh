@@ -3960,6 +3960,31 @@ def _refuse_references_this_lane_cannot_take(
 # ---------------------------------------------------------------------------
 # Video
 # ---------------------------------------------------------------------------
+#: **The video catalogue, with the evidence Story's preflight needs** (0.2.257).
+#: It answers the same path and the same `{"models": …, "freshness": …}` envelope the
+#: generic catalogue loop above registered, but every row also carries its kinds,
+#: durations and ratios with their sources, its price evidence, and whether a reachable
+#: location can run it now (`gateway/video_models.py`). Async, on the catalogue's own
+#: thread budget, for the reason `/v1/models` is: a slow fleet read must not hold a
+#: shared worker thread.
+from . import video_models as _video_models
+
+
+@app.get("/v1/videos/models", dependencies=[Depends(require_auth_async)])
+async def video_models_route() -> dict[str, Any]:
+    """Every video model, priced and eligibility-checked, straight from the live catalogue."""
+    return await anyio.to_thread.run_sync(_video_models.envelope, limiter=_CATALOG_THREADS)
+
+
+# The catalogue loop above already answers this path with the bare rows. The enriched
+# handler must be the one that answers, so its plainer twin is dropped here — one path,
+# one handler, same auth and same envelope.
+app.router.routes = [
+    registered for registered in app.router.routes
+    if getattr(registered, "name", None) != "catalog_video"
+]
+
+
 @app.post("/v1/videos/source-images", dependencies=[Depends(require_auth)])
 async def upload_video_source_image(
     file: UploadFile | None = File(default=None),
