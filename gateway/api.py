@@ -4931,6 +4931,98 @@ def sounds_quota() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Footage library — the authoritative stock store (M2, 0.2.257)
+#
+# Story is read-only here: it lists, searches and downloads on pick, and never
+# writes. The store itself (root, index, probe, licence gate, trash) lives in
+# `gateway/footage_library.py`; these routes are the thin door onto it.
+# ---------------------------------------------------------------------------
+from . import footage_library as _footage
+
+
+@app.get("/v1/footage/search", dependencies=[Depends(require_auth)])
+def footage_search(q: str = "", tag: str | None = None) -> dict[str, Any]:
+    """Search the enabled stock connectors and the Gateway's own library."""
+    from .stock_sources import all_sources
+
+    results: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = []
+    failed = False
+    for source in all_sources(_registry.credentials):
+        if not source.is_available():
+            continue
+        try:
+            results.extend(hit.to_dict() for hit in source.search(q, limit=10))
+            reports.append({"id": source.id, "ok": True})
+        except Exception as exc:  # noqa: BLE001 - a dead source is reported, not fatal
+            failed = True
+            reports.append({"id": source.id, "ok": False, "error": str(exc)})
+    seen: set[tuple[Any, Any]] = set()
+    unique: list[dict[str, Any]] = []
+    for item in results:
+        key = (item.get("source"), item.get("source_id"))
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    answer: dict[str, Any] = {
+        "results": unique,
+        # The library answers on its own: a dead connector must not turn a local
+        # clip into "nothing matched".
+        "library": [_footage.describe(clip) for clip in _footage.search_library(q, tag=tag)],
+        "sources": reports,
+    }
+    if failed:
+        answer["note"] = (
+            "Could not reach " + ", ".join(r["id"] for r in reports if not r["ok"])
+            + "; the Gateway's own library still answers.")
+    return answer
+
+
+@app.get("/v1/footage/library", dependencies=[Depends(require_auth)])
+def footage_list_library() -> dict[str, Any]:
+    """Every clip in the shared library, newest first."""
+    return {"clips": [_footage.describe(clip) for clip in _footage.list_clips()]}
+
+
+@app.post("/v1/footage/library", dependencies=[Depends(require_auth)])
+def footage_add_to_library(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add one clip, two documented ways.
+
+    * `{"source": "wikimedia", "source_id": "<upstream id>"}` fetches through that
+      stock connector and stores it (licence re-read, commercial-safe only).
+    * `{"title", "description", "licence", "licence_note", "provenance",
+      "ai_generated", "format": "<base64 bytes>"}` is an explicit owner import —
+      `format` carries the file itself, and the container is read from its first
+      bytes (`data` is accepted as the same field under a plainer name).
+    """
+    source, source_id = payload.get("source"), payload.get("source_id")
+    try:
+        if source and source_id and not payload.get("data"):
+            return _footage.download_into_library(
+                str(source), str(source_id), _registry.credentials)
+        return _footage.import_bytes(payload)
+    except Exception as exc:  # noqa: BLE001 - refusal status/code travel to the caller
+        raise GatewayError(getattr(exc, "status", 400), str(exc), getattr(exc, "code", None))
+
+
+@app.get("/v1/footage/library/{sha256}/file", dependencies=[Depends(require_auth)])
+def footage_library_file(sha256: str) -> Response:
+    """Serve one library clip's bytes with the media type stored beside them."""
+    if _CLIP_ID.fullmatch(sha256) is None:
+        raise GatewayError(400, "Not a sha256 clip id.", "INVALID_CLIP_ID")
+    path = _footage.clip_path(sha256.lower())
+    if path is None:
+        raise GatewayError(404, "No such clip in the library.", "CLIP_NOT_FOUND")
+    return stream_file(path, _footage.clip_media_type(path))
+
+
+@app.get("/v1/footage/quota", dependencies=[Depends(require_auth)])
+def footage_quota() -> dict[str, Any]:
+    """The library's measured footprint: files, bytes, root and free disk."""
+    return _footage.quota_status()
+
+
+# ---------------------------------------------------------------------------
 # Admin UI
 # ---------------------------------------------------------------------------
 from .admin import AdminError  # noqa: E402 - mounted after app setup
