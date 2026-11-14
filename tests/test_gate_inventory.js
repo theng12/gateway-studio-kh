@@ -32,6 +32,9 @@ function esc(value) {
 
 function element(extra = {}) {
   return {
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    hidden: false, appendChild() {}, replaceChildren() {}, remove() {},
+    insertAdjacentHTML() {}, addEventListener() {},
     innerHTML: '', textContent: '', value: '', options: [], dataset: {},
     querySelector: () => null, ...extra,
   };

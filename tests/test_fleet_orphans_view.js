@@ -39,7 +39,7 @@ function esc(value) {
 
 function element(extra = {}) {
   return { innerHTML: '', textContent: '', value: '', options: [], dataset: {},
-    querySelector: () => null, ...extra };
+    querySelector: () => null, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, hidden: false, appendChild() {}, replaceChildren() {}, remove() {}, insertAdjacentHTML() {}, addEventListener() {},  ...extra };
 }
 
 function context(snapshot, answer = { ok: true, answer: { queued_cancelled: 2, running_signalled: 1, running_pending: 0 } }, options = {}) {

@@ -35,7 +35,7 @@ function esc(value) {
 
 function element(extra = {}) {
   return { innerHTML: '', textContent: '', value: '', options: [], dataset: {},
-    querySelector: () => null, ...extra };
+    querySelector: () => null, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, hidden: false, appendChild() {}, replaceChildren() {}, remove() {}, insertAdjacentHTML() {}, addEventListener() {},  ...extra };
 }
 
 function context(payload = null) {
@@ -275,6 +275,9 @@ test('a site cause is coloured by its own severity, and a down controller is red
     location({ reachable: false, error: 'timed out',
       causes: [cause('controller_silent', 'bad', 'The site\'s address answered nothing in time')] }),
   ]));
+  // The 0.2.256 Fleet pass made cards the default for Locations; this test reads the
+  // Locations table while the other tabs keep their own default.
+  ctx.fleetViewFor = tab => (tab === 'locations' ? 'table' : 'cards');
   await ctx.loadFleet();
   assert.match(ctx.nodes.get(GROUPS).innerHTML,
     /class="msg bad">Likely cause: The site&#39;s address answered nothing in time/);

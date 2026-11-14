@@ -31,7 +31,7 @@ function esc(value) {
 
 function element(extra = {}) {
   return { innerHTML: '', textContent: '', value: '', checked: false, disabled: false,
-    options: [], dataset: {}, querySelector: () => null,
+    options: [], dataset: {}, querySelector: () => null, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, hidden: false, appendChild() {}, replaceChildren() {}, remove() {}, insertAdjacentHTML() {}, addEventListener() {}, 
     setAttribute: () => {}, removeAttribute: () => {}, ...extra };
 }
 

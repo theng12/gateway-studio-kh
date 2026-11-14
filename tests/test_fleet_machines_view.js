@@ -42,7 +42,7 @@ function esc(value) {
 
 function element(extra = {}) {
   return { innerHTML: '', textContent: '', value: '', options: [], dataset: {},
-    querySelector: () => null, ...extra };
+    querySelector: () => null, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, hidden: false, appendChild() {}, replaceChildren() {}, remove() {}, insertAdjacentHTML() {}, addEventListener() {},  ...extra };
 }
 
 function context(payload = null) {
@@ -326,6 +326,9 @@ test('the Locations table reads the roster: refused members, models offered, hub
       error: 'No answer within 5s.', version: '0.6.120', version_status: 'behind',
       node_summary: { total: 2, reachable: 0, unauthorized: 0 }, machines: [] }),
   ]));
+  // The 0.2.256 Fleet pass made cards the default for Locations; this test reads the
+  // Locations table while the other tabs keep their own default.
+  ctx.fleetViewFor = tab => (tab === 'locations' ? 'table' : 'cards');
   await ctx.loadFleet();
   const html = ctx.nodes.get('fleet-locations-wrap').innerHTML;
   assert.match(html, /2 \/ 3 · 1 refused/);

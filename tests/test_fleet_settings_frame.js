@@ -76,7 +76,7 @@ test('Settings is a real read-only page, not an app-only note', () => {
   assert.match(source, /What this Gateway is running\. Appearance, startup, keys and backups are changed in the/);
   assert.match(source, /id="settings-status"/);
   assert.match(source, /id="settings-facts"/);
-  assert.match(source, /Copy this gateway's address/);
+  assert.match(source, /Copy this Gateway's address/);
   assert.match(source, /loadSettingsPage\(\)/);
   assert.match(source, /id="view-settings"/);
   // It is reachable: the section is in the view list and the nav row is not app-only any more.

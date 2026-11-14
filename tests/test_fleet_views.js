@@ -28,7 +28,7 @@ function harness() {
     },
     document: { getElementById: id => (id === 'fleet-view' ? box : null) },
   });
-  vm.runInContext('let fleetTab = "groups"; let lastFleetPayload = null;'
+  vm.runInContext('let fleetTab = "groups";'
     + between('const FLEET_VIEW_DEFAULT', 'function renderFleetViewSwitch')
     + between('function renderFleetViewSwitch()', 'async function saveFleetThreshold')
     + ';globalThis.__v = { fleetViewFor, fleetSetView, renderFleetViewSwitch,'

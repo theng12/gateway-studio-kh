@@ -14,7 +14,10 @@ test('tag filter shows only matching voices', () => {
   const document = { getElementById: element, createElement: () => ({ children: [], append(...items) { this.children.push(...items); }, setAttribute() {} }) };
   element('voice-tag-filter').options = [{value:''}, {value:'Khmer'}, {value:'English'}];
   element('voice-tag-filter').value = 'Khmer';
-  const context = vm.createContext({document, Option: function(value) { this.value = value; }, console});
+  const context = vm.createContext({document, Option: function(value) { this.value = value; }, console,
+  // The page defines `esc` at its top; the Voice details lines use it.
+  esc: value => String(value ?? '').replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))});
 // Every question in the page is now an in-app dialog; the tests' own confirm/alert/prompt
 // stubs are where each answer comes from.
 vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'function' ? confirm(t) : true);

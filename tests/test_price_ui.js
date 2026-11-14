@@ -24,7 +24,7 @@ vm.runInContext(`globalThis.uiConfirm = async (t) => (typeof confirm === 'functi
 globalThis.uiAlert = async (t) => { if (typeof alert === 'function') alert(t); };
 globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, v) : v);`, priceCtx);
 
-vm.runInContext(between('const PRICE_UNITS', 'function machineRow('), priceCtx);
+vm.runInContext(between('const PRICE_UNITS', 'function modelRow('), priceCtx);
 const info = row => priceCtx.priceInfo(row);
 
 test('price text for each price_source', () => {
