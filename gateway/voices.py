@@ -265,6 +265,15 @@ class Voice:
                 else None
             ),
             "license": (self.raw or {}).get("license"),
+            # **What the provider said about using it, or nothing.** A usage suggestion
+            # ("narration", "social media") and emotion/tone tags are published only when
+            # the provider stated them; a reader prints "not provided" for `None`, never an
+            # invented one-line pitch (0.2.257 voice picker).
+            "usage_suggestion": ((self.raw or {}).get("usage_suggestion")
+                                 if isinstance((self.raw or {}).get("usage_suggestion"), str)
+                                 else None),
+            "emotion_tags": (list((self.raw or {}).get("emotion_tags") or [])
+                             if isinstance((self.raw or {}).get("emotion_tags"), list) else None),
         }
 
 
@@ -317,7 +326,16 @@ def _elevenlabs_account(definition: ProviderDefinition, values: dict[str, str]) 
                     age=str(labels.get("age") or ""),
                     preview_url=str(item.get("preview_url") or ""),
                     owned=True,
-                    raw={"category": item.get("category")},
+                    raw={
+                        "category": item.get("category"),
+                        # ElevenLabs states these in the voice's own labels; pass them on
+                        # rather than composing a description here.
+                        "usage_suggestion": (str(labels.get("use case") or "").strip() or None),
+                        "emotion_tags": [
+                            part.strip() for part in str(labels.get("descriptive") or "").split(",")
+                            if part.strip()
+                        ] or None,
+                    },
                 )
             )
         if voices:

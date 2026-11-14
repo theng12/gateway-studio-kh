@@ -1137,6 +1137,10 @@ def _model_row(
         "locations": [] if location else None,
         "locations_enabled": (1 if model["enabled"] else 0) if location else None,
         "locations_total": 1 if location else None,
+        # **On the Mac whose console this is**, never "somewhere in the fleet": the Models
+        # overview answers "what can I run here", and a model only a remote location holds is
+        # installed on *a* Mac, not this one (`_finish_location_row` recomputes the merge).
+        "installed_local": bool(location and definition.id == fleet.provider_id_for(fleet.LOCAL_ID)),
         **_price(definition, model),
     }
 
@@ -1192,6 +1196,8 @@ def _finish_location_row(merged: dict[str, Any]) -> None:
     merged["source"] = primary["source"]
     merged["free_lane"] = any(machine["free_lane"] for machine in machines)
     merged["data_use"] = primary["data_use"]
+    merged["installed_local"] = any(
+        machine["provider_id"] == fleet.provider_id_for(fleet.LOCAL_ID) for machine in machines)
 
 
 def _flat_models() -> list[dict[str, Any]]:
@@ -1278,6 +1284,7 @@ def _filter_models(
     lane: str | None = None,
     privacy: str | None = None,
     provider_lane: str | None = None,
+    location_id: str | None = None,
     only_enabled: bool = False,
 ) -> list[dict[str, Any]]:
     """The model browser's one filter, shared by the browse route and the bulk route.
@@ -1291,13 +1298,24 @@ def _filter_models(
     if status is None and only_enabled:
         status = "enabled"
     if provider_id:
-        # A merged location row belongs to **every** machine in it, so selecting
-        # one Mac has to find the model it shares rather than only the rows whose
-        # primary provider happens to be that Mac. Cloud rows carry the single id.
+        if provider_id == fleet.FLEET_PROVIDER_ID:
+            # The fleet is **one provider**: every merged row, whichever Mac is primary in it.
+            rows = [r for r in rows if r.get("is_location")]
+        else:
+            # A merged location row belongs to **every** machine in it, so selecting
+            # one Mac has to find the model it shares rather than only the rows whose
+            # primary provider happens to be that Mac. Cloud rows carry the single id.
+            rows = [
+                r
+                for r in rows
+                if provider_id in (r.get("provider_ids") or [r["provider_id"]])
+            ]
+    if location_id:
+        # The **locations** sub-filter: only a merged fleet row can match one Mac.
         rows = [
-            r
-            for r in rows
-            if provider_id in (r.get("provider_ids") or [r["provider_id"]])
+            r for r in rows
+            if location_id in (r.get("provider_ids") or [])
+            and (r.get("is_location") or r.get("locations"))
         ]
     if modality:
         rows = [r for r in rows if r["modality"] == modality]
@@ -1407,6 +1425,7 @@ def search_models(
     lane: str | None = None,
     privacy: str | None = None,
     provider_lane: str | None = None,
+    location_id: str | None = None,
     only_enabled: bool = False,
     sort: str | None = None,
     order: str = "asc",
@@ -1422,6 +1441,7 @@ def search_models(
         "lane": lane,
         "privacy": privacy,
         "provider_lane": provider_lane,
+        "location_id": location_id,
     }
     matched = _filter_models(everything, only_enabled=only_enabled, **filters)
     # **Sort before slicing, not after.** With more models than one page holds, a
@@ -1447,6 +1467,18 @@ def search_models(
         "sources": sorted({r["source"] for r in everything}),
         "privacy_values": sorted({r["data_use"] for r in everything}),
         "providers": _provider_options(everything),
+        "locations": _location_options(everything),
+        # **The "Your models" dashboard, counted over the whole catalogue** — not over the
+        # page's own `limit`, which would make a type's number shrink when another filter
+        # narrowed the list. `installed_local` is this Mac; `enabled` is offered to Story.
+        "summary": {
+            modality: {
+                "total": len(rows),
+                "enabled": sum(1 for row in rows if row["enabled"]),
+                "installed_local": sum(1 for row in rows if row.get("installed_local")),
+            }
+            for modality, rows in _by_modality(everything).items()
+        },
         # Echoed so the page can show what it actually asked for rather than what it
         # meant to ask for — an ignored sort would otherwise look applied.
         "sort": sort if sort in _MODEL_SORTS else None,
@@ -1456,22 +1488,38 @@ def search_models(
 
 
 def _provider_options(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    """The (id, name) pairs the provider filter can select.
+    """The (id, name) pairs the **provider** filter can select.
 
-    A merged location row offers each **machine**, never the `studio-hub`
-    namespace: the namespace is what Story Studio reads, it is not a provider,
-    and enablement written under it goes nowhere (see `_apply`).
+    **A provider, not a Mac** (0.2.257). This used to offer every machine, so the filter named
+    six Macs and no provider, while the owner asked by provider ("ElevenLabs, Anthropic, Hub
+    Studio KH (local)"). The fleet is one provider entry — `fleet.FLEET_PROVIDER_ID`, the same
+    namespace Story Studio is told — and the Macs are its **locations**, offered by
+    `_location_options` below. Enablement still goes to concrete machine ids (`_apply`); the
+    filter translating `studio-hub` to its members is the only thing the namespace id does here.
     """
     options: set[tuple[str, str]] = set()
     for row in rows:
-        machines = row.get("locations")
-        if machines:
-            options.update(
-                (str(machine["provider_id"]), str(machine["provider_name"]))
-                for machine in machines
-            )
+        if row.get("is_location"):
+            options.add((fleet.FLEET_PROVIDER_ID, "Hub Studio KH (local)"))
         else:
             options.add((str(row["provider_id"]), str(row["provider_name"])))
+    return sorted(options)
+
+
+def _by_modality(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """The rows bucketed by operation, in the order each first appears."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        out.setdefault(str(row["modality"]), []).append(row)
+    return out
+
+
+def _location_options(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """The Macs a merged fleet row stands for, for the locations sub-filter and Show locations."""
+    options: set[tuple[str, str]] = set()
+    for row in rows:
+        for machine in row.get("locations") or []:
+            options.add((str(machine["provider_id"]), str(machine["provider_name"])))
     return sorted(options)
 
 
@@ -2842,6 +2890,40 @@ def _guest_can_see_voice(guest: dict, voice: Any) -> bool:
     return not owner or owner.get("guest_id") == guest.get("guest_id")
 
 
+def _voice_attribution(row: dict[str, Any]) -> dict[str, Any]:
+    """Who a voice belongs to, and where it can be served — **one row per voice**, always.
+
+    A **local** voice's clip travels with the job, so every enabled Studio Hub location can serve
+    it; the Macs are locations inside one provider, `Hub Studio KH (local)`, never separate rows
+    (owner, 0.2.257: "with 100 locations the list is still one line per voice"). A provider voice
+    belongs to its provider and has no locations — `null`, never an invented one-entry list.
+    """
+    from .voices import SOURCE_LOCAL
+
+    provider_id = str(row.get("provider_id") or "")
+    local = (str(row.get("source") or "") == SOURCE_LOCAL
+             or provider_id.startswith(fleet.PROVIDER_PREFIX))
+    if local:
+        locations = [
+            {"provider_id": definition.id, "label": definition.display_name,
+             "enabled": registry.credentials.is_enabled(definition.id)}
+            for definition in registry.definitions() if definition.kind == "studio_hub"
+        ]
+        return {
+            "provider": "Hub Studio KH (local)",
+            "locations": locations,
+            "locations_enabled": sum(1 for item in locations if item["enabled"]),
+            "locations_total": len(locations),
+        }
+    definition = registry.definition(provider_id)
+    return {
+        "provider": definition.display_name if definition is not None else "provider not recorded",
+        "locations": None,
+        "locations_enabled": None,
+        "locations_total": None,
+    }
+
+
 @router.get("/api/voices", dependencies=[Depends(require_guest_or_admin)])
 def list_voices(
     request: Request,
@@ -2906,11 +2988,12 @@ def list_voices(
         }
 
     voices = voice_registry()
-    rows = [
-        voice.as_dict() | {"enabled": voices.is_enabled(voice)}
-        for voice in voices.voices(provider_id=provider_id)
-        if not guest or _guest_can_see_voice(guest, voice)
-    ]
+    rows = []
+    for voice in voices.voices(provider_id=provider_id):
+        if guest and not _guest_can_see_voice(guest, voice):
+            continue
+        data = voice.as_dict()
+        rows.append(data | {"enabled": voices.is_enabled(voice)} | _voice_attribution(data))
     if source:
         rows = [r for r in rows if r["source"] == source]
     if only_enabled:

@@ -232,15 +232,24 @@ class GroupingTests(unittest.TestCase):
             admin._filter_models(rows, provider_id=CLOUD, modality="tts"), []
         )
 
-    def test_the_provider_filter_offers_each_machine_not_the_namespace(self) -> None:
-        options = admin._provider_options(self._rows())
-        self.assertIn((MAC_A, "Studio One"), options)
-        self.assertIn((MAC_B, "Studio Two"), options)
+    def test_the_provider_filter_offers_providers_and_the_macs_are_locations(self) -> None:
+        rows = self._rows()
+        options = admin._provider_options(rows)
         self.assertIn((CLOUD, "OpenAI"), options)
-        self.assertNotIn(
-            ("studio-hub", "Studio Hub"), options,
-            "the published namespace is not a provider and enablement under it goes nowhere",
+        self.assertIn(
+            ("studio-hub", "Hub Studio KH (local)"), options,
+            "the fleet is one provider entry, named for the owner",
         )
+        self.assertNotIn((MAC_A, "Studio One"), options,
+                         "a Mac is a location, not a provider")
+        # The Macs are offered by the locations sub-filter instead.
+        locations = admin._location_options(rows)
+        self.assertIn((MAC_A, "Studio One"), locations)
+        self.assertIn((MAC_B, "Studio Two"), locations)
+        # And the provider entry selects every fleet row.
+        matched = admin._filter_models(rows, provider_id="studio-hub")
+        self.assertTrue(matched)
+        self.assertTrue(all(row["is_location"] for row in matched))
 
     def test_a_bulk_action_reaches_every_machine_on_the_row(self) -> None:
         rows = self._rows()
@@ -269,8 +278,19 @@ class GroupingTests(unittest.TestCase):
             page["facets"]["status"]["enabled"] + page["facets"]["status"]["disabled"],
             page["listable_total"],
         )
-        machines = {pair[0] for pair in page["providers"]}
-        self.assertTrue({LOCAL, MAC_A, MAC_B, CLOUD} <= machines, page["providers"])
+        providers = {pair[0] for pair in page["providers"]}
+        self.assertEqual(providers, {"studio-hub", CLOUD},
+                         "providers, never Macs — the Macs are the locations list")
+        machines = {pair[0] for pair in page["locations"]}
+        self.assertTrue({LOCAL, MAC_A, MAC_B} <= machines, page["locations"])
+        # The dashboard's own count is over the whole catalogue, per operation.
+        self.assertEqual(sum(item["total"] for item in page["summary"].values()),
+                         page["listable_total"])
+        self.assertEqual(
+            sum(item["enabled"] for item in page["summary"].values()),
+            page["enabled_total"],
+        )
+        self.assertTrue(page["summary"]["tts"]["total"] >= 1)
 
     def test_one_model_id_in_two_modalities_stays_two_rows(self) -> None:
         # Pathological but possible: a group whose rows disagreed about the

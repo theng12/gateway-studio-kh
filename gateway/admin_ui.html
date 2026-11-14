@@ -232,6 +232,25 @@
   #m-rows tr.m-machine td { padding-top: var(--s4); padding-bottom: var(--s4); border: 0; overflow-wrap: anywhere; }
   #m-rows tr.m-machine .m-machine-name { color: var(--dim); padding-left: var(--s16); }
   #m-rows .m-machines .badge { margin-left: var(--s4); }
+  /* The `…` detail row: the Macs and the ids, on request, under the one model row. */
+  #m-rows tr.m-details td { background: var(--panel2); }
+  .m-detail-wrap { display: flex; flex-wrap: wrap; gap: var(--s16); padding: var(--s8) var(--s12); }
+  .m-detail-text { min-width: 240px; flex: 1 1 280px; font-size: 12px; color: var(--dim); }
+  .m-detail-locations { min-width: 240px; flex: 1 1 280px; font-size: 12px; }
+  .m-loc-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s8);
+    padding: var(--s4) 0; border-top: 1px solid var(--line); }
+  .m-more { font-weight: 600; line-height: 1; padding: 2px 8px; }
+  /* Your models: one card per operation. */
+  .model-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--s12); margin-bottom: var(--s12); }
+  .model-card { margin: 0; }
+  .model-mini { list-style: none; margin: var(--s8) 0 0; padding: 0; }
+  .model-mini li { display: flex; align-items: center; gap: var(--s8); padding: var(--s6) 0;
+    border-top: 1px solid var(--line); font-size: 12px; }
+  .model-mini li:first-child { border-top: 0; }
+  .model-mini .mm-name { font-weight: 600; font-size: 13px; min-width: 0;
+    overflow-wrap: anywhere; flex: 1 1 auto; }
+  .model-mini .hint { flex: 0 0 auto; }
 
   /* Pools: one ordered list of models per pool, each with its health badge on the right. */
   .pool-members { list-style: none; margin: 0; padding: 0 var(--s16) var(--s8); }
@@ -1009,13 +1028,21 @@
   <section id="view-models" style="display:none">
     <div class="heading">
       <h1>Models</h1>
-      <p>Every model this gateway has discovered. Only ticked models are offered to Story Studio —
-         everything else stays discovered but hidden. A model your Hub locations run is listed
-         <b>once</b>, with how many of those machines offer it; the Macs themselves are the rows
-         beneath it.</p>
+      <p><b>Your models</b> first: what you can run, by what it does. <b>Discover</b> holds the full
+         catalogue — every model this gateway has found, with search, filters and bulk actions.
+         Only ticked models are offered to Story Studio. A model is one row wherever it runs: a Mac
+         is a <b>location inside Hub Studio KH (local)</b>, never a separate model.</p>
       <div class="stat" id="stats" style="margin-top:8px">loading…</div>
     </div>
 
+    <!-- **Two questions, two views.** "What have I got?" and "what else could I switch on?" are
+         different jobs, and one long catalogue table answered neither well. The mode is
+         remembered, like the Fleet tabs' view switch. -->
+    <div class="chip-row" id="m-mode-chips" role="group" aria-label="Models view"></div>
+
+    <div id="models-overview"></div>
+
+    <div id="models-discover" style="display:none">
     <!-- **Operation first.** The catalogue is over a thousand rows and what a model
          *does* is what the owner shops by, so the operations are a headline control
          rather than one more dropdown — and each carries its own count, computed by
@@ -1028,6 +1055,9 @@
     <div class="filters">
       <div class="grow"><input type="text" id="m-q" placeholder="Search models by name or id…" autocomplete="off"></div>
       <select id="m-provider" aria-label="Filter by provider"></select>
+      <select id="m-location" aria-label="Filter by location (one Mac inside Hub Studio KH)">
+        <option value="">All locations</option>
+      </select>
       <select id="m-source" aria-label="Filter by where the model came from">
         <option value="">Any source</option>
         <option value="discovered">Discovered</option>
@@ -1111,8 +1141,8 @@
         <table>
           <thead><tr>
             <th style="width:32px"></th><th>Model</th><th>Provider</th>
-            <th style="width:120px">Operation</th><th style="width:136px">Machines</th>
-            <th class="num" style="width:150px">Price</th>
+            <th style="width:120px">Operation</th><th style="width:150px">Locations</th>
+            <th class="num" style="width:140px">Price</th><th style="width:40px"></th>
           </tr></thead>
           <tbody id="m-rows"></tbody>
         </table>
@@ -1121,9 +1151,10 @@
     </div>
     <div class="hint" style="margin-top:12px">
       Only ticked models are offered to Story Studio. Everything else is discovered but hidden.
-      Ticking a model switches it on for every machine that has it; each machine can still be
-      switched off on its own row.
+      Ticking a model switches it on for every machine that has it; <b>Show locations</b> in the
+      row's <b>…</b> menu lets you switch a model off on one Mac without touching the others.
     </div>
+    </div><!-- /models-discover -->
   </section>
 
   <!-- PROVIDERS -->
@@ -2743,12 +2774,32 @@ function renderVoiceTags() {
     const row = document.createElement('div'); row.className = 'card-head';
     const main = document.createElement('div'); main.className = 'card-main';
     const name = document.createElement('div'); name.className = 'name'; name.textContent = voice.display_name + (voice.guest_owner ? ` · ${voice.guest_owner.label}` : '');
+    // **Who the voice is and where it can speak, in one line.** The provider is the real one
+    // ("Hub Studio KH (local)", ElevenLabs, Fish Audio), never "source unknown"; a local
+    // voice's Macs are a count — `N of M locations` — not a row each (owner, 0.2.257).
+    const meta = document.createElement('div'); meta.className = 'hint';
+    const where = voice.locations_total
+      ? ` · ${voice.locations_enabled} of ${voice.locations_total} locations` : '';
+    const howLong = Number.isFinite(voice.duration_seconds) ? ` · sample 0:${String(Math.round(voice.duration_seconds)).padStart(2, '0')}` : '';
+    meta.textContent = `${voice.provider || 'provider not recorded'}${voice.language ? ' · ' + voice.language : ''}${where}${howLong}`;
     const sampleStatus = document.createElement('span'); sampleStatus.className = 'hint';
     const sample = document.createElement('button'); sample.className = 'sm'; sample.textContent = voice.has_preview ? 'Play' : 'No sample';
     const enable = document.createElement('button'); enable.className = 'sm'; enable.textContent = voice.enabled ? 'Disable' : 'Enable';
     enable.onclick = async () => { try { await api('/voices/enabled', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({items:[voice.id], enabled:!voice.enabled})}); await loadVoiceTags(); } catch (error) { sampleStatus.textContent = error.message; } };
     sample.disabled = !voice.has_preview; sample.setAttribute('aria-label', `Play ${voice.display_name} sample`);
     sample.onclick = () => playVoiceSample(voice.id, sampleStatus);
+    // The profile at a glance: what the provider stated about tone and use, and the id behind
+    // Details. An unstated field reads "not provided" — never an invented pitch.
+    const profile = document.createElement('details'); profile.className = 'hint';
+    const summary = document.createElement('summary'); summary.textContent = 'Details';
+    const lines = document.createElement('div');
+    lines.innerHTML = [
+      `Tone: ${(voice.emotion_tags || []).length ? esc(voice.emotion_tags.join(', ')) : 'not provided'}`,
+      `Best for: ${voice.usage_suggestion ? esc(voice.usage_suggestion) : 'not provided'}`,
+      `Voice id: <span class="m-id">${esc(voice.id)}</span>`,
+      voice.locations_total ? `Locations: ${(voice.locations || []).map(location => esc(location.label) + (location.enabled ? '' : ' (off)')).join(', ') || 'none'}` : '',
+    ].filter(Boolean).join('<br>');
+    profile.append(summary, lines);
     const tags = document.createElement('div'); tags.className = 'row';
     (voice.tags || []).forEach(tag => {
       const button = document.createElement('button'); button.className = 'sm';
@@ -2761,7 +2812,7 @@ function renderVoiceTags() {
     const add = document.createElement('button'); add.className = 'sm'; add.textContent = 'Add';
     add.onclick = () => { if (input.value.trim()) saveVoiceTags(voice, [...(voice.tags || []), input.value]); };
     input.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); add.click(); } };
-    main.append(name, sample, sampleStatus, enable, tags); row.append(main, input, add); container.append(row);
+    main.append(name, meta, sample, sampleStatus, enable, profile, tags); row.append(main, input, add); container.append(row);
   });
   const list = document.createElement('datalist'); list.id = 'voice-tag-suggestions';
   [...document.getElementById('voice-tag-filter').options].slice(1).forEach(option => list.append(new Option(option.value)));
@@ -2936,6 +2987,7 @@ function modelQuery() {
     modality: state.modelModality || '',
     status: state.modelStatus || '',
     provider_id: document.getElementById('m-provider').value,
+    location_id: document.getElementById('m-location').value,
     source: document.getElementById('m-source').value,
     lane: document.getElementById('m-lane').value,
     privacy: document.getElementById('m-privacy').value,
@@ -2981,6 +3033,8 @@ async function loadModels() {
   try { data = await api('/models?' + params.toString()); }
   catch (e) { document.getElementById('m-count').textContent = 'error: ' + e.message; return; }
 
+  const modeChips = document.getElementById('m-mode-chips');
+  if (modeChips && !(modeChips.children || []).length) renderModelsMode();
   state.modelRows = data.models;
   // The same `[[id, name], …]` the filter and the re-discover picker are built from, kept so a
   // re-discover can name a provider the way this page names it rather than by its id.
@@ -3007,7 +3061,17 @@ async function loadModels() {
 
 let filtersPopulated = false;
 function populateFilters(data) {
-  if (filtersPopulated) return;
+  // **The locations are refreshed every read, the providers once.** A location can be added or
+  // removed while the page is open; a provider list that changed under a bulk action would
+  // reinterpret a filter the person had already chosen.
+  const loc = document.getElementById('m-location');
+  if (loc) {
+    const chosen = loc.value;
+    loc.innerHTML = '<option value="">All locations</option>' +
+      (data.locations || []).map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('');
+    loc.value = chosen;
+  }
+  if (filtersPopulated) { syncRediscover(); return; }
   const prov = document.getElementById('m-provider');
   prov.innerHTML = '<option value="">All providers</option>' +
     (data.providers || []).map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('');
@@ -3147,65 +3211,143 @@ function priceCell(m) {
     + (i.source ? `<div class="mid">${i.url ? `<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.source)}</a>` : esc(i.source)}</div>` : '');
 }
 
-function machineRow(model, machine) {
+// One row per model, always: where it runs is a count, and the Macs are behind `…`.
+// (The Machines cell answers "how many"; the detail row answers "which", only on request.)
+function modelRow(r) {
+  const fleet = Array.isArray(r.locations) && r.locations.length;
+  const every = fleet && r.locations_enabled === r.locations_total;
+  const machines = fleet
+    ? `${r.locations_enabled} of ${r.locations_total}`
+      + (every ? ' <span class="badge ok">everywhere</span>'
+               : ` <span class="badge warn">${r.locations_enabled ? 'partial' : 'off'}</span>`)
+    : '<span class="muted">—</span>';
+  const key = modelKey(r);
   return `
-    <tr class="m-machine${machine.enabled ? ' on' : ''}">
-      <td><input type="checkbox" ${machine.enabled ? 'checked' : ''}
-                 aria-label="${esc(machine.provider_name)}"
-                 onchange="toggleModel('${esc(machine.provider_id)}','${esc(model.model_id)}', this.checked)"></td>
-      <td class="m-machine-name" title="${esc(machine.provider_id)}">↳ ${esc(machine.provider_name)}
-        ${machine.provider_enabled ? '' : '<span class="badge warn">off</span>'}</td>
-      <td class="muted">${machine.enabled ? 'enabled here' : 'not enabled'}</td>
-      <td><span class="badge">${esc(modalityLabel(machine.modality))}</span></td>
-      <td class="muted">${esc(machine.provider_id)}</td>
-      <td></td>
-    </tr>`;
+    <tr class="${r.enabled ? 'on' : ''}" data-model="${esc(key)}">
+      <td><input type="checkbox" ${(fleet ? every : r.enabled) ? 'checked' : ''}
+                 title="${fleet ? esc(`tick to enable on all ${r.locations_total} Macs that have this model`) : ''}"
+                 aria-label="${esc(`Offer ${r.display_name} to Story Studio`)}"
+                 onchange="${fleet
+                   ? `toggleModelEverywhere('${esc(r.model_id)}','${esc(r.modality)}', this.checked)`
+                   : `toggleModel('${esc(r.provider_id)}','${esc(r.model_id)}', this.checked)`}"></td>
+      <td><div class="m-name">${esc(r.display_name)}</div></td>
+      <td class="m-provider">${esc(r.is_location ? 'Hub Studio KH (local)' : r.provider_name)}
+        ${r.provider_enabled ? '' : '<span class="badge warn">provider off</span>'}
+        ${privacyBadge(r.data_use, r.free_lane)}</td>
+      <td><span class="badge">${esc(modalityLabel(r.modality))}</span></td>
+      <td class="m-machines">${machines}</td>
+      <td class="m-price num">${priceCell(r)}</td>
+      <td><button class="sm m-more" aria-expanded="false" aria-label="More about ${esc(r.display_name)}"
+                  onclick="toggleModelDetails(this, '${esc(key)}')">…</button></td>
+    </tr>
+    <tr class="m-details" data-for="${esc(key)}" hidden><td colspan="7">
+      <div class="m-detail-wrap">
+        <div class="m-detail-text">
+          <div><b>Provider</b> ${esc(r.is_location ? 'Hub Studio KH (local)' : r.provider_name)}
+            ${fleet ? `· ${r.locations_total} location${r.locations_total === 1 ? '' : 's'}` : '· cloud provider'}</div>
+          <div><b>Source</b> ${esc(SOURCE_LABELS[r.source] || r.source)}</div>
+          <div><b>Model id</b> <span class="m-id">${esc(r.model_id)}</span></div>
+          ${r.installed_local ? '<div><b>This Mac</b> has it installed</div>'
+                              : (r.is_location ? '<div class="muted">Not installed on this Mac; another location serves it.</div>' : '')}
+        </div>
+        ${fleet ? `<div class="m-detail-locations"><b>Locations</b>
+          ${r.locations.map(machine => `<div class="m-loc-row">
+            <span>${esc(machine.provider_name)}${machine.enabled ? ' · serving' : ' · off'}</span>
+            <button class="sm" onclick="toggleModel('${esc(machine.provider_id)}','${esc(r.model_id)}', ${machine.enabled ? 'false' : 'true'})">
+              ${machine.enabled ? 'Turn off here' : 'Turn on here'}</button></div>`).join('')}
+        </div>` : ''}
+      </div>
+    </td></tr>`;
 }
 
-function modelRow(r) {
-  // A merged row: the tick is "on every machine", which is the one click the
-  // owner wanted and could not have. A partially enabled model shows unchecked
-  // and says so in the Machines cell; the sub-rows are how one Mac is changed.
-  if (Array.isArray(r.locations) && r.locations.length) {
-    const every = r.locations_enabled === r.locations_total;
-    return `
-    <tr class="${r.enabled ? 'on' : ''}">
-      <td><input type="checkbox" ${every ? 'checked' : ''}
-                 title="${esc(`tick to enable on all ${r.locations_total} machines that have this model`)}"
-                 onchange="toggleModelEverywhere('${esc(r.model_id)}','${esc(r.modality)}', this.checked)"></td>
-      <td>
-        <div class="m-name">${esc(r.display_name)}</div>
-        <div class="m-id">${esc(r.model_id)}</div>
-      </td>
-      <td class="m-provider">${esc(r.provider_name)}
-        ${r.provider_enabled ? '' : '<span class="badge warn">provider off</span>'}
-        ${privacyBadge(r.data_use, r.free_lane)}</td>
-      <td><span class="badge">${esc(modalityLabel(r.modality))}</span></td>
-      <td class="m-machines">${r.locations_enabled} of ${r.locations_total} machines
-        ${every ? '<span class="badge ok">everywhere</span>'
-                : '<span class="badge warn">partial</span>'}</td>
-      <td class="m-price num">${priceCell(r)}</td>
-    </tr>` + r.locations.map(machine => machineRow(r, machine)).join('');
+//: A row's DOM key. No NUL and no quotes: `CSS.escape` and an attribute selector both use it.
+function modelKey(r) { return `${r.modality}|${r.model_id}`; }
+
+function toggleModelDetails(button, key) {
+  const row = document.querySelector(`tr.m-details[data-for="${CSS.escape(key)}"]`);
+  if (!row) return;
+  const open = row.hidden;
+  // One open detail row at a time: two expanded models push the next rows off screen for
+  // no one's benefit, and the row that was open is no longer the question.
+  document.querySelectorAll('tr.m-details').forEach(other => { other.hidden = true; });
+  document.querySelectorAll('#m-rows .m-more').forEach(other => other.setAttribute('aria-expanded', 'false'));
+  row.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+}
+
+// **Your models first.** A dashboard per operation, each card saying how many are offered,
+// how many this Mac has, and the models themselves with one action each. Discover is the
+// full catalogue and keeps every control it had.
+function renderModelsOverview() {
+  const host = document.getElementById('models-overview');
+  const rows = state.modelRows || [];
+  const summary = (state.meta && state.meta.summary) || {};
+  const order = ['image', 'chat', 'tts', 'music', 'video', 'transcription', 'embeddings'];
+  const known = Object.keys(summary);
+  const modalities = [...order.filter(m => known.includes(m)), ...known.filter(m => !order.includes(m))];
+  if (!modalities.length) {
+    host.innerHTML = '<div class="empty">No models yet. Use Discover to fetch a provider\'s catalogue.</div>';
+    return;
   }
-  return `
-    <tr class="${r.enabled ? 'on' : ''}">
-      <td><input type="checkbox" ${r.enabled ? 'checked' : ''}
-                 onchange="toggleModel('${esc(r.provider_id)}','${esc(r.model_id)}', this.checked)"></td>
-      <td>
-        <div class="m-name">${esc(r.display_name)}</div>
-        <div class="m-id">${esc(r.model_id)}</div>
-      </td>
-      <td class="m-provider">${esc(r.provider_name)}
-        ${r.provider_enabled ? '' : '<span class="badge warn">provider off</span>'}
-        ${privacyBadge(r.data_use, r.free_lane)}</td>
-      <td><span class="badge">${esc(modalityLabel(r.modality))}</span></td>
-      <td class="muted">—</td>
-      <td class="m-price num">${priceCell(r)}</td>
-    </tr>`;
+  host.innerHTML = `<div class="model-cards">` + modalities.map(modality => {
+    const item = summary[modality] || {};
+    const mine = rows.filter(r => r.modality === modality);
+    const offered = mine.filter(r => r.enabled).slice(0, 6);
+    return `<section class="card model-card">
+      <div class="card-head">
+        <div class="card-main">
+          <div class="m-name">${esc(modalityLabel(modality))}</div>
+          <div class="hint">${item.enabled || 0} of ${item.total || 0} offered to Story Studio
+            ${item.installed_local ? ` · ${item.installed_local} installed on this Mac` : ''}</div>
+        </div>
+        <button class="sm" onclick="discoverModality('${esc(modality)}')">Manage</button>
+      </div>
+      ${offered.length ? `<ul class="model-mini">${offered.map(r => `
+        <li><span class="mm-name">${esc(r.display_name)}</span>
+            <span class="hint">${esc(r.is_location ? 'Hub Studio KH (local)' : r.provider_name)}${Array.isArray(r.locations) && r.locations.length ? ` · ${r.locations_enabled} of ${r.locations_total}` : ''}</span>
+            <button class="sm" onclick="toggleModelEverywhere('${esc(r.model_id)}','${esc(r.modality)}', false)">Turn off</button></li>`).join('')}</ul>`
+        : `<p class="hint" style="margin:8px 0 0">Nothing offered yet. Open Discover to switch one on.</p>`}
+    </section>`;
+  }).join('') + '</div>';
+  const hidden = rows.filter(r => !r.enabled);
+  if (hidden.length) {
+    host.innerHTML += `<p class="hint" style="margin-top:12px">${hidden.length} more discovered but not offered.
+      <button class="sm" onclick="setModelsMode('discover')">Open Discover</button></p>`;
+  }
+}
+
+function discoverModality(modality) {
+  setModelsMode('discover');
+  state.modelModality = modality;
+  document.getElementById('m-location').value = '';
+  loadModels();
+}
+
+//: Remembered like the Fleet tabs' view switch: the question "what have I got" is the
+//: default, and a person who went to Discover to shop stays there on the next visit.
+let modelsMode = (() => {
+  try { return localStorage.getItem('kh.modelsMode') === 'discover' ? 'discover' : 'mine'; }
+  catch (e) { return 'mine'; }
+})();
+function setModelsMode(mode) {
+  modelsMode = mode === 'discover' ? 'discover' : 'mine';
+  try { localStorage.setItem('kh.modelsMode', modelsMode); } catch (e) {}
+  renderModelsMode();
+  renderModels();
+}
+function renderModelsMode() {
+  document.getElementById('m-mode-chips').innerHTML =
+    [['mine', 'Your models'], ['discover', 'Discover']].map(([key, label]) =>
+      `<button class="chip" data-tab="${key}" aria-pressed="${key === modelsMode}"
+               onclick="setModelsMode('${key}')">${label}</button>`).join('');
+  document.getElementById('models-overview').style.display = modelsMode === 'mine' ? '' : 'none';
+  document.getElementById('models-discover').style.display = modelsMode === 'discover' ? '' : 'none';
 }
 
 function renderModels() {
+  renderModelsOverview();
   const rows = state.modelRows;
+  if (!state.meta) return;
   const { matched, listable_total, enabled_total, returned } = state.meta;
   document.getElementById('m-count').innerHTML =
     `showing ${returned} of ${matched} matching · <b>${enabled_total}</b> of ${listable_total} enabled overall`
@@ -3226,7 +3368,7 @@ function renderModels() {
     });
     let html = '';
     groups.forEach((groupRows, label) => {
-      html += `<tr class="m-group"><td colspan="6">${esc(label)} <span class="n">${groupRows.length}</span></td></tr>`;
+      html += `<tr class="m-group"><td colspan="7">${esc(label)} <span class="n">${groupRows.length}</span></td></tr>`;
       html += groupRows.map(modelRow).join('');
     });
     document.getElementById('m-rows').innerHTML = html;
@@ -3338,7 +3480,9 @@ function flash(text) {
 }
 
 function clearFilters() {
-  ['m-q', 'm-provider', 'm-source', 'm-lane', 'm-privacy', 'm-provider-lane',
+  // **What hides rows**: the search, provider, location and the four stance filters. Sorting,
+  // grouping and page size decide how the list is drawn, so "Show all" leaves them alone.
+  ['m-q', 'm-provider', 'm-location', 'm-source', 'm-lane', 'm-privacy', 'm-provider-lane',
    'm-sort', 'm-group'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
@@ -5657,7 +5801,8 @@ function renderCreateForm() {
     }
     if (f.type === 'textarea') {
       return `<div id="cf-${f.k}-box" style="${f.vocal ? 'display:none;' : ''}margin-bottom:12px"><label for="cf-${f.k}">${esc(f.label)}</label>
-        <textarea id="cf-${f.k}" rows="${f.rows || 5}" placeholder="${esc(f.placeholder || '')}"></textarea></div>`;
+        <textarea id="cf-${f.k}" rows="${f.rows || 5}" placeholder="${esc(f.placeholder || '')}" oninput="updateCreateGate()"></textarea>
+        ${f.k === 'lyrics' ? '<div class="hint" id="cf-lyrics-count" aria-live="polite"></div>' : ''}</div>`;
     }
     if (f.type === 'voice') {
       // A `<select>`, not an input with a suggestion list: a suggestion list shows its *value*,
@@ -5666,8 +5811,18 @@ function renderCreateForm() {
       // published name as what is read. Typing an id stays possible — the page always intended
       // that — as an explicit last option, because a voice known from a share link is not in the
       // library.
+      // **One decision, one control.** "Saved voice" and "Provider voice ID" were two ways in
+      // that both looked like extra optional fields; a segmented choice says they are exclusive
+      // and shows the matching control under it (owner, 0.2.257). The select keeps the value so
+      // everything that reads `cf-voice_id` (and the manual option) behaves exactly as before.
       return `<div style="margin-bottom:12px"><label>${esc(f.label)}</label>
-        <div class="row" style="flex-wrap:wrap"><select style="min-width:0;max-width:100%" id="cf-${f.k}" onchange="createVoiceChoice(this)"></select>
+        <div class="chip-row" role="group" aria-label="Where the voice comes from" style="margin-bottom:8px">
+          <button type="button" class="chip" id="cf-voice-mode-saved" aria-pressed="true"
+                  onclick="setVoiceMode('saved')">Saved voice</button>
+          <button type="button" class="chip" id="cf-voice-mode-manual" aria-pressed="false"
+                  onclick="setVoiceMode('manual')">Provider voice ID</button>
+        </div>
+        <div class="row" style="flex-wrap:wrap"><select style="min-width:0;max-width:100%" id="cf-${f.k}" onchange="createVoiceChoice(this); updateCreateGate()"></select>
         <button type="button" class="sm" id="cf-voice-play" disabled onclick="playSelectedVoice()">No sample</button></div>
         <div class="hint" id="cf-voice-play-status" aria-live="polite"></div>
         ${typeof GUEST !== 'undefined' && GUEST ? `<details style="margin-top:8px"><summary>Add voice</summary>
@@ -5680,7 +5835,7 @@ function renderCreateForm() {
           <button type="button" class="sm" onclick="addGuestVoice()">Add voice</button><div id="guest-voice-status" class="hint" aria-live="polite"></div>
         </details>` : ''}
         <input type="text" id="cf-${f.k}_manual" placeholder="a voice id"
-               style="display:none;margin-top:6px">
+               style="display:none;margin-top:6px" oninput="updateCreateGate()">
         <div class="hint" id="cf-voice-hint"></div></div>`;
     }
     if (f.type === 'number') {
@@ -5723,15 +5878,43 @@ function renderCreateForm() {
         (typeof GUEST !== 'undefined' && GUEST) ? 'No free or local model is switched on for this lane. A guest account may use free and local models only — ask the owner to allow paid models for you.'
               : 'No model is switched on for this lane. Enable one on the Models page and it appears here.'}</div>`;
 
+  // **The model's own geometry and length, where it is chosen.** The options come from the
+  // catalogue row — never a list here — so the form cannot offer a ratio or a duration the
+  // model refuses, and one the model stops offering disappears with it (owner, 0.2.257).
+  const optionBlocks = t.key === 'image' ? `
+    <div id="cf-image-options" style="display:none;margin-bottom:12px">
+      <div class="row" style="gap:12px;flex-wrap:wrap">
+        <span class="ctl"><label class="check inline" for="cf-aspect_ratio">Aspect ratio</label>
+          <select id="cf-aspect_ratio" aria-label="Aspect ratio" onchange="syncCreateImageSizes()"></select></span>
+        <span class="ctl"><label class="check inline" for="cf-resolution">Size</label>
+          <select id="cf-resolution" aria-label="Image size" onchange="updateCreateSizeChoice()"></select></span>
+      </div>
+      <div class="hint" id="cf-size-price" aria-live="polite"></div>
+    </div>`
+    : t.key === 'video' ? `
+    <div id="cf-video-options" style="display:none;margin-bottom:12px">
+      <label for="cf-video-variant">Duration, resolution and shape</label>
+      <select id="cf-video-variant" onchange="updateCreateGate()"></select>
+      <div class="hint" id="cf-video-options-note"></div>
+    </div>`
+    : t.key === 'music' ? `
+    <label class="check" id="cf-instrumental-box" style="display:none;margin-bottom:12px">
+      <input type="checkbox" id="cf-instrumental" onchange="updateCreateGate()"> Instrumental — no vocals</label>`
+    : '';
+
   document.getElementById('create-form').innerHTML =
     `<h2>${esc(t.title)}</h2><div class="hint" style="margin:-4px 0 12px">${esc(t.blurb)}</div>
-     ${picker}${upload}${body}
+     ${picker}${upload}${optionBlocks}${body}
      <div class="row"><button class="primary" id="cf-go" onclick="submitCreate(this)">Generate</button>
-       <span class="msg" id="cf-msg"></span></div>`;
+       <span class="msg" id="cf-msg"></span></div>
+     <div class="hint" id="cf-gate" aria-live="polite"></div>`;
   if (voiceLane && rows.length) loadCreateVoices();
   if (voiceLane && typeof GUEST !== 'undefined' && GUEST) { loadGuestVoiceLimits(); refreshGuestVoices(); }
   showUploadLimit();
   applyCreateModelControls();
+  syncCreateImageOptions();
+  syncCreateVideoOptions();
+  updateCreateGate();
 }
 
 // **The selected model's own upload limit, where the file is chosen.** The row publishes it
@@ -5845,6 +6028,186 @@ function applyCreateModelControls() {
   if (help) help.innerHTML = deliveryGuidanceHtml(control.guidance);
 }
 
+// ---------------------------------------------------------------------------
+// Geometry, length and required fields — all from the selected model's own row.
+//
+// **No list here is hard-coded.** The ratios, sizes and video variants are the catalogue
+// row's `output_options` and `variants`, which the gateway built from the provider's
+// declaration; a model that stops offering one stops offering it here too. An unsupported
+// pair cannot be chosen because it is not drawn, and the server refuses it anyway.
+// ---------------------------------------------------------------------------
+let createImageSizes = [];
+let createVideoVariants = [];
+
+function createOutputOptions() {
+  const row = createModelRow(document.getElementById('cf-model')?.value || '');
+  return row && Array.isArray(row.output_options) ? row.output_options : [];
+}
+
+function syncCreateImageOptions() {
+  const box = document.getElementById('cf-image-options');
+  if (!box) return;
+  const row = createModelRow(document.getElementById('cf-model')?.value || '');
+  const options = createOutputOptions().filter(o => o && typeof o.aspect_ratio === 'string'
+    && Number.isFinite(o.width) && Number.isFinite(o.height));
+  box.style.display = options.length ? '' : 'none';
+  if (!options.length) return;
+  const ratioSelect = document.getElementById('cf-aspect_ratio');
+  const ratios = [...new Set(options.map(o => o.aspect_ratio))];
+  const preferred = row && ratios.includes(row.default_aspect_ratio) ? row.default_aspect_ratio : ratios[0];
+  ratioSelect.innerHTML = ratios.map(ratio =>
+    `<option value="${esc(ratio)}">${esc(ratio)}${row && ratio === row.default_aspect_ratio ? ' · recommended' : ''}</option>`).join('');
+  ratioSelect.value = ratios.includes(ratioSelect.value) ? ratioSelect.value : preferred;
+  syncCreateImageSizes();
+}
+
+function syncCreateImageSizes() {
+  const ratio = document.getElementById('cf-aspect_ratio');
+  const sizeSelect = document.getElementById('cf-resolution');
+  if (!ratio || !sizeSelect) return;
+  const row = createModelRow(document.getElementById('cf-model')?.value || '');
+  const sizes = createOutputOptions().filter(o => o.aspect_ratio === ratio.value);
+  createImageSizes = sizes;
+  const chosen = sizes.findIndex(o => `${o.width}x${o.height}` === sizeSelect.dataset.choice);
+  const index = chosen >= 0 ? chosen : Math.max(sizes.findIndex(o => o.is_default), 0);
+  sizeSelect.innerHTML = sizes.map((o, i) =>
+    `<option value="${i}">${o.resolution ? esc(o.resolution) + ' · ' : ''}${o.width}×${o.height}</option>`).join('');
+  sizeSelect.value = String(index);
+  sizeSelect.dataset.choice = sizes[index] ? `${sizes[index].width}x${sizes[index].height}` : '';
+  updateCreateSizePrice();
+}
+
+function updateCreateSizeChoice() {
+  const sizeSelect = document.getElementById('cf-resolution');
+  if (!sizeSelect) return;
+  const option = createImageSizes[Number(sizeSelect.value)];
+  sizeSelect.dataset.choice = option ? `${option.width}x${option.height}` : '';
+  updateCreateSizePrice();
+}
+
+function updateCreateSizePrice() {
+  const price = document.getElementById('cf-size-price');
+  if (!price) return;
+  const row = createModelRow(document.getElementById('cf-model')?.value || '');
+  const option = createImageSizes[Number((document.getElementById('cf-resolution') || {}).value || 0)];
+  if (!option) { price.textContent = ''; return; }
+  const credits = Number(option.credits_per_image || 0);
+  // **The option's own price, read live.** A size-dependent price is shown beside the size;
+  // a free local lane says so in the owner's words. Unknown prints nothing, never "$0".
+  const text = credits > 0 ? `${credits} credit${credits === 1 ? '' : 's'} per image`
+    : row && row.free_lane ? 'Free (your Macs)' : (row ? priceInfo(row).text : '');
+  price.textContent = text ? `This size: ${text}.` : '';
+}
+
+function createImageParams() {
+  const ratio = document.getElementById('cf-aspect_ratio');
+  if (!ratio || !ratio.value) return {};
+  const option = createImageSizes[Number((document.getElementById('cf-resolution') || {}).value || 0)];
+  if (!option) return { aspect_ratio: ratio.value };
+  return {
+    aspect_ratio: option.aspect_ratio,
+    width: option.width,
+    height: option.height,
+    ...(option.resolution ? { resolution: option.resolution } : {}),
+  };
+}
+
+function syncCreateVideoOptions() {
+  const box = document.getElementById('cf-video-options');
+  if (!box) return;
+  const row = createModelRow(document.getElementById('cf-model')?.value || '');
+  createVideoVariants = row && Array.isArray(row.variants)
+    ? row.variants.filter(v => v && Number.isFinite(v.duration_seconds)) : [];
+  box.style.display = createVideoVariants.length ? '' : 'none';
+  if (!createVideoVariants.length) return;
+  const select = document.getElementById('cf-video-variant');
+  const current = Number(select.value);
+  select.innerHTML = createVideoVariants.map((v, i) =>
+    `<option value="${i}">${v.duration_seconds}s · ${esc(v.resolution || 'not stated')} · `
+    + `${esc(v.aspect_ratio || 'not stated')} · `
+    + `${v.operation === 'image-to-video' ? 'image to video' : 'text to video'}</option>`).join('');
+  select.value = Number.isInteger(current) && createVideoVariants[current] ? String(current) : '0';
+}
+
+function createVideoParams() {
+  const select = document.getElementById('cf-video-variant');
+  const variant = createVideoVariants[Number(select ? select.value : 0)];
+  if (!variant) return {};
+  return {
+    duration_seconds: variant.duration_seconds,
+    ...(variant.resolution ? { resolution: variant.resolution } : {}),
+    ...(variant.aspect_ratio ? { aspect_ratio: variant.aspect_ratio } : {}),
+  };
+}
+
+function setVoiceMode(mode) {
+  const saved = document.getElementById('cf-voice-mode-saved');
+  const manual = document.getElementById('cf-voice-mode-manual');
+  if (saved) saved.setAttribute('aria-pressed', String(mode === 'saved'));
+  if (manual) manual.setAttribute('aria-pressed', String(mode === 'manual'));
+  const select = document.getElementById('cf-voice_id');
+  const input = document.getElementById('cf-voice_id_manual');
+  if (select) {
+    if (mode === 'manual') select.value = '__manual__';
+    else if (select.value === '__manual__') select.value = '';
+  }
+  if (input) {
+    input.style.display = mode === 'manual' ? '' : 'none';
+    if (mode === 'manual') input.focus();
+    else input.value = '';
+  }
+  updateCreateGate();
+}
+
+//: One line naming what is missing, and Generate disabled until it is there. The sentence is
+//: also the server's own refusal (LYRICS_REQUIRED, an unspoken voice), so the page and the
+//: door cannot say two different things.
+function createRequiredProblem() {
+  const tab = currentTab();
+  const row = createModelRow(document.getElementById('cf-model')?.value || '');
+  const instrumental = document.getElementById('cf-instrumental');
+  if (tab.modality === 'music' && row && row.requires_lyrics === true
+      && !(instrumental && instrumental.checked) && !cfValue('lyrics')) {
+    return 'This model needs lyrics. Write the lyrics, or switch on Instrumental if it is offered.';
+  }
+  if ((CREATE_FIELDS[tab.key] || []).some(f => f.type === 'voice') && !createVoiceValue()) {
+    return 'Choose a saved voice, or a provider voice ID.';
+  }
+  return '';
+}
+
+function updateCreateGate() {
+  const problem = createRequiredProblem();
+  const button = document.getElementById('cf-go');
+  if (button) button.disabled = !!problem;
+  const note = document.getElementById('cf-gate');
+  if (note) {
+    note.className = problem ? 'hint bad' : 'hint';
+    note.textContent = problem;
+  }
+  const row = createModelRow(document.getElementById('cf-model')?.value || '');
+  const instrumental = document.getElementById('cf-instrumental');
+  const instrumentalBox = document.getElementById('cf-instrumental-box');
+  if (instrumentalBox) {
+    instrumentalBox.style.display = row && row.supports_instrumental === true ? '' : 'none';
+    if (!(row && row.supports_instrumental === true) && instrumental) instrumental.checked = false;
+  }
+  const lyricsBox = document.getElementById('cf-lyrics-box');
+  if (lyricsBox && row) {
+    const vocals = !!(row.supports_vocals === true || row.requires_lyrics === true) && !(instrumental && instrumental.checked);
+    lyricsBox.style.display = vocals ? '' : 'none';
+    if (!vocals) { const lyrics = document.getElementById('cf-lyrics'); if (lyrics) lyrics.value = ''; }
+  }
+  const lyrics = document.getElementById('cf-lyrics');
+  const count = document.getElementById('cf-lyrics-count');
+  if (lyrics && count) {
+    const text = lyrics.value || '';
+    const lines = text.split(/\r?\n/).filter(line => line.trim()).length;
+    count.textContent = text.trim()
+      ? `${text.length} character${text.length === 1 ? '' : 's'} · ${lines} line${lines === 1 ? '' : 's'}` : '';
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Voices on the Create page.
@@ -5883,11 +6246,19 @@ function createVoiceChoice(select) {
   if (button) { button.disabled = !voice || !(voice.has_preview || voice.preview_available); button.textContent = button.disabled ? 'No sample' : 'Play sample'; }
   const status = document.getElementById('cf-voice-play-status');
   if (status) status.textContent = voice && voice.guest_status && voice.guest_status !== 'ready' ? `${voice.guest_status}${voice.guest_error ? ': ' + voice.guest_error : ''}` : '';
-  const manual = document.getElementById('cf-voice_id_manual');
-  if (!manual) return;
+  // The segmented control follows the select whichever way it was changed — including the
+  // manual option the select itself still carries for older habits.
+  const savedChip = document.getElementById('cf-voice-mode-saved');
+  const manualChip = document.getElementById('cf-voice-mode-manual');
   const typing = select.value === '__manual__';
-  manual.style.display = typing ? '' : 'none';
-  if (typing) manual.focus();
+  if (savedChip) savedChip.setAttribute('aria-pressed', String(!typing));
+  if (manualChip) manualChip.setAttribute('aria-pressed', String(typing));
+  const manual = document.getElementById('cf-voice_id_manual');
+  if (manual) {
+    manual.style.display = typing ? '' : 'none';
+    if (typing) manual.focus();
+  }
+  if (typeof updateCreateGate === 'function') updateCreateGate();
 }
 
 function playSelectedVoice() {
@@ -5941,7 +6312,7 @@ async function refreshGuestVoices() {
 function createVoiceValue() {
   const select = document.getElementById('cf-voice_id');
   const manual = document.getElementById('cf-voice_id_manual');
-  const typed = manual ? manual.value.trim() : '';
+  const typed = manual && typeof manual.value === 'string' ? manual.value.trim() : '';
   if (!select || select.value === '__manual__') return typed;
   return select.value;
 }
@@ -5950,6 +6321,9 @@ function createModelChanged() {
   createVoices = { modelId: '', rows: [], error: '' };
   showUploadLimit();
   applyCreateModelControls();
+  syncCreateImageOptions();
+  syncCreateVideoOptions();
+  updateCreateGate();
   loadCreateVoices();
 }
 
@@ -6059,8 +6433,18 @@ async function submitCreate(btn) {
         if (f.type === 'number') params[f.k] = parseInt(v, 10);
         else params[f.k] = v;
       });
-      if (t.modality === 'music' && createModelRow(modelEl.value)?.requires_lyrics === true && !params.lyrics) {
-        throw new Error('This model needs lyrics. Write the lyrics before generating.');
+      const missing = createRequiredProblem();
+      if (missing) throw new Error(missing);
+      // The geometry and length the form drew are the ones that travel; a model with no
+      // declared options sends none, and the adapter keeps its own default.
+      if (t.modality === 'image') Object.assign(params, createImageParams());
+      if (t.modality === 'video') Object.assign(params, createVideoParams());
+      if (t.modality === 'music') {
+        const instrumental = document.getElementById('cf-instrumental');
+        if (instrumental && instrumental.checked) {
+          params.instrumental = true;
+          delete params.lyrics;
+        }
       }
       // The gateway refuses to invent a voice, so a missing one is refused here with the
       // sentence that says what to do rather than as a provider error after a round trip.

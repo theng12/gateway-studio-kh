@@ -59,7 +59,8 @@ test('a card More button opens and closes its menu and says so', () => {
 
 test('opening one menu closes the other and resets its button', () => {
   const { m, menus, buttons } = context();
-  menus[1].hidden = false;
+  menus[0].hidden = false;          // the other menu is open
+  menus[1].hidden = true;           // the filters menu is closed
   buttons[0].attrs['aria-expanded'] = 'true';
 
   m.toggleFleetFilters();

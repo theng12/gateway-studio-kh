@@ -48,6 +48,12 @@ function actionContext(fetchImpl) {
     currentTab: () => ({ key: 'chat', modality: 'chat' }),
     CREATE_FIELDS: { chat: [] },
     cfValue: () => '',
+    // The required-field gate and the model's own row readers are page functions; a chat
+    // submit has no required field and no geometry, so these answer "nothing to check".
+    createModelRow: () => null,
+    createVoiceValue: () => '',
+    createImageParams: () => ({}),
+    createVideoParams: () => ({}),
     crypto: { randomUUID: () => 'first-key' },
     adminHeaders: extra => extra || {},
     showTokenPrompt() {},
@@ -69,6 +75,7 @@ globalThis.uiPrompt = async (t, v) => (typeof prompt === 'function' ? prompt(t, 
   vm.runInContext([
     'let pendingCreateAttempt = null;',
     section('async function api(path, opts)', '// Contents cannot go through'),
+    section('function createRequiredProblem()', 'function updateCreateGate()'),
     section('async function submitCreate(btn)', 'function pollCreate(id)'),
     section('async function keepArtifact(jobId, assetId, btn)', 'function renderCreateResult(job)'),
   ].join('\n'), context);

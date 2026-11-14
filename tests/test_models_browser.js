@@ -92,7 +92,8 @@ test('chip and select state becomes exactly the server filter names', () => {
   const query = { ...context.modelQuery() };
   assert.deepEqual(query, {
     q: 'voice', modality: 'chat', status: 'enabled', provider_id: 'openai-direct',
-    source: 'user', lane: 'free', privacy: 'unverified', provider_lane: 'off',
+    location_id: '', source: 'user', lane: 'free', privacy: 'unverified',
+    provider_lane: 'off',
   });
 });
 
@@ -190,9 +191,9 @@ test('grouping buckets by operation and counts each bucket', () => {
 
   context.renderModels();
   const html = get('m-rows').innerHTML;
-  assert.ok(html.includes('<tr class="m-group"><td colspan="6">LLM chat <span class="n">2</span></td></tr>'),
+  assert.ok(html.includes('<tr class="m-group"><td colspan="7">LLM chat <span class="n">2</span></td></tr>'),
     'a group header names its operation and counts its own rows');
-  assert.ok(html.includes('<tr class="m-group"><td colspan="6">Image <span class="n">1</span></td></tr>'));
+  assert.ok(html.includes('<tr class="m-group"><td colspan="7">Image <span class="n">1</span></td></tr>'));
   assert.equal((html.match(/m-group/g) || []).length, 2, 'one header per operation, not per row');
 });
 
@@ -217,7 +218,7 @@ function locationRow(overrides = {}) {
   };
 }
 
-test('a model several machines run is drawn once, with its count and its Macs', () => {
+test('a model several machines run is one row, with the Macs behind its own menu', () => {
   const { context, get } = harness();
   const row = locationRow();
   context.state.modelRows = [row];
@@ -227,13 +228,15 @@ test('a model several machines run is drawn once, with its count and its Macs', 
   const html = get('m-rows').innerHTML;
   assert.equal((html.match(/class="m-name"/g) || []).length, 1,
     'the model is drawn once, whatever number of machines run it');
-  assert.equal((html.match(/<tr class="m-machine/g) || []).length, 2,
-    'and each machine that reported it is a sub-row beneath it');
-  assert.match(html, /1 of 2 machines/, 'the Machines cell is the served-of-discovered count');
+  assert.equal((html.match(/<tr class="m-machine/g) || []).length, 0,
+    'no Mac is a row in the default list — one row per model, always');
+  assert.match(html, /1 of 2/, 'the Locations cell is the served-of-found count');
   assert.match(html, /partial/, 'a partially rolled-out model says so rather than reading as on');
-  assert.match(html, /↳ This Mac/);
-  assert.match(html, /↳ Studio Two/);
-  assert.match(html, /not enabled/, 'each Mac states its own enabled/disabled state');
+  // The Macs and their own toggles are in the row's detail panel, opened from `…`.
+  assert.match(html, /toggleModelDetails/);
+  assert.match(html, /This Mac/);
+  assert.match(html, /Studio Two/);
+  assert.match(html, /toggleModel\('studio-hub-aaa','mock-hub\/clone-model', true\)/);
 });
 
 test('the merged tick switches the model on for every machine that has it', async () => {
@@ -270,15 +273,18 @@ test('the server sends the Macs, and the page never derives them', async () => {
   assert.equal(paramsOf(calls[0]).get('limit'), '400');
 });
 
-test('a Mac sub-row toggles only that Mac', async () => {
+test('a Mac in the detail panel toggles only that Mac', async () => {
   const { context, get, calls } = harness();
   context.state.modelRows = [locationRow()];
   context.state.meta = { matched: 1, returned: 1, listable_total: 1, enabled_total: 1 };
   context.renderModels();
   const html = get('m-rows').innerHTML;
   assert.match(html,
-    /onchange="toggleModel\('studio-hub-aaa','mock-hub\/clone-model', this\.checked\)"/,
-    'the sub-row checkbox addresses that machine provider id and nothing else');
+    /toggleModel\('studio-hub-aaa','mock-hub\/clone-model', true\)/,
+    'that Mac\'s control addresses its provider id and nothing else');
+  assert.doesNotMatch(html,
+    /toggleModel\('studio-hub-aaa','mock-hub\/clone-model', false\)/,
+    'a Mac that is off offers to turn on, not off');
 });
 
 test('a cloud row keeps one row per vendor and publishes no machines', () => {
@@ -293,7 +299,9 @@ test('a cloud row keeps one row per vendor and publishes no machines', () => {
   context.state.meta = { matched: 1, returned: 1, listable_total: 1, enabled_total: 1 };
   context.renderModels();
   const html = get('m-rows').innerHTML;
-  assert.equal((html.match(/m-machine/g) || []).length, 0, 'a vendor is not a machine');
+  assert.equal((html.match(/<tr class="m-machine/g) || []).length, 0, 'a vendor is not a machine');
+  assert.equal((html.match(/m-detail-locations/g) || []).length, 0,
+    'a vendor row has no locations panel at all');
   assert.match(html, /onchange="toggleModel\('openai-direct','gpt-4o', this\.checked\)"/);
 });
 
