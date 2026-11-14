@@ -3144,6 +3144,8 @@ class Worker:
         modality = str(job.get("modality") or "")
         model_id = str(job.get("model_id") or "")
         params = _job_params(job)
+        if params.get("_pool_id"):
+            return False  # an image pool routes through **any** member; one member says nothing
         try:
             eligibility = fleet.dispatch_eligibility(
                 model_id, modality,

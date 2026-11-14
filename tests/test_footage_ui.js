@@ -62,7 +62,9 @@ test('one row per clip, with measured length, size, licence and source', () => {
   assert.match(html, /cc0/);
   assert.match(html, /wikimedia/);
   assert.match(html, new RegExp(`/admin/api/footage/file/${'a'.repeat(64)}`),
-    'the console plays the clip through its own authenticated route');
+    'the console plays the clip in place through its own authenticated route');
+  assert.doesNotMatch(html, /target="_blank" rel="noreferrer">Open/,
+    'a raw file in a new tab is not a player');
 });
 
 test('an unmeasured clip says so, never zero', () => {

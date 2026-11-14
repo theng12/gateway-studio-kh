@@ -2593,7 +2593,8 @@ function renderFootageRows(clips) {
       <td>${clip.filesize_bytes == null ? 'not recorded' : esc(formatBytes(clip.filesize_bytes))}</td>
       <td>${esc(clip.licence || 'not recorded')}</td>
       <td>${esc(clip.source || 'not recorded')}</td>
-      <td><a class="sm" href="/admin/api/footage/file/${esc(clip.sha256)}" target="_blank" rel="noreferrer">Open</a></td>
+      <td><video controls preload="none" style="max-width:220px;max-height:90px"
+        src="/admin/api/footage/file/${esc(clip.sha256)}"></video></td>
     </tr>`).join('') + '</tbody></table></div>';
 }
 
