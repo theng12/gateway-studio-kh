@@ -2154,6 +2154,11 @@ class Worker:
         #: 2,758 times per job, every 0.4 s pass). Dropped once the job moves or is admitted.
         #: ponytail: a job that ends while backed off leaves its entry (bytes); prune if that matters.
         self._rebind_backoff: dict[str, tuple[float, float]] = {}
+        #: `(model, modality) -> (read at, eligibility)` for the fail-fast check. The fleet
+        #: snapshot is warm but the walk is per queued job per pass; a few seconds of reuse
+        #: cannot change a structural absence, and it keeps a long queue from re-deriving it
+        #: dozens of times a second.
+        self._eligibility_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
         #: `job id -> job` for every job thread alive in this process: what a drain waits on.
         self._running: dict[str, dict[str, Any]] = {}
         #: Dispatch takes no new work before this `time.time()` (a drain; `inf` on shutdown).
@@ -3146,15 +3151,21 @@ class Worker:
         params = _job_params(job)
         if params.get("_pool_id"):
             return False  # an image pool routes through **any** member; one member says nothing
-        try:
-            eligibility = fleet.dispatch_eligibility(
-                model_id, modality,
-                require_capability=fleet.required_capability(modality, params),
-                **({"image_params": params} if modality == "image" else {}),
-            )
-        except Exception:  # noqa: BLE001 - an unread fleet never fails a job
-            log.debug("eligibility for %s could not be read", job.get("id"), exc_info=True)
-            return False
+        cache_key = (model_id, modality)
+        cached = self._eligibility_cache.get(cache_key)
+        if cached is not None and time.monotonic() - cached[0] < 5.0:
+            eligibility = cached[1]
+        else:
+            try:
+                eligibility = fleet.dispatch_eligibility(
+                    model_id, modality,
+                    require_capability=fleet.required_capability(modality, params),
+                    **({"image_params": params} if modality == "image" else {}),
+                )
+            except Exception:  # noqa: BLE001 - an unread fleet never fails a job
+                log.debug("eligibility for %s could not be read", job.get("id"), exc_info=True)
+                return False
+            self._eligibility_cache[cache_key] = (time.monotonic(), eligibility)
         if eligibility["available"] or eligibility["busy_only"] or not eligibility["rejections"]:
             return False
         detail = (f"No reachable Mac can run '{model_id}' right now — "
