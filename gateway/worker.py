@@ -2917,7 +2917,9 @@ class Worker:
                     except ValueError as exc:
                         _fail(self.store, job["id"], code="INVALID_MEASUREMENT_TARGET", detail=str(exc))
                         continue
-                    if self._expired_in_queue(job) or self._stranded_on_paused(job) or self._image_limits_refused(job):
+                    if (self._expired_in_queue(job) or self._stranded_on_paused(job)
+                            or self._image_limits_refused(job)
+                            or self._no_eligible_machine(job)):
                         continue
                     # Reserve first, then claim: a claim that fails must not leave the
                     # budget holding a slot nobody will ever release.
@@ -3106,6 +3108,67 @@ class Worker:
             detail=(f"No Mac was free for {int(waited // 3600)} hours, so the job was withdrawn from the "
                     "queue before anything ran. Nothing was started or charged; run it again when the "
                     "Macs are free."),
+        )
+        return True
+
+    def _no_eligible_machine(self, job: dict[str, Any]) -> bool:
+        """End a queued fleet job whose model no reachable location can run, naming every location.
+
+        The live defect (2026-11-14): job `646570e3…` sat pending about four hours with
+        `selected_machine: null`; its only candidate was a location offline for seven days and
+        nothing on the job said so. The Hub's own `dispatch_trace` cannot explain a *Gateway*
+        decision, so the reasons are computed here and stored as the job's evidence.
+
+        Conditions, each load-bearing:
+
+          * only a job that has **never been sent** (`accepted`, no upstream id, no
+            `dispatch_started_at`) — a dispatched job's outcome is not ours to assume;
+          * a **fleet** job, never a cloud lane (its own refusals already say why);
+          * past `queue.no_eligible_grace_seconds` — a fleet snapshot warming up is unknown,
+            not "no machine";
+          * at least one rejection recorded and **no candidate**, and not `busy_only`: a
+            busy fleet is a wait, and `_expired_in_queue` already bounds it.
+        """
+        if (job.get("state") != "accepted" or job.get("upstream_job_id")
+                or job.get("dispatch_started_at")):
+            return False
+        provider_id = str(job.get("provider_id") or "")
+        if not provider_id.startswith(fleet.PROVIDER_PREFIX):
+            return False
+        if "measurement_target" in _job_params(job):
+            return False  # an exact-node measurement has its own refusal path
+        grace = float(concurrency.queue_wait_budget()["no_eligible_grace_seconds"])
+        waited = time.time() - float(job.get("created_at") or time.time())
+        if waited < grace:
+            return False
+        modality = str(job.get("modality") or "")
+        model_id = str(job.get("model_id") or "")
+        params = _job_params(job)
+        try:
+            eligibility = fleet.dispatch_eligibility(
+                model_id, modality,
+                require_capability=fleet.required_capability(modality, params),
+                **({"image_params": params} if modality == "image" else {}),
+            )
+        except Exception:  # noqa: BLE001 - an unread fleet never fails a job
+            log.debug("eligibility for %s could not be read", job.get("id"), exc_info=True)
+            return False
+        if eligibility["available"] or eligibility["busy_only"] or not eligibility["rejections"]:
+            return False
+        detail = (f"No reachable Mac can run '{model_id}' right now — "
+                  + fleet.dispatch_reason_summary(eligibility))
+        _fail(
+            self.store, job["id"], code="DISPATCH_NO_ELIGIBLE_MACHINE", detail=detail,
+            retryable=True,
+            evidence={"dispatch": {
+                "code": "DISPATCH_NO_ELIGIBLE_MACHINE",
+                "model_id": model_id,
+                "modality": modality,
+                "origin": "gateway",
+                "checked_at": eligibility["checked_at"],
+                "candidates": eligibility["rejections"],
+                "selected": None,
+            }},
         )
         return True
 

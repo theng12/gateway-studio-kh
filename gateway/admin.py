@@ -2571,9 +2571,62 @@ def _bounded_dispatch_trace(value: object) -> dict[str, Any] | None:
     return trace
 
 
+_JOB_STATES = frozenset({"accepted", "queued", "running", "succeeded", "failed", "cancelled"})
+
+
+def _cancellation_fields(job: dict[str, Any]) -> dict[str, Any] | None:
+    """Who stopped this job, why and from where — `None` when it was never cancelled.
+
+    A cancelled row used to say only `state: cancelled`, so Story had nothing to show and a
+    retry could not tell a deliberate stop from a failure (0.2.257). The fields are the stored
+    record, never inferred from the state.
+    """
+    if not (job.get("cancelled_at") or job.get("cancel_requested_at")
+            or str(job.get("state") or "") == "cancelled"):
+        return None
+    return {
+        "cancelled_by": job.get("cancelled_by"),
+        "cancel_reason": job.get("cancel_reason"),
+        "cancel_origin": job.get("cancel_origin"),
+        "cancelled_at": job.get("cancelled_at"),
+        "requested_at": job.get("cancel_requested_at"),
+    }
+
+
+def _dispatch_evidence(job: dict[str, Any]) -> dict[str, Any]:
+    """The Gateway's own dispatch decision stored on the job, if any (see `worker._fail`)."""
+    raw = job.get("result_json")
+    if not isinstance(raw, str):
+        return {}
+    try:
+        result = json.loads(raw)
+    except ValueError:
+        return {}
+    payload = result.get("payload") if isinstance(result, dict) else None
+    dispatch = payload.get("dispatch") if isinstance(payload, dict) else None
+    return dispatch if isinstance(dispatch, dict) else {}
+
+
+def _previous_cancellation(job: dict[str, Any]) -> dict[str, Any] | None:
+    """The cause of the cancelled job this one replaced (a retry keeps it, 0.2.257)."""
+    raw = job.get("previous_cancel_json")
+    if not isinstance(raw, str):
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
 @router.get("/api/jobs/{job_id}/upstream", dependencies=[Depends(require_admin)])
 def upstream_job_trace(job_id: str) -> Any:
-    """Read bounded Hub placement evidence through a stored Gateway job link."""
+    """Read bounded Hub placement evidence through a stored Gateway job link.
+
+    **A job with no upstream batch still has an answer.** `DISPATCH_NO_ELIGIBLE_MACHINE` and a
+    cancellation both happen before any Hub batch exists, and those are exactly the cases Story
+    must explain; this used to answer 409 with nothing in it.
+    """
     from .adapters import studio_hub
     from .providers.definitions import KIND_STUDIO_HUB
 
@@ -2584,9 +2637,29 @@ def upstream_job_trace(job_id: str) -> Any:
     definition = registry.definition(provider_id)
     if definition is None or definition.kind != KIND_STUDIO_HUB:
         return _error(409, "job has no Studio Hub upstream")
+    evidence = _dispatch_evidence(job)
+    requester = requested_by_of(job) or {}
+    common = {
+        "job_id": _safe_dispatch_trace_id(job.get("id") or job_id),
+        "error_code": job.get("error_code"),
+        "error_detail": job.get("error_detail"),
+        "failed_at": job.get("finished_at"),
+        "origin": (requester.get("label") or job.get("caller") or "gateway"),
+        "candidates": evidence.get("candidates") or [],
+        "selection": {"selected": evidence.get("selected"),
+                      "checked_at": evidence.get("checked_at")},
+        "cancellation": _cancellation_fields(job),
+        "previous_cancellation": _previous_cancellation(job),
+    }
     upstream_id = str(job.get("upstream_job_id") or "")
     if not upstream_id:
-        return _error(409, "job has no accepted Studio Hub batch")
+        state = str(job.get("state") or "").lower()
+        return {
+            **common,
+            "state": state if state in _JOB_STATES else "unknown",
+            "selected_machine": None,
+            "dispatch_trace": None,
+        }
     values = registry.credentials.resolved(provider_id)
     base_url = str(values.get("base_url") or definition.base_url or "")
     snapshot = studio_hub.batch_snapshot(
@@ -2607,7 +2680,7 @@ def upstream_job_trace(job_id: str) -> Any:
     selected = trace.get("selected") if isinstance(trace, dict) else None
     state = str(snapshot.get("state") or "").lower()
     return {
-        "job_id": _safe_dispatch_trace_id(job.get("id") or job_id),
+        **common,
         "state": state if state in _UPSTREAM_STATES else "unknown",
         "selected_machine": selected.get("machine") if isinstance(selected, dict) else None,
         "dispatch_trace": trace,

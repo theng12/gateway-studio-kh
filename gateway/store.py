@@ -501,6 +501,18 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     # A JSON list of `{batch_id, item_index, provider_id, location, modality, status, ...}`; NULL
     # means this job never superseded an attempt, which is every job before this column.
     ("superseded_batches", "TEXT"),
+    # **Who cancelled it, why, and from where** (0.2.257). A cancelled job used to read only
+    # `cancelled`, so Story could not show the original cause and a retry could not tell a
+    # deliberate stop from a failure. `cancelled_by` is the caller label the Gateway knew
+    # (the gateway key, a guest id, the owner), never a name the client sent as proof.
+    ("cancelled_by", "TEXT"),
+    ("cancel_reason", "TEXT"),
+    ("cancel_origin", "TEXT"),
+    ("cancelled_at", "REAL"),
+    # **A retry of a cancelled job is a fresh job, and it says what it replaced.** The old row
+    # is immutable and keeps its id; these two fields on the new row carry the cause Story shows.
+    ("previous_job_id", "TEXT"),
+    ("previous_cancel_json", "TEXT"),
 )
 
 _RENDER_STAGING_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -3192,6 +3204,8 @@ class JobStore:
         job_group: str | None = None,
         priority: str | None = None,
         requested_by: dict[str, Any] | None = None,
+        previous_job_id: str | None = None,
+        previous_cancel: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Create a job, or return the existing one for a repeated key.
 
@@ -3225,8 +3239,8 @@ class JobStore:
                 INSERT INTO jobs (id, idempotency_key, modality, model_id, provider_id,
                                   state, params, created_at, updated_at, next_action_at, caller,
                                   job_group, priority, requested_by, image_mode,
-                                  submitted_reference_count)
-                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  submitted_reference_count, previous_job_id, previous_cancel_json)
+                VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -3244,6 +3258,8 @@ class JobStore:
                     _requested_by_json(requested_by),
                     image_mode,
                     submitted_reference_count,
+                    previous_job_id,
+                    json.dumps(previous_cancel) if previous_cancel else None,
                 ),
             )
             self._conn.commit()
@@ -4091,12 +4107,13 @@ class JobStore:
                 """
                 UPDATE jobs
                    SET state = 'cancelled', cancel_state = ?, next_action_at = NULL,
+                       cancelled_at = COALESCE(cancelled_at, ?),
                        updated_at = ?, finished_at = ?
                  WHERE id = ? AND state = 'running'
                    AND cancel_requested_at IS NOT NULL
                    AND dispatch_started_at IS NULL
                 """,
-                (CANCEL_CONFIRMED, now, now, job_id),
+                (CANCEL_CONFIRMED, now, now, now, job_id),
             )
             self._conn.commit()
             return result.rowcount == 1
@@ -4113,10 +4130,11 @@ class JobStore:
                 """
                 UPDATE jobs
                    SET state = 'cancelled', cancel_state = ?, next_action_at = NULL,
+                       cancelled_at = COALESCE(cancelled_at, ?),
                        updated_at = ?, finished_at = ?
                  WHERE id = ? AND state = 'running' AND cancel_requested_at IS NOT NULL
                 """,
-                (CANCEL_CONFIRMED, now, now, job_id),
+                (CANCEL_CONFIRMED, now, now, now, job_id),
             )
             self._conn.commit()
             return result.rowcount == 1
@@ -4197,19 +4215,38 @@ class JobStore:
             self._conn.commit()
             return True
 
-    def cancel(self, job_id: str) -> dict[str, Any]:
+    def cancel(self, job_id: str, *, by: str | None = None, reason: str | None = None,
+               origin: str | None = None) -> dict[str, Any]:
+        """Cancel a job and record **who asked, why and from where**.
+
+        `by`/`reason`/`origin` are the caller's own statement, kept so Story can show the
+        original cause and a later retry never reads a deliberate stop as a mystery
+        (0.2.257: a retry of a cancelled job reused the cancelled upstream and answered
+        "image job was cancelled at the Gateway" with nothing behind it). An already
+        terminal job keeps its verdict and its first cancellation record.
+        """
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM jobs WHERE id = ?", (job_id,)
             ).fetchone()
             if row is None:
                 return None  # type: ignore[return-value]
+            fields: dict[str, Any] = {}
+            if by:
+                fields["cancelled_by"] = str(by)[:200]
+            if reason:
+                fields["cancel_reason"] = str(reason)[:500]
+            if origin:
+                fields["cancel_origin"] = str(origin)[:40]
+            now = time.time()
             if row["state"] == "accepted":
                 self._update_locked(
                     job_id,
                     {
+                        **fields,
                         "state": "cancelled",
                         "cancel_state": CANCEL_CONFIRMED,
+                        "cancelled_at": now,
                         "next_action_at": None,
                     },
                 )
@@ -4217,7 +4254,8 @@ class JobStore:
                 self._update_locked(
                     job_id,
                     {
-                        "cancel_requested_at": time.time(),
+                        **fields,
+                        "cancel_requested_at": now,
                         "cancel_state": CANCEL_REQUESTED,
                     },
                 )
@@ -4225,6 +4263,22 @@ class JobStore:
             return self._row_dict(
                 self._conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             )
+
+    def release_idempotency_key(self, job_id: str, *, key: str) -> bool:
+        """Move a finished job's idempotency key aside so a fresh retry can hold it.
+
+        A cancelled job is immutable, but its key was still the one the caller re-POSTs.
+        The retry path frees the key here (to `<key>:cancelled:<job id>`, which no caller
+        sends) and gives it to the fresh job, so a second replay finds the live row and
+        never mints a third job. Returns whether the row moved.
+        """
+        with self._lock:
+            result = self._conn.execute(
+                "UPDATE jobs SET idempotency_key = ?, updated_at = ? WHERE id = ?",
+                (key, time.time(), job_id),
+            )
+            self._conn.commit()
+            return result.rowcount == 1
 
     def record_route(self, job_id: str, provider_id: str, model_id: str | None = None) -> bool:
         """Point a queued job at a different location (and, optionally, member model) after a site refusal.

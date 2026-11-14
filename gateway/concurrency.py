@@ -135,6 +135,14 @@ DEFAULT_DEFER_CAP_S = 300.0
 #:     {"global": 60, "queue": {"wait_ceiling_seconds": 10800}}
 DEFAULT_QUEUE_WAIT_CEILING_S = 3 * 3600.0
 
+#: **How long an empty candidate set may persist before the job fails** (0.2.257).
+#:
+#: Not a queue wait: a job whose model no reachable location can run is waiting for something
+#: to exist, and on 2026-11-14 one waited four hours with `selected_machine: null` and no
+#: reason anywhere. Busy locations (`no_slot`/`spent`) never reach this; they keep the ordinary
+#: queue ceiling. Editable as `queue.no_eligible_grace_seconds`.
+DEFAULT_NO_ELIGIBLE_GRACE_S = 30.0
+
 #: What a cloud provider gets when neither its own answer nor the owner's file says
 #: anything. One, because over-scheduling is what produces 429s, and a 429 on a
 #: submitted job is a durable unknown-outcome hold rather than a clean retry.
@@ -457,13 +465,22 @@ def queue_wait_budget() -> dict[str, Any]:
     cap_seconds = float(cap) if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0 else None
     ceiling = entry.get("wait_ceiling_seconds")
     ceiling_seconds = float(ceiling) if isinstance(ceiling, (int, float)) and not isinstance(ceiling, bool) and ceiling > 0 else None
+    # **The grace before an empty candidate set ends a job** (0.2.257). A job whose model no
+    # reachable location can run is not waiting for a Mac — it is waiting for something to
+    # exist, and the live 2026-11-14 job waited four hours for it. Thirty seconds covers a
+    # fleet snapshot that is warming; busy locations are never failed by this.
+    grace = entry.get("no_eligible_grace_seconds")
+    grace_seconds = float(grace) if isinstance(grace, (int, float)) and not isinstance(grace, bool) and grace > 0 else None
     return {
         "max_deferrals": attempts if attempts is not None else DEFAULT_MAX_DEFERRALS,
         "defer_cap_seconds": cap_seconds if cap_seconds is not None else DEFAULT_DEFER_CAP_S,
         "wait_ceiling_seconds": (ceiling_seconds if ceiling_seconds is not None
                                  else DEFAULT_QUEUE_WAIT_CEILING_S),
+        "no_eligible_grace_seconds": (grace_seconds if grace_seconds is not None
+                                      else DEFAULT_NO_ELIGIBLE_GRACE_S),
         "source": SOURCE_CURATED if (attempts is not None or cap_seconds is not None
-                                     or ceiling_seconds is not None) else SOURCE_GATEWAY,
+                                     or ceiling_seconds is not None or grace_seconds is not None)
+        else SOURCE_GATEWAY,
         "path": str(SETTINGS_PATH),
     }
 

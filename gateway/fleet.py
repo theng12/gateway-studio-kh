@@ -4321,6 +4321,25 @@ def resume_location(controller_id: str) -> dict | None:
     return _masked(row)
 
 
+def _last_machine_seen(row: dict) -> float | None:
+    """The newest heartbeat among a location's last-known Macs, if any stated one."""
+    seen = [_num(m.get("node_last_seen_at")) for m in row.get("machines") or []
+            if isinstance(m, dict)]
+    return max((value for value in seen if value), default=None)
+
+
+def _no_work_reason(row: dict) -> tuple[str, str]:
+    """The vocabulary reason a row that `_takes_customer_jobs` refused should carry."""
+    if row.get("paused_at") or owner_paused_at(str(row.get("id") or "")):
+        return "paused", "the location is paused"
+    if (str(row.get("role") or "").strip().lower() == "agent"
+            or str(row.get("handed_over_to") or "").strip()):
+        return "location_mismatch", "an agent-mode or handed-over location does not take customer jobs"
+    if _location_disk_stopped(row):
+        return "draining", "every Mac here is out of disk"
+    return "draining", "the location has stopped taking customer jobs"
+
+
 def _takes_customer_jobs(row: dict) -> bool:
     """Whether a location may be sent customer work at all.
 
@@ -4396,7 +4415,39 @@ def no_free_mac(row: dict, model_id: str) -> bool:
                               for w in able)
 
 
-def _all_able_offline(row: dict, model_id: str) -> bool:
+#: How old a Mac's last heartbeat may be before routing treats it as offline.
+#:
+#: **A missed heartbeat is an offline Mac** (owner report, 2026-11-14: 1204's only qwen-image Mac
+#: had been gone seven days and routing still offered the location). The Hub's `online: false` is
+#: one statement of the same fact; this is the other, for a Hub that keeps a stale worker row.
+#: The window is generous on purpose: a busy Mac answers its overview less often than an idle one.
+ONLINE_WINDOW_S = 900.0
+
+
+def _machine_offline(row: dict, worker: dict, now: float) -> bool:
+    """Whether one able Mac is offline by the Hub's word **or** by a heartbeat past the window.
+
+    Three answers again: a stated `online: false`, a machine row the Hub marks unreachable or whose
+    node has not been seen inside `ONLINE_WINDOW_S`, or a worker whose own `last_seen_at` is that
+    old. Nothing stated stays "unknown", never "offline".
+    """
+    if worker.get("online") is False:
+        return True
+    seen = _num(worker.get("last_seen_at"))
+    if seen is not None and now - seen > ONLINE_WINDOW_S:
+        return True
+    machines = {str(m.get("id")): m for m in row.get("machines") or [] if isinstance(m, dict)}
+    machine = machines.get(str(worker.get("machine")))
+    if isinstance(machine, dict):
+        if machine.get("reachable") is False:
+            return True
+        node_seen = _num(machine.get("node_last_seen_at"))
+        if node_seen is not None and now - node_seen > ONLINE_WINDOW_S:
+            return True
+    return False
+
+
+def _all_able_offline(row: dict, model_id: str, now: float | None = None) -> bool:
     """Every Mac here that could run `model_id` has gone offline, so none of them can take work.
 
     **A controller whose Macs have all dropped keeps answering.** On 2026-10-31 its studios stopped
@@ -4407,12 +4458,27 @@ def _all_able_offline(row: dict, model_id: str) -> bool:
     `online: false` (measured live 2026-11-02: 56 of them at Shops, every one on a machine the
     activity read calls `offline`).
 
+    **A stale heartbeat counts the same way** (`_machine_offline`): 1204's only qwen-image worker
+    was last seen seven days ago while its row still listed the model, and routing offered it.
+
     Three answers, never two: `False` while any able worker is online — a site with one working Mac
     is not dead; `False` when a worker states no `online` at all (an older Hub), because "not read"
     is never "dead"; and `False` when the location names no able Mac, which stays unknown.
     """
     able = _able_workers(row, model_id)
-    return bool(able) and all(w.get("online") is False for w in able)
+    now = time.time() if now is None else now
+    if not able:
+        # **An older Hub publishes no worker list, but its machine rows still carry heartbeats.**
+        # 1204's only qwen-image Mac was last seen seven days ago with no worker row naming the
+        # model; every machine at the location stale is the same fact as every able Mac offline.
+        machines = [m for m in row.get("machines") or [] if isinstance(m, dict)]
+        if not machines:
+            return False
+        return all(machine.get("reachable") is False
+                   or (_num(machine.get("node_last_seen_at")) is not None
+                       and now - _num(machine.get("node_last_seen_at")) > ONLINE_WINDOW_S)
+                   for machine in machines)
+    return all(_machine_offline(row, worker, now) for worker in able)
 
 
 def location_has_no_free_mac(provider_id: str, model_id: str) -> bool:
@@ -5568,11 +5634,20 @@ def routing_candidates(
     exclude_locations: set[str] | None = None,
     require_capability: str | None = None, image_params: dict | None = None,
     respect_model_supply: bool = True,
+    rejections: list[dict] | None = None,
 ) -> list[dict]:
     """Every location that can run this model right now, with its pressure.
 
     A candidate must be a model the catalogue would **offer**, be answering, and
     -- when the request names a voice -- be the location that owns that voice.
+
+    **Every skip can say why.** A caller that passes `rejections` gets one row per
+    location the walk passed over -- `{location_id, provider_id, label, machine, reason,
+    detail, last_seen_at?}` -- in the fixed vocabulary the dispatch contract publishes
+    (`offline`, `paused`, `draining`, `no_slot`, `spent`, `model_not_published`,
+    `model_not_installed`, `location_mismatch`, `memory_ineligible`, `unknown`). A skipped
+    candidate used to leave no trace, so the live 2026-11-14 job showed a candidate that was
+    offered and never selected with nothing saying why.
 
     "Enabled" is not that question. This used to test `is_enabled` plus a row
     match, while `enabled_models` -- the set the catalogue is built from -- also
@@ -5605,6 +5680,22 @@ def routing_candidates(
     rows = {str(row.get("id")): row for row in locations}
     candidates: list[dict] = []
     seconds: Callable[[str, str], float] | None = None
+    now = time.time()
+
+    def reject(definition: Any, location_id: str, row: dict, reason: str, detail: str,
+               machine: str | None = None, last_seen_at: float | None = None) -> None:
+        if rejections is None:
+            return
+        rejections.append({
+            "location_id": location_id,
+            "provider_id": getattr(definition, "id", "") or provider_id_for(location_id),
+            "label": row.get("label") or location_id,
+            "machine": machine,
+            "reason": reason,
+            "detail": detail,
+            **({"last_seen_at": last_seen_at} if last_seen_at is not None else {}),
+        })
+
     for definition, model in registry.models.enabled_models(modality):
         location_id = controller_id_from(definition.id)
         if location_id is None:
@@ -5617,6 +5708,7 @@ def routing_candidates(
             # Tried already and refused this model; the worker is looking for the
             # next site, not the same one again.
             continue
+        row = rows.get(location_id) or {}
         if require_capability and not advertises(model, require_capability):
             # **Capability, not memory, is the gateway's question.** The Hub already decided per
             # Mac whether the weights are there and the RAM is enough, and a Mac that cannot do the
@@ -5624,25 +5716,43 @@ def routing_candidates(
             # than offered work its own broker will refuse. One site that cannot therefore does not
             # take the feature down for the others; the catalogue publishes the union and this line
             # is what makes that honest.
+            reject(definition, location_id, row, "location_mismatch",
+                   f"this location does not offer {require_capability} for the model")
             continue
-        row = rows.get(location_id) or {}
         if not row.get("reachable"):
+            reject(definition, location_id, row, "offline",
+                   f"{'not answering' if row else 'not read yet'}"
+                   + (f": {row.get('error')}" if row.get("error") else ""),
+                   last_seen_at=_last_machine_seen(row))
             continue
         # A site that cannot accept customer work is not a candidate: an agent-mode
         # Hub answers 409 to the submit, and a drained one has been told to stop.
         if not _takes_customer_jobs(row):
+            reject(definition, location_id, row, *_no_work_reason(row))
             continue
         # Every Mac here that could run this model is paused: as good as unreachable for it.
         if no_free_mac(row, model_id):
+            reject(definition, location_id, row, "paused",
+                   "every Mac here that can run this model is paused")
+            continue
+        # **A Mac whose heartbeat has stopped is offline for routing** (`_machine_offline`).
+        if _all_able_offline(row, model_id, now):
+            reject(definition, location_id, row, "offline",
+                   "every Mac here that can run this model is offline",
+                   last_seen_at=_last_machine_seen(row))
             continue
         # **Every Mac here that could run this model switched this kind off** (owner, 2026-10-28):
         # never dispatch that kind to this site.
         if _function_off_at_site(row, model_id, modality):
+            reject(definition, location_id, row, "model_not_installed",
+                   f"every Mac here that can run this model has {modality} switched off")
             continue
         # **A location installing an update is not a candidate until it is back** (Kind I). It
         # said so itself, deliberately, and re-offering it is what turned one job into 126
         # attempts against a Mac that could not answer any of them.
         if is_draining_provider(definition.id):
+            reject(definition, location_id, row, "draining",
+                   "the location is installing an update")
             continue
 
         # **A site that states it has no Mac for this model is not a candidate.** Its controller
@@ -5655,11 +5765,15 @@ def routing_candidates(
         # Unstated supply is unknown, never "none" (see `states_no_mac`), so an older Hub keeps
         # every fallback below.
         if respect_model_supply and states_no_mac(row, model_id):
+            reject(definition, location_id, row, "model_not_installed",
+                   "the location states it has no Mac that can run this model")
             continue
 
         from . import image_limits
         limits = image_limits.assess(model.get("raw") or {}, model_id, image_params) if modality == "image" and image_params is not None else None
         if limits is not None and not limits["allowed"]:
+            reject(definition, location_id, row, "memory_ineligible",
+                   str(limits.get("reason") or "no Mac here fits the model for this request"))
             continue
 
         capacity = row.get("capacity") or {}
@@ -5728,6 +5842,109 @@ def routing_candidates(
             **speed,
         })
     return [c for c in candidates if not c["spent"]] or candidates
+
+
+#: Rejection reasons that mean "this location is busy now" rather than "it can never run this".
+#: A job whose only rejections are these is a normal queue wait, never `DISPATCH_NO_ELIGIBLE_MACHINE`.
+BUSY_REASONS = frozenset({"no_slot", "spent"})
+
+#: The fixed rejection vocabulary of the dispatch contract (Story consumes it; the brief is
+#: `_orchestra/gateway-lead/next-gate-batch-20261113.md`, item 16).
+REJECTION_REASONS = ("offline", "paused", "draining", "no_slot", "spent", "model_not_published",
+                     "model_not_installed", "location_mismatch", "memory_ineligible", "unknown")
+
+
+def dispatch_eligibility(model_id: str, modality: str, *,
+                         require_capability: str | None = None,
+                         image_params: dict | None = None) -> dict:
+    """Whether any reachable location can run this model **now**, and a reason for every one that cannot.
+
+    `routing_candidates` answers the candidate half; this adds the locations the walk never even
+    reached because they do not publish the model, and the fleet row's own reasons. The shape is
+    the one the dispatch contract publishes: `candidates` (with `provider_id`, `location_id`,
+    `slots`, …), `rejections` (`{location_id, provider_id, label, machine, reason, detail,
+    last_seen_at?}`), `available`, `busy_only` and `checked_at`.
+
+    **Busy is not broken.** `busy_only` is true when every rejection is `no_slot`/`spent` and a
+    candidate exists somewhere; a caller must keep waiting in that case, not fail the job.
+    """
+    rejections: list[dict] = []
+    candidates = routing_candidates(
+        model_id, modality, require_capability=require_capability,
+        image_params=image_params, rejections=rejections,
+    )
+    covered = {str(c.get("location_id")) for c in candidates}
+    covered |= {str(r.get("location_id")) for r in rejections}
+    try:
+        rows = snapshot(allow_stale=True).get("locations") or []
+    except Exception:  # noqa: BLE001 - an unread fleet is unknown, never "no eligible machine"
+        rows = []
+    for row in rows:
+        location_id = str(row.get("id") or "")
+        if not location_id or location_id in covered:
+            continue
+        if row.get("reachable") is False:
+            rejections.append({
+                "location_id": location_id, "provider_id": provider_id_for(location_id),
+                "label": row.get("label") or location_id, "machine": None,
+                "reason": "offline",
+                "detail": str(row.get("error") or "not answering"),
+                **_seen(row),
+            })
+            continue
+        if not _takes_customer_jobs(row):
+            reason, detail = _no_work_reason(row)
+            rejections.append({
+                "location_id": location_id, "provider_id": provider_id_for(location_id),
+                "label": row.get("label") or location_id, "machine": None,
+                "reason": reason, "detail": detail,
+            })
+            continue
+        # Reachable and taking work, but absent from the model's enabled inventory: the Hub does
+        # not publish the model at all. That is `model_not_published`, not "not installed".
+        rejections.append({
+            "location_id": location_id, "provider_id": provider_id_for(location_id),
+            "label": row.get("label") or location_id, "machine": None,
+            "reason": "model_not_published",
+            "detail": "this location does not publish the model",
+        })
+    busy_only = bool(rejections) and all(r.get("reason") in BUSY_REASONS for r in rejections)
+    return {
+        "model_id": model_id,
+        "modality": modality,
+        "candidates": candidates,
+        "rejections": rejections,
+        "available": bool(candidates),
+        "busy_only": busy_only,
+        "checked_at": time.time(),
+    }
+
+
+def _seen(row: dict) -> dict:
+    """`last_seen_at` for a rejection row, only when the fleet actually stated one."""
+    seen = _last_machine_seen(row)
+    return {"last_seen_at": seen} if seen is not None else {}
+
+
+def dispatch_reason_summary(eligibility: dict) -> str:
+    """One sentence for a job's failure: the reasons, with the age of an offline location."""
+    rejections = eligibility.get("rejections") or []
+    if not rejections:
+        return "no location publishes this model"
+    parts: list[str] = []
+    for item in rejections[:6]:
+        label = item.get("label") or item.get("location_id") or "a location"
+        reason = item.get("reason") or "unknown"
+        if reason == "offline" and item.get("last_seen_at"):
+            age = max(0.0, time.time() - float(item["last_seen_at"]))
+            days = int(age // 86400)
+            hours = int((age % 86400) // 3600)
+            when = f"{days}d" if days else f"{hours}h" if hours else f"{int(age // 60)}m"
+            parts.append(f"{label}: offline, last seen {when}")
+        else:
+            parts.append(f"{label}: {reason}" + (f" ({item['detail']})" if item.get("detail") else ""))
+    more = f" (+{len(rejections) - 6} more)" if len(rejections) > 6 else ""
+    return "; ".join(parts) + more
 
 
 #: **Prefer fast Macs for Qwen** (owner decision 2026-10-09). 20-step medians on 10-08: This Mac
