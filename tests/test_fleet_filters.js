@@ -112,6 +112,27 @@ test('two conditions combine, and a version filter reads the live versions', () 
   assert.equal(vm.runInContext('fleetMachineRowsFor(lastFleetPayload).length', ctx), 4);
 });
 
+test('the network filter matches the measured link kind, and Reset clears it', () => {
+  const machines = [
+    machine({ machine: 'eth', connection: { status: 'measured', kind: 'ethernet', slow: false } }),
+    machine({ machine: 'wifi', connection: { status: 'measured', kind: 'wifi', slow: false } }),
+    machine({ machine: 'none' }),
+  ];
+  const { ctx } = harness(payload(machines));
+  ctx.__setPayload(payload(machines));
+  const labels = () => [...vm.runInContext('fleetMachineRowsFor(lastFleetPayload).map(m => m.machine)', ctx)];
+  vm.runInContext("fleetSetFacetNetwork('ethernet')", ctx);
+  assert.deepEqual(labels(), ['eth']);
+  vm.runInContext("fleetSetFacetNetwork('wifi')", ctx);
+  assert.deepEqual(labels(), ['wifi']);
+  vm.runInContext("fleetSetFacetNetwork('unknown')", ctx);
+  assert.deepEqual(labels(), ['none'], 'a Mac that reported no link is "not reported", never a guess');
+  vm.runInContext("fleetSetFacetNetwork('other')", ctx);
+  assert.deepEqual(labels(), []);
+  vm.runInContext('fleetClearFacets()', ctx);
+  assert.equal(labels().length, 3, 'Reset restores every row');
+});
+
 test('the Machines table has a Location column and announces its sort', () => {
   const { ctx } = harness(payload(MACHINES));
   ctx.__setPayload(payload(MACHINES));
