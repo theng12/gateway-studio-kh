@@ -23,6 +23,7 @@ every feature title, and they are left as they were written.
 - **Retrying a cancelled job makes a new job.** The cancelled one keeps its place and its cause, and the retry carries that cause instead of answering "cancelled at the Gateway".
 - **Image pools publish only the sizes they can actually render**, with one recommended size, so choosing a fleet never silently produces a square image.
 - **Settings groups what it shows** — this Gateway, what it is doing — in wrapping rows instead of one run-on list.
+- **The old Story Studio update/monitoring tab is gone.** Fleet no longer has a Stories tab or the Story-Mac version/check-in report behind it; Gateway signs and serves no app release, and Fleet keeps its Mac, model, job and location monitoring.
 
 ## 0.2.256 — 2026-11-13
 

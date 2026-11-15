@@ -44,7 +44,6 @@ test('the owner defaults hold before anything is chosen', () => {
   v.tab('machines'); assert.equal(v.fleetViewFor(), 'table');
   v.tab('models'); assert.equal(v.fleetViewFor(), 'table');
   v.tab('jobs'); assert.equal(v.fleetViewFor(), 'list');
-  v.tab('story'); assert.equal(v.fleetViewFor(), 'list');
 });
 
 test('a changed view is remembered per tab and does not leak to another tab', () => {

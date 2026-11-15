@@ -992,12 +992,6 @@
         batch; nothing is marked cancelled here.</p>
     </div>
 
-    <!-- Story Studio: every Story Mac that checks in. -->
-    <div class="fleet-pane" id="fleet-pane-story" hidden>
-      <div class="stat" id="fleet-story-status"></div>
-      <div id="fleet-story-note" role="status" aria-live="polite"></div>
-      <div class="tablewrap" id="fleet-story-wrap" class="fleet-list-narrow"></div>
-    </div>
   </section>
   <!-- One dialog, filled by the action that opened it. The native page used a sheet per action
        (Lite Mode, Work Priorities, Trash, credentials, an address, installing a model, a preset);
@@ -7136,12 +7130,12 @@ let fleetQuery = '';
 // sorted worst-first without being asked, which is the order someone fixing Macs wants. It orders
 // Groups, Locations and the Machines table alike; a Machines column header takes over that table.
 let fleetSort = 'issues';   // issues | offline | problematic | site | lastseen | drops | name
-let fleetTab = 'groups';    // groups | locations | machines | models | jobs | story
+let fleetTab = 'groups';    // groups | locations | machines | models | jobs
 // **One view per tab, remembered per tab.** The owner, 2026-11-13: machines showed a metric
 // strip and a card wall, models duplicate rows above a table. A tab draws exactly one of its
 // views; the choice survives a reload.
 const FLEET_VIEW_DEFAULT = { groups: 'cards', locations: 'cards', machines: 'table',
-  models: 'table', jobs: 'list', story: 'list' };
+  models: 'table', jobs: 'list' };
 const FLEET_VIEW_TABS = new Set(['groups', 'locations', 'machines', 'models']);
 function fleetViewFor(tab = fleetTab) {
   if (FLEET_VIEW_TABS.has(tab)) {
@@ -7192,7 +7186,7 @@ const FLEET_SORTS = [['issues', 'Issues (worst first)'], ['offline', 'Offline fi
   ['problematic', 'Most flapping'], ['site', 'Site'], ['lastseen', 'Longest unseen'],
   ['drops', 'Most drops'], ['name', 'Name']];
 const FLEET_TABS = [['groups', 'Groups'], ['locations', 'Locations'], ['machines', 'Machines'],
-  ['models', 'Models'], ['jobs', 'Jobs'], ['story', 'Story Studio']];
+  ['models', 'Models'], ['jobs', 'Jobs']];
 const FLEET_STATE_WORDS = { working: 'Working', ready: 'Ready', long_idle: 'Idle',
   offline: 'Offline', needs_attention: 'Needs attention', just_finished: 'Just finished' };
 
@@ -10234,66 +10228,6 @@ async function fleetRetryItem(button) {
   } finally { button.disabled = false; }
 }
 
-// ---- Story Studio ----------------------------------------------------------
-
-let fleetStoryRows = null;
-
-function fleetStoryStatusText(instance) {
-  // Only what this Gateway knows: a Mac that checked in recently, or one that went quiet.
-  // App updates are Studio Launcher KH's business (owner rule 2026-11-13).
-  switch (instance.status) {
-    case 'online': return { text: 'Checked in', health: 'ok' };
-    case 'offline': return { text: 'Offline', health: '' };
-    default: return { text: instance.status || '—', health: '' };
-  }
-}
-
-function renderFleetStory() {
-  const wrap = document.getElementById('fleet-story-wrap');
-  const status = document.getElementById('fleet-story-status');
-  if (status) {
-    const rows = fleetStoryRows || [];
-    const online = rows.filter(row => row.status === 'online').length;
-    status.textContent = fleetStoryRows == null ? 'Reading Story Studio…'
-      : `${rows.length} Story Mac${rows.length === 1 ? '' : 's'} · ${online} checked in within the last 75 minutes`;
-  }
-  if (!wrap) return;
-  if (fleetStoryRows == null) { wrap.innerHTML = '<div class="fleet-empty">Reading Story Studio…</div>'; return; }
-  wrap.innerHTML = fleetStoryRows.length
-    ? `<table class="ftable"><thead><tr><th>Mac</th><th>Version</th><th>Status</th><th>Channels</th>
-       <th>Last reported queue</th><th>Checked in</th></tr></thead><tbody>${fleetStoryRows.map(instance => {
-        const state = fleetStoryStatusText(instance);
-        const queue = instance.queue || {};
-        const count = value => (value == null ? '—' : value);
-        return `<tr>
-          <td class="ft-lead" data-label="Mac"><div class="ft-name">${esc(instance.machine || instance.instance_id || '—')}</div></td>
-          <td class="nowrap" data-label="Version">${esc(instance.version || '—')}</td>
-          <td data-label="Status">${fleetBadge(state.text, state.health)}</td>
-          <td data-label="Channels">${count(instance.channels)}</td>
-          <td data-label="Last reported queue">${count(queue.running)} running · ${count(queue.queued)} queued${
-            queue.held ? ' · paused' : ''}<div class="ft-sub">${instance.age_seconds != null
-              ? 'Reported ' + esc(fleetSeenText(Date.now() / 1000 - instance.age_seconds))
-              : 'Report age unknown'}</div></td>
-          <td data-label="Checked in">${esc(fleetSeenText(instance.age_seconds != null
-            ? Date.now() / 1000 - instance.age_seconds : null))}</td>
-        </tr>`;
-      }).join('')}</tbody></table>`
-    : '<div class="fleet-empty">No Story Studio Mac has checked in yet.</div>';
-}
-
-async function loadFleetStory() {
-  try {
-    const answer = await api('/story/instances');
-    fleetStoryRows = answer.instances || [];
-  } catch (e) {
-    fleetStoryRows = [];
-    const wrap = document.getElementById('fleet-story-wrap');
-    if (wrap) wrap.innerHTML = `<div class="fleet-empty">Could not read Story Studio: ${esc(e.message)}</div>`;
-    return;
-  }
-  renderFleetStory();
-}
-
 // ---- The page --------------------------------------------------------------
 
 // The two controls, drawn once into the page and only ever re-read — a poll that rebuilt them
@@ -10424,7 +10358,6 @@ function selectFleetTab(tab) {
   document.querySelectorAll('.fleet-pane').forEach(pane => {
     pane.hidden = pane.id !== 'fleet-pane-' + tab;
   });
-  if (tab === 'story') loadFleetStory();
   if (tab === 'jobs') loadAutoStops();
 }
 
@@ -10888,7 +10821,6 @@ async function loadFleet(force) {
   fleetControls();
   renderFleetTabs();
   renderFleet(d);
-  if (fleetTab === 'story') loadFleetStory();
 }
 
 function imageModeLabel(mode) {

@@ -40,8 +40,7 @@ const NODES = ['fleet-body', 'fleet-summary', 'fleet-issues', 'fleet-filter', 'f
   'fleet-locations-wrap', 'fleet-locations-status', 'fleet-models-wrap', 'fleet-models-status',
   'fleet-jobs-wrap', 'fleet-jobs-status', 'fleet-jobs-note', 'fleet-jobs-problems', 'fleet-tabs', 'fleet-search',
   'fleet-location', 'fleet-drops', 'fleet-threshold-note', 'fleet-machine-action-note',
-  'fleet-model-action-note', 'fleet-location-action-note', 'fleet-story-note', 'fleet-story-wrap',
-  'fleet-story-status', 'fleet-installs', 'fleet-rollout', 'fleet-release-status',
+  'fleet-model-action-note', 'fleet-location-action-note', 'fleet-installs', 'fleet-rollout', 'fleet-release-status',
   'fleet-release-note', 'fleet-render-body', 'fleet-render-note',
   'fleet-dialog', 'fleet-dialog-heading', 'fleet-dialog-text', 'fleet-dialog-body',
   'fleet-dialog-note', 'fleet-dialog-actions'];
@@ -590,44 +589,6 @@ test('the Jobs tab stops a whole batch by id and retries one failed item by inde
   const retry = writes(ctx.calls).find(call => call.route.endsWith('/retry'));
   assert.equal(retry.route, '/fleet/controllers/L1/jobs/b-9/items/4/retry');
   assert.deepEqual(JSON.parse(retry.opts.body), { modality: 'tts' });
-});
-
-test('the Story tab lists checked-in Macs and offers no update controls', async () => {
-  // Owner rule 2026-11-13: only Studio Launcher KH installs updates. The Story tab is a report:
-  // version, queue and last check-in — no Update Now, no release publish.
-  const instances = [
-    { instance_id: 's1', machine: 'Studio 1', status: 'online', version: '1.4.360', queue: {} },
-    { instance_id: 's2', machine: 'Studio 2', status: 'offline', version: '1.4.363', queue: {} },
-  ];
-  const ctx = context(payload([]), { respond: route => (route === '/story/instances' ? { instances } : {}) });
-  await ctx.loadFleetStory();
-  const html = node(ctx, 'fleet-story-wrap').innerHTML;
-  assert.doesNotMatch(html, /fleetStoryUpdate|Update Now|Publish/);
-  assert.match(node(ctx, 'fleet-story-status').textContent, /2 Story Macs · 1 checked in/);
-});
-
-test('Story queue counts and pause state are labelled as a dated report, including unknown age', async () => {
-  const instances = [
-    { instance_id: 'paused', queue: { running: 0, queued: 33, held: true }, age_seconds: 720 },
-    { instance_id: 'running', queue: { running: 1, queued: 33, held: false }, age_seconds: 0 },
-    { instance_id: 'unknown', queue: {}, age_seconds: null },
-  ];
-  const ctx = context({}, { respond: () => ({ instances }) });
-  await ctx.loadFleetStory();
-  const html = node(ctx, 'fleet-story-wrap').innerHTML;
-  assert.match(html, /<th>Last reported queue<\/th>/);
-  const cells = [...html.matchAll(/<td data-label="Last reported queue">([\s\S]*?)<\/td>/g)]
-    .map(match => match[1]);
-  assert.equal(cells.length, 3);
-  assert.match(cells[0], /0 running · 33 queued · paused/);
-  assert.match(cells[0], /Reported 12 min ago/);
-  assert.match(cells[1], /1 running · 33 queued/);
-  assert.match(cells[1], /Reported just now/);
-  assert.doesNotMatch(cells[1], / · paused/);
-  assert.match(cells[2], /— running · — queued/);
-  assert.match(cells[2], /Report age unknown/);
-  assert.doesNotMatch(cells[2], /just now/);
-  assert.deepEqual(ctx.calls, [{ route: '/story/instances', opts: undefined }]);
 });
 
 test('Remote final rendering lists each Mac and sends one switch per Mac', async () => {

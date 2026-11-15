@@ -116,7 +116,7 @@ function pageRoutes() {
     const literal = match[1];
     if (!/^[`'"](\/|\$\{)/.test(literal)) continue;
     const route = normalise(literal.slice(1, -1));
-    if (!/(^|\*)\/(fleet|release|story|settings|providers)(\/|$)/.test(route)) continue;
+    if (!/(^|\*)\/(fleet|release|settings|providers)(\/|$)/.test(route)) continue;
     routes.add(route);
   }
   return routes;
@@ -182,7 +182,6 @@ test('the page really calls the routes this release added', () => {
     '/fleet/controllers/*/credential', '/fleet/controllers/*/hub-token', '/fleet/controllers/*/address',
     '/fleet/controllers/*/network', '/fleet/controllers/*/test', '/fleet/controllers/*/pause',
     '/fleet/controllers/*/resume', '/fleet/controllers/*',
-    '/story/instances',
     '/settings/fleet-health', '/settings/fleet-warnings', '/providers/*/refresh',
   ];
   const missing = routes.filter(route => !called.some(candidate => matcher(route).test(candidate)));

@@ -6044,24 +6044,6 @@ def fleet_startup_auto_stops(days: float = 7, limit: int = 200) -> dict[str, Any
     return startup_control.recent_stops(days=days, limit=limit)
 
 # ---------------------------------------------------------------------------
-# Story Macs — check-ins and Content Pack removal reports only. Gateway signs and serves no app
-# release (owner rule 2026-11-13: only Studio Launcher KH installs updates).
-# ---------------------------------------------------------------------------
-
-@router.get("/api/story/instances", dependencies=[Depends(require_admin)])
-def story_instances() -> Any:
-    """Every Story Mac that checked in, its version and its jobs on this Gateway."""
-    from . import story_instances as story_macs
-
-    counts = store.active_counts_by_caller()
-    out = story_macs.instances()
-    for row in out["instances"]:
-        row["gateway_jobs"] = counts.get(f"story-studio@{row['instance_id']}",
-                                         {"waiting": 0, "running": 0})
-    return out
-
-
-# ---------------------------------------------------------------------------
 # Sound Library Admin
 #
 # **A sound source is not a model provider** — it contributes no catalogue rows,
