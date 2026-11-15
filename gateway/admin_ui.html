@@ -242,6 +242,11 @@
     #models-discover th:nth-child(4), #models-discover td:nth-child(4),
     #models-discover th:nth-child(5), #models-discover td:nth-child(5) { display: none; }
   }
+  /* 375: the Re-discover scope is the one control that still pushed the page 7 px wide. */
+  @media (max-width: 420px) {
+    #m-rediscover-scope { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+    #m-rediscover-scope select, #m-rediscover { max-width: 150px; }
+  }
   /* The `…` detail row: the Macs and the ids, on request, under the one model row. */
   #m-rows tr.m-details td { background: var(--panel2); }
   .m-detail-wrap { display: flex; flex-wrap: wrap; gap: var(--s16); padding: var(--s8) var(--s12); }
@@ -2573,7 +2578,8 @@ async function loadFootage() {
     const data = await api('/footage');
     if (quota) {
       const q = data.quota || {};
-      quota.textContent = `${q.files ?? 0} clips · ${formatBytes(q.bytes ?? 0)}`;
+      const files = q.files ?? 0;
+      quota.textContent = `${files} clip${files === 1 ? '' : 's'} · ${formatBytes(q.bytes ?? 0)}`;
     }
     if (root) {
       root.textContent = `Folder: ${data.root}${data.using_default ? ' (default)' : ''} · ${formatBytes(data.quota?.free_bytes ?? 0)} free`;
@@ -3593,6 +3599,9 @@ function setModelsMode(mode) {
   try { localStorage.setItem('kh.modelsMode', modelsMode); } catch (e) {}
   renderModelsMode();
   renderModels();
+  const host = document.getElementById('m-mode-chips');
+  const button = host && host.querySelector(`button[data-tab="${modelsMode}"]`);
+  if (button) button.focus();  // the render replaced the pressed node
 }
 function renderModelsMode() {
   document.getElementById('m-mode-chips').innerHTML =
@@ -6058,6 +6067,12 @@ function selectCreateTab(key) {
   renderCreateForm();
   document.getElementById('create-result').innerHTML = '<div class="empty">Nothing generated yet.</div>';
   renderCreateRecent();
+  // **The render replaced the button that was just pressed.** A keyboard user would land on
+  // BODY and have to Tab back through the sidebar (0.2.257 critic round 5).
+  const host = document.getElementById('create-tabs');
+  const button = host && host.querySelector(`button[data-tab="${key}"]`);
+  if (button) button.focus();
+  document.title = 'Gateway Studio KH — ' + currentTab().title;
 }
 
 async function loadCreate() {
@@ -6155,9 +6170,13 @@ function renderCreateForm() {
   // ever (review 2026-10-29e, finding 1).
   const voiceLane = fields.some(f => f.type === 'voice');
   const notReady = (createCatalogue && createCatalogue.not_ready && createCatalogue.not_ready[t.modality]) || 0;
+  const notReadyDetail = (createCatalogue && createCatalogue.not_ready_detail
+    && createCatalogue.not_ready_detail[t.modality]) || [];
   const keyNote = ' A model on a provider without its key stays hidden until that key is saved in Providers.';
+  const named = notReadyDetail.map(item =>
+    `${(item.models || []).join(', ')} on ${item.provider}`).join('; ');
   const emptyWhy = notReady
-    ? `${notReady} model${notReady === 1 ? ' is' : 's are'} switched on for this lane, but `
+    ? `${notReady} model${notReady === 1 ? ' is' : 's are'} switched on for this lane (${named}), but `
       + `${notReady === 1 ? 'its' : 'their'} provider has no key yet. Add the key on Providers and it appears here.`
     : ((typeof GUEST !== 'undefined' && GUEST)
         ? 'No free or local model is switched on for this lane. A guest account may use free and local models only — ask the owner to allow paid models for you.'
@@ -6465,10 +6484,9 @@ function createVideoParams() {
 }
 
 function setVoiceMode(mode) {
-  const saved = document.getElementById('cf-voice-mode-saved');
-  const manual = document.getElementById('cf-voice-mode-manual');
-  if (saved && saved.setAttribute) saved.setAttribute('aria-pressed', String(mode === 'saved'));
-  if (manual && manual.setAttribute) manual.setAttribute('aria-pressed', String(mode === 'manual'));
+  // One function owns the chips AND the visible row, so choosing Saved voice always brings
+  // its control back (0.2.257 critic round 5: it could hide both and leave no voice control).
+  syncVoiceModeChips(mode);
   const select = document.getElementById('cf-voice_id');
   const input = document.getElementById('cf-voice_id_manual');
   if (select) {

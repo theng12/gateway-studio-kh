@@ -2259,19 +2259,29 @@ def create_models(request: Request) -> dict[str, Any]:
     # key never reaches this list; the page says so instead of "enable one on the Models page",
     # which the owner already did (0.2.257 critic: music was enabled and Create stayed empty).
     not_ready: dict[str, int] = {modality: 0 for modality in wanted}
+    not_ready_detail: dict[str, list[dict[str, Any]]] = {modality: [] for modality in wanted}
     for definition in registry.definitions():
         if (registry.credentials.is_configured(definition.id)
                 or not registry.credentials.is_enabled(definition.id)):
             continue
+        by_modality_names: dict[str, list[str]] = {}
         for model in registry.models.models_for(definition.id, include_disabled=True):
             modality = str(model.get("modality") or "")
             if (modality in not_ready and model.get("enabled")
                     and registry.models.can_publish(definition, model)):
                 not_ready[modality] += 1
+                by_modality_names.setdefault(modality, []).append(str(model.get("model_id") or ""))
+        for modality, names in by_modality_names.items():
+            # The page names the provider and the model, not just a count (0.2.257 critic N1).
+            not_ready_detail[modality].append({
+                "provider": definition.display_name, "provider_id": definition.id,
+                "models": names,
+            })
     return {
         "by_modality": by_modality,
         "counts": {k: len(v) for k, v in by_modality.items()},
         "not_ready": not_ready,
+        "not_ready_detail": not_ready_detail,
         "paid_models": paid,
     }
 

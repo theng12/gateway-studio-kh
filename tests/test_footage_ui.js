@@ -115,7 +115,7 @@ test('the library overview fills quota and the chosen folder', async () => {
   });
   await context.loadFootage();
   assert.deepEqual(calls, ['/footage']);
-  assert.match(nodes['footage-quota'].textContent, /1 clips · 2 KB/);
+  assert.match(nodes['footage-quota'].textContent, /1 clip · 2 KB/);
   assert.match(nodes['footage-root'].textContent, /\/Volumes\/NAS\/footage/);
   assert.match(nodes['footage-rows'].innerHTML, /City timelapse/);
 });

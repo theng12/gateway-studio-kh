@@ -246,6 +246,16 @@ test('no selectable model is itself a required-field reason', () => {
   assert.match(nodes['cf-gate'].textContent, /No model is ready for this lane/);
 });
 
+test('the keyless message names the provider and model; focus survives a tab render', () => {
+  assert.match(SECTION, /not_ready_detail/);
+  assert.match(SECTION, /on \$\{item.provider\}/);
+  assert.match(source, /button\.focus\(\);  \/\/ the render replaced the pressed node/);
+  assert.match(SECTION, /button\.focus\(\);/);
+  // The Saved voice chip must bring its row back, not only its pressed state.
+  assert.match(SECTION, /function setVoiceMode\(mode\) \{\n  \/\/ One function owns the chips AND the visible row/);
+  assert.match(SECTION, /syncVoiceModeChips\(mode\);/);
+});
+
 test('the image seed field is optional and the empty lane names a missing key', () => {
   assert.match(SECTION, /k: 'seed'/);
   assert.match(SECTION, /Optional\. Repeat the same seed/);
