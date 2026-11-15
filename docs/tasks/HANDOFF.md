@@ -18,6 +18,11 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 - **0.2.256** — previous **published** build, kept in `dist/` beside 0.2.257. Its released
   artifact is `2cd548aea731-gw-0256.dmg` (sha `2cd548ae…`, 63,254,947 bytes, 2026-11-13); the
   e0d4232 candidate of the same version was never published and sits in `_trash/dist/`.
+- **1301 login item:** the bundled `SMAppService.agent` plist is correct (`RunAtLoad`, `KeepAlive
+  SuccessfulExit=false`), but the registered record is a **partial import** (`EX_CONFIG 78`,
+  `spawn failed`) — a reboot leaves the gateway down until `launchctl kickstart`. Fix at a quiet
+  point by toggling launch-at-login off/on in the app and reboot-testing; see
+  `_orchestra/gateway-lead/release-0257-20261114/1301-login-item-finding.md`.
 - **1301 route:** SSH and the feed answer over the LAN at `terranash-1301-m1-16-1000`
   (192.168.0.105) with `~/.ssh/id_ed25519_gateway1301`; the `100.x` IP and the HTTP feed port
   time out even when Tailscale is off. Tailscale is not a prerequisite.
