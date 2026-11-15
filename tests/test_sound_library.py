@@ -28,6 +28,11 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+#: The mock server's base URL, set once it has bound an **ephemeral** port. A fixed port made
+#: this file fail with EADDRINUSE whenever another suite was on the machine — a false red on a
+#: busy Mac, exactly what the gate runner exists to avoid. Fixture URLs are built from this.
+MOCK_BASE = ""
+
 
 # ---------------------------------------------------------------------------
 # Mock Openverse server
@@ -91,7 +96,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
             "license": "cc0",
             "license_version": "1.0",
             "foreign_landing_url": "https://openverse.org/audio/cc0-1",
-            "url": "http://127.0.0.1:18999/audio/cc0-1.mp3",
+            "url": f"{MOCK_BASE}/audio/cc0-1.mp3",
             "filesize": 1024,
             "filetype": "mp3",
             "duration": 60000,
@@ -108,7 +113,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
             "license": "by",
             "license_version": "4.0",
             "foreign_landing_url": "https://openverse.org/audio/by-1",
-            "url": "http://127.0.0.1:18999/audio/by-1.mp3",
+            "url": f"{MOCK_BASE}/audio/by-1.mp3",
             "filesize": 2048,
             "filetype": "mp3",
             "duration": 120000,
@@ -125,7 +130,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
             "license": "by-nc",
             "license_version": "4.0",
             "foreign_landing_url": "https://openverse.org/audio/nc-1",
-            "url": "http://127.0.0.1:18999/audio/nc-1.mp3",
+            "url": f"{MOCK_BASE}/audio/nc-1.mp3",
             "filesize": 512,
             "filetype": "mp3",
             "duration": 30000,
@@ -139,7 +144,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
             "license": "by-nd",
             "license_version": "4.0",
             "foreign_landing_url": "https://openverse.org/audio/nd-1",
-            "url": "http://127.0.0.1:18999/audio/nd-1.mp3",
+            "url": f"{MOCK_BASE}/audio/nd-1.mp3",
             "filesize": 512,
             "filetype": "mp3",
             "duration": 30000,
@@ -152,7 +157,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
             "creator": "Mystery",
             "license": "",
             "foreign_landing_url": "https://openverse.org/audio/unknown-1",
-            "url": "http://127.0.0.1:18999/audio/unknown-1.mp3",
+            "url": f"{MOCK_BASE}/audio/unknown-1.mp3",
             "filesize": 512,
             "filetype": "mp3",
             "duration": 30000,
@@ -175,7 +180,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
                 "license": override_licence or "cc0",
                 "license_version": "1.0",
                 "foreign_landing_url": "https://openverse.org/audio/cc0-1",
-                "url": "http://127.0.0.1:18999/audio/cc0-1.mp3",
+                "url": f"{MOCK_BASE}/audio/cc0-1.mp3",
                 "filesize": 1024,
                 "filetype": "mp3",
                 "duration": 60000,
@@ -192,7 +197,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
                 "license": override_licence or "by",
                 "license_version": "4.0",
                 "foreign_landing_url": "https://openverse.org/audio/by-1",
-                "url": "http://127.0.0.1:18999/audio/by-1.mp3",
+                "url": f"{MOCK_BASE}/audio/by-1.mp3",
                 "filesize": 2048,
                 "filetype": "mp3",
                 "duration": 120000,
@@ -209,7 +214,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
                 "license": "by-nc",
                 "license_version": "4.0",
                 "foreign_landing_url": "https://openverse.org/audio/nc-1",
-                "url": "http://127.0.0.1:18999/audio/nc-1.mp3",
+                "url": f"{MOCK_BASE}/audio/nc-1.mp3",
                 "filesize": 512,
                 "filetype": "mp3",
                 "duration": 30000,
@@ -223,7 +228,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
                 "license": "by-nd",
                 "license_version": "4.0",
                 "foreign_landing_url": "https://openverse.org/audio/nd-1",
-                "url": "http://127.0.0.1:18999/audio/nd-1.mp3",
+                "url": f"{MOCK_BASE}/audio/nd-1.mp3",
                 "filesize": 512,
                 "filetype": "mp3",
                 "duration": 30000,
@@ -236,7 +241,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
                 "creator": "Mystery",
                 "license": "",
                 "foreign_landing_url": "https://openverse.org/audio/unknown-1",
-                "url": "http://127.0.0.1:18999/audio/unknown-1.mp3",
+                "url": f"{MOCK_BASE}/audio/unknown-1.mp3",
                 "filesize": 512,
                 "filetype": "mp3",
                 "duration": 30000,
@@ -248,7 +253,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
                 "creator": "Broken",
                 "license": "cc0",
                 "foreign_landing_url": "https://openverse.org/audio/corrupt",
-                "url": "http://127.0.0.1:18999/audio/corrupt.mp3",
+                "url": f"{MOCK_BASE}/audio/corrupt.mp3",
                 "filesize": 100,
                 "filetype": "mp3",
                 "duration": 5000,
@@ -286,7 +291,7 @@ class MockOpenverseHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def start_mock_server(port: int = 18999):
+def start_mock_server(port: int = 0):
     server = HTTPServer(("127.0.0.1", port), MockOpenverseHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -319,10 +324,12 @@ class SoundLibraryTests(unittest.TestCase):
             "GATEWAY_APP_SUPPORT": str(cls.tmp / "app"),
             "GATEWAY_NO_MIGRATE": "1",
             "STUDIOHUB_READY_FILE": str(cls.tmp / "nohub.json"),
-            "OPENVERSE_BASE_URL": "http://127.0.0.1:18999/v1",
             "OPENVERSE_ALLOW_INSECURE_URLS": "1",
         })
-        cls.server = start_mock_server(18999)
+        cls.server = start_mock_server()
+        global MOCK_BASE
+        MOCK_BASE = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        os.environ["OPENVERSE_BASE_URL"] = f"{MOCK_BASE}/v1"
         # Import after env is set
         from gateway.providers.registry import registry
         from gateway.sound_sources import source_for, list_source_ids
