@@ -43,13 +43,16 @@ def startup(*, login=True, services=True, stale=False):
 
 
 def machine(mid, label, chip, mem, avail, disk_free, *, reachable=True, health="up", modalities=None,
-            disk_total=460.0, start=None, current=None):
+            disk_total=460.0, start=None, current=None, connection=None):
     row = {"machine": mid, "label": label, "reachable": reachable, "chip": chip, "memory_gb": mem,
            "available_gb": avail, "disk_free_gb": disk_free, "disk_total_gb": disk_total, "health": health,
            "modalities": modalities or {}, "disk": disk(disk_free, disk_total),
            "startup": start if start is not None else startup()}
     if current:
         row["current"] = current
+    if connection is not None:
+        # A measured link, stated as the Hub states one; absent stays "not reported".
+        row["connection"] = connection
     return row
 
 
