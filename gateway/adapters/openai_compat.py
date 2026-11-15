@@ -172,6 +172,30 @@ def _temperature_refused(response: httpx.Response) -> bool:
     )
 
 
+#: `(provider_id, model_id)` pairs that answered a 400 naming `max_completion_tokens`. **Keyed
+#: by provider too**: the same model id can exist on two OpenAI-compatible providers, and one
+#: learning the new spelling must not send it to the other. In-process only: the next process
+#: rediscovers it with one refused request, which is cheaper than persisting a fact the provider
+#: can change back without telling us.
+_WANTS_COMPLETION_TOKENS: set[tuple[str, str]] = set()
+
+
+def _max_tokens_refused(response: httpx.Response) -> bool:
+    """A 400 saying this model wants `max_completion_tokens`, not `max_tokens`.
+
+    Newer OpenAI chat models reject the old spelling outright (live 2026-11-15, gpt-6-luna):
+    "Unsupported parameter: 'max_tokens' is not supported with this model. Use
+    'max_completion_tokens' instead." Story always sends an output cap, so every capped
+    request to such a model failed while an uncapped one succeeded — the model was reachable
+    and healthy the whole time. A 400 is a definite refusal: nothing ran, nothing was
+    charged, so re-sending once with the other spelling is safe.
+    """
+    if response.status_code != 400:
+        return False
+    text = response.text.lower()
+    return "max_tokens" in text and "max_completion_tokens" in text
+
+
 def _messages(params: dict[str, Any]) -> list[dict[str, Any]]:
     """Story Studio sends `input`; older callers send `messages`."""
     raw = params.get("input") or params.get("messages") or []
@@ -236,7 +260,11 @@ def _chat(request: BackendRequest) -> BackendResult:
     # provider to choose a different number from the one Story was told.
     max_tokens = caller_max_output_tokens(request.params) or request.max_output_tokens
     if max_tokens:
-        body["max_tokens"] = max_tokens
+        # A model that already refused the old spelling is remembered, so the remap costs one
+        # round trip once per process rather than on every request. Safe to remember: the new
+        # spelling is accepted by the models that still take the old one.
+        body["max_completion_tokens" if (request.provider_id, request.model_id)
+             in _WANTS_COMPLETION_TOKENS else "max_tokens"] = max_tokens
 
     response_format = request.params.get("response_format")
     if isinstance(response_format, dict) and response_format.get("type") in {
@@ -269,6 +297,14 @@ def _chat(request: BackendRequest) -> BackendResult:
         # output as if 0.7 had been honoured.
         body.pop("temperature")
         dropped.append("temperature")
+        response = send()
+
+    if "max_tokens" in body and _max_tokens_refused(response):
+        # This model names the field it wants. Re-send once with that spelling and remember
+        # the model, so later requests do not pay for the discovery again.
+        body["max_completion_tokens"] = body.pop("max_tokens")
+        _WANTS_COMPLETION_TOKENS.add((request.provider_id, request.model_id))
+        dropped.append("max_tokens→max_completion_tokens")
         response = send()
 
     _raise_for(response, request.provider_id)
