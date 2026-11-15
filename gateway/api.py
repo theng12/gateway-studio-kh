@@ -1209,6 +1209,107 @@ def recovery_action(job: dict[str, Any]) -> str | None:
     return "discard_upstream" if _named_attempt(job) else "close_hold"
 
 
+#: The tail every local close shares: nothing was sent upstream, and a real answer
+#: that turns up afterwards is still this job's to keep. One string so the hold
+#: close and the terminal discard cannot drift into different honest words.
+_NOT_TOLD_TAIL = (
+    ", so the provider was not told and cannot be: the attempt stays abandoned. "
+    "A result it produces anyway is still this job's result and is adopted if it "
+    "arrives — the gateway has stopped waiting, not stopped collecting."
+)
+
+
+def _lane_declines_discard(job: dict[str, Any]) -> bool:
+    """The lane's own contract says its discard route does not apply to this job.
+
+    Hub 0.6.61 states `states.discard_supported` per lane and chat says `false`;
+    the lane's statement outranks the adapter's capability, so a job on such a
+    lane is closed locally rather than sent a discard the Hub would refuse.
+    """
+    definition = registry.definition(str(job.get("provider_id") or ""))
+    if definition is None or getattr(adapter_for(definition), "discard", None) is None:
+        return False
+    return _lane_discard_state(job) is False
+
+
+def _discard_attempt(job_id: str, job: dict[str, Any], *, subject: str) -> dict[str, Any]:
+    """Ask the lane to abandon this job's named attempt — or say why it was not asked.
+
+    One implementation behind both exits: the recovery-hold close and the terminal
+    discard share the decline rules (a lane with no route, a lane that states
+    `discard_supported: false`, an attempt nothing names), the adapter call and the
+    recorded answer, so a sentence or a rule cannot drift between them. `subject`
+    is "hold" or "job" — the word the local-close sentence opens with.
+
+    Returns `{"answer": dict | None, "lane": str | None, "declined": bool}`: an
+    `answer` is the lane's own reply (already recorded on the row), a `lane` is the
+    honest fragment saying why nothing was asked. A refusal raises
+    `DISCARD_REFUSED`, as the hold path always has.
+    """
+    provider_id = str(job.get("provider_id") or "")
+    definition = registry.definition(provider_id)
+    discard = getattr(adapter_for(definition), "discard", None) if definition else None
+    declined = _lane_declines_discard(job)
+    if declined:
+        # The lane's own contract says it has no discard route (Hub 0.6.61,
+        # `states.discard_supported: false` — a synchronous chat completion has no
+        # queued attempt). Calling anyway would get a refusal and leave the row,
+        # so it takes the same path as a lane with no discard call at all.
+        discard = None
+    unnamed = discard is not None and not _named_attempt(job)
+    if unnamed:
+        discard = None
+    if discard is None:
+        # **Nothing upstream can be told, so the record is closed here and the
+        # sentence says so.** The lane either has no discard route, says the one it
+        # has does not apply here, or is no longer configured; in every case the
+        # gateway would be quoting a discard that never happened if it claimed one.
+        if unnamed:
+            lane = f"This {subject} does not name the upstream attempt it was waiting on"
+        elif declined:
+            lane = "This lane's own contract states it has no discard route"
+        elif definition is not None:
+            lane = f"The {definition.kind} lane has no discard route"
+        else:
+            lane = f"Provider '{provider_id}' is no longer configured"
+        return {"answer": None, "lane": lane, "declined": declined}
+    batch, index = _named_attempt(job)
+    request = BackendRequest(
+        provider_id=provider_id,
+        model_id=str(job.get("model_id") or ""),
+        modality=str(job.get("modality") or ""),
+        # **The attempt's own context travels with the action.** A pool has no upstream id of
+        # its own — the attempt belongs to a *member* — so the member it stopped on is recorded in
+        # this context (`pool.py` writes `pool_member` and the member's `provider_id` there) and
+        # `PoolBackend.discard` is the only reader. Without it the pool lane had no discard route
+        # at all and every pool hold was closed locally.
+        params=dict(job.get("recovery_context") or {}),
+        values=registry.credentials.resolved(provider_id),
+        base_url=definition.base_url,
+        display_name=definition.display_name,
+        upstream_job_id=batch,
+        upstream_item_index=index,
+    )
+    try:
+        answer = discard(request)
+    except Exception as exc:  # noqa: BLE001 - an action must report, not 500
+        answer = {"ok": False, "status": None, "error": f"{type(exc).__name__}: {exc}"}
+    if not isinstance(answer, dict):
+        answer = {
+            "ok": False,
+            "status": None,
+            "error": f"unreadable discard answer: {answer!r}",
+        }
+    # Recorded either way, so a refused discard is visible rather than silent.
+    store.record_discard_remote(job_id, answer)
+    if not answer.get("ok"):
+        reason = answer.get("reason") or answer.get("error") or f"HTTP {answer.get('status')}"
+        raise GatewayError(
+            409, f"The upstream did not discard the attempt: {reason}", "DISCARD_REFUSED"
+        )
+    return {"answer": answer, "lane": None, "declined": declined}
+
+
 def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
     """Resolve a recovery hold, on the operator's word.
 
@@ -1240,38 +1341,9 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
             "This job is not waiting on a recovery hold, so there is nothing to discard.",
             "NO_RECOVERY_HOLD",
         )
-    provider_id = str(job.get("provider_id") or "")
-    definition = registry.definition(provider_id)
-    discard = getattr(adapter_for(definition), "discard", None) if definition else None
-    lane_declined = discard is not None and _lane_discard_state(job) is False
-    if lane_declined:
-        # The lane's own contract says it has no discard route (Hub 0.6.61,
-        # `states.discard_supported: false` — a synchronous chat completion has no
-        # queued attempt). Calling anyway would get a refusal and leave the hold,
-        # so it takes the same path as a lane with no discard call at all.
-        discard = None
-    unnamed = discard is not None and not _named_attempt(job)
-    if unnamed:
-        discard = None
-    if discard is None:
-        # **Nothing upstream can be told, so the record is closed here and the
-        # sentence says so.** The lane either has no discard route, says the one it
-        # has does not apply here, or is no longer configured; in every case the
-        # gateway would be quoting a discard that never happened if it claimed one.
-        if unnamed:
-            lane = "This hold does not name the upstream attempt it was waiting on"
-        elif lane_declined:
-            lane = "This lane's own contract states it has no discard route"
-        elif definition is not None:
-            lane = f"The {definition.kind} lane has no discard route"
-        else:
-            lane = f"Provider '{provider_id}' is no longer configured"
-        detail = (
-            f"An operator closed this unknown-outcome hold. {lane}, so the provider was not "
-            "told and cannot be: the attempt stays abandoned. A result it produces anyway is "
-            "still this job's result and is adopted if it arrives — the gateway has stopped "
-            "waiting, not stopped collecting."
-        )
+    outcome = _discard_attempt(job_id, job, subject="hold")
+    if outcome["answer"] is None:
+        detail = f"An operator closed this unknown-outcome hold. {outcome['lane']}{_NOT_TOLD_TAIL}"
         closed = store.close_recovery_hold(job_id, code=HOLD_CLOSED, detail=detail)
         return {
             "ok": True,
@@ -1279,40 +1351,6 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
             "discard": None,
             "job": _job_envelope(closed or store.get(job_id), native=True),
         }
-    batch, index = _named_attempt(job)
-    request = BackendRequest(
-        provider_id=provider_id,
-        model_id=str(job.get("model_id") or ""),
-        modality=str(job.get("modality") or ""),
-        # **The hold's own context travels with the action.** A pool has no upstream id of its
-        # own — the attempt belongs to a *member* — so the member it stopped on is recorded in
-        # this context (`pool.py` writes `pool_member` and the member's `provider_id` there) and
-        # `PoolBackend.discard` is the only reader. Without it the pool lane had no discard route
-        # at all and every pool hold was closed locally.
-        params=dict(job.get("recovery_context") or {}),
-        values=registry.credentials.resolved(provider_id),
-        base_url=definition.base_url,
-        display_name=definition.display_name,
-        upstream_job_id=batch,
-        upstream_item_index=index,
-    )
-    try:
-        answer = discard(request)
-    except Exception as exc:  # noqa: BLE001 - an action must report, not 500
-        answer = {"ok": False, "status": None, "error": f"{type(exc).__name__}: {exc}"}
-    if not isinstance(answer, dict):
-        answer = {
-            "ok": False,
-            "status": None,
-            "error": f"unreadable discard answer: {answer!r}",
-        }
-    # Recorded either way, so a refused discard is visible rather than silent.
-    store.record_discard_remote(job_id, answer)
-    if not answer.get("ok"):
-        reason = answer.get("reason") or answer.get("error") or f"HTTP {answer.get('status')}"
-        raise GatewayError(
-            409, f"The upstream did not discard the attempt: {reason}", "DISCARD_REFUSED"
-        )
     detail = (
         "An operator discarded this uncertain attempt: it was abandoned rather than "
         "reconciled, so a result the original worker may still produce is ignored."
@@ -1323,7 +1361,86 @@ def _discard_recovery_hold(job_id: str) -> dict[str, Any]:
     return {
         "ok": True,
         "closed": "upstream",
-        "discard": answer,
+        "discard": outcome["answer"],
+        "job": _job_envelope(closed or store.get(job_id), native=True),
+    }
+
+
+def _discard_job(job_id: str, *, by: str | None = None,
+                 reason: str | None = None) -> dict[str, Any]:
+    """End a job for good on the operator's word — terminal, and evidence retained.
+
+    Story calls this for a row stuck `running` whose upstream is gone: `store.cancel`
+    only *requests* for a running job, and a request nobody is left to confirm waits
+    for ever (measured 2026-11-15: seven Story jobs at top-level `running` with
+    terminal linked Gateway jobs and no way to end them). A recovery hold is handed
+    to `_discard_recovery_hold` whole, so today's Hub-discard semantics and
+    sentences stay the one implementation; an already terminal row is untouched, so
+    a second call changes nothing. The row is never deleted — `cancelled_by`,
+    `cancel_reason` and `cancel_origin` record who ended it and why, and a late
+    settlement keeps this verdict (`succeed`/`fail` record a late result beside a
+    terminal row instead of reopening it).
+    """
+    job = store.get(job_id)
+    if job is None:
+        raise GatewayError(404, "No such job.", "JOB_NOT_FOUND")
+    if job.get("recovery_state"):
+        hold = _discard_recovery_hold(job_id)
+        closed = store.get(job_id) or job
+        upstream = "told" if hold.get("closed") == "upstream" else (
+            "declined" if _lane_declines_discard(job) else "none"
+        )
+        return {
+            "ok": True,
+            "discarded": True,
+            "already_terminal": False,
+            "upstream": upstream,
+            "detail": str(closed.get("error_detail") or ""),
+            "job": hold["job"],
+        }
+    if job["state"] in TERMINAL_STATES:
+        return {
+            "ok": True,
+            "discarded": False,
+            "already_terminal": True,
+            "upstream": "none",
+            "detail": f"Already {job['state']}; discard changed nothing.",
+            "job": _job_envelope(job, native=True),
+        }
+    if job["state"] == "accepted":
+        # Claimed but never dispatched: there is nobody upstream to tell, and the
+        # detail says so rather than implying a provider was asked.
+        cancelled = store.cancel(job_id, by=by, reason=reason, origin="discard")
+        return {
+            "ok": True,
+            "discarded": True,
+            "already_terminal": False,
+            "upstream": "none",
+            "detail": (
+                "Nothing was ever dispatched, so the provider was not told and cannot be: "
+                "the job is cancelled here."
+            ),
+            "job": _job_envelope(cancelled or store.get(job_id), native=True),
+        }
+    # Running — or any other live state: the lane's own route first (told is told,
+    # everything else closes locally with the honest words), then terminal here.
+    outcome = _discard_attempt(job_id, job, subject="job")
+    if outcome["answer"] is None:
+        detail = f"An operator discarded this job. {outcome['lane']}{_NOT_TOLD_TAIL}"
+        upstream = "declined" if outcome["declined"] else "none"
+    else:
+        detail = (
+            "An operator discarded this uncertain attempt: it was abandoned rather than "
+            "reconciled, so a result the original worker may still produce is ignored."
+        )
+        upstream = "told"
+    closed = store.discard(job_id, by=by, reason=reason, origin="discard")
+    return {
+        "ok": True,
+        "discarded": True,
+        "already_terminal": False,
+        "upstream": upstream,
+        "detail": detail,
         "job": _job_envelope(closed or store.get(job_id), native=True),
     }
 

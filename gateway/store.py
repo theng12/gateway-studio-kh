@@ -4326,6 +4326,46 @@ class JobStore:
                 self._conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             )
 
+    def discard(self, job_id: str, *, by: str | None = None, reason: str | None = None,
+                origin: str | None = None) -> dict[str, Any] | None:
+        """End a live row on the operator's discard — terminal now, evidence retained.
+
+        `cancel` for a running job only *requests*: the worker that owns the row
+        confirms it, and a row whose worker is gone (upstream lost, thread dead)
+        waits for ever — measured 2026-11-15: seven Story jobs stuck at top-level
+        `running` with terminal linked Gateway jobs. This is the operator's
+        terminal answer for that case: the same attribution `cancel` stamps,
+        `CANCEL_CONFIRMED` so nothing keeps waiting, and the row itself is never
+        deleted. An already terminal row is returned untouched, so a second call
+        changes nothing. A late settlement keeps this verdict — `succeed`/`fail`
+        record a late result beside a terminal row instead of reopening it.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return None  # type: ignore[return-value]
+            if row["state"] in TERMINAL_STATES:
+                return self._row_dict(row)
+            fields: dict[str, Any] = {
+                "state": "cancelled",
+                "cancel_state": CANCEL_CONFIRMED,
+                "cancelled_at": row["cancelled_at"] or time.time(),
+                "next_action_at": None,
+            }
+            if by:
+                fields["cancelled_by"] = str(by)[:200]
+            if reason:
+                fields["cancel_reason"] = str(reason)[:500]
+            if origin:
+                fields["cancel_origin"] = str(origin)[:40]
+            self._update_locked(job_id, fields)
+            self._conn.commit()
+            return self._row_dict(
+                self._conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            )
+
     def release_idempotency_key(self, job_id: str, *, key: str) -> bool:
         """Move a finished job's idempotency key aside so a fresh retry can hold it.
 

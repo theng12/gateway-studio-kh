@@ -3089,6 +3089,31 @@ def discard_uncertain_job(job_id: str) -> Any:
         return _error(exc.status, exc.detail, exc.code)
 
 
+@router.post("/api/jobs/{job_id}/discard", dependencies=[Depends(require_admin)])
+def discard_job(job_id: str, body: dict[str, Any] | None = None) -> Any:
+    """End a job for good from the app — a stuck row that is not a recovery hold.
+
+    `cancel` only *requests* for a running job and waits for a worker that may be
+    gone (seven Story jobs measured 2026-11-15 at top-level `running` with
+    terminal linked Gateway jobs and no way to end them); `discard-uncertain`
+    refuses anything that is not a hold. This route ends any live row terminally,
+    delegates a hold to the same Hub-discard path, and records who ended it and
+    why (`by`/`reason` are optional and recorded when given). Terminal wins: a
+    late settlement keeps the verdict rather than reopening the row.
+    """
+    from .api import GatewayError, _discard_job
+
+    payload = body or {}
+    try:
+        return _discard_job(
+            job_id,
+            by=str(payload["by"]) if payload.get("by") else None,
+            reason=str(payload["reason"]) if payload.get("reason") else None,
+        )
+    except GatewayError as exc:
+        return _error(exc.status, exc.detail, exc.code)
+
+
 @router.post("/api/jobs/{job_id}/reconcile-hold", dependencies=[Depends(require_admin)])
 def reconcile_hold_job(job_id: str) -> Any:
     """Ask the Hub to settle a "Needs recovery" job from its original worker (keeps a finished result).
