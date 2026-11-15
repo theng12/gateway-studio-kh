@@ -259,6 +259,9 @@
   .model-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: var(--s12); margin-bottom: var(--s12); }
   .model-card { margin: 0; }
+  /* Nothing offered: one line, not a tall blank card. */
+  .model-card.is-empty .card-head { padding: var(--s8) var(--s16); align-items: center; }
+  .model-card.is-empty .m-name { font-size: 13px; }
   .model-mini { list-style: none; margin: var(--s8) 0 0; padding: 0; }
   .model-mini li { display: flex; align-items: center; gap: var(--s8); padding: var(--s6) 0;
     border-top: 1px solid var(--line); font-size: 12px; }
@@ -3592,21 +3595,40 @@ function renderModelsOverview() {
   host.innerHTML = `<div class="model-cards">` + modalities.map(modality => {
     const item = summary[modality] || {};
     const mine = rows.filter(r => r.modality === modality);
-    const offered = mine.filter(r => r.enabled).slice(0, 6);
+    const offeredAll = mine.filter(r => r.enabled);
+    const offered = offeredAll.slice(0, 6);
+    // One source for the count and the list. The summary total and the rendered
+    // rows can disagree, and the card used to state both, so it read "8 offered"
+    // above a single row.
+    const shown = offered.length;
+    const total = Math.max(offeredAll.length, item.enabled || 0);
+    const more = offeredAll.length > shown ? ` · showing ${shown}` : '';
+    if (!shown) {
+      // Nothing offered: a compact line, not a tall empty card.
+      return `<section class="card model-card is-empty">
+        <div class="card-head">
+          <div class="card-main">
+            <div class="m-name">${esc(modalityLabel(modality))}</div>
+            <div class="hint">Nothing offered yet.</div>
+          </div>
+          <button class="sm" onclick="discoverModality('${esc(modality)}')">Discover</button>
+        </div>
+      </section>`;
+    }
     return `<section class="card model-card">
       <div class="card-head">
         <div class="card-main">
           <div class="m-name">${esc(modalityLabel(modality))}</div>
-          <div class="hint">${item.enabled || 0} of ${item.total || 0} offered to Story Studio
+          <div class="hint">${total} of ${item.total || 0} offered to Story Studio${more}
             ${item.installed_local ? ` · ${item.installed_local} installed on this Mac` : ''}</div>
         </div>
         <button class="sm" onclick="discoverModality('${esc(modality)}')">Manage</button>
       </div>
-      ${offered.length ? `<ul class="model-mini">${offered.map(r => `
+      <ul class="model-mini">${offered.map(r => `
         <li><span class="mm-name">${esc(r.display_name)}</span>
             <span class="hint">${esc(r.is_location ? 'Hub Studio KH (local)' : r.provider_name)}${Array.isArray(r.locations) && r.locations.length ? ` · ${r.locations_enabled} of ${r.locations_total}` : ''}</span>
-            <button class="sm" onclick="toggleModelEverywhere('${esc(r.model_id)}','${esc(r.modality)}', false)">Turn off</button></li>`).join('')}</ul>`
-        : `<p class="hint" style="margin:8px 0 0">Nothing offered yet. Open Discover to switch one on.</p>`}
+            <button class="sm" onclick="toggleModelEverywhere('${esc(r.model_id)}','${esc(r.modality)}', false)">Turn off</button></li>`).join('')}</ul>
+      ${offeredAll.length > shown ? `<p class="hint" style="margin:8px 0 0">${offeredAll.length - shown} more offered. <button class="sm primary" onclick="discoverModality('${esc(modality)}')">Manage all</button></p>` : ''}
     </section>`;
   }).join('') + '</div>';
   const hidden = rows.filter(r => !r.enabled);
