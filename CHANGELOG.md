@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.258 — 2026-11-15
+
+- **A request with an output cap now works on a model that wants `max_completion_tokens`.** Some OpenAI-compatible models reject `max_tokens` outright ("Unsupported parameter … Use 'max_completion_tokens' instead"). The Gateway now recognises that refusal by the provider's own words, re-sends once with the field the model named (a 400 means nothing ran and nothing was charged), and says so in the job's `params_dropped`. The model is remembered for the rest of the process, per provider, so later requests go straight to the right spelling.
+
 ## 0.2.257 — 2026-11-15
 
 - **Models answers "what have I got?" first.** It opens on **Your models** — a card per kind (Image, LLM, Voice/TTS, Music, Video, Transcription) with how many are offered, how many are installed on this Mac, and the models themselves. **Discover** holds the full catalogue with the filters, search and bulk actions.
