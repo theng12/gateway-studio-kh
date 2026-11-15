@@ -4172,7 +4172,7 @@ def list_jobs(
     that is SQLite's "no limit", so the Jobs window could be handed every job
     ever recorded. The app asks for 200, so 500 is headroom rather than a wall.
     """
-    from . import retention
+    from . import fleet, retention
     from .api import _lifecycle_fields, recovery_action
 
     pinned = {str(row["path"]) for row in retention.kept()}
@@ -4224,7 +4224,6 @@ def list_jobs(
         execution = None
         hub_machine = executed_by
         if hub_machine is not None:
-            from . import fleet
             location_id = fleet.controller_id_from(provider_id)
             if location_id is not None:
                 location_label = definition.display_name if definition else provider_id
@@ -4258,6 +4257,9 @@ def list_jobs(
                 "executed_by": executed_by,
                 "hub_machine": hub_machine,
                 "execution": execution,
+                # **A fleet job, or a cloud lane with no Mac at all.** The Jobs page says which,
+                # so a cloud job's empty serving machine reads as "no Mac", never "unknown".
+                "fleet": provider_id.startswith(fleet.PROVIDER_PREFIX),
                 # **Who asked.** Stored on every job and, until this line, published
                 # by nothing — the store had it and the surface the Jobs window
                 # reads did not, which is the same defect as a control wired to

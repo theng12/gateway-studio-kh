@@ -36,14 +36,15 @@ test('jobs show the qualified machine and measured reference count, including ze
   const result = await render({ ...job, reference_count: 0, started_at: 11, finished_at: 12 });
   assert.match(result, /Remote studio \(controller\)/);
   assert.match(result, /0 reference images used/);
-  assert.match(result, /Gateway dispatched: time-11/);
-  assert.match(result, /Gateway settled: time-12/);
+  assert.match(result, /Dispatched time-11/);
+  assert.match(result, /Settled time-12/);
 });
 
 test('old jobs show unrecorded clocks without inventing reference counts', async () => {
   const result = await render(job);
-  assert.match(result, /Gateway dispatched: not recorded/);
-  assert.match(result, /Gateway settled: not recorded/);
+  assert.doesNotMatch(result, /Gateway dispatched: not recorded/);
+  assert.doesNotMatch(result, /Gateway settled: not recorded/,
+    'an unrecorded clock is omitted, not printed on every row');
   assert.doesNotMatch(result, /reference images used/);
 });
 

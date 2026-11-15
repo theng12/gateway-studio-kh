@@ -11087,18 +11087,42 @@ function imageJobEvidence(job) {
     ? `${applied} reference image${applied === 1 ? '' : 's'} used` : 'Used count not recorded'}</div>`;
 }
 
+//: What is actually running the job — the Hub's own machine for the item, once it has said so.
+//: A queued or accepted job has no serving Mac yet, and a cloud lane has none at all; neither is
+//: ever filled in from the location the Gateway targeted.
+function servingMachineCell(job) {
+  const terminal = ['succeeded', 'failed', 'cancelled'].includes(job.state);
+  if (job.executed_by) {
+    return `<div>${esc(job.executed_by)}</div><div class="hint">${
+      terminal ? 'Ran here' : 'Accepted & executing here'}</div>`;
+  }
+  // **A cloud lane has no Mac at all**, at any state; that is not "unknown".
+  if (job.fleet === false) return '<div class="hint">Cloud provider — no Mac</div>';
+  if (job.state === 'accepted') return '<div class="hint">Waiting for execution</div>';
+  if (job.state === 'running') return '<div class="hint">Not reported by the Hub yet</div>';
+  if (terminal) return '<div class="hint">Not recorded</div>';
+  return '<div class="hint">—</div>';
+}
+
 function jobsTable(rows, filtered = false) {
   return rows.length ? `<div class="tablewrap"><table style="min-width:1100px"><thead><tr>
-      <th>Job</th><th>Image mode / references</th><th>State</th><th>Model</th><th>Where</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
+      <th>Job</th><th>Image mode / references</th><th>State</th><th>Model</th><th>Location</th><th>Serving machine</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
     </tr></thead><tbody>${rows.map(j => `<tr>
       <td class="mid">${esc(j.short_id || String(j.id).slice(0, 8))}</td>
       <td>${imageJobEvidence(j)}</td>
       <td><span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span></td>
       <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}</td>
-      <td>${esc(j.provider_name || '')}${j.executed_by ? `<div class="hint">${esc(j.executed_by)}</div>` : ''}</td>
+      <td>${esc(j.provider_name || '—')}</td>
+      <td>${servingMachineCell(j)}</td>
       <td>${esc(requesterLabel(j))}</td>
       <td>${esc(j.caller || '')}</td>
-      <td class="num">${ago(j.created_at)}<div class="hint">Gateway dispatched: ${j.started_at == null ? 'not recorded' : ago(j.started_at)}</div><div class="hint">Gateway settled: ${j.finished_at == null ? 'not recorded' : ago(j.finished_at)}</div></td>
+      <td class="num">${ago(j.created_at)}${
+        j.started_at != null && j.state !== 'accepted'
+          ? `<div class="hint">Dispatched ${ago(j.started_at)}</div>` : ''}${
+        j.finished_at != null && ['succeeded', 'failed', 'cancelled'].includes(j.state)
+          ? `<div class="hint">Settled ${ago(j.finished_at)}</div>` : ''}${
+        j.started_at == null && j.state === 'accepted'
+          ? '<div class="hint">Not dispatched yet</div>' : ''}</td>
     </tr>`).join('')}</tbody></table></div>`
     : `<div class="empty">${filtered ? 'No jobs match this image mode.'
       : 'No jobs have run yet — they appear here after a Create job.'}</div>`;
