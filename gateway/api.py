@@ -1724,7 +1724,7 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         # `generation_seconds` and `usage` — so a lowered answer allowance never reached the job
         # the caller polls, which is why no job has ever shown one. Published here, for a
         # re-sent job too: the resize writes the same keys.
-        for key in ("max_tokens_asked", "max_tokens_lowered_to", "max_tokens_lowered_reason",
+        for key in ("max_tokens_asked", "max_tokens_sent", "max_tokens_lowered_to", "max_tokens_lowered_reason",
                     "prompt_tokens_measured"):
             if payload.get(key) is not None:
                 body[key] = payload[key]
@@ -1742,7 +1742,7 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         }.get(body["failure_code"], "provider_error")
         body["failure_reason"] = job.get("error_detail") or "generation failed"
         for key in ("partial_response", "pool_attempts",
-                    "max_tokens_asked", "max_tokens_lowered_to", "max_tokens_lowered_reason",
+                    "max_tokens_asked", "max_tokens_sent", "max_tokens_lowered_to", "max_tokens_lowered_reason",
                     "prompt_tokens_measured"):
             if payload.get(key) is not None:
                 body[key] = payload[key]

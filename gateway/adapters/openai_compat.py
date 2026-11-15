@@ -295,7 +295,16 @@ def _chat(request: BackendRequest) -> BackendResult:
             upstream_accepted=True,
             upstream_settled=True,
         )
-        error.evidence = {"finish_reason": finish_reason or "refusal"}
+        # **What was asked and what was sent**, so a truncated answer can be attributed without
+        # inferring a cap from usage alone (live 2026-11-15: a caller's own 10,624 stopped the
+        # free primary at length while the model published 32,000). This lane sends the caller's
+        # figure verbatim; when none was named it sends the published allowance.
+        asked = caller_max_output_tokens(request.params)
+        error.evidence = {
+            "finish_reason": finish_reason or "refusal",
+            **({"max_tokens_asked": asked} if asked else {}),
+            **({"max_tokens_sent": max_tokens} if max_tokens else {}),
+        }
         if not policy_refusal:
             error.evidence["partial_response"] = {
                 "text": text or "",

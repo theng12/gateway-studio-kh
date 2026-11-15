@@ -63,6 +63,23 @@ class OpenAIFinishReasonTests(unittest.TestCase):
         self.assertTrue(error.upstream_settled)
         self.assertTrue(error.retryable)
         self.assertEqual("kept words", error.evidence["partial_response"]["text"])
+        self.assertEqual(error.evidence["partial_response"]["finish_reason"], "length")
+        self.assertEqual(error.evidence["partial_response"]["usage"], {"completion_tokens": 4})
+
+    def test_a_truncated_answer_says_what_was_asked_and_sent(self) -> None:
+        answer = httpx.Response(200, json={
+            "model": "model",
+            "choices": [{"message": {"content": "kept"}, "finish_reason": "length"}],
+            "usage": {"completion_tokens": 10623, "completion_tokens_details": {"reasoning_tokens": 8602}},
+        })
+        request = _request()
+        request.params["max_tokens"] = 10624
+        with patch.object(openai_compat.httpx, "post", return_value=answer):
+            with self.assertRaises(BackendError) as caught:
+                openai_compat.OpenAICompatibleBackend().generate(request)
+        self.assertEqual(caught.exception.evidence["max_tokens_asked"], 10624)
+        self.assertEqual(caught.exception.evidence["max_tokens_sent"], 10624)
+        self.assertEqual(caught.exception.evidence["partial_response"]["usage"]["completion_tokens"], 10623)
 
     def test_sync_route_preserves_incomplete_output_and_pool_attempts(self) -> None:
         partial_text = "See https://example.com/chapter and keep studio-hub-reader exactly."
