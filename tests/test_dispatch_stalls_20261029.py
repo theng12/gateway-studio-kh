@@ -314,6 +314,35 @@ class PoolMemberWaitTest(_Base):
         self.assertIn("waiting for a Magpie slot", waits[0]["reason"])
         self.assertIsNone(waits[-1], "the job is told the wait is over")
 
+    def test_the_published_wait_shows_its_ceiling_and_counts_down(self) -> None:
+        """The wait's own limit is shown, and it moves: 15 min flat would read like a wedged row.
+
+        Owner rule: a limit you enforce is shown. The adapter already failed at the ceiling; what
+        was missing is that a legitimately waiting row could not be told from a silent one.
+        """
+        self.budget = 180.0
+        self.pool._member_calls["magpie"] = 1
+        base = 1_000.0
+        ticks = {"now": 0.0}
+
+        def fake_clock() -> float:
+            ticks["now"] += 70.0
+            return base + ticks["now"]
+
+        waits: list[object] = []
+        with patch.object(self.pool, "_clock", fake_clock):
+            with self.assertRaises(BackendError) as caught:
+                self.pool._acquire_member(self._definition(), self._request(waits.append))
+        self.assertEqual("POOL_MEMBER_BUSY", caught.exception.code, "the adapter still ends it")
+
+        reasons = [str(w["reason"]) for w in waits if isinstance(w, dict)]
+        self.assertIn("up to 3 min", reasons[0])
+        self.assertIn("waiting for a Magpie slot", reasons[0])
+        remaining = [int(part.split(" about ")[1].split(" min")[0]) for part in reasons if " about " in part]
+        self.assertGreater(len(remaining), 1, f"the wait must count down: {reasons}")
+        self.assertEqual(remaining, sorted(remaining, reverse=True), f"remaining only falls: {remaining}")
+        self.assertLess(remaining[-1], remaining[0])
+
     def test_the_published_wait_since_is_wall_clock(self) -> None:
         """`waiting.since` is rendered as a date beside the job (`api._iso`), so it must be one.
 
@@ -831,3 +860,4 @@ class ClaimWindowTest(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
