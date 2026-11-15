@@ -13,8 +13,55 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 ## Versions
 
-- **0.2.246** — current, installed here and on 1301, published to the feed (2026-11-12).
-- Release builds come from `menubar/build.sh`; `dist/` keeps the **latest three** verified DMGs, older ones go to `_trash` after reference checks.
+- **0.2.257** — current: built from `980379b`, accepted, installed here (2026-11-15). Published
+  to the 1301 feed pending the Developer's publish + readback (this Mac has no ssh to 1301).
+- **0.2.256** — previous accepted build, kept in `dist/` beside 0.2.257.
+- Release builds come from `menubar/build.sh`; `dist/` keeps the **latest two** verified DMGs,
+  older ones go to `_trash` after reference checks.
+
+## 0.2.257 — what changed (source `0cedfe5..980379b`)
+
+- **Models** opens on *Your models* (per-kind cards, offered/installed counts) with *Discover*
+  as the catalogue; one row per model; `N of M` + Macs behind `…`; providers listed as
+  providers (Hub Studio KH (local) one entry), Macs as a locations filter.
+- **Voices**: real provider, `N of M locations`, tone/best-for/sample length/id in Details.
+- **Create** draws the selected model's own options: image ratios/sizes with the size's price
+  and a seed, video variants, music instrumental + lyrics count, TTS temperature where declared,
+  Saved voice | Provider voice ID as one decision, and Generate disabled with the missing line.
+- **Cloud image geometry** labels are the pixels really sent (3:2/1:1/2:3); legacy names still
+  resolve to the same pixels.
+- **Footage library** (Content Packs): `<sha256>` bytes + sidecar + `index.json` under a root
+  chosen with a folder picker; measured length/size/licence, quota, free stock (Wikimedia on,
+  Pexels/Pixabay key+switch), free AI stock from the fleet's t2v; Story reads `/v1/footage/*`.
+- **Video catalogue** `/v1/videos/models` with sources, price evidence and live eligibility.
+- **Dispatch**: eligibility vocabulary, stale-heartbeat offline, 30 s
+  `DISPATCH_NO_ELIGIBLE_MACHINE` with reasons, `/upstream` before a Hub batch, cancelled
+  who/why and a fresh-job retry.
+- **Image pools** publish only ratios with options, one default.
+- **The old Story Studio update/monitoring tab is removed** (Fleet Stories tab and
+  `/admin/api/story/instances`); `/v1/apps/story/checkin` stays for the Content Pack removal
+  report.
+- **Fleet > Machines**: grouped live filters (State/Issues with counts, Version, Network,
+  Location), chips + Reset, sortable columns with `aria-sort`, a fleet-wide warning summary
+  with "Show warning kinds"/"Show Macs with issues", wrapping cause text, stacked rows at 900.
+- **Jobs**: Location and Serving machine are separate; the serving Mac is the Hub's own
+  machine from success/failure evidence, with honest queued/running/cloud states and concise
+  Created clocks.
+- **Pool failures**: a mixed pool reports `POOL_EXHAUSTED` with every member cause (not the
+  last member's auth code); the OpenAI-compatible lane records `max_tokens_asked`/`sent` with
+  the finish reason and usage. Story contract: `pool-failure-contract-0257.md`.
+
+## What 0.2.257 learned
+
+- The JS console suite is one process per file; a single multi-file run shares globals.
+- The studio-gate COMPLETENESS check was broken in the shared scanner (macOS `find` rejects
+  grep's `--exclude-dir`), fixed in `Shared Tools/studio-orchestration` `efaeb83`.
+- A model can be ticked on a keyless provider; `/create/models` returns `not_ready(_detail)`
+  and Create names the key.
+- Keyboard: a render that replaces a focused button must re-focus it; a dialog opened from a
+  menu returns focus to the menu trigger; an expanded Fleet detail closes on Escape.
+- The publish needs 1301 access (no ssh from this Mac); the feed write and readback are the
+  Developer's step.
 
 ## Browser-extension workers (wire v1)
 
