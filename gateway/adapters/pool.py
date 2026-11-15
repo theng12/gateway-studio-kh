@@ -39,6 +39,7 @@ refused on its own: a toggle has to still be a toggle when the job runs.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from typing import Any
@@ -110,6 +111,7 @@ def _acquire_member(definition: Any, request: BackendRequest) -> None:
     announced_at = time.time()
     deadline = started + ceiling_s
     announced = False
+    announced_left_min: int | None = None
     try:
         while True:
             with _member_cond:
@@ -127,14 +129,32 @@ def _acquire_member(definition: Any, request: BackendRequest) -> None:
                     f"{int(ceiling_s // 60)} min.",
                     code="POOL_MEMBER_BUSY", retryable=True,
                     upstream_accepted=False, upstream_settled=True)
-            if request.on_wait is not None and not announced:
-                request.on_wait({"reason": f"waiting for a {label} slot", "since": announced_at})
-                announced = True
+            # The wait shows its own deadline, and counts down: a row that is legitimately
+            # waiting must not read like one that is wedged (owner rule: a limit you enforce is
+            # shown). Re-announced only when the remaining minutes change, so a stable wait costs
+            # no extra store writes.
+            if request.on_wait is not None:
+                left_min = max(0, math.ceil(left / 60.0))
+                if not announced or left_min != announced_left_min:
+                    request.on_wait({
+                        "reason": _wait_sentence(label, ceiling_s, left),
+                        "since": announced_at,
+                    })
+                    announced = True
+                    announced_left_min = left_min
             with _member_cond:
                 _member_cond.wait(min(WAIT_STEP_S, left))  # re-read the limit: the owner may raise it live
     finally:
         if announced and request.on_wait is not None:
             request.on_wait(None)
+
+
+
+def _wait_sentence(label: str, ceiling_s: float, left_s: float) -> str:
+    """Why this job is waiting, how long it may wait, and how much of that is left."""
+    up = max(1, math.ceil(ceiling_s / 60.0))
+    left = max(0, math.ceil(left_s / 60.0))
+    return f"waiting for a {label} slot - up to {up} min, about {left} min left"
 
 
 def _release_member(provider_id: str) -> None:
