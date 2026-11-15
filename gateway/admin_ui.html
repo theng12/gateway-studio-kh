@@ -7496,6 +7496,8 @@ function fleetCauseTooltip(causes) {
 // A card's own detail is opened on demand and survives the 15 s redraw: the page keeps the keys
 // the operator opened, and the redraw renders those panels open.
 const fleetOpenDetails = new Set();
+//: The control that opened an expanded detail panel, so Escape can give focus back to it.
+let fleetDetailsOpener = null;
 
 // "Open" on a group card goes to the tab that can act on that Mac or site, with the location
 // filter already set: a card that says "Unreachable" now offers the place that fixes it.
@@ -10949,6 +10951,9 @@ function fleetGroupRow(item) {
 
 // Details from a table row: show the same item as a card, with its detail panel open.
 function fleetShowDetails(button) {
+  const menu = button.closest && button.closest('.more-menu');
+  fleetDetailsOpener = (menu && menu.parentElement
+    ? menu.parentElement.querySelector('[aria-haspopup="true"]') : null) || button;
   closeMenus();
   const key = button.dataset.fleetKey;
   if (!key) return;
@@ -11460,6 +11465,22 @@ async function signOut() {
   // and never while a dialog is open, where the dialog's Escape wins.
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
+    // **An expanded Fleet detail closes with Escape, and focus goes back to the control that
+    // opened it.** The Details view is a panel, not a dialog; without this it could only be
+    // closed by finding its Hide button, and Escape left focus on the page body.
+    if (typeof fleetOpenDetails !== 'undefined' && fleetOpenDetails.size) {
+      fleetOpenDetails.clear();
+      if (typeof lastFleetPayload !== 'undefined' && lastFleetPayload) renderFleet(lastFleetPayload);
+      const opener = fleetDetailsOpener;
+      fleetDetailsOpener = null;
+      if (opener && opener.isConnected !== false && typeof opener.focus === 'function') opener.focus();
+      else {
+        const more = document.querySelector('#fleet-body [aria-haspopup="true"]');
+        if (more) more.focus();
+      }
+      event.preventDefault();
+      return;
+    }
     const filters = document.getElementById('fleet-filters');
     if (filters && !filters.hidden) {
       filters.hidden = true;
