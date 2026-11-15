@@ -188,13 +188,24 @@ class EverythingElseKeepsTheHold(_Case):
         self.assert_held_at_the_same_site(store, job_id, hub, moves)
         self.assertEqual(hub.posts, [])
 
-    def test_transcription_chat_and_a_cancelled_job_are_held(self) -> None:
-        for name, kwargs in {"srt": {"modality": "transcription"}, "chat": {"modality": "chat"},
-                             "cancel": {"cancel": True}}.items():
+    def test_transcription_and_chat_jobs_are_held(self) -> None:
+        for name, kwargs in {"srt": {"modality": "transcription"}, "chat": {"modality": "chat"}}.items():
             with self.subTest(name):
                 store, job_id = self.interrupted(f"held-{name}", **kwargs)
                 self.assertEqual(store.interrupted, [])
                 self.assertEqual(store.get(job_id)["error_code"], "UNKNOWN_OUTCOME")
+
+    def test_a_job_with_a_pending_cancel_ends_cancelled_not_held(self) -> None:
+        """0.2.260: a cancel is finalised by the worker that owns the job, and a restart removes
+        that worker — so the request used to sit `requested` forever on a held row (1301,
+        2026-11-15: the operator's cancel reached the Gateway and never finalised). The hold is
+        where the gateway says nothing is working the row, so it answers the cancel instead."""
+        store, job_id = self.interrupted("held-cancel", cancel=True)
+        self.assertEqual(store.interrupted, [])
+        job = store.get(job_id)
+        self.assertEqual(job["state"], "cancelled", job.get("error_detail"))
+        self.assertIsNotNone(job.get("cancelled_at"))
+        self.assertFalse(job["recovery_required"])
 
 
 class MeasurementRestartTests(_Case):
