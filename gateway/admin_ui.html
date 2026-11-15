@@ -235,6 +235,13 @@
   /* A narrow window scrolls the Discover table inside its box rather than crushing the
      Model and Price columns to 50/44 px (0.2.257 critic). */
   #models-discover .tablewrap table { min-width: 820px; }
+  /* Below 900 the Operation and Locations columns fold into the row's Details, so the table
+     fits the window instead of requiring a sideways scroll (0.2.257 critic round 4). */
+  @media (max-width: 900px) {
+    #models-discover .tablewrap table { min-width: 0; }
+    #models-discover th:nth-child(4), #models-discover td:nth-child(4),
+    #models-discover th:nth-child(5), #models-discover td:nth-child(5) { display: none; }
+  }
   /* The `…` detail row: the Macs and the ids, on request, under the one model row. */
   #m-rows tr.m-details td { background: var(--panel2); }
   .m-detail-wrap { display: flex; flex-wrap: wrap; gap: var(--s16); padding: var(--s8) var(--s12); }
@@ -3495,7 +3502,9 @@ function modelRow(r) {
         <div class="m-detail-text">
           <div><b>Provider</b> ${esc(r.is_location ? 'Hub Studio KH (local)' : r.provider_name)}
             ${fleet ? `· ${r.locations_total} location${r.locations_total === 1 ? '' : 's'}` : '· cloud provider'}</div>
+          <div><b>Operation</b> ${esc(modalityLabel(r.modality))}</div>
           <div><b>Source</b> ${esc(SOURCE_LABELS[r.source] || r.source)}</div>
+          <div><b>Locations</b> ${fleet ? `${r.locations_enabled} of ${r.locations_total}` : 'cloud provider'}</div>
           <div><b>Model id</b> <span class="m-id">${esc(r.model_id)}</span></div>
           ${r.installed_local ? '<div><b>This Mac</b> has it installed</div>'
                               : (r.is_location ? '<div class="muted">Not installed on this Mac; another location serves it.</div>' : '')}
@@ -3590,6 +3599,7 @@ function renderModelsMode() {
     [['mine', 'Your models'], ['discover', 'Discover']].map(([key, label]) =>
       `<button class="chip" data-tab="${key}" aria-pressed="${key === modelsMode}"
                onclick="setModelsMode('${key}')">${label}</button>`).join('');
+  if (typeof wireTabKeys === 'function') wireTabKeys('m-mode-chips');
   document.getElementById('models-overview').style.display = modelsMode === 'mine' ? '' : 'none';
   document.getElementById('models-discover').style.display = modelsMode === 'discover' ? '' : 'none';
 }
@@ -3654,6 +3664,7 @@ async function toggleModel(providerId, modelId, enabled) {
   // *click*, not the server's state, so a rejected change left the checkbox
   // displaying something that was never applied — and an accepted one could
   // still differ once the catalogue's gates had their say.
+  createCatalogue = null;  // the Create pickers must see this change
   await loadModels();
   loadStatus();
 }
@@ -3674,6 +3685,7 @@ async function toggleModelEverywhere(modelId, modality, enabled) {
   } catch (e) {
     await uiAlert(e.message);
   }
+  createCatalogue = null;  // a bulk change reaches the Create pickers too
   await loadModels();
   loadStatus();
 }
@@ -6010,6 +6022,22 @@ function stopAllCreatePolls() {
   Object.keys(createTimers).forEach(stopCreatePoll);
 }
 
+//: Arrow keys move focus within a button group; Enter/Space activate (native button behaviour).
+function wireTabKeys(hostId) {
+  const host = document.getElementById(hostId);
+  if (!host || host.dataset.arrowsWired) return;
+  host.dataset.arrowsWired = '1';
+  host.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    const tabs = [...host.querySelectorAll('button')];
+    const index = tabs.indexOf(document.activeElement);
+    if (index < 0) return;
+    const step = event.key === 'ArrowRight' ? 1 : -1;
+    tabs[(index + step + tabs.length) % tabs.length].focus();
+    event.preventDefault();
+  });
+}
+
 function renderCreateTabs() {
   // `aria-pressed` and not `aria-selected`: without `role="tab"` the selected
   // attribute is meaningless to assistive tech, and a group of toggle buttons keeps
@@ -6019,6 +6047,7 @@ function renderCreateTabs() {
   document.getElementById('create-tabs').innerHTML = CREATE_TABS.map(t =>
     `<button data-tab="${t.key}" aria-pressed="${t.key === createTab}"
              onclick="selectCreateTab('${t.key}')">${esc(t.title)}</button>`).join('');
+  wireTabKeys('create-tabs');
 }
 
 function selectCreateTab(key) {
@@ -6033,10 +6062,12 @@ function selectCreateTab(key) {
 
 async function loadCreate() {
   renderCreateTabs();
-  if (!createCatalogue) {
-    try {
-      createCatalogue = await api('/create/models');
-    } catch (e) { createCatalogue = { by_modality: {}, counts: {} }; }
+  // **Always re-read.** A model switched on in Models used to leave a cached catalogue in
+  // place, so Create still said "no model is switched on" (0.2.257 critic round 4).
+  try {
+    createCatalogue = await api('/create/models');
+  } catch (e) {
+    if (!createCatalogue) createCatalogue = { by_modality: {}, counts: {} };
   }
   // Voices are **not** loaded here: which voices a lane may use is the model's answer, so
   // they are fetched per model in `loadCreateVoices` and re-fetched on every change.
@@ -6457,6 +6488,9 @@ function setVoiceMode(mode) {
 //: door cannot say two different things.
 function createRequiredProblem() {
   const tab = currentTab();
+  if (!document.getElementById('cf-model')) {
+    return 'No model is ready for this lane — see the note above for why.';
+  }
   const row = createModelRow(document.getElementById('cf-model')?.value || '');
   const instrumental = document.getElementById('cf-instrumental');
   if (tab.modality === 'music' && row && row.requires_lyrics === true

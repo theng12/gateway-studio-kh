@@ -228,6 +228,24 @@ test('the subtitle form refuses to generate without a recording', () => {
   assert.equal(nodes['cf-go'].disabled, false);
 });
 
+test('a model switched on in Models reaches Create, and no model disables Generate', () => {
+  // The Create catalogue was cached for the page's life, so a model ticked in Models left
+  // "No model is switched on" on screen (0.2.257 critic round 4).
+  assert.match(SECTION, /createCatalogue = await api\('\/create\/models'\)/);
+  assert.match(SECTION, /createCatalogue = null;/);
+  assert.match(SECTION, /No model is ready for this lane/);
+  assert.match(SECTION, /wireTabKeys\('create-tabs'\)/, 'arrow keys move within the Create tabs');
+  assert.match(source, /wireTabKeys\('m-mode-chips'\)/, 'and within the Models mode chips');
+});
+
+test('no selectable model is itself a required-field reason', () => {
+  const nodes = { 'cf-gate': element(), 'cf-go': element() };
+  const { context } = harness(nodes);
+  vm.runInContext("createTab = 'music'; updateCreateGate();", context);
+  assert.equal(nodes['cf-go'].disabled, true);
+  assert.match(nodes['cf-gate'].textContent, /No model is ready for this lane/);
+});
+
 test('the image seed field is optional and the empty lane names a missing key', () => {
   assert.match(SECTION, /k: 'seed'/);
   assert.match(SECTION, /Optional\. Repeat the same seed/);
