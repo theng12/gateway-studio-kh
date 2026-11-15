@@ -1638,8 +1638,13 @@ function khDialog({title = '', body = '', confirmLabel = 'OK', cancelLabel = nul
   const show = () => new Promise(resolve => {
     if (!document.body) { resolve(input === null ? (cancelLabel ? false : undefined) : null); return; }
     // What had focus before the question: it gets focus back when the question closes, so a
-    // keyboard user does not land on the page body after Cancel or Continue.
+    // keyboard user does not land on the page body after Cancel or Continue. **A menu item can be
+    // rebuilt by the action's own re-render** (a bulk confirm reloads the table), so the menu's
+    // trigger is remembered as the fallback and focus never falls to BODY.
     const opener = document.activeElement;
+    const openerTrigger = opener && opener.closest && opener.closest('.more-menu')
+      ? opener.closest('.more-menu').parentElement?.querySelector('[aria-haspopup="true"]') || null
+      : null;
     const dialog = document.createElement('dialog');
     const questionId = `kh-dialog-question-${++khDialogSeq}`;
     if (title) {
@@ -1675,7 +1680,11 @@ function khDialog({title = '', body = '', confirmLabel = 'OK', cancelLabel = nul
       settled = true;
       if (typeof dialog.close === 'function') dialog.close(); else dialog.remove();
       dialog.remove();
-      if (opener && opener !== document.body && typeof opener.focus === 'function') opener.focus();
+      // A menu item's dialog returns focus to the menu's **trigger**: the item's own menu is
+      // closed by the action, so focusing the item would be a focus on a hidden node (BODY).
+      const target = openerTrigger && openerTrigger.isConnected !== false ? openerTrigger
+        : (opener && opener !== document.body && opener.isConnected !== false ? opener : null);
+      if (target && typeof target.focus === 'function') target.focus();
       resolve(value);
     };
     const ok = document.createElement('button');
