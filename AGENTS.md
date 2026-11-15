@@ -221,6 +221,11 @@ Ponytail/Graphify apply here and to delegated workers.
 .venv/bin/python scripts/test_run_gate.py                     # the gate runner's self-test
 ```
 
+**Never run `python -m unittest discover -s tests` on this repo.** It reports ~96 failures and
+~107 errors that are not regressions: `_NetworkDisabled` leaks across files when discover imports
+them all into one process. The gate runner exists for exactly that reason; use it, or the focused
+one-file command above. (Cost: a person who runs discover first reads the suite as red.)
+
 - The gate runs **one file per process** with its own profile (`GATEWAY_APP_SUPPORT`,
   `GATEWAY_DATA`, `STUDIOHUB_READY_FILE`, `GATEWAY_NO_MIGRATE=1`), in parallel
   (`min(3, cores/2)`), with a `SERIAL` list for the native/offscreen AppKit suites and the
