@@ -149,7 +149,6 @@ def _acquire_member(definition: Any, request: BackendRequest) -> None:
             request.on_wait(None)
 
 
-
 def _wait_sentence(label: str, ceiling_s: float, left_s: float) -> str:
     """Why this job is waiting, how long it may wait, and how much of that is left."""
     up = max(1, math.ceil(ceiling_s / 60.0))
