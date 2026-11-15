@@ -1451,6 +1451,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             replied = true
             NSApp.reply(toApplicationShouldTerminate: ok)
         }
+        // **An unattended quit has nobody to answer a dialog.** The Updater quits by sending a
+        // Quit AppleEvent and waits 60 seconds; `PageKit.confirm` is a modal `NSAlert.runModal()`,
+        // which never returns when no one is there — so `reply(toApplicationShouldTerminate:)`
+        // never fired and the app never quit. Measured on 1301, 2026-11-15: every install failed
+        // because the host always has jobs running or queued. Ask only when the question can
+        // actually be seen (the app is active and its window is up); otherwise go straight to
+        // stopping the gateway.
+        let attended = NSApp.isActive && MainWindow.shared.isShown
+        // Armed **before** any dialog, and shorter than the installer's wait: whatever happens
+        // below, termination is answered within 40 seconds. A modal can never hang it again.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 40) { finish(true) }
+        guard attended else {
+            GatewayController.shared.stopAnything { stopped in finish(stopped) }
+            return .terminateLater
+        }
         GatewayController.shared.confirmIfBusy("Quit") { ok in
             guard ok else { return finish(false) }
             // A wedged backend must not keep the app alive forever.

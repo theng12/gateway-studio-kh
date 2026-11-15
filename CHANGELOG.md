@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.259 — 2026-11-15
+
+- **An installer can quit the Gateway again.** The app asked a modal "Quit the gateway?" whenever jobs were running — but when an installer sends Quit and nobody is there to answer, that question never returned, so the app never quit and every install on a busy Mac failed. It now asks only when the window is actually in front of you; otherwise it stops the gateway and quits. A 40-second deadline now guarantees termination in every case, so a dialog can never hold an installer open. Quitting from the app with work in flight still shows the warning.
+
 ## 0.2.258 — 2026-11-15
 
 - **A request with an output cap now works on a model that wants `max_completion_tokens`.** Some OpenAI-compatible models reject `max_tokens` outright ("Unsupported parameter … Use 'max_completion_tokens' instead"). The Gateway now recognises that refusal by the provider's own words, re-sends once with the field the model named (a 400 means nothing ran and nothing was charged), and says so in the job's `params_dropped`. The model is remembered for the rest of the process, per provider, so later requests go straight to the right spelling.

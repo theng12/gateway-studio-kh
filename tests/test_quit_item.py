@@ -39,6 +39,21 @@ class QuitItemTests(unittest.TestCase):
     def test_a_slow_stop_cannot_hang_the_quit(self):
         self.assertRegex(handler(), r"asyncAfter\(deadline: \.now\(\) \+ \d+")
 
+    def test_an_unattended_quit_never_asks_a_modal(self):
+        body = handler()
+        # The Updater quits by AppleEvent with nobody there; a modal runModal() never returns and
+        # termination was never answered (1301, 2026-11-15: every install hung).
+        self.assertIn("let attended = NSApp.isActive && MainWindow.shared.isShown", body)
+        self.assertIn("guard attended else", body)
+        unattended = body[body.index("guard attended else"):]
+        self.assertIn("stopAnything", unattended[: unattended.index("confirmIfBusy")])
+
+    def test_a_deadline_is_armed_before_any_dialog(self):
+        body = handler()
+        deadline = body.index("DispatchQueue.main.asyncAfter(deadline: .now() + 40)")
+        self.assertLess(deadline, body.index("confirmIfBusy"),
+                        "the 40 s net must be armed before the modal, not after its answer")
+
     def test_a_cancelled_confirmation_keeps_the_app_open(self):
         self.assertIn("guard ok else { return finish(false) }", handler())
 

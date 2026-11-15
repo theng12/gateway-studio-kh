@@ -414,6 +414,9 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     static let shared = MainWindow()
 
     private var window: NSWindow?
+    /// Whether the owner can actually see this window. Quit asks a modal question only when it
+    /// can be seen; an unattended quit (an installer's AppleEvent) must never wait for an answer.
+    var isShown: Bool { window?.isVisible == true }
     private var sidebar: NSTableView!
     private var container: NSView!
     private var sections: [AppSection] = []
