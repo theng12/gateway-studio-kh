@@ -244,7 +244,7 @@ def main(argv: list[str]) -> int:
             if _version(value, "managed version") != requested_key
         ]
         prior.sort(key=lambda record: _version(record["version"], "managed version"))
-        releases = prior[-2:] + [
+        releases = prior[-1:] + [
             {
                 "version": args.version,
                 "source": str(candidate),
