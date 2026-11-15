@@ -1,0 +1,99 @@
+"""A chat job on a `pool` provider, in flight at a restart, must be held — never left `running`.
+
+Found on 1301 during the 0.2.259 install window (2026-11-15): eight `story-studio-llm` jobs on
+provider `pool`, `dispatch_started_at` set, no upstream id, came back `running` with
+`recovery_state NULL` after the restart and nothing ever wrote the rows again. The sweep
+(`JobStore._recover_interrupted`) should send that shape to `_write_restart_hold`: it matches
+neither the upstream-id branch nor the `studio-hub-` + resendable-modality branch.
+
+This reproduces it on a throwaway database: dispatch a chat job to a `pool` provider, close the
+store as a restart does, reopen, and read the row.
+
+    .venv/bin/python tests/test_restart_pool_chat_hold.py
+"""
+from __future__ import annotations
+
+import os
+import sys
+import threading
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
+from _isolation import sandbox_env  # noqa: E402
+
+_SANDBOX = sandbox_env("gateway-restart-pool-chat-")
+os.environ["GATEWAY_HOST"] = "127.0.0.1"
+
+from gateway import worker as worker_module  # noqa: E402
+from gateway.store import JobStore  # noqa: E402
+
+_ROOT = Path(_SANDBOX.name)
+
+
+class _PoolRegistry:
+    """The provider is a model pool, whose chat lane cannot be followed or re-sent by id."""
+
+    @staticmethod
+    def definitions():
+        return []
+
+    @staticmethod
+    def definition(provider_id: str):
+        return SimpleNamespace(id=provider_id, kind="pool", base_url="http://pool.invalid",
+                               display_name="Pool")
+
+
+class _Sends:
+    def __init__(self) -> None:
+        self.sending = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, job, store, resume=False):
+        store.begin_dispatch(job["id"])
+        self.sending.set()
+        self.release.wait(30)  # the send is unanswered: no upstream id, nothing to follow
+
+
+class PoolChatRestartHold(unittest.TestCase):
+    def setUp(self) -> None:
+        self.path = _ROOT / f"{self._testMethodName}.sqlite3"
+        self.store = JobStore(self.path)
+        self.addCleanup(self.store.close)
+        for item in (patch.object(worker_module, "registry", _PoolRegistry()),
+                     patch("gateway.fleet.snapshot", lambda **_: {"locations": []})):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_a_pool_chat_send_in_flight_at_restart_is_held(self) -> None:
+        row, _ = self.store.submit(modality="chat", model_id="story-studio-llm", params={},
+                                   idempotency_key="pool-chat-1", provider_id="pool")
+        job_id = row["id"]
+        sends = _Sends()
+        worker = worker_module.Worker(self.store, interval_s=0.02, pool_size=2)
+        executing = patch.object(worker_module, "execute_job", sends)
+        executing.start()
+        self.addCleanup(executing.stop)
+        self.addCleanup(sends.release.set)
+        self.addCleanup(worker.stop)
+        worker.start()
+        self.assertTrue(sends.sending.wait(5), "the job reached dispatch")
+        # The restart: the owning process is gone, so the next opener sweeps.
+        self.store.close()
+        reopened = JobStore(self.path)
+        self.addCleanup(reopened.close)
+        job = reopened.get(job_id)
+        self.assertEqual(
+            job["state"], "failed",
+            f"a pool/chat job interrupted mid-send must be held, not left {job['state']!r}",
+        )
+        self.assertTrue(job["recovery_required"], "the restart hold must be recorded")
+        self.assertIsNotNone(job.get("recovery_state"))
+
+
+if __name__ == "__main__":
+    unittest.main()
