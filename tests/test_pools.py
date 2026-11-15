@@ -845,6 +845,40 @@ class PoolPaidLastResortTests(_TempEnv):
         self.assertEqual([True, False, True],
                          [attempt["paid"] for attempt in result.payload["pool"]["attempts"]])
 
+    def test_the_served_member_is_recorded_when_the_first_member_answers(self):
+        """'Is the fallback validated?' must be answerable from the job record, not by guessing."""
+        self.pools.create("mix", ["haiku::x", "f-gemini::x"], routing_policy="strict_order")
+        backend, _ = self._backend({"haiku::x": self._ok("first"), "f-gemini::x": self._ok("second")})
+
+        result = backend.generate(self._request())
+
+        pool = result.payload["pool"]
+        self.assertEqual("haiku::x", pool["used"], "the member that actually served the call")
+        self.assertEqual(
+            [{"member": "haiku::x", "outcome": "answered", "paid": True}], pool["attempts"],
+            "one attempt, and it is the one that answered",
+        )
+
+    def test_a_fallback_records_the_failed_member_and_the_one_that_served(self):
+        from gateway.adapters.base import BackendError
+
+        self.pools.create("mix", ["haiku::x", "luna::x"], routing_policy="strict_order")
+        backend, _ = self._backend({
+            "haiku::x": BackendError("technical", code="PROVIDER_FAILED", status=503,
+                                      upstream_settled=True),
+            "luna::x": self._ok("served by luna"),
+        })
+
+        result = backend.generate(self._request())
+
+        pool = result.payload["pool"]
+        self.assertEqual("luna::x", pool["used"], "the fallback is named as the server")
+        self.assertEqual(["haiku::x", "luna::x"], [attempt["member"] for attempt in pool["attempts"]],
+                         "the member that failed is kept beside the one that answered")
+        self.assertEqual("failed", pool["attempts"][0]["outcome"])
+        self.assertEqual("PROVIDER_FAILED", pool["attempts"][0]["code"])
+        self.assertEqual("answered", pool["attempts"][1]["outcome"])
+
     def test_strict_order_stops_on_a_structured_policy_refusal(self):
         from gateway.adapters.base import BackendError
 
