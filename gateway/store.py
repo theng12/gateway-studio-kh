@@ -759,6 +759,8 @@ class JobStore:
         )
         self._ensure_columns()
         owner = self._claim_queue()
+        #: Whether this process owns the queue (and may therefore sweep and dispatch).
+        self.queue_owned = owner
         if owner:
             self._recover_interrupted()
         # A late canonical result may still be a `failed / UNKNOWN_OUTCOME` hold on the job
@@ -771,6 +773,15 @@ class JobStore:
             self._recover_account_reservations()
         self._relabel_never_sent_pool_failures()
         self._conn.commit()
+
+    #: How long a starting process waits for the previous owner to release the queue. A restart's
+    #: graceful drain is bounded at 15 s, so a new process that starts while the old one is still
+    #: shutting down must wait rather than silently give up: on 2026-11-15 a restart that raced the
+    #: drain left eight in-flight chat jobs `running` with no sweep, because the claim failed once
+    #: and was never retried.
+    #: Read per call, so a test (or an operator) can change it without a re-import.
+    _CLAIM_WAIT_DEFAULT_S = 20.0
+    _CLAIM_POLL_S = 0.5
 
     def _claim_queue(self) -> bool:
         """Whether *this* process is the one taking the queue over, so the restart sweep may run.
@@ -793,14 +804,37 @@ class JobStore:
         except OSError:  # noqa: BLE001 - an unopenable lock is never worse than no lock
             log.warning("no owner lock beside %s; sweeping as the only opener", self.path)
             return True
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            os.close(fd)
-            log.info("%s is being served by another process; leaving its jobs alone", self.path)
-            return False
-        self._owner_fd = fd
-        return True
+        wait_s = float(os.environ.get("GATEWAY_QUEUE_CLAIM_WAIT_S", self._CLAIM_WAIT_DEFAULT_S))
+        started = time.time()
+        deadline = started + wait_s
+        waited = False
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                if time.time() >= deadline:
+                    os.close(fd)
+                    # **Loud, not silent.** A process that serves without the queue runs no restart
+                    # sweep and can leave `running` rows nothing is working; the worker refuses to
+                    # dispatch in that state (`Worker.start`), and this line is how a person learns
+                    # why. `log.info` here is what hid it on 1301.
+                    log.error(
+                        "%s is still held by another process after %.0fs: this process does NOT own "
+                        "the queue, so it will not sweep interrupted jobs or dispatch new work",
+                        self.path, wait_s)
+                    return False
+                if not waited:
+                    log.warning(
+                        "%s is held by another process (a restart draining?); waiting up to %.0fs",
+                        self.path, wait_s)
+                    waited = True
+                time.sleep(self._CLAIM_POLL_S)
+                continue
+            self._owner_fd = fd
+            if waited:
+                log.warning("%s: queue claimed after %.1fs — the previous owner was still draining",
+                            self.path, time.time() - started)
+            return True
 
     def _ensure_columns(self) -> None:
         existing = {
@@ -1023,6 +1057,12 @@ class JobStore:
 
     def note_restart_resend(self, job_id: str) -> None:
         self._update(job_id, restart_resent_at=time.time())
+
+    def running_not_held(self, held: set[str]) -> list[str]:
+        """Ids of `running` rows that no thread in this process owns — orphans, by definition."""
+        with self._lock:
+            rows = self._conn.execute("SELECT id FROM jobs WHERE state = 'running'").fetchall()
+        return [row["id"] for row in rows if row["id"] not in held]
 
     def hold_interrupted(self, job_id: str) -> None:
         """The restart hold, for an interrupted job whose lane cannot be polled by its id."""

@@ -41,6 +41,9 @@ def sandbox_env(prefix: str = "gateway-test-"):
     root = Path(tmp.name)
     os.environ.update({
         "GATEWAY_APP_SUPPORT": str(root),
+        # A second store on the same file must fail its claim at once in tests, not wait for a
+        # draining owner; the restart-race test sets its own wait.
+        "GATEWAY_QUEUE_CLAIM_WAIT_S": "0",
         "GATEWAY_DATA": str(root / "data"),
         "GATEWAY_ARTIFACTS": str(root / "data" / "artifacts"),
         "GATEWAY_DB": str(root / "data" / "jobs.sqlite3"),

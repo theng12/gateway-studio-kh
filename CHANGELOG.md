@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.260 — 2026-11-15
+
+- **A restart can no longer leave jobs looking like they are still running.** When the Gateway started while the previous copy was still shutting down, it lost the queue lock, skipped the restart check and served anyway — leaving in-flight jobs reading "running" with nothing behind them and no way to clear them. A starting Gateway now waits for the old copy to let go (up to 20 seconds, longer than the shutdown wait), and if it still cannot take the queue it says so loudly in the log and does not dispatch work it cannot account for. Every launch now writes its build, pid and whether it owns the queue, so this is answerable from the log instead of from the database.
+
 ## 0.2.259 — 2026-11-15
 
 - **An installer can quit the Gateway again.** The app asked a modal "Quit the gateway?" whenever jobs were running — but when an installer sends Quit and nobody is there to answer, that question never returned, so the app never quit and every install on a busy Mac failed. It now asks only when the window is actually in front of you; otherwise it stops the gateway and quits. A 40-second deadline now guarantees termination in every case, so a dialog can never hold an installer open. Quitting from the app with work in flight still shows the warning.

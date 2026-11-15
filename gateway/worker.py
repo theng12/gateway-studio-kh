@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import struct
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
+from . import __version__ as _VERSION
 from . import concurrency, pools
 from . import catalog
 from .adapters import BackendError, BackendRequest, adapter_for
@@ -2174,11 +2176,48 @@ class Worker:
     def start(self) -> None:
         if self._thread is not None:
             return
+        # **A process that does not own the queue must not dispatch.** Serving without the claim
+        # means no restart sweep ran, so this process would work the queue while leaving the
+        # previous owner's in-flight rows `running` with nothing behind them (1301, 2026-11-15:
+        # eight chat jobs). Refusing is the loud version of that skip.
+        if getattr(self.store, "queue_owned", True) is False:
+            log.error("queue is owned by another process: not dispatching or sweeping "
+                      "(this process serves read-only until it can claim %s)", self.store.path)
+            return
+        log.warning("gateway %s pid %s: queue claimed; sweeping interrupted jobs",
+                    _VERSION, os.getpid())
         if self._render_service is not None:
             self._render_service.recover()
         self._thread = threading.Thread(target=self._loop, name="gateway-worker", daemon=True)
         self._thread.start()
         self._resume_interrupted()
+        self._hold_orphans()
+
+    def _hold_orphans(self) -> int:
+        """Hold every `running` row this process is not actually working.
+
+        **The invariant:** a process that serves must leave no `running` row it does not hold a
+        thread for — such a row reads "running" forever, and nothing ever tells anyone. The restart
+        sweep adopts or holds what it finds at open; this is the same rule applied once more after
+        adoption, so a row that fell through the sweep (1301, 2026-11-15: eight chat jobs left by a
+        start that lost the queue lock) is held loudly instead of orphaning.
+        """
+        held = 0
+        try:
+            rows = self.store.running_not_held(set(self._running))
+        except Exception:  # noqa: BLE001 - a store that cannot answer must not stop the worker
+            log.exception("could not list running rows for the orphan check")
+            return 0
+        for job_id in rows:
+            try:
+                self.store.hold_interrupted(job_id)
+                held += 1
+            except Exception:  # noqa: BLE001
+                log.exception("could not hold orphaned job %s", job_id)
+        if held:
+            log.warning("%d running job(s) had no worker in this process; held them for recovery",
+                        held)
+        return held
 
     def _resume_interrupted(self) -> None:
         """Follow every job a restart interrupted to its end, by the upstream id it was given.

@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,6 +94,66 @@ class PoolChatRestartHold(unittest.TestCase):
         )
         self.assertTrue(job["recovery_required"], "the restart hold must be recorded")
         self.assertIsNotNone(job.get("recovery_state"))
+
+
+class TheQueueClaimWaitsForADrainingOwner(unittest.TestCase):
+    """The 2026-11-15 1301 restart raced the old process's drain, lost the claim once, and skipped
+    the sweep. A starting process must wait for the owner to go, then sweep."""
+
+    def setUp(self) -> None:
+        self.path = _ROOT / f"{self._testMethodName}.sqlite3"
+
+    def test_a_start_that_races_the_drain_waits_then_owns_the_queue(self) -> None:
+        owner = JobStore(self.path)
+        self.assertTrue(owner.queue_owned)
+        def release() -> None:
+            time.sleep(1.0)
+            owner.close()
+        threading.Thread(target=release, daemon=True).start()
+        with patch.dict(os.environ, {"GATEWAY_QUEUE_CLAIM_WAIT_S": "5"}):
+            late = JobStore(self.path)
+        self.addCleanup(late.close)
+        self.assertTrue(late.queue_owned, "the late starter waited out the drain and claimed")
+
+    def test_a_claim_that_never_succeeds_is_reported_not_silently_skipped(self) -> None:
+        owner = JobStore(self.path)
+        self.addCleanup(owner.close)
+        with patch.dict(os.environ, {"GATEWAY_QUEUE_CLAIM_WAIT_S": "0"}):
+            second = JobStore(self.path)
+        self.addCleanup(second.close)
+        self.assertFalse(second.queue_owned, "a process that cannot claim must know it")
+        worker = worker_module.Worker(second, interval_s=0.02, pool_size=1)
+        self.addCleanup(worker.stop)
+        worker.start()  # must refuse, not dispatch
+        self.assertIsNone(worker._thread, "a process without the queue must not dispatch")
+
+
+class AnOrphanedRunningRowIsHeldNotLeft(unittest.TestCase):
+    """The backstop: a `running` row with no thread behind it is held when a worker starts."""
+
+    def setUp(self) -> None:
+        self.path = _ROOT / f"{self._testMethodName}.sqlite3"
+        self.store = JobStore(self.path)
+        self.addCleanup(self.store.close)
+        for item in (patch.object(worker_module, "registry", _PoolRegistry()),
+                     patch("gateway.fleet.snapshot", lambda **_: {"locations": []})):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_a_running_row_with_no_worker_is_held(self) -> None:
+        row, _ = self.store.submit(modality="chat", model_id="story-studio-llm", params={},
+                                   idempotency_key="orphan-1", provider_id="pool")
+        job_id = row["id"]
+        # The shape 1301 was left in: running, dispatch opened, no upstream, no thread anywhere.
+        self.store.mark_running(job_id)
+        self.store.begin_dispatch(job_id)
+        self.assertEqual(self.store.get(job_id)["state"], "running")
+        worker = worker_module.Worker(self.store, interval_s=0.02, pool_size=1)
+        self.addCleanup(worker.stop)
+        worker.start()
+        job = self.store.get(job_id)
+        self.assertEqual(job["state"], "failed", "an orphan must be held, not left running")
+        self.assertTrue(job["recovery_required"])
 
 
 if __name__ == "__main__":
