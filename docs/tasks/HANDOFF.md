@@ -13,16 +13,20 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 ## Versions
 
-- **0.2.257** — current: built from `980379b`, accepted, installed here (2026-11-15). Published
-  to the 1301 feed pending the Developer's publish + readback (this Mac has no ssh to 1301).
-- **0.2.256** — previous **published** build, kept in `dist/` beside 0.2.257. Its released
-  artifact is `2cd548aea731-gw-0256.dmg` (sha `2cd548ae…`, 63,254,947 bytes, 2026-11-13); the
-  e0d4232 candidate of the same version was never published and sits in `_trash/dist/`.
+- **0.2.258** — current: built from `c0e13e7`, accepted, installed here and published to the 1301
+  feed (2026-11-15). `release.json` gateway 0.2.258, sha
+  `7fbc55b1c4d58d7d25b249fba2e277edaef3b36d9b2e9e149eab0e70ea9bd8ab`, 61,968,765 bytes; served
+  artifact hashes identically. Packet: `_orchestra/gateway-lead/release-0257-20261114/packet-0258.md`.
+  The live capped gpt-6-luna check was **not run** (paid; needs the owner's go).
+- **0.2.257** — previous published build, kept in `dist/` beside 0.2.258 (`cb41b570…`, 61,498,949).
+- **0.2.256** — older published build (`2cd548aea731-gw-0256.dmg`, sha `2cd548ae…`, 63,254,947,
+  2026-11-13), retired from `dist/` to `~/Desktop/_trash/dist/` when 0.2.258 was accepted; the
+  e0d4232 candidate of the same version was never published and is in `_trash/dist/`.
 - **1301 login item:** the bundled `SMAppService.agent` plist is correct (`RunAtLoad`, `KeepAlive
-  SuccessfulExit=false`), but the registered record is a **partial import** (`EX_CONFIG 78`,
-  `spawn failed`) — a reboot leaves the gateway down until `launchctl kickstart`. Fix at a quiet
-  point by toggling launch-at-login off/on in the app and reboot-testing; see
-  `_orchestra/gateway-lead/release-0257-20261114/1301-login-item-finding.md`.
+  SuccessfulExit=false`). The broken `partial import`/`EX_CONFIG 78` record was replaced on
+  2026-11-15 by `launchctl bootout` + `bootstrap` of the bundled plist; `/health` stayed up.
+  Remaining proof (quiet point only): fully quit the app or reboot 1301 and confirm `/health`
+  without a kickstart. See `_orchestra/gateway-lead/release-0257-20261114/1301-login-item-finding.md`.
 - **1301 route:** SSH and the feed answer over the LAN at `terranash-1301-m1-16-1000`
   (192.168.0.105) with `~/.ssh/id_ed25519_gateway1301`; the `100.x` IP and the HTTP feed port
   time out even when Tailscale is off. Tailscale is not a prerequisite.
