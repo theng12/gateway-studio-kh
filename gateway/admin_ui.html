@@ -490,8 +490,22 @@
   .fleet-warn-group:first-of-type { border-top: 0; }
   .fleet-warn-group summary { display: flex; gap: var(--s8); align-items: flex-start; padding: var(--s8) 0;
     font-weight: 600; cursor: pointer; }
-  .fleet-warn-detail { padding: 0 0 var(--s4) 21px; color: var(--dim); font-size: 12px; }
+  .fleet-warn-detail { padding: 0 0 var(--s4) 21px; color: var(--dim); font-size: 12px;
+    overflow-wrap: anywhere; white-space: normal; }
   .fleet-warn-banner { padding: var(--s8) var(--s12); }
+  .fleet-warn-summary { display: flex; gap: var(--s8); align-items: center; flex-wrap: wrap;
+    justify-content: space-between; }
+  .fleet-warn-kinds { margin-top: var(--s6); }
+  .fleet-warn-kinds > summary { color: var(--dim); font-size: 12px; padding: var(--s4) 0; }
+  /* A cause is a sentence, not a label: it wraps in its cell and can be read and copied whole. */
+  .ftable .ft-cause { white-space: normal; overflow-wrap: anywhere; }
+  /* The Filters menu's grouped lists. */
+  .fleet-filters { min-width: 280px; max-width: min(360px, 92vw); max-height: 70vh; overflow: auto; }
+  .fleet-facet { margin: var(--s8) 0; }
+  .fleet-facet > b { display: block; font-size: 12px; margin-bottom: var(--s4); }
+  .fleet-facet-list { display: flex; flex-direction: column; gap: var(--s4); }
+  .fleet-facet-list label.check { margin: 0; font-size: 12px; }
+  .fleet-facet-list .n { color: var(--dim); font-variant-numeric: tabular-nums; margin-left: auto; }
   .fleet-warn { display: flex; gap: var(--s8); padding: var(--s6) 0; align-items: flex-start; }
   .fleet-model-issues { margin-top: var(--s8); font-size: 12px; }
   .fleet-model-issues summary { color: var(--dim); cursor: pointer; }
@@ -527,17 +541,18 @@
       display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
     }
   }
-  #fleet-machines-wrap .ftable th:nth-child(1) { width: 12%; }
-  #fleet-machines-wrap .ftable th:nth-child(2) { width: 11%; }
-  #fleet-machines-wrap .ftable th:nth-child(3) { width: 8%; }
-  #fleet-machines-wrap .ftable th:nth-child(4) { width: 6%; }
-  #fleet-machines-wrap .ftable th:nth-child(5) { width: 10%; }
-  #fleet-machines-wrap .ftable th:nth-child(6) { width: 13%; }
-  #fleet-machines-wrap .ftable th:nth-child(7) { width: 6%; }
-  #fleet-machines-wrap .ftable th:nth-child(8) { width: 9%; }
-  #fleet-machines-wrap .ftable th:nth-child(9) { width: 7%; }
+  #fleet-machines-wrap .ftable th:nth-child(1) { width: 11%; }
+  #fleet-machines-wrap .ftable th:nth-child(2) { width: 9%; }
+  #fleet-machines-wrap .ftable th:nth-child(3) { width: 9%; }
+  #fleet-machines-wrap .ftable th:nth-child(4) { width: 8%; }
+  #fleet-machines-wrap .ftable th:nth-child(5) { width: 7%; }
+  #fleet-machines-wrap .ftable th:nth-child(6) { width: 8%; }
+  #fleet-machines-wrap .ftable th:nth-child(7) { width: 13%; }
+  #fleet-machines-wrap .ftable th:nth-child(8) { width: 8%; }
+  #fleet-machines-wrap .ftable th:nth-child(9) { width: 8%; }
   #fleet-machines-wrap .ftable th:nth-child(10) { width: 6%; }
-  #fleet-machines-wrap .ftable th:nth-child(11) { width: 12%; }
+  #fleet-machines-wrap .ftable th:nth-child(11) { width: 6%; }
+  #fleet-machines-wrap .ftable th:nth-child(12) { width: 8%; }
   #fleet-locations-wrap .ftable th:nth-child(1) { width: 14%; }
   #fleet-locations-wrap .ftable th:nth-child(2) { width: 8%; }
   #fleet-locations-wrap .ftable th:nth-child(3) { width: 16%; }
@@ -629,9 +644,10 @@
     background: var(--line); overflow: hidden; }
   .meter i { display: block; height: 100%; border-radius: 2px; }
   .fleet-empty { color: var(--dim); font-size: 13px; padding: var(--s24); text-align: center; }
-  @media (max-width: 760px) {
-    /* A stacked row is not a table any more, so the 1020 px minimum that keeps columns readable
-       on a desktop must not survive here: it would put the whole row inside a sideways scroller. */
+  /* A stacked row is not a table any more, so the 1020 px minimum that keeps columns readable
+     on a desktop must not survive here: it would put the whole row inside a sideways scroller.
+     At 900, not 760: a 768 window must not scroll the Machines table sideways (owner, 2026-11-15). */
+  @media (max-width: 900px) {
     .fleet-pane .ftable, #fleet-machines-wrap .ftable, #fleet-locations-wrap .ftable { min-width: 0; }
     .ftable thead { display: none; }
     .ftable, .ftable tbody, .ftable tr, .ftable td { display: block; width: 100%; }
@@ -640,7 +656,6 @@
     .ftable td { border: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: var(--s8);
       padding: 2px var(--s8); align-items: start; }
     .ftable td > div { min-width: 0; }
-    /* A badge names a value; it must not stretch across the value column. */
     .ftable .badge { width: fit-content; }
     .ftable td::before { content: attr(data-label); font-size: 11px; font-weight: 600; color: var(--dim); }
     .ftable td.nowrap, .ftable td .ft-sub.nowrap,
@@ -872,11 +887,27 @@
       </div>
       <button type="button" class="sm" id="fleet-filters-btn" aria-haspopup="true" aria-expanded="false"
         onclick="toggleFleetFilters()">Filters <span id="fleet-filter-count" class="badge" hidden></span></button>
-      <div class="more-menu" id="fleet-filters" hidden style="left:auto;right:0;top:calc(100% + 4px)">
-        <label>Show <select id="fleet-filter" onchange="fleetSetFilter(this.value)"></select></label>
-        <label>Sort <select id="fleet-sort" title="Orders Groups, Locations and the Machines table — a column header on Machines takes over from it"
-          onchange="fleetSetSort(this.value)"></select></label>
+      <div class="more-menu fleet-filters" id="fleet-filters" hidden style="left:auto;right:0;top:calc(100% + 4px)">
+        <div id="fleet-show-wrap">
+          <label>Show <select id="fleet-filter" onchange="fleetSetFilter(this.value)"></select></label>
+          <label>Sort <select id="fleet-sort" title="Orders Groups, Locations and the Machines table — a column header on Machines takes over from it"
+            onchange="fleetSetSort(this.value)"></select></label>
+        </div>
+        <!-- Machines: grouped filters built from this read. Every count is live. -->
+        <div id="fleet-machine-filters" hidden>
+          <div class="fleet-facet"><b>State</b><div id="fleet-facet-state" class="fleet-facet-list"></div></div>
+          <div class="fleet-facet"><b>Issues</b><div id="fleet-facet-issues" class="fleet-facet-list"></div></div>
+          <label>Version <select id="fleet-facet-version" onchange="fleetSetFacetVersion(this.value)"></select></label>
+          <label>Network <select id="fleet-facet-network" onchange="fleetSetFacetNetwork(this.value)">
+            <option value="">Any network</option>
+            <option value="ethernet">Ethernet</option>
+            <option value="wifi">Wi-Fi</option>
+            <option value="other">Other link</option>
+            <option value="unknown">Not reported</option>
+          </select></label>
+        </div>
         <label>Location <select id="fleet-location" aria-label="Location" onchange="fleetSetLocation(this.value)"></select></label>
+        <button type="button" class="sm" onclick="fleetClearFacets()">Reset filters</button>
       </div>
     </div>
 
@@ -889,6 +920,7 @@
     <!-- Machines: the native table, with the native columns and words, and this Mac's own actions. -->
     <div class="fleet-pane" id="fleet-pane-machines" hidden>
       <div class="stat" id="fleet-status"></div>
+      <div class="row" id="fleet-active-filters" aria-live="polite"></div>
       <div id="fleet-warnings"></div>
       <div id="fleet-warning-settings"></div>
       <div class="row" id="fleet-threshold">
@@ -7973,7 +8005,7 @@ function fleetGateStorageTooltip(inv) {
 }
 
 const FLEET_MACHINE_COLUMNS = [
-  ['machine', 'Machine'], ['state', 'State'], ['health', 'Health'], ['seen', 'Seen'],
+  ['machine', 'Machine'], ['location', 'Location'], ['state', 'State'], ['health', 'Health'], ['seen', 'Seen'],
   ['week', 'Drops · 7 days'], ['cause', 'Likely cause'], ['version', 'Version'],
   ['disk', 'Disk'], ['memory', 'Memory'], ['network', 'Network'],
 ];
@@ -7991,6 +8023,7 @@ function fleetCauseRank(m) {
 function fleetMachineSortValue(key, m) {
   switch (key) {
     case 'machine': return fleetMachineName(m);
+    case 'location': return String(m.location || '');
     case 'state': return fleetStateLabel(m);
     case 'health': return fleetHealthRank(m.history);
     case 'seen': return fleetLastSeenEpoch(m);
@@ -8020,6 +8053,7 @@ function fleetMachineRowsFor(d) {
   const rows = (d.machines || []).filter(m =>
     fleetInLocation(m)
     && fleetRowMatchesFilter('machine', m)
+    && fleetFacetMatches(m)
     && fleetMatchesSearch([m.label, m.machine, m.location, fleetStateLabel(m), m.state_text, m.chip,
       m.limitation, fleetCauseLine(m.causes),
       fleetGateToolsSummary(m.developer_gate_inventory),
@@ -8045,7 +8079,9 @@ function fleetSortBy(key) {
 function fleetSortHeader(key, title) {
   const active = machineSort.key === key;
   const arrow = active ? `<span class="arrow">${machineSort.ascending ? '▲' : '▼'}</span>` : '';
-  return `<th scope="col"><button type="button" class="sort" onclick="fleetSortBy('${esc(key)}')"
+  // `aria-sort` is the state assistive tech announces; the arrow is the visual twin.
+  return `<th scope="col" aria-sort="${active ? (machineSort.ascending ? 'ascending' : 'descending') : 'none'}">`
+    + `<button type="button" class="sort" onclick="fleetSortBy('${esc(key)}')"
     title="Sort by ${esc(title)}">${esc(title)}${arrow}</button></th>`;
 }
 
@@ -8089,6 +8125,7 @@ function fleetMachineRow(m) {
       ${gateTools ? `<div class="ft-sub" title="${esc(gateToolsTip)}">Gate tools: ${esc(gateTools)}</div>` : ''}
       ${carried ? `<div class="ft-sub">${esc(m.state_text || 'Last report')} — shown from its last answer</div>` : ''}
     </td>
+    <td data-label="Location" title="${esc(m.location || '')}"><div>${esc(m.location || '—')}</div></td>
     <td class="nowrap" data-label="State"><div>${fleetBadge(stateWord, fleetBadgeHealth(m))}${
       stateCaption ? `<div class="ft-sub">${esc(stateCaption)}</div>` : ''}</div></td>
     <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">
@@ -8138,6 +8175,8 @@ function renderFleetMachines(d) {
   const status = document.getElementById('fleet-status');
   const warnings = document.getElementById('fleet-warnings');
   if (status) status.innerHTML = fleetStatusLine(rows, d.machines || []);
+  fleetBuildFacets(d);
+  fleetRenderActiveFilters();
   if (warnings) warnings.innerHTML = fleetOrphanWarning(d) + fleetWarningsBox(d.machines || []);
   if (!wrap) return;
   const read = (d.machines || []).length;
@@ -8213,11 +8252,22 @@ function fleetWarningsBox(machines) {
   const lines = fleetWarningLines(machines);
   if (!lines.length) return '';
   const worst = lines.some(l => l.health === 'bad') ? 'bad' : 'warn';
+  const affected = machines.filter(m => fleetMachineIssueKinds(m).size).length;
+  // **The banner is fleet-wide and says so.** A summary first, the kinds behind one disclosure,
+  // and one action that narrows the table to the Macs it is about — never a fix button.
   return `<div class="card fleet-warn-banner" style="border-color:var(--${worst}-line);background:var(--${worst}-bg)">
-    ${lines.map(l => l.details
-      ? `<details class="fleet-warn-group"><summary>${fleetWarnIcon(l.health)}<span>${esc(l.text)}</span></summary>
-          <div>${l.details.map(d => `<div class="fleet-warn-detail">${esc(d)}</div>`).join('')}</div></details>`
-      : `<div class="fleet-warn">${fleetWarnIcon(l.health)}<span>${esc(l.text)}</span></div>`).join('')}</div>`;
+    <div class="fleet-warn-summary">
+      <span><b>Fleet-wide warnings:</b> ${lines.length} kind${lines.length === 1 ? '' : 's'}
+        · ${affected} Mac${affected === 1 ? '' : 's'} affected</span>
+      <button type="button" class="sm" onclick="fleetToggleFacet('issue','any',true)">Show Macs with issues</button>
+    </div>
+    <details class="fleet-warn-kinds">
+      <summary>Show warning kinds</summary>
+      ${lines.map(l => l.details
+        ? `<details class="fleet-warn-group"><summary>${fleetWarnIcon(l.health)}<span>${esc(l.text)}</span></summary>
+            <div>${l.details.map(d => `<div class="fleet-warn-detail">${esc(d)}</div>`).join('')}</div></details>`
+        : `<div class="fleet-warn">${fleetWarnIcon(l.health)}<span>${esc(l.text)}</span></div>`).join('')}
+    </details></div>`;
 }
 // The native banner's own icon: a red octagon for an error, an amber triangle for a warning.
 function fleetWarnIcon(health) {
@@ -10308,11 +10358,206 @@ function updateFleetFilterCount() {
   const badge = document.getElementById('fleet-filter-count');
   if (!badge) return;
   let active = 0;
+  active += fleetFacetActiveCount();
   if (fleetFilter && fleetFilter !== FLEET_FILTERS[0][0]) active += 1;
   if (fleetSort && fleetSort !== FLEET_SORTS[0][0]) active += 1;
   if (fleetLocation && fleetLocation !== 'all') active += 1;
   badge.textContent = active ? String(active) : '';
   badge.hidden = !active;
+}
+
+// ---- Machines: grouped live filters ---------------------------------------
+// Every option and count is built from the fleet read in hand — no list of kinds is hard-coded,
+// and a kind the Gateway does not report simply has no checkbox.
+let fleetFacetState = new Set();
+let fleetFacetIssue = new Set();
+let fleetFacetVersion = '';
+let fleetFacetNetwork = '';
+let fleetFacetSignature = '';
+
+const FLEET_ISSUE_LABELS = {
+  any: 'Any issue', problematic: 'Problematic (drops)', offline: 'Offline now',
+  slow_link: 'Slow Ethernet', disk_red: 'Disk red', disk_amber: 'Disk amber',
+  disk_space: 'Low disk', updates: 'Automatic updates on', trash: 'Trash over limit',
+  time_machine: 'Time Machine on', orphan: 'Orphaned batches', unauthorized: 'Credential refused',
+};
+const FLEET_NETWORK_LABELS = { ethernet: 'Ethernet', wifi: 'Wi-Fi', other: 'Other link',
+  unknown: 'Not reported' };
+
+function fleetIssueLabel(kind) {
+  return FLEET_ISSUE_LABELS[kind]
+    || String(kind || 'issue').replace(/_/g, ' ').replace(/(^|\s)\S/g, c => c.toUpperCase());
+}
+
+function fleetMachineIssueKinds(m) {
+  const kinds = new Set();
+  if (m.history && m.history.problematic === true) kinds.add('problematic');
+  if (fleetOfflineNow({ kind: 'machine', row: m })) kinds.add('offline');
+  const diskState = String((m.disk || {}).state || '').toLowerCase();
+  if (diskState === 'red' || diskState === 'stop') kinds.add('disk_red');
+  if (diskState === 'amber') kinds.add('disk_amber');
+  if (m.connection && m.connection.slow === true) kinds.add('slow_link');
+  if (String(m.node_state || '').toLowerCase() === 'unauthorized') kinds.add('unauthorized');
+  for (const item of (m.disk || {}).warning_items || []) {
+    if (item && item.kind) kinds.add(String(item.kind));
+  }
+  for (const cause of m.causes || []) {
+    const code = String((cause && (cause.code || cause.kind)) || '');
+    const severity = String((cause && cause.severity) || '').toLowerCase();
+    // "Fine" is the Gateway saying there is nothing wrong; it is not an issue to filter by.
+    if (code && code !== 'fine' && severity !== 'none') kinds.add(code);
+  }
+  if (kinds.size) kinds.add('any');
+  return kinds;
+}
+
+function fleetMachineNetworkKind(m) {
+  const connection = m.connection || {};
+  if (connection.status !== 'measured') return 'unknown';
+  if (connection.kind === 'wifi') return 'wifi';
+  if (connection.kind === 'ethernet') return 'ethernet';
+  return 'other';
+}
+
+function fleetFacetMatches(m) {
+  if (fleetFacetState.size && !fleetFacetState.has(fleetStateLabel(m))) return false;
+  if (fleetFacetIssue.size) {
+    const kinds = fleetMachineIssueKinds(m);
+    for (const kind of fleetFacetIssue) if (!kinds.has(kind)) return false;
+  }
+  if (fleetFacetVersion && String(m.hub_version || '') !== fleetFacetVersion) return false;
+  if (fleetFacetNetwork && fleetMachineNetworkKind(m) !== fleetFacetNetwork) return false;
+  return true;
+}
+
+function fleetFacetActiveCount() {
+  return fleetFacetState.size + fleetFacetIssue.size
+    + (fleetFacetVersion ? 1 : 0) + (fleetFacetNetwork ? 1 : 0);
+}
+
+// A count ignores its own group's selections, so picking State=Offline does not empty the Issues
+// list; every other choice stays in force (the same rule as the Models chips).
+function fleetFacetRows(d, group) {
+  return (d.machines || []).filter(m => {
+    if (!fleetInLocation(m)) return false;
+    if (!fleetMatchesSearch([m.label, m.machine, m.location, fleetStateLabel(m), m.state_text,
+      m.chip, m.limitation, fleetCauseLine(m.causes),
+      fleetGateToolsSummary(m.developer_gate_inventory),
+      fleetGateSpaceSummary(m.developer_gate_inventory),
+      fleetGateCleanupSummary(m.developer_gate_inventory)], fleetQuery)) return false;
+    if (group !== 'state' && fleetFacetState.size && !fleetFacetState.has(fleetStateLabel(m))) return false;
+    if (group !== 'issue' && fleetFacetIssue.size) {
+      const kinds = fleetMachineIssueKinds(m);
+      for (const kind of fleetFacetIssue) if (!kinds.has(kind)) return false;
+    }
+    if (fleetFacetVersion && String(m.hub_version || '') !== fleetFacetVersion) return false;
+    if (fleetFacetNetwork && fleetMachineNetworkKind(m) !== fleetFacetNetwork) return false;
+    return true;
+  });
+}
+
+function fleetFacetCounts(d, group) {
+  const counts = {};
+  for (const m of fleetFacetRows(d, group)) {
+    if (group === 'state') {
+      const key = fleetStateLabel(m);
+      counts[key] = (counts[key] || 0) + 1;
+    } else {
+      for (const kind of fleetMachineIssueKinds(m)) counts[kind] = (counts[kind] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function fleetBuildFacets(d) {
+  const stateHost = document.getElementById('fleet-facet-state');
+  const issueHost = document.getElementById('fleet-facet-issues');
+  if (!stateHost || !issueHost) return;
+  // Rebuild only when the read changed or the menu is closed: a 15 s poll must not rebuild the
+  // list under the pointer that is ticking it.
+  const menu = document.getElementById('fleet-filters');
+  const signature = JSON.stringify([(d.machines || []).length,
+    (d.machines || []).map(m => m.hub_version || '').join('|'),
+    (d.machines || []).map(m => m.state || '').join('|')]);
+  if (menu && !menu.hidden && fleetFacetSignature === signature) return;
+  fleetFacetSignature = signature;
+  const states = fleetFacetCounts(d, 'state');
+  stateHost.innerHTML = Object.keys(states).sort().map(name =>
+    `<label class="check"><input type="checkbox" ${fleetFacetState.has(name) ? 'checked' : ''}
+       onchange="fleetToggleFacet('state','${esc(name)}',this.checked)"> ${esc(name)}
+       <span class="n">${states[name]}</span></label>`).join('')
+    || '<span class="hint">No Macs in this read.</span>';
+  const issues = fleetFacetCounts(d, 'issue');
+  const names = Object.keys(issues).sort((a, b) => fleetIssueLabel(a).localeCompare(fleetIssueLabel(b)));
+  issueHost.innerHTML = names.length ? names.map(kind =>
+    `<label class="check"><input type="checkbox" ${fleetFacetIssue.has(kind) ? 'checked' : ''}
+       onchange="fleetToggleFacet('issue','${esc(kind)}',this.checked)"> ${esc(fleetIssueLabel(kind))}
+       <span class="n">${issues[kind]}</span></label>`).join('')
+    : '<span class="hint">No issues reported in this read.</span>';
+  const versions = [...new Set((d.machines || []).map(m => String(m.hub_version || '')).filter(Boolean))].sort();
+  const versionSelect = document.getElementById('fleet-facet-version');
+  if (versionSelect) {
+    versionSelect.innerHTML = '<option value="">Any version</option>' + versions.map(version =>
+      `<option value="${esc(version)}"${version === fleetFacetVersion ? ' selected' : ''}>${esc(version)}</option>`).join('');
+  }
+  const network = document.getElementById('fleet-facet-network');
+  if (network) network.value = fleetFacetNetwork;
+}
+
+function fleetAfterFacetChange() {
+  updateFleetFilterCount();
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
+  else fleetRenderActiveFilters();
+}
+
+function fleetToggleFacet(group, value, checked) {
+  const set = group === 'state' ? fleetFacetState : fleetFacetIssue;
+  if (checked) set.add(value); else set.delete(value);
+  fleetAfterFacetChange();
+}
+
+function fleetSetFacetVersion(value) { fleetFacetVersion = value || ''; fleetAfterFacetChange(); }
+function fleetSetFacetNetwork(value) { fleetFacetNetwork = value || ''; fleetAfterFacetChange(); }
+
+function fleetClearFacets() {
+  fleetFacetState.clear();
+  fleetFacetIssue.clear();
+  fleetFacetVersion = '';
+  fleetFacetNetwork = '';
+  fleetLocation = 'all';
+  fleetQuery = '';
+  fleetFilter = 'all';
+  const search = document.getElementById('fleet-search');
+  if (search) search.value = '';
+  const location = document.getElementById('fleet-location');
+  if (location) location.value = 'all';
+  const filter = document.getElementById('fleet-filter');
+  if (filter) filter.value = 'all';
+  fleetAfterFacetChange();
+}
+
+function fleetRenderActiveFilters() {
+  const host = document.getElementById('fleet-active-filters');
+  if (!host) return;
+  const chips = [];
+  const chip = (label, onclick) =>
+    `<button type="button" class="sm" aria-label="Remove filter ${esc(label)}"
+       onclick="${onclick}">${esc(label)} ×</button>`;
+  for (const state of fleetFacetState) chips.push(chip(`State: ${state}`, `fleetToggleFacet('state','${esc(state)}',false)`));
+  for (const kind of fleetFacetIssue) chips.push(chip(`Issue: ${fleetIssueLabel(kind)}`, `fleetToggleFacet('issue','${esc(kind)}',false)`));
+  if (fleetFacetVersion) chips.push(chip(`Version: ${fleetFacetVersion}`, "fleetSetFacetVersion('')"));
+  if (fleetFacetNetwork) chips.push(chip(`Network: ${FLEET_NETWORK_LABELS[fleetFacetNetwork] || fleetFacetNetwork}`, "fleetSetFacetNetwork('')"));
+  if (fleetLocation && fleetLocation !== 'all') {
+    const select = document.getElementById('fleet-location');
+    const label = select && select.selectedOptions && select.selectedOptions[0]
+      ? select.selectedOptions[0].textContent : fleetLocation;
+    chips.push(chip(`Location: ${label}`, "fleetSetLocation('all')"));
+  }
+  if (fleetQuery) chips.push(chip(`Search: ${fleetQuery}`, "fleetSetSearch('')"));
+  host.innerHTML = chips.length
+    ? chips.join(' ') + ' <button type="button" class="sm" onclick="fleetClearFacets()">Reset filters</button>'
+    : '';
+  host.hidden = !chips.length;
 }
 
 function fleetSetFilter(value) {
@@ -10358,6 +10603,10 @@ function selectFleetTab(tab) {
   document.querySelectorAll('.fleet-pane').forEach(pane => {
     pane.hidden = pane.id !== 'fleet-pane-' + tab;
   });
+  const facets = document.getElementById('fleet-machine-filters');
+  if (facets) facets.hidden = tab !== 'machines';
+  const show = document.getElementById('fleet-show-wrap');
+  if (show) show.hidden = tab === 'machines';
   if (tab === 'jobs') loadAutoStops();
 }
 
@@ -11178,6 +11427,14 @@ async function signOut() {
   // and never while a dialog is open, where the dialog's Escape wins.
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
+    const filters = document.getElementById('fleet-filters');
+    if (filters && !filters.hidden) {
+      filters.hidden = true;
+      const button = document.getElementById('fleet-filters-btn');
+      if (button) { button.setAttribute('aria-expanded', 'false'); button.focus(); }
+      event.preventDefault();
+      return;
+    }
     const field = event.target;
     if (!(field instanceof HTMLInputElement) || !field.value) return;
     if (field.type !== 'search' && field.type !== 'text') return;
