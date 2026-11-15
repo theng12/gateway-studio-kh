@@ -15,7 +15,12 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 - **0.2.257** — current: built from `980379b`, accepted, installed here (2026-11-15). Published
   to the 1301 feed pending the Developer's publish + readback (this Mac has no ssh to 1301).
-- **0.2.256** — previous accepted build, kept in `dist/` beside 0.2.257.
+- **0.2.256** — previous **published** build, kept in `dist/` beside 0.2.257. Its released
+  artifact is `2cd548aea731-gw-0256.dmg` (sha `2cd548ae…`, 63,254,947 bytes, 2026-11-13); the
+  e0d4232 candidate of the same version was never published and sits in `_trash/dist/`.
+- **1301 route:** SSH and the feed answer over the LAN at `terranash-1301-m1-16-1000`
+  (192.168.0.105) with `~/.ssh/id_ed25519_gateway1301`; the `100.x` IP and the HTTP feed port
+  time out even when Tailscale is off. Tailscale is not a prerequisite.
 - Release builds come from `menubar/build.sh`; `dist/` keeps the **latest two** verified DMGs,
   older ones go to `_trash` after reference checks.
 
