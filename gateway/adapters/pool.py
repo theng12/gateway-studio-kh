@@ -193,6 +193,25 @@ def _outcome_known(error: BackendError, sent: bool) -> bool:
             or (isinstance(error.status, int) and 400 <= error.status < 500))
 
 
+#: Attempt outcomes that are not a member's own failure code but still leave the pool short.
+_POOL_SHORT_OUTCOMES = {"unavailable", "nested-pool-refused", "cooling-down", "wait-ceiling", "waited"}
+
+
+def pool_failure_code(attempts: list[dict[str, Any]], last_code: str | None) -> str:
+    """The aggregate code for a pool that had no answer: one member's code only if it is alone.
+
+    Three different member failures are not an auth failure; the pool is exhausted and the
+    per-member causes are published beside it. One distinct code (or a single member) keeps that
+    code, so a genuinely all-auth pool still reads `PROVIDER_AUTH_FAILED`.
+    """
+    codes = {str(a.get("code")) for a in attempts
+             if a.get("outcome") == "failed" and a.get("code")}
+    short = any(a.get("outcome") in _POOL_SHORT_OUTCOMES for a in attempts)
+    if len(codes) > 1 or short:
+        return "POOL_EXHAUSTED"
+    return last_code or "POOL_EXHAUSTED"
+
+
 class PoolBackend(Backend):
     def __init__(self) -> None:
         # Injected by `adapters/__init__.py` after construction. A module-level
@@ -434,15 +453,19 @@ class PoolBackend(Backend):
                             request.model_id, result.payload["pool"]["used"])
             return result
 
-        # Nothing answered. The failure is the last real one, so the job's code and
-        # retryability still describe a provider rather than a pool.
+        # Nothing answered. **A mixed pool is not the last member's verdict.** Reporting the
+        # last member's code made a pool that failed for three different reasons (a truncated
+        # primary, an offline member, one bad key) read as "every member failed auth" (live
+        # 2026-11-15, story-studio-llm). When the outcomes differ, the honest code is
+        # `POOL_EXHAUSTED`; the member causes stay in `failure_reason` and `pool_attempts`.
         last: BackendError | None = walk["last"]
         detail = "; ".join(
             f"{a['member']}: {a.get('detail') or a['outcome']}" for a in attempts
         )[:600]
+        code = pool_failure_code(attempts, last.code if last else None)
         error = BackendError(
             f"Pool '{request.model_id}' had no member that could answer — {detail}",
-            code=(last.code if last else "POOL_EXHAUSTED"),
+            code=code,
             status=(last.status if last else 502),
             retryable=bool(last.retryable) if last else False,
             upstream_accepted=(None if walk["ambiguous"] else
