@@ -156,5 +156,38 @@ class AnOrphanedRunningRowIsHeldNotLeft(unittest.TestCase):
         self.assertTrue(job["recovery_required"])
 
 
+class APendingCancelSettlesWithTheRow(unittest.TestCase):
+    """A cancel the dead worker never finalised must not survive the sweep as a stuck request."""
+
+    def setUp(self) -> None:
+        self.path = _ROOT / f"{self._testMethodName}.sqlite3"
+        self.store = JobStore(self.path)
+        self.addCleanup(self.store.close)
+        for item in (patch.object(worker_module, "registry", _PoolRegistry()),
+                     patch("gateway.fleet.snapshot", lambda **_: {"locations": []})):
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_a_running_row_with_a_pending_cancel_is_cancelled_by_the_sweep(self) -> None:
+        row, _ = self.store.submit(modality="chat", model_id="story-studio-llm", params={},
+                                   idempotency_key="cancel-1", provider_id="pool")
+        job_id = row["id"]
+        self.store.mark_running(job_id)
+        self.store.begin_dispatch(job_id)
+        self.store.cancel(job_id, by="operator", reason="stall", origin="console")
+        self.assertIsNotNone(self.store.get(job_id)["cancel_requested_at"])
+        # The restart: the worker that would have answered is gone.
+        self.store.close()
+        reopened = JobStore(self.path)
+        self.addCleanup(reopened.close)
+        worker = worker_module.Worker(reopened, interval_s=0.02, pool_size=1)
+        self.addCleanup(worker.stop)
+        worker.start()
+        job = reopened.get(job_id)
+        self.assertEqual(job["state"], "cancelled",
+                         "the pending cancel must settle, not be carried into a hold")
+        self.assertFalse(job["recovery_required"])
+
+
 if __name__ == "__main__":
     unittest.main()

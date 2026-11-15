@@ -1027,6 +1027,28 @@ class JobStore:
         return len(rows) - requeued - len(self.interrupted)
 
     def _write_restart_hold(self, job_id: str, upstream: str, now: float) -> None:
+        # **A pending cancel settles with the row it was waiting on.** A cancel is finalised by the
+        # worker that owns the job; when that worker is gone (a restart, a dead thread) the request
+        # sits `requested` forever and Story's reconcile never sees the terminal state it expects
+        # (1301, 2026-11-15: the operator's cancel reached the Gateway and never finalised). The
+        # hold is the moment the gateway says "nothing is working this row", so the cancel is
+        # answered here instead of being carried into a state nobody can clear.
+        row = self._conn.execute(
+            "SELECT cancel_requested_at FROM jobs WHERE id = ? AND state = 'running'", (job_id,)
+        ).fetchone()
+        if row is not None and row["cancel_requested_at"] is not None:
+            self._conn.execute(
+                """
+                UPDATE jobs
+                   SET state = 'cancelled', cancel_state = ?, cancelled_at = ?,
+                       error_code = NULL, error_detail = NULL, retryable = 0,
+                       recovery_state = NULL, recovery_detail = NULL, recovery_context = NULL,
+                       next_action_at = NULL, updated_at = ?
+                 WHERE id = ? AND state = 'running'
+                """,
+                (CANCEL_CONFIRMED, now, now, job_id),
+            )
+            return
         suffix = f" Upstream job id: {upstream}." if upstream else ""
         detail = (
             "The gateway restarted while this job was in flight, so its upstream "
