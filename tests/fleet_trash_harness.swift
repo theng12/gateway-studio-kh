@@ -90,40 +90,66 @@ let memoryOnly = makeRow(bare, ["supported": true, "status": "fresh", "measured_
 check(memoryOnly.diskText == "not reported", "a memory figure is never drawn as free disk")
 check(memoryOnly.memoryText != "not reported", "and it is drawn in its own column")
 
-// 7. The items the Hub moved into macOS Trash (Hub 0.6.243), read from the fleet row it publishes.
+// 7. The Mac's macOS Trash (Hub 0.6.243), read from the fleet row into its own column.
 let withMacos = decodeMachine("""
 {"location_id":"ctl1","machine":"node-3","label":"terranash-1300",
- "macos_trash":{"hub_items_count":4,"hub_items_bytes":1500000000}}
+ "macos_trash":{"count":4,"bytes":1500000000}}
 """)
 let macosRow = makeRow(withMacos, ["supported": true, "status": "fresh", "measured_at": fresh,
                                    "count": 0, "bytes": 0])
-check(macosRow.macosTrashPart?.count == 4 && macosRow.macosTrashPart?.bytes == 1_500_000_000,
-      "the Hub's macOS Trash items are read from the fleet row")
-check(macosRow.canEmpty, "a Mac whose Hub Trash Folder is empty can still be emptied for the macOS items")
-check(macosRow.macosTrashText != "not reported", "and the macOS column states them")
+check(macosRow.macosTrashBytes == 1_500_000_000, "the macOS Trash size is read from the fleet row")
+check(macosRow.canEmpty, "a Mac whose Hub folder is empty can still be emptied for its macOS Trash")
+check(macosRow.macosTrashText.contains("4 items"), "and the macOS column states it")
 
-// 8. A Hub older than 0.6.243 states none: "not reported", and nothing this app may delete.
+// 8. A Hub older than 0.6.243 states none: "not reported", never 0 — and Empty stays live, the Hub decides.
 let olderHub = makeRow(bare, ["supported": true, "status": "fresh", "measured_at": fresh,
                               "count": 0, "bytes": 0])
 check(olderHub.macosTrashText == "not reported", "an unreported macOS Trash reads not reported")
-check(olderHub.macosTrashPart == nil && !olderHub.canEmpty, "and there is nothing to delete from it")
+check(olderHub.macosTrashBytes == nil && olderHub.canEmpty, "an unreported part does not hide Empty")
 
-// 9. A stated 0 is a reading: "empty", never "not reported" and never a delete offer.
+// 9. A stated 0 is a reading: "empty"; both parts stated empty leave nothing to empty.
 let macosZero = decodeMachine("""
-{"location_id":"ctl1","machine":"node-4","macos_trash":{"hub_items_count":0,"hub_items_bytes":0}}
+{"location_id":"ctl1","machine":"node-4","macos_trash":{"count":0,"bytes":0}}
 """)
-let zeroRow = makeRow(macosZero, nil)
+let zeroRow = makeRow(macosZero, ["supported": true, "status": "fresh", "measured_at": fresh,
+                                  "count": 0, "bytes": 0])
 check(zeroRow.macosTrashText == "empty", "a stated 0 in macOS Trash reads empty")
-check(zeroRow.macosTrashPart == nil, "and is not offered as a delete")
+check(!zeroRow.canEmpty, "both parts stated empty: no Empty offered")
+check(!failed.canEmpty && !away.canEmpty, "a Mac that could not be read cannot be emptied")
 
 // 10. A boolean is not a number here either.
 let macosBool = decodeMachine("""
-{"location_id":"ctl1","machine":"node-5","macos_trash":{"hub_items_count":true,"hub_items_bytes":true}}
+{"location_id":"ctl1","machine":"node-5","macos_trash":{"count":true,"bytes":true}}
 """)
 check(makeRow(macosBool, nil).macosTrashText == "not reported", "a boolean macOS Trash size is not a reading")
+
+// 11. The confirmation: each Mac's line, and a total of stated figures only.
+let lines = [full.emptyLine, macosRow.emptyLine, olderHub.emptyLine, makeRow(bare, nil).emptyLine]
+check(lines[0].text.contains("Hub folder 3 items") && lines[0].text.contains("macOS Trash not reported"),
+      "a Mac's line names each part, and an unstated part as not reported")
+let total = FleetTrash.total(lines)
+check(total.contains("7 items") && total.contains(FleetTrash.size(6_500_000_000)),
+      "the total adds only stated figures (3 + 4 items, 5 GB + 1.5 GB)")
+check(total.contains("1 Mac not reported"), "a Mac that stated nothing is named, not counted as 0")
+
+// 12. The outcome names every Mac not emptied, its reason, and what is left.
+let said = FleetTrash.outcome([
+    "totals": ["emptied": 1, "skipped": 1, "failed": 1, "freed_bytes": 2_000_000_000, "left_bytes": 300_000_000],
+    "machines": [
+        ["machine": "node-1", "label": "terranash-1500", "state": "emptied", "freed_bytes": 2_000_000_000],
+        ["machine": "node-2", "label": "terranash-1200", "state": "skipped", "reason": "its switch is off"],
+        ["machine": "node-3", "state": "failed", "reason": "permission denied", "left_bytes": 300_000_000],
+        ["location_id": "ctl9", "state": "skipped", "reason": "offline"],
+    ]])
+check(said.hasPrefix("emptied 1 · skipped 1 · failed 1"), "the outcome leads with the counts")
+check(said.contains("terranash-1200 skipped: its switch is off"), "a skipped Mac says why")
+check(said.contains("node-3 failed: permission denied (\(FleetTrash.size(300_000_000)) left)"),
+      "a failed Mac says why and what is left")
+check(said.contains("site ctl9 skipped: offline"), "an offline site is named as skipped")
+check(!said.contains("terranash-1500"), "an emptied Mac is in the totals, not the exceptions")
 
 if failures > 0 {
     print("FAIL: \(failures) check(s) failed")
     exit(1)
 }
-print("PASS: \(checks) checks - three fields, macOS Trash, not reported, never 0")
+print("PASS: \(checks) checks - four columns, not reported, never 0, empty confirmation and outcome")

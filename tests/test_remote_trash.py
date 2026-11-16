@@ -131,88 +131,159 @@ class RelayTests(_Isolated):
         self.assertEqual(self.seen, [])
 
 
-class MacosHubTrashTests(_Isolated):
-    """The items the Hub moved into macOS Trash (Studio Hub 0.6.243): owner-only, same re-check.
+class EmptyTrashTests(_Isolated):
+    """Empty trash on one Mac or every Mac at every linked site (owner, 2026-11-16; Studio Hub 0.6.243).
 
-    Owner, 2026-11-16: the cleanup must actually free space, including items already moved to macOS
-    Trash. The Hub states the count and bytes per Mac and offers a route that deletes **only** what it
-    put there; the Gateway relays it behind the same owner app-window secret as the Trash Folder delete.
+    The owner's one exception to "only the owner deletes": "one button to delete across all the linking
+    sites and nodes and controllers ... make sure even agents control and make that happen too". The
+    gateway key works here; every other delete stays owner-only (`OwnerConsoleTests`).
     """
-    #: The real relay, kept before `setUp` replaces the module attribute for the route tests.
-    REAL = staticmethod(startup_control.macos_trash_delete)
     KEY = {"Authorization": "Bearer trash-fixture-key"}
-    DELETE = "/admin/api/fleet/controllers/ctl1/machines/node-1/macos-trash/delete"
-    BODY = {"confirm": True, "expected_count": 4, "expected_bytes": 1_500_000_000}
+    EMPTY = "/admin/api/fleet/trash/empty"
+    EMPTIED = {"machine": "node-1", "label": "terranash-1500", "state": "emptied",
+               "freed_bytes": 2_000, "deleted_count": 3}
 
     def setUp(self) -> None:
         super().setUp()
-        self.calls: list[tuple] = []
-        patcher = patch.object(startup_control, "macos_trash_delete",
-                               lambda *a, **k: self.calls.append(a) or {"ok": True, "deleted_count": 4,
-                                                                        "freed_bytes": 1_500_000_000})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.audits: list[tuple[str, dict]] = []
+        for target, name, fake in (
+                (startup_control, "audit", lambda event, **fields: self.audits.append((event, fields))),
+                (startup_control, "_target", lambda c: (f"http://{c}.fixture:47873", "fleet-token")),
+                (fleet, "roster", lambda: [{"id": "ctl2"}, {"id": "ctl3"}]),
+                (fleet, "invalidate", lambda: None)):
+            patcher = patch.object(target, name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
-    def client(self, host: str):
-        client = TestClient(api.app, client=(host, 50000))
-        self.addCleanup(client.close)
-        return client
+    def site(self, answers: dict[str, httpx.Response | Exception]) -> httpx.Client:
+        """One fixture transport for every controller, answering by host."""
+        self.seen: list[httpx.Request] = []
 
-    def test_only_the_owner_app_window_can_use_it(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.seen.append(request)
+            answer = answers[request.url.host.split(".")[0]]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    def run_route(self, host: str, headers: dict, body: dict, answers: dict) -> httpx.Response:
+        client = self.site(answers)
+        real_one, real_all = startup_control.empty_trash_one, startup_control.empty_trash_everywhere
+        with patch.object(startup_control, "empty_trash_one",
+                          lambda *a, **k: real_one(*a, client=client, **k)), \
+             patch.object(startup_control, "empty_trash_everywhere",
+                          lambda **k: real_all(client=client, **k)):
+            api_client = TestClient(api.app, client=(host, 50000))
+            self.addCleanup(api_client.close)
+            return api_client.post(self.EMPTY, headers=headers, json=body)
+
+    def run_lines(self) -> list[dict]:
+        return [fields for event, fields in self.audits if event == "trash_empty"]
+
+    def test_an_agent_holding_the_gateway_key_empties_every_mac_at_every_site(self) -> None:
+        admin_session._owner_secret = SECRET            # the app is running; the agent does not hold it
+        ok = httpx.Response(200, json={"ok": True, "machines": [self.EMPTIED]})
+        answer = self.run_route("10.9.8.7", self.KEY, {}, {"local": ok, "ctl2": ok, "ctl3": ok})
+        self.assertEqual(answer.status_code, 200, answer.text)
+        got = answer.json()
+        self.assertEqual((got["ok"], got["scope"], got["caller"]), (True, "all", "agent"))
+        self.assertEqual([request.url.host for request in self.seen],
+                         ["local.fixture", "ctl2.fixture", "ctl3.fixture"], "every linked site, 1301 first")
+        self.assertTrue(all(request.url.path == "/api/hub/fleet/empty-trash" for request in self.seen))
+        self.assertEqual(self.seen[0].headers["x-hub-token"], "fleet-token")
+        self.assertEqual(got["totals"], {"freed_bytes": 6_000, "deleted_count": 9, "left_bytes": 0,
+                                         "left_count": 0, "emptied": 3, "skipped": 0, "failed": 0})
+        self.assertEqual(self.run_lines(), [{"caller": "agent", "scope": "all", "machines": 3,
+                                             **got["totals"]}], "one audit line per run, naming the caller")
+
+    def test_the_owners_app_window_is_named_as_the_owner(self) -> None:
         admin_session._owner_secret = SECRET
-        for host in ("10.9.8.7", "127.0.0.1"):
-            answer = self.client(host).post(self.DELETE, headers=self.KEY, json=self.BODY)
-            self.assertEqual(answer.status_code, 403, host)
-        local = self.client("127.0.0.1")
-        self.assertEqual(local.post(self.DELETE, json=self.BODY).status_code, 403)
-        token = admin_session.create_session()
-        self.assertEqual(local.post(self.DELETE, json=self.BODY, cookies={admin_session.COOKIE: token},
-                                    headers={"Origin": "http://testserver"}).status_code, 403)
-        self.assertEqual(self.calls, [], "a gateway key or a browser session cannot reach this delete")
-        owner = {**self.KEY, admin_session.OWNER_HEADER: SECRET}
-        self.assertEqual(local.post(self.DELETE, headers=owner, json=self.BODY).status_code, 200)
-        self.assertEqual(self.calls, [("ctl1", "node-1", True, 4, 1_500_000_000)])
+        ok = httpx.Response(200, json={"ok": True, "machines": [self.EMPTIED]})
+        answer = self.run_route("127.0.0.1", {**self.KEY, admin_session.OWNER_HEADER: SECRET}, {"scope": "all"},
+                                {"local": ok, "ctl2": ok, "ctl3": ok})
+        self.assertEqual(answer.json()["caller"], "owner")
+        self.assertEqual(self.run_lines()[0]["caller"], "owner")
 
-    def test_the_relay_sends_only_the_confirmed_count_and_bytes(self) -> None:
-        seen: list[httpx.Request] = []
-        client = httpx.Client(transport=httpx.MockTransport(
-            lambda request: seen.append(request) or httpx.Response(200, json={"ok": True, "deleted_count": 4})))
-        with patch.object(startup_control, "_target", lambda c: ("http://100.64.0.2:47873", "fleet-token")):
-            got = self.REAL("ctl1", "node-1", True, 4, 1_500_000_000, client=client)
-        self.assertEqual(got["deleted_count"], 4)
-        self.assertTrue(str(seen[0].url).endswith("/api/hub/fleet/nodes/node-1/macos-trash/delete"))
-        self.assertEqual(json.loads(seen[0].content),
-                         {"confirm": True, "expected_count": 4, "expected_bytes": 1_500_000_000},
-                         "no item ids: the Hub deletes only what it moved there")
+    def test_no_credential_is_refused_and_nothing_is_sent(self) -> None:
+        answer = self.run_route("10.9.8.7", {}, {}, {})
+        self.assertEqual(answer.status_code, 401)
+        self.assertEqual(self.seen, [])
+        self.assertEqual(self.run_lines(), [])
 
-    def test_a_changed_folder_is_a_409_that_deletes_nothing(self) -> None:
-        answer = httpx.Response(409, json={"ok": False, "code": "TRASH_CHANGED", "count": 5, "bytes": 2})
-        client = httpx.Client(transport=httpx.MockTransport(lambda request: answer))
-        with patch.object(startup_control, "_target", lambda c: ("http://100.64.0.2:47873", "t")):
-            with self.assertRaises(startup_control.StartupError) as caught:
-                self.REAL("ctl1", "node-1", True, 4, 1_500_000_000, client=client)
-        self.assertEqual((caught.exception.status, caught.exception.body["code"]), (409, "TRASH_CHANGED"))
+    def test_a_switch_off_mac_an_old_hub_and_an_offline_site_are_skipped_with_a_reason(self) -> None:
+        local = httpx.Response(200, json={"ok": True, "machines": [
+            self.EMPTIED,
+            {"machine": "node-2", "state": "skipped", "reason": "its own switch is off"}]})
+        answers = {"local": local,
+                   "ctl2": httpx.Response(404, json={"detail": "Not Found"}),      # Hub older than 0.6.243
+                   "ctl3": httpx.ConnectError("no route to host")}                 # offline
+        got = self.run_route("10.9.8.7", self.KEY, {}, answers).json()
+        rows = {(row["location_id"], row["machine"]): row for row in got["machines"]}
+        self.assertEqual(rows[("local", "node-2")]["state"], "skipped")
+        self.assertEqual(rows[("local", "node-2")]["reason"], "its own switch is off")
+        self.assertEqual((rows[("ctl2", None)]["state"], rows[("ctl2", None)]["code"]), ("skipped", "HUB_TOO_OLD"))
+        self.assertIn("0.6.243", rows[("ctl2", None)]["reason"])
+        self.assertEqual((rows[("ctl3", None)]["state"], rows[("ctl3", None)]["code"]),
+                         ("skipped", "CONTROLLER_UNREACHABLE"), "offline is skipped, never failed")
+        self.assertTrue(rows[("ctl3", None)]["reason"])
+        self.assertEqual((got["ok"], got["totals"]["skipped"], got["totals"]["failed"]), (True, 3, 0))
+        self.assertIsNone(rows[("ctl3", None)]["freed_bytes"], "nothing attempted: not reported, never 0")
+
+    def test_a_partial_failure_reports_exactly_what_is_left(self) -> None:
+        partial = httpx.Response(500, json={"ok": False, "machines": [
+            self.EMPTIED,
+            {"machine": "node-3", "state": "failed", "reason": "Operation not permitted",
+             "freed_bytes": 500, "deleted_count": 1, "left_bytes": 300, "left_count": 2}]})
+        ok = httpx.Response(200, json={"ok": True, "machines": []})
+        got = self.run_route("10.9.8.7", self.KEY, {}, {"local": partial, "ctl2": ok, "ctl3": ok}).json()
+        failed = [row for row in got["machines"] if row["state"] == "failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual((failed[0]["machine"], failed[0]["reason"], failed[0]["left_bytes"],
+                          failed[0]["left_count"]), ("node-3", "Operation not permitted", 300, 2))
+        self.assertFalse(got["ok"])
+        self.assertEqual((got["totals"]["freed_bytes"], got["totals"]["left_bytes"], got["totals"]["failed"]),
+                         (2_500, 300, 1))
+        # A Hub that answered without naming a Mac is said, not a silent empty run.
+        self.assertEqual([row["reason"] for row in got["machines"] if row["location_id"] == "ctl2"],
+                         ["the Hub answered without naming a Mac"])
+
+    def test_a_refused_credential_or_an_unknown_state_is_a_failure_not_a_skip(self) -> None:
+        answers = {"local": httpx.Response(200, json={"ok": True, "machines": [
+                       {"machine": "node-1", "state": "maybe", "freed_bytes": True}]}),
+                   "ctl2": httpx.Response(401, json={"detail": "bad token"}),
+                   "ctl3": httpx.Response(200, json={"ok": True, "machines": [self.EMPTIED]})}
+        got = self.run_route("10.9.8.7", self.KEY, {}, answers).json()
+        states = {(row["location_id"], row["state"]) for row in got["machines"]}
+        self.assertEqual(states, {("local", "failed"), ("ctl2", "failed"), ("ctl3", "emptied")})
+        unknown = next(row for row in got["machines"] if row["location_id"] == "local")
+        self.assertIn("unknown state", unknown["reason"])
+        self.assertIsNone(unknown["freed_bytes"], "a boolean is not a size")
+
+    def test_one_mac_goes_to_its_node_route(self) -> None:
+        ok = httpx.Response(200, json={"ok": True, "state": "emptied", "freed_bytes": 10, "deleted_count": 1})
+        got = self.run_route("10.9.8.7", self.KEY, {"location_id": "ctl2", "machine": "node-7"},
+                             {"ctl2": ok}).json()
+        self.assertEqual([request.url.path for request in self.seen], ["/api/hub/fleet/nodes/node-7/empty-trash"])
+        self.assertEqual((got["scope"], got["machines"][0]["machine"], got["machines"][0]["state"]),
+                         ("machine", "node-7", "emptied"))
+        self.assertEqual(self.run_lines()[0]["scope"], "machine")
 
     def test_a_malformed_request_is_refused_before_anything_is_sent(self) -> None:
-        seen: list[httpx.Request] = []
-        client = httpx.Client(transport=httpx.MockTransport(
-            lambda request: seen.append(request) or httpx.Response(200)))
-        for args in ((False, 4, 1), (True, None, 1), (True, 4, "1"), (True, True, 1)):
-            with self.assertRaises(startup_control.StartupError) as caught:
-                self.REAL("ctl1", "node-1", *args, client=client)
-            self.assertEqual(caught.exception.status, 400, args)
-        self.assertEqual(seen, [])
+        for body, code in (({"scope": "everything"}, "BAD_SCOPE"), ({"location_id": "ctl2"}, "MACHINE_REQUIRED"),
+                           ({"location_id": "ctl2", "machine": "../../etc"}, "BAD_MACHINE")):
+            answer = self.run_route("10.9.8.7", self.KEY, body, {})
+            self.assertEqual((answer.status_code, answer.json()["code"]), (400, code), body)
+        self.assertEqual(self.seen, [])
 
-    def test_a_mac_row_states_the_hub_items_or_none_never_zero(self) -> None:
-        self.assertEqual(fleet._macos_trash_fact(
-            {"macos_trash": {"hub_items_count": 4, "hub_items_bytes": 1500}}),
-            {"hub_items_count": 4, "hub_items_bytes": 1500})
-        self.assertEqual(fleet._macos_trash_fact({"macos_trash_hub_items_bytes": 7}),
-                         {"hub_items_count": None, "hub_items_bytes": 7})
+    def test_a_mac_row_states_its_macos_trash_or_none_never_zero(self) -> None:
+        self.assertEqual(fleet._macos_trash_fact({"macos_trash": {"count": 4, "bytes": 1500}}),
+                         {"count": 4, "bytes": 1500})
+        self.assertEqual(fleet._macos_trash_fact({"macos_trash": {"hub_items_bytes": 7}}),
+                         {"count": None, "bytes": 7}, "a first Hub cut's spelling is still read")
         self.assertIsNone(fleet._macos_trash_fact({}), "an older Hub states nothing: None, never 0")
-        self.assertIsNone(fleet._macos_trash_fact(
-            {"macos_trash": {"hub_items_count": True, "hub_items_bytes": True}}),
-            "a boolean is not a size")
+        self.assertIsNone(fleet._macos_trash_fact({"macos_trash": {"count": True, "bytes": -1}}),
+                          "a boolean or a negative is not a size")
 
 
 class OwnerConsoleTests(_Isolated):

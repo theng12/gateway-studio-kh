@@ -754,23 +754,23 @@ struct FleetHistory: Decodable {
     var measured: Bool { observed == true }
 }
 
-/// The items **the Hub itself** moved into this Mac's macOS Trash (Studio Hub 0.6.243).
+/// What this Mac's macOS Trash holds (Studio Hub 0.6.243) — its own column, beside the Hub folder.
 ///
 /// Every retirement a Hub makes ends in Finder's Trash, so a Mac whose Trash is never emptied fills
 /// its disk even after the Studio Hub Trash Folder is empty. Both fields are optional: a Hub that
 /// states neither leaves them `nil` — unknown, never drawn as 0.
 struct FleetMacosTrash: Decodable {
-    var hubItemsCount: Int?
-    var hubItemsBytes: Int64?
+    var count: Int?
+    var bytes: Int64?
 
     private enum CodingKeys: String, CodingKey {
-        case hubItemsCount, hubItemsBytes
+        case count, bytes
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        hubItemsCount = try? c.decode(Int.self, forKey: .hubItemsCount)
-        hubItemsBytes = try? c.decode(Int64.self, forKey: .hubItemsBytes)
+        count = try? c.decode(Int.self, forKey: .count)
+        bytes = try? c.decode(Int64.self, forKey: .bytes)
     }
 }
 

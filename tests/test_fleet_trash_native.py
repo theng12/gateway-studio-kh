@@ -1,4 +1,4 @@
-"""The Fleet Trash view's three fields, native (Gateway 0.2.264).
+"""The Fleet Trash view's columns and Empty flow, native (Gateway 0.2.264).
 
 The owner asked for an all-Macs Trash view: one row per Mac with the trash it holds, its free disk and
 its free memory as separate columns, and one step to empty a Mac's Trash Folder. This pins the half a
@@ -9,10 +9,9 @@ boolean is not a number; and memory is never drawn as disk.
 It compiles the real `menubar/*.swift` sources with `tests/fleet_trash_harness.swift` as `main`, so a
 renamed field in the decoders fails here rather than on the owner's screen.
 
-What is *not* here, and needs no test because it already exists: the delete route's authority. Owner
-app-window secret only, count and bytes re-check with 409 `TRASH_CHANGED`, and an API key or a browser
-session refused - `tests/test_remote_trash.py` pins that, through the same route this view uses with
-`items: "all"`.
+It also pins the Empty confirmation's per-Mac lines and total (stated figures only) and the outcome
+sentence (every Mac not emptied, its reason, what is left). The route's authority and skip/fail rules are
+in `tests/test_remote_trash.py` (`EmptyTrashTests`).
 """
 import os
 import shutil

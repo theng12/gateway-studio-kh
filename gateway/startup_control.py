@@ -722,26 +722,25 @@ def stamp_lite_mode_pending(machines: list[dict[str, Any]]) -> list[dict[str, An
     return issues
 
 
-def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, Any] | None, *, event: str,
-               too_old: str, refused: str, audit_fields: dict[str, Any],
-               client: httpx.Client | None, method: str = "POST", send: dict[str, Any] | None = None,
-               timeout: httpx.Timeout = _TIMEOUT) -> dict[str, Any]:
-    """POST one node action to the controller that owns the Mac, with the credential every fleet call uses.
+def _hub_post(controller_id: str, path: str, body: dict[str, Any] | None, *, event: str,
+              too_old: str, refused: str, audit_fields: dict[str, Any],
+              client: httpx.Client | None, method: str = "POST",
+              send: dict[str, Any] | None = None,
+              timeout: httpx.Timeout = _TIMEOUT) -> dict[str, Any]:
+    """One request to a controller, with the credential every fleet call uses, and its answer.
 
-    ``method="GET"`` is a status read through the same path: not audited, and the Fleet is not re-read.
-    ``send`` replaces the JSON ``body`` with other httpx request arguments (a multipart upload).
+    The failure vocabulary is the same for a node route and a controller route: a 404/405 or the
+    Hub's own pre-routing 403 is `HUB_TOO_OLD` (the token was accepted, the route is newer), a 401/403
+    is `CONTROLLER_REFUSED`, and an unreachable controller is `CONTROLLER_UNREACHABLE`. Never raises
+    for a body; raises `StartupError` for a refused answer.
     """
     base, token = _target(controller_id)
     action = method != "GET"
     if action:
-        audit(f"{event}_requested", controller=controller_id, machine=machine_id, **audit_fields)
+        audit(f"{event}_requested", controller=controller_id, **audit_fields)
     owned = client is None
     client = client or httpx.Client(timeout=timeout)
     try:
-        path = (f"/api/hub/{route}"
-                if machine_id == fleet.LOCAL_ID and route in {
-                    "render-authority", "render-while-paused"}
-                else f"/api/hub/fleet/nodes/{machine_id}/{route}")
         response = client.request(method, base + path,
                                   headers={"X-Hub-Token": token} if token else {},
                                   **(send if send is not None else {"json": body}))
@@ -770,7 +769,6 @@ def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, 
     elif response.status_code in (401, 403) and "code" not in answered:
         answered = {"ok": False, "code": "CONTROLLER_REFUSED", "detail": refused}
     answered.setdefault("ok", response.is_success)
-    answered["machine"] = machine_id
     # **`queued` is the controller having taken the request, not having applied it yet.** Hub
     # 0.6.193 holds a request for a Mac it cannot dial — a Shops Mac, reached only through its own
     # check-in — and answers `202` with `queued: true` and the command's id. That is a success for
@@ -781,12 +779,32 @@ def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, 
         answered.setdefault("detail", "held for the Mac: its controller cannot dial it and will "
                                       "deliver it on the Mac's next check-in")
     if action:
-        audit(f"{event}_result", controller=controller_id, machine=machine_id, status=response.status_code,
-              code=answered.get("code"), ok=answered.get("ok"), queued=answered.get("queued"))
+        audit(f"{event}_result", controller=controller_id, status=response.status_code,
+              code=answered.get("code"), ok=answered.get("ok"), queued=answered.get("queued"),
+              **audit_fields)
     if not response.is_success:
         raise StartupError(response.status_code if response.status_code < 500 else 502, answered)
     if action:
-        fleet.invalidate()   # the next Fleet read shows the new name, not a cached old one
+        fleet.invalidate()   # the next Fleet read shows the new state, not a cached old one
+    return answered
+
+
+def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, Any] | None, *, event: str,
+               too_old: str, refused: str, audit_fields: dict[str, Any],
+               client: httpx.Client | None, method: str = "POST", send: dict[str, Any] | None = None,
+               timeout: httpx.Timeout = _TIMEOUT) -> dict[str, Any]:
+    """One node action, or a status read, to the controller that owns the Mac.
+
+    ``method="GET"`` is a status read through the same path: not audited, and the Fleet is not re-read.
+    ``send`` replaces the JSON ``body`` with other httpx request arguments (a multipart upload).
+    """
+    path = (f"/api/hub/{route}"
+            if machine_id == fleet.LOCAL_ID and route in {"render-authority", "render-while-paused"}
+            else f"/api/hub/fleet/nodes/{machine_id}/{route}")
+    answered = _hub_post(controller_id, path, body, event=event, too_old=too_old, refused=refused,
+                         audit_fields={"machine": machine_id, **audit_fields}, client=client,
+                         method=method, send=send, timeout=timeout)
+    answered["machine"] = machine_id
     return answered
 
 
@@ -1038,33 +1056,156 @@ def trash_delete(controller_id: str, machine_id: str, items: object, confirm: ob
                                 "bytes": expected_bytes})
 
 
-#: **The items the Hub itself moved into macOS Trash** (Studio Hub 0.6.243). Every retirement a Hub
-#: makes ends there, so a Mac whose Finder never empties that Trash still fills its disk even after its
-#: Studio Hub Trash Folder is emptied. The Hub states the count and bytes per Mac, and offers an
-#: owner-only route that deletes **only** what the Hub put there — never a file the owner put in
-#: Finder's Trash. A Hub older than this answers `HUB_TOO_OLD`.
-MACOS_HUB_TRASH_HUB = "0.6.243"
-MACOS_HUB_TRASH_TOO_OLD = (f"Needs Studio Hub {MACOS_HUB_TRASH_HUB} to empty the items it moved to "
-                           "macOS Trash.")
+#: **Emptying trash on a fleet Mac** (owner, 2026-11-16: "one button to delete across all the linking
+#: sites and nodes and controllers ... what's in the trash will go", and "make sure even agents control
+#: and make that happen too"). Studio Hub 0.6.243's route removes the Studio Hub Trash Folder **and**
+#: the whole macOS Trash on that Mac; a Mac with its own switch off, an older Hub or an offline Mac is
+#: answered `skipped` with a reason, never `failed`. The owner made this the one trash action an agent
+#: may take with the gateway key alone; every other delete still needs the app-window secret.
+FLEET_TRASH_HUB = "0.6.243"
+FLEET_TRASH_TOO_OLD = ("This controller's Studio Hub cannot empty a Mac's trash from the Gateway yet. "
+                       "It needs Studio Hub 0.6.243: update it first (Fleet > Release).")
 
 
-def macos_trash_delete(controller_id: str, machine_id: str, confirm: object, expected_count: object,
-                       expected_bytes: object, *, client: httpx.Client | None = None) -> dict[str, Any]:
-    """Permanently delete the items **this Hub** moved to that Mac's macOS Trash.
+def empty_trash(controller_id: str, machine_id: str | None = None, *,
+                client: httpx.Client | None = None) -> dict[str, Any]:
+    """Ask one controller to empty one Mac's trash, or every Mac it owns.
 
-    The same contract as the Studio Hub Trash Folder's delete: `confirm: true` plus the count and
-    bytes the owner saw, and the Mac re-measures — a folder that changed deletes nothing (409
-    `TRASH_CHANGED`). It never touches anything else in Finder's Trash. Answers `deleted_count`,
-    `freed_bytes`, `failed`.
+    Returns the Hub's own answer: `machines` (one entry per Mac, `state` `emptied|skipped|failed`,
+    `freed_bytes`, `deleted_count`, `reason`) and its totals. The Gateway adds nothing to a Mac's
+    outcome — the Hub measured it.
     """
-    if confirm is not True or any(type(v) is not int or v < 0 for v in (expected_count, expected_bytes)):
-        raise StartupError(400, {"ok": False, "code": "CONFIRM_REQUIRED",
-                                 "detail": "Permanent delete needs confirm: true, expected_count and "
-                                           "expected_bytes."})
-    return _trash(controller_id, machine_id, "macos-trash/delete",
-                  {"confirm": True, "expected_count": expected_count, "expected_bytes": expected_bytes},
-                  event="macos_trash_delete", client=client, too_old=MACOS_HUB_TRASH_TOO_OLD,
-                  audit_fields={"count": expected_count, "bytes": expected_bytes})
+    if machine_id is not None and not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    path = (f"/api/hub/fleet/nodes/{machine_id}/empty-trash" if machine_id
+            else "/api/hub/fleet/empty-trash")
+    answered = _hub_post(controller_id, path, {}, event="trash_empty", too_old=FLEET_TRASH_TOO_OLD,
+                         refused="The controller refused this gateway's credential for emptying trash.",
+                         audit_fields={"machine": machine_id or "all"}, client=client,
+                         timeout=_TRASH_TIMEOUT)
+    answered.setdefault("machines", [])
+    if machine_id is not None:
+        answered["machine"] = machine_id
+    return answered
+
+
+def _trash_rows(answer: dict[str, Any], controller_id: str) -> list[dict[str, Any]]:
+    """One controller's answer as one entry per Mac, each terminal.
+
+    A Hub that answers `ok` without naming a Mac emptied nothing this Gateway can account for, and
+    that is said rather than reported as a run with no Macs in it.
+    """
+    rows = answer.get("machines") if isinstance(answer.get("machines"), list) else []
+    if not rows and answer.get("state"):
+        rows = [answer]          # a node route may answer for the one Mac directly
+    if not rows:
+        return [_controller_row(controller_id, "skipped", "the Hub answered without naming a Mac")]
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        state = str(row.get("state") or "").strip().lower()
+        reason = row.get("reason") or row.get("detail")
+        if state not in {"emptied", "skipped", "failed"}:
+            state, reason = "failed", f"the Hub answered an unknown state ({state or 'none'})"
+        out.append({
+            "location_id": controller_id,
+            "machine": row.get("machine"),
+            "label": row.get("label"),
+            "state": state,
+            "reason": reason or (None if state == "emptied" else "the Hub gave no reason"),
+            # `None` is "not reported", never 0: a partial failure must say what is left only if it knows.
+            "freed_bytes": _size(row.get("freed_bytes")),
+            "deleted_count": _size(row.get("deleted_count")),
+            "left_count": _size(row.get("left_count", row.get("remaining_count"))),
+            "left_bytes": _size(row.get("left_bytes", row.get("remaining_bytes"))),
+        })
+    return out
+
+
+def _size(value: object) -> int | None:
+    # A boolean is not a size, and neither is a negative: unstated, never 0.
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return int(value)
+
+
+#: A controller that never got the request attempted nothing: offline or too old to know the route.
+#: Anything else it refuses (a credential, a server error) is a failure with its reason.
+_TRASH_SKIP_CODES = {"HUB_TOO_OLD", "CONTROLLER_UNREACHABLE"}
+
+
+def _controller_row(controller_id: str, state: str, reason: str, code: str | None = None) -> dict[str, Any]:
+    return {"location_id": controller_id, "machine": None, "label": None, "state": state, "reason": reason,
+            "code": code, "freed_bytes": None, "deleted_count": None, "left_count": None, "left_bytes": None}
+
+
+def _refused_rows(controller_id: str, body: dict[str, Any]) -> list[dict[str, Any]]:
+    """A controller error as rows. A Hub that answers an error *with* its per-Mac list (a partial
+    failure) keeps every Mac's own outcome; otherwise the controller is one skipped or failed row."""
+    if isinstance(body.get("machines"), list) and body["machines"]:
+        return _trash_rows(body, controller_id)
+    code = str(body.get("code") or "") or None
+    state = "skipped" if code in _TRASH_SKIP_CODES else "failed"
+    return [_controller_row(controller_id, state, str(body.get("detail") or code or "the controller refused"),
+                            code)]
+
+
+def _trash_run(*, caller: str, scope: str, machines: list[dict[str, Any]]) -> dict[str, Any]:
+    """The run's envelope and its one audit line, whoever asked for it."""
+    def stated(field: str) -> int:
+        return sum(row[field] for row in machines if row.get(field) is not None)
+
+    totals = {
+        # A partial failure may have freed part of a Mac, so freed and left count every stated row.
+        "freed_bytes": stated("freed_bytes"),
+        "deleted_count": stated("deleted_count"),
+        "left_bytes": stated("left_bytes"),
+        "left_count": stated("left_count"),
+        "emptied": sum(1 for row in machines if row["state"] == "emptied"),
+        "skipped": sum(1 for row in machines if row["state"] == "skipped"),
+        "failed": sum(1 for row in machines if row["state"] == "failed"),
+    }
+    audit("trash_empty", caller=caller, scope=scope, machines=len(machines), **totals)
+    return {"ok": totals["failed"] == 0, "scope": scope, "caller": caller,
+            "machines": machines, "totals": totals}
+
+
+def empty_trash_everywhere(*, caller: str, client: httpx.Client | None = None) -> dict[str, Any]:
+    """Empty every Mac's trash at every linked site, one controller after another.
+
+    One entry per Mac, each terminal: `emptied` with its freed bytes, `skipped` with the reason (the
+    Mac's switch is off, its Hub is older than 0.6.243, or it is offline), or `failed` with the Hub's
+    reason. A controller that does not answer is **skipped**, never failed: nothing was attempted
+    there. The caller — the owner's app window or an agent holding the gateway key — is in the audit
+    line, one per run.
+    """
+    ids = [fleet.LOCAL_ID] + [str(row.get("id")) for row in fleet.roster() if row.get("id")]
+    machines: list[dict[str, Any]] = []
+    for controller_id in dict.fromkeys(ids):
+        try:
+            answer = empty_trash(controller_id, client=client)
+        except StartupError as error:
+            machines.extend(_refused_rows(controller_id, error.body))
+            continue
+        machines.extend(_trash_rows(answer, controller_id))
+    return _trash_run(caller=caller, scope="all", machines=machines)
+
+
+def empty_trash_one(controller_id: str, machine_id: str, *, caller: str,
+                    client: httpx.Client | None = None) -> dict[str, Any]:
+    """Empty one Mac's trash, in the same envelope and with the same audit line as a whole run."""
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    try:
+        answer = empty_trash(controller_id, machine_id, client=client)
+    except StartupError as error:
+        machines = _refused_rows(controller_id, error.body)
+    else:
+        machines = _trash_rows(answer, controller_id)
+    for row in machines:
+        row["machine"] = row.get("machine") or machine_id
+    return _trash_run(caller=caller, scope="machine", machines=machines)
 
 
 # A Mac's macOS Trash preference (owner request 2026-10-19, Studio Hub 0.6.187). Every retirement a Hub

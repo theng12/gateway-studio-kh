@@ -294,98 +294,96 @@ enum FleetTrash {
         }, title: "Delete permanently", done: done)
     }
 
-    /// The items the Hub moved into macOS Trash, as the fleet row states them (Hub 0.6.243).
-    struct MacosTrashPart {
-        let count: Int
-        let bytes: Int64
+    // MARK: Empty trash — one Mac, or every Mac at every linked site
+
+    /// One Mac's line in the confirmation: what its Hub folder and its macOS Trash hold, as stated.
+    /// `nil` is "not reported" — named, never counted as 0.
+    struct EmptyLine {
+        let name: String
+        let folderCount: Int?
+        let folderBytes: Int64?
+        let macosCount: Int?
+        let macosBytes: Int64?
+
+        var text: String {
+            func part(_ count: Int?, _ bytes: Int64?) -> String {
+                guard let bytes else { return "not reported" }
+                if bytes == 0 { return "empty" }
+                let items = count ?? 0
+                return "\(items) item\(items == 1 ? "" : "s"), \(FleetTrash.size(bytes))"
+            }
+            return "\(name) — Hub folder \(part(folderCount, folderBytes)) · macOS Trash \(part(macosCount, macosBytes))"
+        }
+        var stated: Bool { folderBytes != nil || macosBytes != nil }
+        var bytes: Int64 { (folderBytes ?? 0) + (macosBytes ?? 0) }
+        var count: Int { (folderBytes == nil ? 0 : folderCount ?? 0) + (macosBytes == nil ? 0 : macosCount ?? 0) }
     }
 
-    // MARK: One step, one Mac
+    /// The confirmation's total: only what was stated, and how many Macs stated nothing.
+    static func total(_ lines: [EmptyLine]) -> String {
+        let stated = lines.filter(\.stated)
+        let bytes = stated.reduce(Int64(0)) { $0 + $1.bytes }
+        let count = stated.reduce(0) { $0 + $1.count }
+        var text = "Total: \(count) item\(count == 1 ? "" : "s"), \(size(bytes)) (\(exact(bytes))) "
+            + "on \(stated.count) Mac\(stated.count == 1 ? "" : "s")"
+        let unstated = lines.count - stated.count
+        if unstated > 0 { text += " · \(unstated) Mac\(unstated == 1 ? "" : "s") not reported, not counted" }
+        return text
+    }
 
-    /// **Empty this Mac's Trash Folder in one step** (owner, 2026-11-16: "i want to add a feature so
-    /// that we can delete it through the gateway or the hub").
+    /// What one run said: the totals, then every Mac that was not emptied, with its reason and what is left.
+    static func outcome(_ payload: [String: Any]) -> String {
+        let totals = payload["totals"] as? [String: Any] ?? [:]
+        func n(_ key: String) -> Int64 { Report.number(totals[key])?.int64Value ?? 0 }
+        var text = "emptied \(n("emptied")) · skipped \(n("skipped")) · failed \(n("failed"))"
+            + " — freed \(size(n("freed_bytes")))"
+        if n("left_bytes") > 0 { text += ", \(size(n("left_bytes"))) left" }
+        let named = (payload["machines"] as? [[String: Any]] ?? []).compactMap { row -> String? in
+            guard let state = row["state"] as? String, state != "emptied" else { return nil }
+            let who = row["label"] as? String ?? row["machine"] as? String
+                ?? (row["location_id"] as? String).map { "site \($0)" } ?? "a Mac"
+            var said = "\(who) \(state): \(row["reason"] as? String ?? "no reason given")"
+            if let left = Report.number(row["left_bytes"])?.int64Value { said += " (\(size(left)) left)" }
+            return said
+        }
+        return ([text] + named).joined(separator: "; ")
+    }
+
+    /// **Empty trash** (owner, 2026-11-16: "one button to delete across all the linking sites and nodes
+    /// and controllers ... what's in the trash will go"). `machine: nil` is every Mac at every linked
+    /// site; otherwise that one Mac. Both go to the one route an agent can call too
+    /// (`POST /admin/api/fleet/trash/empty`): Studio Hub 0.6.243 removes the Hub Trash Folder and the
+    /// whole macOS Trash, and answers each Mac emptied, skipped or failed with its reason.
     ///
-    /// One confirmation, then two deletes when the Mac holds both: the Studio Hub Trash Folder
-    /// (`items: "all"`) and the items **this Hub** moved into macOS Trash — Finder's Trash, which
-    /// keeps filling the disk after the folder is emptied. Each goes through its own route with the
-    /// same re-check: the Mac re-measures and deletes nothing if the count or bytes differ from what
-    /// was shown here (409 `TRASH_CHANGED`). Both carry the owner-console secret this app alone
-    /// holds, so an API key or a browser session still cannot delete anything. The macOS part deletes
-    /// only what the Hub put there, never a file the owner dropped in Finder's Trash.
-    ///
-    /// Every run ends in the bytes freed or a named refusal, in this app's own dialog.
-    static func empty(_ report: Report, macos: MacosTrashPart? = nil, done: @escaping (String) -> Void) {
-        let hasFolder = report.error == nil && report.supported && report.deletable
-        let hasMacos = (macos?.count ?? 0) > 0
-        guard hasFolder || hasMacos else {
-            return done(report.error == nil && report.supported
-                        ? "Nothing to empty on \(report.name)." : report.line)
+    /// One in-app confirmation names each Mac's count and bytes and the total; every run ends in a
+    /// sentence saying what was freed and what was not, and why.
+    static func emptyTrash(_ lines: [EmptyLine], machine: FleetMachine?, done: @escaping (String) -> Void) {
+        var body: [String: Any] = ["scope": "all"]
+        if let machine {
+            guard let location = machine.locationId, let id = machine.machine else { return done("no machine id") }
+            body = ["location_id": location, "machine": id]
         }
         let sure = NSAlert()
         sure.alertStyle = .critical
-        sure.messageText = "Empty \(report.name)'s Trash?"
-        var what: [String] = []
-        if hasFolder {
-            what.append("\(report.count) item\(report.count == 1 ? "" : "s") "
-                        + "(\(exact(report.bytes)) — \(size(report.bytes))) in the Studio Hub Trash Folder")
-        }
-        if let macos, macos.count > 0 {
-            what.append("\(macos.count) item\(macos.count == 1 ? "" : "s") "
-                        + "(\(exact(macos.bytes)) — \(size(macos.bytes))) the Hub moved to macOS Trash")
-        }
-        sure.informativeText = "Permanently deletes " + what.joined(separator: ", and ")
-            + " on \(report.name). They cannot be recovered. If either changed since it was measured, "
-            + "nothing is deleted from it."
+        sure.messageText = machine == nil ? "Empty trash on every Mac?"
+            : "Empty \(lines.first?.name ?? "this Mac")'s trash?"
+        sure.informativeText = "Permanently deletes the Studio Hub Trash Folder and everything in macOS Trash on "
+            + (machine == nil ? "every Mac at every linked site" : "this Mac")
+            + ". It cannot be recovered. A Mac whose own switch is off, whose Hub is older than 0.6.243, "
+            + "or that is offline is skipped and says why.\n\n" + total(lines)
+        if !lines.isEmpty { sure.accessoryView = listView(lines.map(\.text)) }
         sure.addButton(withTitle: "Cancel")
         sure.closeOnEscape()
-        let empty = sure.addButton(withTitle: "Empty Trash")
+        let empty = sure.addButton(withTitle: machine == nil ? "Empty All Trash" : "Empty Trash")
         if #available(macOS 11.0, *) { empty.hasDestructiveAction = true }
         guard sure.runModal() == .alertSecondButtonReturn else { return done("Nothing was deleted.") }
-
-        var freed: Int64 = 0
-        var deleted = 0
-        var problems: [String] = []
-        func finish() {
-            if freed == 0 && deleted == 0 && !problems.isEmpty {
-                return done("could not empty it: " + problems.joined(separator: "; "))
-            }
-            var text = "freed \(size(freed)) (\(deleted) item\(deleted == 1 ? "" : "s"))"
-            if !problems.isEmpty { text += "; " + problems.joined(separator: "; ") }
-            done(text)
-        }
-        func take(_ payload: [String: Any]) {
-            freed += (payload["freed_bytes"] as? NSNumber)?.int64Value ?? 0
-            deleted += (payload["deleted_count"] as? NSNumber)?.intValue ?? 0
-            let said = failures(payload)
-            if !said.isEmpty { problems.append(said) }
-        }
-        func deleteMacos() {
-            guard let macos, macos.count > 0 else { return finish() }
-            guard let macosPath = path(report.machine, "/macos-trash/delete") else {
-                problems.append("macOS Trash: no machine id")
-                return finish()
-            }
-            GatewayAPI.post(macosPath, body: ["confirm": true, "expected_count": macos.count,
-                                         "expected_bytes": macos.bytes],
-                            timeout: 900, ownerConsole: true) { result in
-                switch result {
-                case .success(let payload): take(payload)
-                case .failure(let error): problems.append("macOS Trash: \(error.localizedDescription)")
-                }
-                finish()
-            }
-        }
-        guard hasFolder, let folderPath = path(report.machine, "/delete") else {
-            return deleteMacos()
-        }
-        GatewayAPI.post(folderPath, body: ["items": "all", "confirm": true,
-                                     "expected_count": report.count, "expected_bytes": report.bytes],
-                        timeout: 900, ownerConsole: true) { result in
+        // shortcut: one request for the whole fleet, bounded at an hour; past it the tab's re-read shows the truth.
+        GatewayAPI.post("/admin/api/fleet/trash/empty", body: body, timeout: machine == nil ? 3600 : 960,
+                        ownerConsole: true) { result in
             switch result {
-            case .success(let payload): take(payload)
-            case .failure(let error): problems.append("Trash Folder: \(error.localizedDescription)")
+            case .success(let payload): done(outcome(payload))
+            case .failure(let error): done("could not empty trash: \(error.localizedDescription)")
             }
-            deleteMacos()
         }
     }
 }

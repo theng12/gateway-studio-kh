@@ -6006,21 +6006,35 @@ def fleet_machine_trash_delete(controller_id: str, machine_id: str, payload: dic
         return JSONResponse(status_code=error.status, content=error.body)
 
 
-@router.post(
-    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/macos-trash/delete",
-    dependencies=[Depends(require_admin), Depends(require_owner_console)],
-)
-def fleet_machine_macos_trash_delete(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
-    """Permanently delete the items **this Hub** moved to that Mac's macOS Trash (Studio Hub 0.6.243).
+@router.post("/api/fleet/trash/empty", dependencies=[Depends(require_admin)])
+def fleet_trash_empty(request: Request, payload: dict[str, Any]) -> Any:
+    """Empty trash on one Mac, or on every Mac of every linked site (owner, 2026-11-16).
 
-    Body `{"confirm": true, "expected_count", "expected_bytes"}`. Owner's app window only
-    (`require_owner_console`): an API key, a browser session or a local process cannot. The Mac
-    re-measures; a different count or bytes is 409 `TRASH_CHANGED` and nothing is deleted. It never
-    touches anything else in Finder's Trash.
+    **The owner's one exception to "only the owner deletes".** He asked for one button across all
+    linked sites, nodes and controllers, and for agents to be able to make it happen: this route
+    therefore accepts the gateway key, because it removes only what is already retired — the Studio
+    Hub Trash Folder and the macOS Trash on that Mac — never anything in the live store. Every other
+    delete stays behind the app-window secret.
+
+    Body `{}` (or `{"scope": "all"}`) empties the whole fleet; `{"location_id", "machine"}` empties
+    one Mac. Each Mac ends `emptied`, `skipped` (its own switch is off, its Hub is older than 0.6.243,
+    or it is offline) or `failed`, with its reason, and one audit line names the caller and the totals.
     """
+    scope = str(payload.get("scope") or ("machine" if payload.get("location_id") else "all"))
+    caller = ("owner" if admin_session.owner_console(request.headers.get(admin_session.OWNER_HEADER))
+              else "agent")
     try:
-        return startup_control.macos_trash_delete(controller_id, machine_id, payload.get("confirm"),
-                                                  payload.get("expected_count"), payload.get("expected_bytes"))
+        if scope == "all":
+            return startup_control.empty_trash_everywhere(caller=caller)
+        if scope != "machine":
+            raise startup_control.StartupError(400, {"ok": False, "code": "BAD_SCOPE",
+                                                     "detail": 'scope must be "all" or a location_id and machine'})
+        location_id = str(payload.get("location_id") or "")
+        machine_id = str(payload.get("machine") or "")
+        if not location_id or not machine_id:
+            raise startup_control.StartupError(400, {"ok": False, "code": "MACHINE_REQUIRED",
+                                                     "detail": "a single-Mac empty needs location_id and machine"})
+        return startup_control.empty_trash_one(location_id, machine_id, caller=caller)
     except startup_control.StartupError as error:
         return JSONResponse(status_code=error.status, content=error.body)
 

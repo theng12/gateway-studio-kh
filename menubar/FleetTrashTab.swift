@@ -1,5 +1,6 @@
 // Every Mac's Trash Folder on one Fleet page (owner, 2026-11-16: "i want to add a feature so that we
-// can delete it through the gateway or the hub").
+// can delete it through the gateway or the hub"; then "one button to delete across all the linking sites
+// and nodes and controllers").
 //
 // One row per Mac, with the trash it holds, its free disk and its free **memory** in separate columns,
 // so a memory shortfall never reads as a disk one, and one step to empty a Mac's Trash Folder.
@@ -37,22 +38,26 @@ struct FleetTrashRow {
     }
     var deletable: Bool { report?.deletable ?? false }
 
-    /// The items this Hub moved into macOS Trash, when it states both a count and a size and holds
-    /// something. `nil` is "nothing this app can delete" — an older Hub, an unstated figure, or none.
-    var macosTrashPart: FleetTrash.MacosTrashPart? {
-        guard let stated = machine.macosTrash, let count = stated.hubItemsCount,
-              let bytes = stated.hubItemsBytes, count > 0 else { return nil }
-        return FleetTrash.MacosTrashPart(count: count, bytes: bytes)
-    }
+    /// What this Mac's macOS Trash holds (Hub 0.6.243 states it on the fleet row). `nil` is "not reported".
+    var macosTrashBytes: Int64? { machine.macosTrash?.bytes }
     /// The macOS Trash column. `not reported` from a Hub older than 0.6.243 — never 0.
     var macosTrashText: String {
-        guard let stated = machine.macosTrash, let bytes = stated.hubItemsBytes else { return "not reported" }
+        guard let bytes = macosTrashBytes else { return "not reported" }
         if bytes == 0 { return "empty" }
-        let count = stated.hubItemsCount ?? 0
+        let count = machine.macosTrash?.count ?? 0
         return "\(count) item\(count == 1 ? "" : "s") · \(FleetTrash.size(bytes))"
     }
-    /// One step can empty either part, so the row's button is live when either holds something.
-    var canEmpty: Bool { deletable || macosTrashPart != nil }
+    /// The row's Empty is live once the Mac answered, unless both parts are stated empty. An unreported
+    /// macOS Trash may still hold something, so it does not hide the button; the Hub skips what it cannot do.
+    var canEmpty: Bool {
+        guard let report, report.error == nil, report.supported else { return false }
+        return !(trashBytes == 0 && macosTrashBytes == 0)
+    }
+    /// This Mac's line in the empty confirmation.
+    var emptyLine: FleetTrash.EmptyLine {
+        FleetTrash.EmptyLine(name: name, folderCount: report?.count, folderBytes: trashBytes,
+                             macosCount: machine.macosTrash?.count, macosBytes: macosTrashBytes)
+    }
 
     /// What the Trash column says. A Mac that cannot be read says why instead of a size.
     var trashText: String {
@@ -78,6 +83,9 @@ final class FleetTrashTab: FleetTabView {
     private lazy var refresh = FleetClosureButton(title: "Read Every Mac") { [weak self] in
         self?.load(force: true)
     }
+    private lazy var emptyAll = FleetClosureButton(title: "Empty All Trash…") { [weak self] in
+        self?.empty(nil)
+    }
     private lazy var table = FleetTableController(columns: columns(), rowHeight: 36)
 
     private var machines: [FleetMachine] = []
@@ -89,7 +97,7 @@ final class FleetTrashTab: FleetTabView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         addSection("Trash folders")
-        let header = PageKit.row([statusLabel, NSView(), refresh], spacing: DS.Space.m)
+        let header = PageKit.row([statusLabel, NSView(), emptyAll, refresh], spacing: DS.Space.m)
         page.addArrangedSubview(header)
         page.setCustomSpacing(DS.Space.m, after: header)
         table.container.heightAnchor.constraint(equalToConstant: 340).isActive = true
@@ -153,14 +161,16 @@ final class FleetTrashTab: FleetTabView {
         return parts.joined(separator: " · ")
     }
 
-    /// One step: confirm, send, and say what happened. The read afterwards is what proves the freed
-    /// bytes — the number is re-measured by the Mac, not taken from the delete's own receipt.
-    private func empty(_ row: FleetTrashRow) {
-        guard let report = row.report else { return }
-        FleetTrash.empty(report, macos: row.macosTrashPart) { [weak self] outcome in
+    /// One Mac, or every Mac at every linked site when `row` is nil: confirm, send, say what happened.
+    /// The read afterwards is what proves the freed bytes — the Mac re-measures, not the delete's receipt.
+    private func empty(_ row: FleetTrashRow?) {
+        let lines = row.map { [$0.emptyLine] }
+            ?? machines.map { FleetTrashRow(machine: $0, report: reports[key($0)]).emptyLine }
+        FleetTrash.emptyTrash(lines, machine: row?.machine) { [weak self] outcome in
             guard let self else { return }
-            self.statusLabel.stringValue = "\(row.name): \(outcome)"
-            self.reports[row.key] = nil
+            self.statusLabel.stringValue = row.map { "\($0.name): \(outcome)" } ?? "Every Mac: \(outcome)"
+            if outcome == "Nothing was deleted." { return }
+            self.reports = [:]
             self.load(force: true)
         }
     }
@@ -175,13 +185,12 @@ final class FleetTrashTab: FleetTabView {
                         tooltip: { ($0 as? FleetTrashRow).map {
                             "\($0.machine.location ?? "") · \($0.machine.chip ?? "")"
                         } }),
-            FleetColumn(id: "trash", title: "Trash", width: 190, minWidth: 120, flex: 3,
+            FleetColumn(id: "trash", title: "Hub folder", width: 190, minWidth: 120, flex: 3,
                         text: { ($0 as? FleetTrashRow)?.trashText ?? "" },
                         sortValue: { .number(Double(($0 as? FleetTrashRow)?.trashBytes ?? -1)) }),
             FleetColumn(id: "macos", title: "macOS Trash", width: 160, minWidth: 110, flex: 2,
                         text: { ($0 as? FleetTrashRow)?.macosTrashText ?? "" },
-                        sortValue: { .number(Double(($0 as? FleetTrashRow)?.macosTrashPart?.bytes ?? -1)) },
-                        tooltip: { _ in "Only the items this Hub moved there — never anything else in Finder's Trash." }),
+                        sortValue: { .number(Double(($0 as? FleetTrashRow)?.macosTrashBytes ?? -1)) }),
             FleetColumn(id: "disk", title: "Free disk", width: 130, minWidth: 96,
                         text: { ($0 as? FleetTrashRow)?.diskText ?? "" },
                         sortValue: { .number(($0 as? FleetTrashRow)?.freeDiskBytes.map(Double.init) ?? -1) }),
@@ -201,8 +210,7 @@ final class FleetTrashTab: FleetTabView {
                                 guard let self else { return }
                                 self.empty(row)
                             }
-                            button.toolTip = "Permanently delete what this Mac's Trash holds, and what the Hub "
-                                + "moved to macOS Trash."
+                            button.toolTip = "Permanently delete this Mac's Studio Hub Trash Folder and its macOS Trash."
                             return button
                         })
         ]

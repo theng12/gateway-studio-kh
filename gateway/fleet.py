@@ -2567,7 +2567,7 @@ def _update_error_fact(raw: object) -> dict | None:
 
 
 def _macos_trash_fact(machine: dict) -> dict | None:
-    """What **the Hub itself** moved into this Mac's macOS Trash (Studio Hub 0.6.243).
+    """What this Mac's macOS Trash holds (Studio Hub 0.6.243), its own column beside the Hub folder.
 
     Every retirement a Hub makes ends in Finder's Trash, so a Mac whose Trash is never emptied fills
     its disk even after its Studio Hub Trash Folder is empty. The Hub states the count and bytes per
@@ -2583,11 +2583,13 @@ def _macos_trash_fact(machine: dict) -> dict | None:
             return None
         return int(value) if value >= 0 else None
 
-    count = count_or_bytes(raw.get("hub_items_count", machine.get("macos_trash_hub_items_count")))
-    size = count_or_bytes(raw.get("hub_items_bytes", machine.get("macos_trash_hub_items_bytes")))
+    # The whole macOS Trash (`count`/`bytes`) is what Hub 0.6.243's empty-trash removes; the
+    # Hub-moved-items spelling of a first cut is still read so one naming mismatch hides nothing.
+    count = count_or_bytes(raw.get("count", raw.get("hub_items_count", machine.get("macos_trash_count"))))
+    size = count_or_bytes(raw.get("bytes", raw.get("hub_items_bytes", machine.get("macos_trash_bytes"))))
     if count is None and size is None:
         return None
-    return {"hub_items_count": count, "hub_items_bytes": size}
+    return {"count": count, "bytes": size}
 
 
 def _startup_fact(machine: dict, node: dict) -> dict | None:

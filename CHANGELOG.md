@@ -12,8 +12,8 @@ every feature title, and they are left as they were written.
 
 ## 0.2.264 — 2026-11-16
 
-- **Fleet has a Trash tab: every Mac's Trash on one page.** One row per Mac, with the Studio Hub Trash Folder, the items the Hub moved to macOS Trash, free disk and free memory as separate columns, so a shortfall in memory never reads as a disk one. A field a Mac does not report says "not reported" rather than 0, and a Mac that cannot be read says why.
-- **Empty one Mac's Trash in a step, including what the Hub moved to macOS Trash.** One confirmation names the exact item counts and bytes; each part re-measures and deletes nothing if it changed. The macOS part needs Studio Hub 0.6.243 and removes only what the Hub put there, never anything else in Finder's Trash; an older Hub shows "not reported". It needs this app's own window: an API key or a browser session still cannot delete anything. Every run ends with the bytes freed or the reason it could not.
+- **Fleet has a Trash tab: every Mac's trash on one page.** One row per Mac, with the Studio Hub Trash Folder, macOS Trash, free disk and free memory as separate columns, so a shortfall in memory never reads as a disk one. A field a Mac does not report says "not reported" rather than 0, and a Mac that cannot be read says why.
+- **Empty All Trash: one button for every Mac at every linked site.** It reaches every node and controller, this Mac included, and removes the Studio Hub Trash Folder and everything in macOS Trash (needs Studio Hub 0.6.243). One confirmation lists each Mac's count and bytes and the total; each Mac's own Empty stays. A Mac whose switch is off, whose Hub is older, or that is offline is skipped and says why; every Mac ends emptied, skipped or failed, and a failure says what is left. Agents can run it too with the gateway key (`POST /admin/api/fleet/trash/empty`); each run writes one audit line naming who asked. Every other delete still needs this app's own window.
 
 ## 0.2.262 — 2026-11-16
 
