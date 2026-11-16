@@ -515,6 +515,10 @@ echo "$BUILD_ID" > "$APP/Contents/Resources/gateway/BUILD"
 # Launch at login is an SMAppService agent: its plist lives inside the bundle, so it travels with
 # the app and unregistering removes the background-item record. A raw ~/Library/LaunchAgents plist
 # does not — measured 2026-11-12, three stale kh.gateway.menubar rows survived an uninstall.
+# `BundleProgram` is the path SMAppService resolves inside the registered bundle (an absolute
+# ProgramArguments path left launchd "inferring" the program). `KeepAlive: Crashed` restarts a
+# crash but not a spawn launchd itself refused: on 1301 `SuccessfulExit: false` retried an exit-78
+# spawn failure 10 060 times (2026-11-16). The app's own exits are all 0 (a second copy included).
 LAGENTS="$APP/Contents/Library/LaunchAgents"
 mkdir -p "$LAGENTS"
 cat > "$LAGENTS/kh.gateway.menubar.plist" <<'PLIST'
@@ -524,17 +528,19 @@ cat > "$LAGENTS/kh.gateway.menubar.plist" <<'PLIST'
 <dict>
 	<key>Label</key>
 	<string>kh.gateway.menubar</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/Gateway Studio KH</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Applications/gateway-kh.app/Contents/MacOS/Gateway Studio KH</string>
+		<string>Contents/MacOS/Gateway Studio KH</string>
 		<string>--background</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<dict>
-		<key>SuccessfulExit</key>
-		<false/>
+		<key>Crashed</key>
+		<true/>
 	</dict>
 	<key>ProcessType</key>
 	<string>Interactive</string>

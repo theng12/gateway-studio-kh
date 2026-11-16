@@ -508,6 +508,32 @@ class SpeedByMacClassTest(_Case):
         self.assertEqual(admin.mac_class(None, None), "unknown chip · ? GB")
 
 
+class RefusedConnectionTest(_Case):
+    """terranash-1200 refused connections at 21:10 on 2026-11-16, yet sections kept going there."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(fleet._REFUSED_AT.clear)
+        self.addCleanup(fleet._LIVE_READ_AT.clear)
+
+    def test_a_site_that_refused_takes_no_new_work_until_it_answers(self) -> None:
+        self.sites = [_site("a", op_total=1, supply={HEAVY: 1}), _site("b", op_total=1, supply={HEAVY: 1})]
+        rows = [(types.SimpleNamespace(id=_pid(s)), {"model_id": HEAVY, "modality": "tts"}) for s in "ab"]
+        with patch.object(registry.models, "enabled_models", lambda modality: rows), \
+                patch.object(fleet, "_takes_customer_jobs", lambda row: True):
+            fleet._remember_live_read("a", 100.0)
+            fleet.note_connection_refused(_pid("a"), now=200.0)
+            rejected: list = []
+            got = [c["location_id"] for c in fleet.routing_candidates(HEAVY, "tts", rejections=rejected)]
+            self.assertEqual(got, ["b"], "the fleet's cached row still says reachable; the refusal wins")
+            self.assertTrue(any("refused the connection" in str(r) for r in rejected), "and it says why")
+            fleet._remember_live_read("a", 150.0)        # a probe that began before the refusal
+            self.assertEqual([c["location_id"] for c in fleet.routing_candidates(HEAVY, "tts")], ["b"])
+            fleet._remember_live_read("a", 250.0)        # it answered again
+            self.assertEqual(sorted(c["location_id"] for c in fleet.routing_candidates(HEAVY, "tts")),
+                             ["a", "b"])
+
+
 class OutputSpaceTest(_Case):
     """A Mac that cannot write the result is not a Mac that can run the job.
 

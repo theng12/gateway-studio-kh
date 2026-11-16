@@ -1679,6 +1679,12 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
             if exc.code == "INSUFFICIENT_MEMORY":
                 fleet.note_memory_refusal(provider_id, model_id, str(exc))  # F1: rest that Mac
+            if "Connection refused" in str(exc) or exc.code == "LOCATION_UNREACHABLE":
+                # The location is down now (a submit that could not connect, or a poll refused
+                # mid-job): no new work there until a fleet read hears it answer again.
+                fleet.note_connection_refused(provider_id)
+            if exc.code == "INSUFFICIENT_MEMORY":
+                fleet.note_memory_refusal(provider_id, model_id, str(exc))  # F1: rest that Mac
             elif exc.code == "OUTPUT_STORAGE_FULL":
                 # A Mac that cannot write its output refuses every job until its Trash Folder is
                 # emptied, so rest the location rather than send the next asset into the same fail.

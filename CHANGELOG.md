@@ -19,6 +19,9 @@ every feature title, and they are left as they were written.
 
 - **A Mac that refused a job without starting it no longer uses up one of its three tries.** Out of memory, out of disk, not ready, unreachable or busy: nothing was sent, so the job moves to another Mac and keeps all three tries for real failures. Each Mac that refused is still named, and a job no Mac could take ends with "Nothing was charged; run it again".
 - **A full disk is named and avoided.** A Mac with no room for the result now says `OUTPUT_STORAGE_FULL` and is left alone for 15 minutes. A site whose controller's disk is stopped, or whose every able Mac is out of disk, is offered voice, music and video work only when nothing else can take it. A job already waiting on such a site moves on instead of waiting there.
+- **A site that refuses connections gets no new work until it answers again.** Gateway notices the refusal itself instead of waiting up to 30 seconds for the next fleet check, so voice sections stop being sent to a site that is down. A submit that could not connect costs no try. A job whose site dropped mid-job moves to another Mac instead of being held there.
+- **"Attempts" now shows the count that ends a job.** Refusals that accepted nothing are listed but not counted, so a job never reads "6 of 3".
+- **Launch at login keeps working after an update.** The app registers its login item again once for each new build, so the record macOS keeps always matches the installed app. A login launch that macOS refuses now stops after one try instead of retrying for ever.
 - **Every lost-contact hold can be swept.** Each one now keeps the batch it is waiting on, so the hold sweep can collect a batch that finished instead of leaving the hold for a person to close.
 
 ## 0.2.262 — 2026-11-16

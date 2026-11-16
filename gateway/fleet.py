@@ -1792,7 +1792,11 @@ def locations() -> list[dict]:
         local_error = str(exc)
 
     if local_base:
+        # Stamped before the probe: one that began before a refusal must not clear it.
+        local_started = time.time()
         local = _probe(local_base, local_token)
+        if local.get("reachable"):
+            _remember_live_read(LOCAL_ID, local_started)
         local.update({
             "id": LOCAL_ID, "label": local_label(), "url": local_base, "local": True,
             # **The provider id this location is managed under.** A dashboard row
@@ -1826,6 +1830,7 @@ def locations() -> list[dict]:
     # hundreds this has to survive would be minutes — every one of them spent
     # waiting on the slowest site rather than on the work. The pool is bounded so
     # a large fleet cannot open an unbounded number of sockets.
+    probes_started = time.time()
     with ThreadPoolExecutor(max_workers=min(_MAX_PROBES, len(configured))) as pool:
         probed = list(pool.map(
             lambda row: _probe(str(row["url"]), _token_for(str(row.get("id") or ""))),
@@ -1836,6 +1841,7 @@ def locations() -> list[dict]:
         controller_id = str(row.get("id") or "")
         reachable_now = bool(result.get("reachable"))
         if reachable_now:
+            _remember_live_read(controller_id, probes_started)
             # Remember what a live controller said about its members, so a later outage can still
             # name them (check 10 — a powered-down house must not look like an empty one).
             _remember_members(controller_id, result.get("nodes"), result.get("node_summary"))
@@ -5580,6 +5586,39 @@ def note_drain_refusal(provider_id: str, detail: str, now: float | None = None) 
         _DRAIN_COOLDOWN[location] = (time.time() if now is None else now) + DRAIN_COOLDOWN_S
 
 
+#: **A location that refused the connection takes no new work until it answers again**
+#: (2026-11-16: terranash-1200 refused connections at 21:10, yet 20 voice sections were still sent
+#: there and polled until they became holds). The fleet read is cached for `_CACHE_TTL` and a flapping
+#: Hub can pass one probe and refuse the next, so the worker's own refusal is the faster fact.
+#: `location id -> when it refused`; cleared by the next live read of that location
+#: (`_remember_live_read`), never by a clock. In memory only, like the drain rest.
+_REFUSED_AT: dict[str, float] = {}
+_LIVE_READ_AT: dict[str, float] = {}
+
+
+def note_connection_refused(provider_id: str, now: float | None = None) -> None:
+    """The worker could not connect to this location: keep it out of routing until it answers."""
+    location = controller_id_from(provider_id)
+    if location:
+        _REFUSED_AT[location] = time.time() if now is None else now
+
+
+def _remember_live_read(location_id: str, now: float | None = None) -> None:
+    _LIVE_READ_AT[str(location_id)] = time.time() if now is None else now
+
+
+def is_refusing_provider(provider_id: str) -> bool:
+    """True while a location's last refused connection is newer than its last live read."""
+    location = controller_id_from(provider_id)
+    refused = _REFUSED_AT.get(location or "")
+    if refused is None:
+        return False
+    if _LIVE_READ_AT.get(location or "", 0.0) > refused:
+        _REFUSED_AT.pop(location or "", None)
+        return False
+    return True
+
+
 def is_draining_provider(provider_id: str, now: float | None = None) -> bool:
     """True while a location is installing an update and must not be offered work."""
     location = controller_id_from(provider_id)
@@ -5850,6 +5889,11 @@ def routing_candidates(
         if is_draining_provider(definition.id):
             reject(definition, location_id, row, "draining",
                    "the location is installing an update")
+            continue
+        if is_refusing_provider(definition.id):
+            reject(definition, location_id, row, "offline",
+                   "it refused the connection; no new work until it answers again",
+                   last_seen_at=_last_machine_seen(row))
             continue
 
         # **A site that states it has no Mac for this model is not a candidate.** Its controller

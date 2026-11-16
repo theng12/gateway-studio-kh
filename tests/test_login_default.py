@@ -43,5 +43,46 @@ class TheAppAppliesIt(unittest.TestCase):
         self.assertIn("launchAtLoginOptedOut = true", handler)
 
 
+class ReregisterOncePerBuild(unittest.TestCase):
+    """1301, 2026-11-16: `kh.gateway.menubar` at "spawn failed", last exit 78, runs 10 060, with
+    "needs LWCR update" and "inferred program". The app never redid the registration after an
+    update, the plist named an absolute program, and KeepAlive retried a refused spawn for ever."""
+
+    def setUp(self) -> None:
+        main = (MENUBAR / "main.swift").read_text()
+        start = main.index("enum LaunchAgent {")
+        self.agent = main[start:main.index("// MARK: - Settings window", start)]
+        self.refresh = self.agent[self.agent.index("static func refresh("):self.agent.index("static func install()")]
+        self.plist = (MENUBAR / "build.sh").read_text()
+        self.plist = self.plist[self.plist.index("kh.gateway.menubar.plist\" <<'PLIST'"):]
+        self.plist = self.plist[:self.plist.index("\nPLIST\n")]
+
+    def test_an_installed_agent_is_refreshed_at_launch(self) -> None:
+        repair = self.agent[self.agent.index("static func repairIfNeeded("):self.agent.index("static var currentBuild")]
+        self.assertIn("return refresh(executable: current)", repair)
+        self.assertIn("LoginDefault.shouldReregister(", self.refresh)
+
+    def test_it_goes_through_smappservice_and_never_launchctl(self) -> None:
+        self.assertIn("try service.unregister()", self.refresh)
+        self.assertIn("try service.register()", self.refresh)
+        for raw in ("launchctl", "runLaunchctl", "bootout", "bootstrap", "kickstart"):
+            self.assertNotIn(raw, self.refresh)
+
+    def test_it_records_the_build_and_says_what_happened(self) -> None:
+        self.assertIn("$0.launchAgentBuild = build", self.refresh)
+        self.assertIn('NSLog("launch-at-login re-registered', self.refresh)
+        self.assertIn('NSLog("launch-at-login could not be re-registered', self.refresh)
+        install = self.agent[self.agent.index("static func install()"):]
+        self.assertIn("$0.launchAgentBuild = currentBuild", install[:install.index("installLegacyPlist()")])
+
+    def test_the_plist_names_the_program_inside_the_bundle(self) -> None:
+        self.assertIn("<key>BundleProgram</key>\n\t<string>Contents/MacOS/Gateway Studio KH</string>", self.plist)
+        self.assertNotIn("/Applications/", self.plist, "an absolute path is what launchd had to infer")
+
+    def test_a_spawn_launchd_refused_is_not_retried_for_ever(self) -> None:
+        self.assertIn("<key>Crashed</key>\n\t\t<true/>", self.plist)
+        self.assertNotIn("SuccessfulExit", self.plist)
+
+
 if __name__ == "__main__":
     unittest.main()

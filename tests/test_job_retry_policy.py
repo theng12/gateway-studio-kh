@@ -336,6 +336,17 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
                                    "managed output storage has insufficient free space; empty the Trash "
                                    "Folder to free space", code="LOCATION_NOT_READY", status=507,
                                    retryable=True, upstream_accepted=False)
+            if self.behaviour == "refused_poll":
+                # Production 2026-11-16, terranash-1200: accepted, then refused mid-poll.
+                raise BackendError("lost contact with the location while polling batch ab0a235660 (item 0) "
+                                   "for 60s: [Errno 61] Connection refused",
+                                   code="PROVIDER_SUBMISSION_UNCERTAIN", retryable=False,
+                                   upstream_accepted=True,
+                                   recovery={"batch_id": "ab0a235660", "item_index": 0,
+                                             "location": "http://100.114.4.52:47873", "lost_contact": True})
+            if self.behaviour == "refused_submit":
+                raise BackendError("could not reach the Hub at http://100.114.4.52:47873 (ConnectError)",
+                                   code="LOCATION_UNREACHABLE", retryable=True, upstream_accepted=False)
             if self.behaviour == "engine":
                 raise BackendError("ffmpeg not found on PATH", code="PROVIDER_FAILED",
                                    upstream_accepted=False, upstream_settled=True)
@@ -469,6 +480,31 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
         self.assertTrue(worker_module.fleet.storage_cooled(
             worker_module.fleet.controller_id_from("studio-hub-a") or "studio-hub-a",
             "z-image-turbo-6b-mlx-4bit"), "and the full site rests, so the next asset is not sent there")
+
+    def test_a_poll_refused_mid_job_moves_the_job_and_rests_the_site(self) -> None:
+        """Job 8eb32470's shape (Production 2026-11-16): refusals that accepted nothing, one lost
+        contact at 1200, then 1200 refused the poll again. Under 0.2.260 the refusals had spent the
+        budget, so the job became a hold at the dead site; now it moves, and 1200 takes no new work."""
+        before = [("studio-hub-x", "OUTPUT_STORAGE_FULL"), ("studio-hub-a", "PROVIDER_SUBMISSION_UNCERTAIN"),
+                  ("studio-hub-y", "INSUFFICIENT_MEMORY"), ("studio-hub-z", "LOCATION_NOT_READY")]
+        self.addCleanup(worker_module.fleet._REFUSED_AT.clear)
+        with patch.object(worker_module, "_hub_batch_answer", lambda *a, **k: None), \
+                patch.object(worker_module, "_superseded_stops_allowed", lambda: False):
+            store, dispatch = self._run(["refused_poll", "ok"], sites=["a", "b"], before=before)
+        self.assertEqual(dispatch, ["studio-hub-a", "studio-hub-b"], "it moves to a live site")
+        self.assertEqual((store.holds, store.failed), ([], []), "not a hold at a site that refuses")
+        self.assertTrue(worker_module.fleet.is_refusing_provider("studio-hub-a"),
+                        "and the refusing site is out of routing until it answers")
+
+    def test_a_submit_that_could_not_connect_costs_no_attempt(self) -> None:
+        """Nothing left this Mac, so it is not an unknown outcome and not one of the three tries."""
+        before = [("studio-hub-x", "PROVIDER_FAILED"), ("studio-hub-y", "PROVIDER_FAILED")]
+        self.addCleanup(worker_module.fleet._REFUSED_AT.clear)
+        store, dispatch = self._run(["refused_submit", "ok"], sites=["a", "b"], before=before)
+        self.assertEqual(dispatch, ["studio-hub-a", "studio-hub-b"],
+                         "two real failures plus a refused connection still leave the third try")
+        self.assertEqual((store.holds, store.failed), ([], []))
+        self.assertTrue(worker_module.fleet.is_refusing_provider("studio-hub-a"))
 
     def test_three_failures_produce_one_proper_failure_naming_all_three(self) -> None:
         store, dispatch = self._run(["busy", "engine", "engine"])
