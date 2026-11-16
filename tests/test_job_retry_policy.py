@@ -459,5 +459,117 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
         self.assertEqual(store.holds, [], "a known failure is never a reconciliation hold")
 
 
+class UnsentRefusalsDoNotSpendTheBudgetTest(unittest.TestCase):
+    """A machine that refused the work did not fail it.
+
+    Measured 2026-11-16: one voice job spent all three attempts on a Mac whose Trash Folder was
+    full, a Mac with 1.5 GB free against a 3.2 GB need, and a third that then went silent — so
+    the ceiling, not the work, ended it. A refusal that accepted nothing (`upstream_accepted is
+    False`) is a fact about that machine and must not spend an attempt. The exclusion set still
+    grows with every one, so a job cannot bounce between the same machines.
+    """
+
+    def setUp(self) -> None:
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+
+    def _next(self, store, sites, *, code="INSUFFICIENT_MEMORY", provider="studio-hub-c"):
+        with patch.object(worker_module.fleet, "route",
+                          lambda *a, **k: (sites.pop(0), "note") if sites else (None, "")):
+            return worker_module._next_machine(store, store.job["id"], "voice-model", "tts",
+                                               provider, code=code, detail="refused")
+
+    def test_three_unfit_machines_leave_the_three_for_a_fourth(self) -> None:
+        store = _Store({"id": "job-unfit"})
+        for site, code in (("a", "INSUFFICIENT_MEMORY"), ("b", "OUTPUT_STORAGE_FULL")):
+            store.record_attempt("job-unfit", location_id=f"studio-hub-{site}", code=code, detail="x")
+        self.assertEqual(self._next(store, [_Site("d")], provider="studio-hub-c"), "studio-hub-d",
+                         "want of memory, of disk or an install is not a failed attempt")
+        self.assertEqual([entry["location"] for entry in store.log],
+                         ["studio-hub-a", "studio-hub-b", "studio-hub-c"],
+                         "every refusal is still recorded — it happened")
+
+    def test_three_real_failures_still_end_at_the_ceiling(self) -> None:
+        store = _Store({"id": "job-real"})
+        for site in ("a", "b", "c"):
+            store.record_attempt("job-real", location_id=f"studio-hub-{site}",
+                                 code="PROVIDER_FAILED", detail="engine crashed")
+        self.assertIsNone(self._next(store, [_Site("d")], code="PROVIDER_FAILED"))
+
+
+class EveryMachineUnfitStillEndsTest(unittest.TestCase):
+    """The risk in not counting unfit refusals: the job must still end, never cycle.
+
+    With nothing counting, the waiting ladder (`_defer_if_transient`) is what ends the job — the
+    same ladder a busy fleet takes — and it must say why. The ladder's budget is shortened here
+    (the shipped one is 240 waits) so the proof stays fast; the rule is unchanged.
+    """
+
+    def setUp(self) -> None:
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+
+    def test_the_job_ends_on_the_waiting_ladder_with_a_named_reason(self) -> None:
+        store = _Store({"id": "job-unfit-all", "modality": "tts", "model_id": "voice-model",
+                        "provider_id": "studio-hub-a", "params": "{}", "state": "running",
+                        "attempt_count": 0})
+
+        def defer(job_id, *, delay_s, reason, new_round=False, unsent=False):
+            store.deferred.append({"reason": reason, "new_round": new_round})
+            # The dispatcher's own count grows with every wait, exactly as `store.defer` does.
+            store.job["attempt_count"] = int(store.job.get("attempt_count") or 0) + 1
+            return True
+
+        store.defer = defer
+        sites = [_Site(name) for name in ("a", "b", "c")]
+        error = BackendError(
+            "INSUFFICIENT_MEMORY: Mac mini 1101 needs about 3.2 GB free and has about 1.5 GB free "
+            "(it refused 3 times).", code="INSUFFICIENT_MEMORY", retryable=True,
+            upstream_accepted=False, upstream_settled=True)
+
+        class _Unfit:
+            def generate(self, request):
+                raise error
+
+        def route(model_id, modality, *, exclude_locations=None, **kwargs):
+            excluded = set(exclude_locations or ())
+            for site in sites:
+                if (worker_module.fleet.controller_id_from(site.id) or site.id) not in excluded:
+                    return site, "note"
+            return None, ""
+
+        definition = lambda pid: type("D", (), {"id": pid, "base_url": "", "kind": "studio_hub",
+                                                "display_name": pid})()
+        budget = dict(concurrency.queue_wait_budget(), max_deferrals=2)
+        passes = 0
+        with patch.object(worker_module, "adapter_for", lambda _d: _Unfit()), \
+                patch.object(worker_module.fleet, "route", route), \
+                patch.object(worker_module.fleet, "_location_takes_customer_jobs", lambda _l: True), \
+                patch.object(concurrency, "queue_wait_budget", lambda: budget), \
+                patch.object(worker_module.registry, "definition", definition), \
+                patch.object(worker_module.registry.credentials, "is_enabled", lambda _p: True), \
+                patch.object(worker_module.registry.models, "enabled_models",
+                             lambda _m: [(type("D", (), {"id": "studio-hub-a", "kind": "studio_hub"})(),
+                                          {"model_id": "voice-model",
+                                           "provider_id": "studio-hub-a"})]), \
+                patch.object(worker_module.registry.credentials, "resolved", lambda _p: {}):
+            while not store.failed and passes < 12:
+                worker_module.execute_job(dict(store.job), store)
+                passes += 1
+        self.assertEqual(len(store.failed), 1, "it must end — waiting is bounded, a cycle is not")
+        self.assertLess(passes, 12)
+        self.assertEqual({entry["location"] for entry in store.log},
+                         {"studio-hub-a", "studio-hub-b", "studio-hub-c"},
+                         "each unfit machine was tried once, not in a loop")
+        self.assertGreaterEqual(len(store.deferred), 2, "the end is the ladder's, and it was used")
+        reason = store.failed[0]["detail"]
+        self.assertIn("none could take it", reason)
+        self.assertIn("INSUFFICIENT_MEMORY", reason)
+        self.assertIn("needs about 3.2 GB free", reason)
+        self.assertIn("Nothing was charged", reason)
+        for machine in ("studio-hub-a", "studio-hub-b", "studio-hub-c"):
+            self.assertIn(machine, reason, "the ending names every machine that refused it")
+
+
 if __name__ == "__main__":
     unittest.main()

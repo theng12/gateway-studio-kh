@@ -1098,6 +1098,33 @@ class UncertainIsARecoveryHoldTests(_HubCase):
         self.assertIn("/reconcile", exc.recovery["hub_reconcile_route"])
         self.assertIn("/discard", exc.recovery["hub_discard_route"])
 
+    def test_a_mac_that_ran_out_of_output_space_is_a_known_refusal(self) -> None:
+        # Measured 2026-11-16: this arrived as an ordinary PROVIDER_FAILED and spent one of the
+        # job's three attempts; the Mac can run no job at all until its Trash Folder is emptied.
+        hub = _Hub(
+            states=["failed"],
+            item={
+                "state": "failed",
+                "error_code": "VOICE_REFERENCE_REJECTED",
+                "error": {"message": "managed output storage has insufficient free space; "
+                                     "empty the Trash Folder"},
+            },
+        )
+        with self.assertRaises(BackendError) as raised:
+            self.generate(hub, self.request(modality="tts", params={"text": "x"}))
+        exc = raised.exception
+        self.assertEqual(exc.code, "OUTPUT_STORAGE_FULL")
+        self.assertIs(exc.upstream_accepted, False, "the Mac refused it before running anything")
+        self.assertIs(exc.upstream_settled, True)
+        self.assertIn("insufficient free space", str(exc))
+
+    def test_a_message_that_merely_mentions_disk_is_not_a_storage_refusal(self) -> None:
+        hub = _Hub(states=["failed"], item={"state": "failed", "error_code": "BAD_REQUEST",
+                                            "error": {"message": "prompt must not discuss disk usage"}})
+        with self.assertRaises(BackendError) as raised:
+            self.generate(hub, self.request(modality="tts", params={"text": "x"}))
+        self.assertEqual(raised.exception.code, "PROVIDER_FAILED")
+
     def test_an_ordinary_hub_failure_is_still_an_ordinary_failure(self) -> None:
         hub = _Hub(
             states=["error"],
@@ -1164,6 +1191,36 @@ class UncertainIsARecoveryHoldTests(_HubCase):
             self.assertEqual(store.due(time.time() + 60), [])
         finally:
             store.close()
+
+    def test_a_hold_backfills_its_batch_id_so_a_sweep_can_ask_about_it(self) -> None:
+        # `holds(sweepable=True)` only ever asks about a row carrying an upstream id. A hold that
+        # knew its batch only in `recovery_context` could never be swept — it would sit for good.
+        store = JobStore(_TEMP_ROOT / "hold-id.sqlite3")
+        self.addCleanup(store.close)
+        row, _ = store.submit(modality="tts", model_id="model/test", params={"text": "x"},
+                              idempotency_key="hold-id", provider_id="studio-hub-test")
+        self.assertTrue(store.mark_running(row["id"]))
+        store.fail(row["id"], code="PROVIDER_SUBMISSION_UNCERTAIN", detail="lost contact",
+                   recovery_state="unknown_outcome", recovery_detail="lost contact",
+                   recovery_context={"batch_id": BATCH, "item_index": 0})
+        held = store.get(row["id"])
+        self.assertEqual(held["upstream_job_id"], BATCH)
+        self.assertEqual([job["id"] for job in store.holds(sweepable=True)], [row["id"]])
+
+    def test_a_hold_that_names_no_batch_is_never_swept_and_cannot_be_adopted(self) -> None:
+        # The invariant behind the backfill above: this row is a hold to a person, and invisible
+        # to the sweep — so the only way it ever leaves is someone closing it by hand.
+        store = JobStore(_TEMP_ROOT / "hold-nobody.sqlite3")
+        self.addCleanup(store.close)
+        row, _ = store.submit(modality="tts", model_id="model/test", params={"text": "x"},
+                              idempotency_key="hold-nobody", provider_id="studio-hub-test")
+        self.assertTrue(store.mark_running(row["id"]))
+        store.fail(row["id"], code="PROVIDER_SUBMISSION_UNCERTAIN", detail="lost contact",
+                   recovery_state="unknown_outcome", recovery_detail="lost contact")
+        held = store.get(row["id"])
+        self.assertTrue(held["recovery_required"])
+        self.assertEqual(store.holds(sweepable=True), [])
+        self.assertEqual([job["id"] for job in store.holds()], [row["id"]])
 
 
 class HubVersionDriftTests(unittest.TestCase):
@@ -2159,6 +2216,30 @@ class QueueWaitTests(_HubCase):
             outcome = self._poll(hub, deadline=100)  # 25 s of wall time, 15 s of it queued
         self.assertEqual(outcome["item"]["state"], "done")
         self.assertEqual(hub.deletes, [], "a rendering item must never be withdrawn at the ceiling")
+
+    def test_a_ceiling_the_hub_did_not_confirm_is_the_uncertain_hold(self) -> None:
+        # All three unknown-outcome raises state it the same way: never retryable, and naming the
+        # batch — `store.holds(sweepable=True)` can only sweep a row that carries an upstream id.
+        hub = _Hub(states=["queued"], cancel_status=500)
+        with patch.object(hub_module, "queue_wait_ceiling_s", lambda: 20.0):
+            with self.assertRaises(BackendError) as caught:
+                self._poll(hub, deadline=10)
+        exc = caught.exception
+        self.assertEqual(exc.code, "PROVIDER_SUBMISSION_UNCERTAIN")
+        self.assertFalse(exc.retryable, "an unknown outcome is never automatically re-sent")
+        self.assertTrue(exc.upstream_accepted)
+        self.assertEqual(exc.recovery["batch_id"], BATCH)
+
+    def test_a_mac_that_never_confirms_it_stopped_is_the_same_hold(self) -> None:
+        hub = _Hub(states=["running"])
+        with patch.object(hub_module, "CANCEL_SETTLE_S", 0.0):
+            with self.assertRaises(BackendError) as caught:
+                self._poll(hub, deadline=10)
+        exc = caught.exception
+        self.assertEqual(exc.code, "PROVIDER_SUBMISSION_UNCERTAIN")
+        self.assertFalse(exc.retryable)
+        self.assertTrue(exc.upstream_accepted)
+        self.assertEqual(exc.recovery["batch_id"], BATCH)
 
 
 class _HoldRegistry(_Registry):

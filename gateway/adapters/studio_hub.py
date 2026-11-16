@@ -254,6 +254,12 @@ def hub_version_relation(version: object) -> str | None:
 
 # Hub item states -> our terminal interpretation.
 _TERMINAL_OK = {"done", "succeeded", "complete", "completed"}
+#: A Mac with no room to write its output refuses the work with the Hub's own sentence. Matched on
+#: the sentence and not a code, because the Hub sends it under `VOICE_REFERENCE_REJECTED`, which
+#: also covers refusals that are not about space. Unmapped it became an ordinary `PROVIDER_FAILED`
+#: and spent one of the job's three attempts (measured 2026-11-16).
+_STORAGE_FULL = re.compile(r"insufficient free (?:disk |storage )?space|empty the trash folder",
+                           re.IGNORECASE)
 _TERMINAL_BAD = {"error", "failed", "cancelled", "cancelled_items"}
 #: The Hub settled an item **after dispatch** without knowing the worker's
 #: outcome. That is a recovery hold, never an ordinary failure: the work may have
@@ -1050,6 +1056,10 @@ def _poll_batch(
                 f"(item {item_index}) for {int(now - dropped_since)}s: {reason}",
                 code="PROVIDER_SUBMISSION_UNCERTAIN",
                 upstream_accepted=True,
+                # Never retryable: the batch may be running and billing right now, so the outcome
+                # is a hold for `worker.reconcile_holds`, not a re-send. Stated on all three
+                # uncertain raises so a caller reading only this flag cannot tell them apart.
+                retryable=False,
                 recovery={
                     "location": base,
                     "batch_id": batch_id,
@@ -1187,6 +1197,19 @@ def _poll_batch(
                     upstream_accepted=False,
                     upstream_settled=True,
                 )
+            if hub_code == "OUTPUT_STORAGE_FULL" or _STORAGE_FULL.search(f"{hub_code} {message or ''}"):
+                # The Mac had no room to write the result: nothing was produced and nothing is
+                # pending, so this is a *known* refusal like a memory hand-back, with its own code
+                # so the attempt log and the terminal reason name it, and the worker rests the
+                # location instead of sending the next asset into the same full disk.
+                raise BackendError(
+                    "OUTPUT_STORAGE_FULL: "
+                    + (message or "the Mac has no free space to write this output"),
+                    code="OUTPUT_STORAGE_FULL",
+                    retryable=True,
+                    upstream_accepted=False,
+                    upstream_settled=True,
+                )
             if hub_code:  # MODEL_PAUSED, MACHINE_DISABLED, ...: terminal, but say which
                 message = f"{hub_code}: {message or 'no detail'}"
             candidate = (_review_candidate_locator(client, base, headers, batch_id, item_index)
@@ -1236,7 +1259,13 @@ def _poll_batch(
         raise BackendError(
             f"the Hub kept this queued for {int(ceiling)}s and did not confirm withdrawing it",
             code="PROVIDER_SUBMISSION_UNCERTAIN",
-            retryable=True,
+            # Never retryable, and always naming its batch: an unknown outcome is a hold the
+            # sweeper can ask about (`worker.reconcile_holds`), never a re-send. All three
+            # uncertain raises state this the same way.
+            retryable=False,
+            upstream_accepted=True,
+            recovery={"location": base, "batch_id": batch_id, "item_index": item_index,
+                      "jobs_path": jobs_path, "lost_contact": False},
         )
     if on_deadline is not None and resumed_after_restart and state == "running":
         try:
@@ -1262,7 +1291,11 @@ def _poll_batch(
         + (", and the Mac did not confirm it stopped" if settled is None else "")
         + why,
         code="PROVIDER_SUBMISSION_UNCERTAIN",
-        retryable=True,
+        # Never retryable, and always naming its batch — the Mac may still be rendering it.
+        retryable=False,
+        upstream_accepted=True,
+        recovery={"location": base, "batch_id": batch_id, "item_index": item_index,
+                  "jobs_path": jobs_path, "lost_contact": False},
     )
 
 

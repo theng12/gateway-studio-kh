@@ -5305,6 +5305,36 @@ def _function_off_at_site(row: dict, model_id: str, modality: str) -> bool:
     return bool(switched_off) and all(mid in switched_off or mid in paused for mid in serving)
 
 
+#: Modalities whose result is a file the Mac has to write. A Mac out of disk cannot produce one,
+#: whatever model it has: measured 2026-11-16, a voice job was sent to a Mac whose managed output
+#: storage was full and was refused `VOICE_REFERENCE_REJECTED`. Video render already refuses a
+#: `disk` red/stop machine this way (`_render_candidates`); this asks the same question of the
+#: other output modalities, at dispatch.
+_STORAGE_BACKED_MODALITIES = frozenset({"tts", "music", "video"})
+#: `machine_disk` states that mean the Mac cannot take output (black is the Hub's own stop).
+_DISK_STOPPED = frozenset({"red", "stop", "black"})
+
+
+def _no_disk_for_output(row: dict, model_id: str, modality: str) -> bool:
+    """Whether every Mac here that could run `model_id` reports a disk that cannot take output.
+
+    Only a positive reading of **every** able Mac says so: a site that states no per-machine rows,
+    or one Mac whose disk is unstated, is not refused on a guess.
+    """
+    if modality not in _STORAGE_BACKED_MODALITIES:
+        return False
+    able = set(_eligible_macs(row, model_id, modality))
+    if not able:
+        return False
+    states = set()
+    for machine in row.get("machines") or []:
+        if isinstance(machine, dict) and str(machine.get("machine") or "") in able:
+            disk = machine_disk(machine) or {}
+            # Only the Hub's own state is acted on; a state this gateway derived is for showing.
+            states.add(str(disk.get("state") or "") if disk.get("state_source") == "hub" else "")
+    return bool(states) and states <= _DISK_STOPPED
+
+
 def _as_optional_int(value: object) -> int | None:
     """`None` stays `None`: "the Hub did not say" is not "zero"."""
     return None if value is None else _as_int(value)
@@ -5455,6 +5485,35 @@ def memory_cooled_machine_ids(row: dict, model_id: str) -> set[str]:
             str(name) for name in (machine.get("machine"), machine.get("label")) if name
         )
     }
+
+
+#: **A Mac that ran out of output space refuses every job until its Trash Folder is emptied.**
+#: Measured 2026-11-16: `VOICE_REFERENCE_REJECTED: managed output storage has insufficient free
+#: space; empty the Trash Folder` — the first of three attempts a voice job spent before the
+#: ceiling ended it. The Hub's sentence names no Mac, so the rest is per location and model, the
+#: same shape and effect as F1's memory rest (a spent location is offered only when nothing else
+#: can take the model). In memory only: a restart costs at most one more refusal.
+STORAGE_COOLDOWN_S = 15 * 60.0
+_STORAGE_COOLDOWN: dict[tuple[str, str], float] = {}
+
+
+def note_storage_refusal(provider_id: str, model_id: str, now: float | None = None) -> None:
+    """Rest a location that just refused work for lack of output space."""
+    location = controller_id_from(provider_id)
+    if location:
+        _STORAGE_COOLDOWN[(location, model_id)] = (
+            (time.time() if now is None else now) + STORAGE_COOLDOWN_S)
+
+
+def storage_cooled(location_id: str, model_id: str, now: float | None = None) -> bool:
+    """Whether this location refused work for lack of output space inside its rest window."""
+    until = _STORAGE_COOLDOWN.get((location_id, model_id))
+    if until is None:
+        return False
+    if until <= (time.time() if now is None else now):
+        _STORAGE_COOLDOWN.pop((location_id, model_id), None)
+        return False
+    return True
 
 
 #: **A location installing an update is not offered work until it is back** (Kind I, 2026-10-19).
@@ -5787,7 +5846,12 @@ def routing_candidates(
         # Every Mac here that fits it is offline or just refused it for memory (F1/F3): offered
         # only if no other location can take it, never dropped (a submit with no route is refused).
         usable = usable_slots(row, model_id, slots) if slots > 0 else 0
-        spent = slots > 0 and usable <= 0
+        # A location that just refused for lack of output space, or whose every able Mac reports a
+        # disk that cannot take it, is offered only when nothing else can run the model — the same
+        # last-resort rule the memory rest uses, because a submit with no route is refused.
+        spent = ((slots > 0 and usable <= 0)
+                 or storage_cooled(location_id, model_id)
+                 or _no_disk_for_output(row, model_id, modality))
         if slots > 0:
             slots = max(usable, 1)
         if slots <= 0:

@@ -3419,7 +3419,7 @@ class JobStore:
         """
         with self._lock:
             row = self._conn.execute(
-                "SELECT state, recovery_state FROM jobs WHERE id = ?", (job_id,)
+                "SELECT state, recovery_state, upstream_job_id FROM jobs WHERE id = ?", (job_id,)
             ).fetchone()
             if row is None:
                 return
@@ -3446,6 +3446,11 @@ class JobStore:
                 return
             if recovery_state is None and retryable:
                 recovery_state = RECOVERY_RETRYABLE
+            # **A hold must name the batch it is waiting on.** `holds(sweepable=True)` only ever
+            # asks about a row with an upstream id, so an unknown outcome whose batch id arrived
+            # only in `recovery_context` would sit there for ever, unsweepable by anything.
+            context = recovery_context if isinstance(recovery_context, dict) else {}
+            batch = str(context.get("batch_id") or "")
             self._update_locked(
                 job_id,
                 {
@@ -3454,6 +3459,9 @@ class JobStore:
                     "error_detail": detail,
                     "retryable": int(bool(retryable)),
                     "recovery_state": recovery_state,
+                    **({"upstream_job_id": batch}
+                       if recovery_state == RECOVERY_UNKNOWN and batch and not row["upstream_job_id"]
+                       else {}),
                     "recovery_detail": recovery_detail,
                     "recovery_context": (
                         json.dumps(recovery_context) if recovery_context else None

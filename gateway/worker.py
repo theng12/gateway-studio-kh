@@ -107,11 +107,22 @@ WORKSTATION_YIELDED = "WORKSTATION_YIELDED"
 _HANDBACK_CODES = frozenset({WORKSTATION_YIELDED, "INSUFFICIENT_MEMORY", "NO_AVAILABLE_MACHINE"})
 
 #: Hand-backs that are no fault of the job, so they do not count against the retry ceiling: a
-#: workstation yield, and a group whose every Mac able to run the model is paused
-#: (`NO_AVAILABLE_MACHINE`, from the Hub or the Gateway's own stranded-queue check, 2026-10-04).
-_UNCOUNTED_CODES = frozenset({WORKSTATION_YIELDED, "NO_AVAILABLE_MACHINE"})
-#: What the retry ceiling does not count: the hand-backs above, and the one free deadline move.
-_UNCOUNTED_ATTEMPT_CODES = _UNCOUNTED_CODES | _NO_REROUTE_CODES
+#: workstation yield, a group whose every Mac able to run the model is paused
+#: (`NO_AVAILABLE_MACHINE`, from the Hub or the Gateway's own stranded-queue check, 2026-10-04),
+#: and a Mac that refused work because it was short of memory or of output space.
+_UNCOUNTED_CODES = frozenset({WORKSTATION_YIELDED, "NO_AVAILABLE_MACHINE",
+                              "INSUFFICIENT_MEMORY", "OUTPUT_STORAGE_FULL"})
+#: Refusals that prove **nothing was sent** (`upstream_accepted is False` at the raise): the
+#: machine or the site was unfit, which says nothing about the work. Measured 2026-11-16: a voice
+#: job spent all three attempts on a trash-full Mac, a Mac with 1.5 GB free, and a third that went
+#: silent — the ceiling, not the work, ended it. Excluding them from the count does not weaken the
+#: ceiling: every one still joins the job's tried set, so it cannot bounce between the same
+#: machines, and the deferral ladder bounds the waiting (see `_defer_if_transient`).
+_UNSENT_REFUSAL_CODES = frozenset({"INSUFFICIENT_MEMORY", "OUTPUT_STORAGE_FULL", "LOCATION_NOT_READY",
+                                   "LOCATION_UNREACHABLE", "SITE_CAPACITY_UNAVAILABLE", "POOL_MEMBER_BUSY"})
+#: What the retry ceiling does not count: the hand-backs above, the one free deadline move, and
+#: every refusal that accepted nothing.
+_UNCOUNTED_ATTEMPT_CODES = _UNCOUNTED_CODES | _NO_REROUTE_CODES | _UNSENT_REFUSAL_CODES
 
 
 def _takes_no_new_work(provider_id: str) -> bool:
@@ -1068,12 +1079,17 @@ _REBIND_BACKOFF_S = 1.0
 _REBIND_BACKOFF_CAP_S = 60.0
 
 
-def _tried_everything_detail(attempts: list[dict[str, Any]], *, limit: int) -> str:
+def _tried_everything_detail(attempts: list[dict[str, Any]], *, limit: int,
+                             refused: bool = False) -> str:
     """The terminal reason: every machine that was tried, and why each one failed.
 
     The owner asked for a *proper* failure rather than an endless defer, and a proper failure
     names what happened. "All machines failed" is not actionable; naming the site, its code and
     its own sentence is.
+
+    `refused` is the same sentence for the other ending: a fleet of machines that could not take
+    the job (no memory, no disk, busy) spends none of the three attempts, so the waiting ladder,
+    not the ceiling, is what ends it — and then it says nothing was charged.
     """
     parts = []
     for entry in attempts[:limit]:
@@ -1082,6 +1098,9 @@ def _tried_everything_detail(attempts: list[dict[str, Any]], *, limit: int) -> s
         said = str(entry.get("detail") or "").strip()
         parts.append(f"{where} ({why}{': ' + said if said else ''})")
     joined = "; ".join(parts) if parts else "no attempt was recorded"
+    if refused:
+        return (f"tried {len(parts) or limit} machines and none could take it - "
+                f"{joined}. Nothing was charged; run it again.")
     return (f"tried {len(parts) or limit} machines and every one failed - "
             f"{joined}. This is the end of the retry policy, not a queue wait.")
 
@@ -1660,6 +1679,10 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             log.warning("job %s failed via %s: %s", job_id, provider_id, exc)
             if exc.code == "INSUFFICIENT_MEMORY":
                 fleet.note_memory_refusal(provider_id, model_id, str(exc))  # F1: rest that Mac
+            elif exc.code == "OUTPUT_STORAGE_FULL":
+                # A Mac that cannot write its output refuses every job until its Trash Folder is
+                # emptied, so rest the location rather than send the next asset into the same fail.
+                fleet.note_storage_refusal(provider_id, model_id)
             elif exc.code == "LOCATION_NOT_READY":
                 # **A location that is installing an update has stopped taking work, and saying
                 # so is not a reason to ask it again** (Kind I). `_next_machine`/`_rebind` already
@@ -1957,11 +1980,19 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             terminal_detail = detail
             if not unknown:
                 attempts_of = getattr(store, "attempts_of", None)
-                logged = [entry for entry in (attempts_of(job_id) if attempts_of is not None else [])
-                          if entry.get("code") != "RESTART_DEADLINE"]
+                every = [entry for entry in (attempts_of(job_id) if attempts_of is not None else [])
+                         if entry.get("code") != "RESTART_DEADLINE"]
+                # The same entries the ceiling counted — an unfit machine did not spend the
+                # budget, so it cannot be why it ran out.
+                logged = [entry for entry in every
+                          if entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES]
                 limit = int(concurrency.retry_policy()["max_attempts"])
                 if logged and len(logged) >= limit:
                     terminal_detail = _tried_everything_detail(logged, limit=limit)
+                elif exc.code in _UNCOUNTED_CODES and len(every) > 1:
+                    # No attempt was spent, but several machines still refused it: the owner's
+                    # "name every machine" sentence, with "nothing was charged" as its ending.
+                    terminal_detail = _tried_everything_detail(every, limit=len(every), refused=True)
                 elif exc.code in _UNCOUNTED_CODES:
                     terminal_detail = detail.rstrip(". ") + ". " + (
                         "This voice exists only on that location, so it was not moved to another Mac."

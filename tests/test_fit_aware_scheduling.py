@@ -508,5 +508,61 @@ class SpeedByMacClassTest(_Case):
         self.assertEqual(admin.mac_class(None, None), "unknown chip · ? GB")
 
 
+class OutputSpaceTest(_Case):
+    """A Mac that cannot write the result is not a Mac that can run the job.
+
+    Measured 2026-11-16: a voice job was sent to a Mac whose managed output storage was full and
+    was refused `VOICE_REFERENCE_REJECTED` — the Hub's own disk figure already said so, and the
+    gateway asked nobody. Both halves are held here: the rest after a refusal, and the disk
+    reading before one.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.addCleanup(fleet._STORAGE_COOLDOWN.clear)
+
+    def _rows(self, sites: str) -> list[tuple[types.SimpleNamespace, dict]]:
+        return [(types.SimpleNamespace(id=_pid(s)), {"model_id": HEAVY, "modality": "tts"})
+                for s in sites]
+
+    def test_a_location_that_refused_for_output_space_is_offered_only_as_a_last_resort(self) -> None:
+        self.sites = [_site("a", op_total=1, supply={HEAVY: 1}), _site("b", op_total=1, supply={HEAVY: 1})]
+        with patch.object(registry.models, "enabled_models", lambda modality: self._rows("ab")), \
+                patch.object(fleet, "_takes_customer_jobs", lambda row: True):
+            fleet.note_storage_refusal(_pid("a"), HEAVY)
+            self.assertEqual([c["location_id"] for c in fleet.routing_candidates(HEAVY, "tts")], ["b"],
+                             "the location that just ran out of output space is not offered the next asset")
+            fleet._STORAGE_COOLDOWN[("a", HEAVY)] = time.time() - 1
+            self.assertEqual(sorted(c["location_id"] for c in fleet.routing_candidates(HEAVY, "tts")),
+                             ["a", "b"], "and it is back once its rest has run out")
+
+    def test_a_mac_the_hub_states_is_out_of_disk_is_not_offered_voice_output(self) -> None:
+        site = _site("a", op_total=1, supply={HEAVY: 1})
+        site["machines"] = [{"machine": "mac-1", "label": "mac-1", "reachable": True, "health": "up",
+                             "available_gb": 8.0,
+                             "disk": {"state": "red", "free_gb": 3.0, "total_gb": 500.0}}]
+        site["local_models"] = [{"machine": "mac-1", "model_id": HEAVY, "modality": "tts",
+                                 "memory_eligible": True, "runtime_ready": True}]
+        self.sites = [site]
+        with patch.object(registry.models, "enabled_models", lambda modality: self._rows("a")), \
+                patch.object(fleet, "_takes_customer_jobs", lambda row: True):
+            self.assertTrue(fleet.routing_candidates(HEAVY, "tts")[0]["spent"],
+                            "offered only when nothing else can take the model, never skipped outright")
+            site["machines"][0]["disk"]["state"] = "green"
+            self.assertFalse(fleet.routing_candidates(HEAVY, "tts")[0]["spent"])
+
+    def test_a_disk_state_this_gateway_derived_is_shown_but_not_acted_on(self) -> None:
+        site = _site("a", op_total=1, supply={HEAVY: 1})
+        site["machines"] = [{"machine": "mac-1", "label": "mac-1", "reachable": True,
+                             "disk_free_gb": 1.0, "disk_total_gb": 500.0}]
+        site["local_models"] = [{"machine": "mac-1", "model_id": HEAVY, "modality": "tts",
+                                 "memory_eligible": True, "runtime_ready": True}]
+        self.sites = [site]
+        with patch.object(registry.models, "enabled_models", lambda modality: self._rows("a")), \
+                patch.object(fleet, "_takes_customer_jobs", lambda row: True):
+            self.assertFalse(fleet.routing_candidates(HEAVY, "tts")[0]["spent"],
+                             "only the Hub's own reading gates work; a derived one is for showing")
+
+
 if __name__ == "__main__":
     unittest.main()
