@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.265 — 2026-11-17
+
+- **Gateway starts at login again, and still needs no certificate.** After an update to 0.2.264 the app stayed down until someone started it by hand: an older registration was still holding the app's name, and 0.2.264 no longer carried the file it needed to cancel it, so its attempt to load its own login item was refused every time. The app carries that file again, cancels the old registration, and loads its own login item; if the old row is still in the way it is cleared once and the load is tried again. Both outcomes are written to the log instead of failing quietly.
+- **The Fleet Trash page says which "off" a Mac is in.** One Mac's trash can be off because nobody ever turned it on, because the owner turned it off, or because the automatic rule is not running. The row said one sentence for all three; it now says **Off — never enabled**, **Off — you turned this off**, or **Off — automatic**, and a Mac that does not report it shows nothing rather than a guess.
+
 ## 0.2.264 — 2026-11-16
 
 - **Fleet has a Trash tab: every Mac's trash on one page.** One row per Mac, with the Studio Hub Trash Folder, macOS Trash, free disk and free memory as separate columns, so a shortfall in memory never reads as a disk one. A field a Mac does not report says "not reported" rather than 0, and a Mac that cannot be read says why.
