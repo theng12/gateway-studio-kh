@@ -2214,6 +2214,8 @@ class Worker:
         self._rebind_backoff: dict[str, tuple[float, float]] = {}
         #: `job id -> time.time()` when a fleet job first sat waiting for placement. Dropped on
         #: admit, rebind success, move or fail. The placement ceiling reads this live.
+        #: ponytail: a job ended elsewhere while waiting (QUEUE_TIMEOUT, a cancel) leaves its entry
+        #: (one float); prune if a long-lived Gateway ever shows thousands of them.
         self._placement_wait_started: dict[str, float] = {}
         #: `(model, modality) -> (read at, eligibility)` for the fail-fast check. The fleet
         #: snapshot is warm but the walk is per queued job per pass; a few seconds of reuse
