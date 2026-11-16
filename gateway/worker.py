@@ -119,7 +119,12 @@ _UNCOUNTED_CODES = frozenset({WORKSTATION_YIELDED, "NO_AVAILABLE_MACHINE",
 #: ceiling: every one still joins the job's tried set, so it cannot bounce between the same
 #: machines, and the deferral ladder bounds the waiting (see `_defer_if_transient`).
 _UNSENT_REFUSAL_CODES = frozenset({"INSUFFICIENT_MEMORY", "OUTPUT_STORAGE_FULL", "LOCATION_NOT_READY",
-                                   "LOCATION_UNREACHABLE", "SITE_CAPACITY_UNAVAILABLE", "POOL_MEMBER_BUSY"})
+                                   "LOCATION_UNREACHABLE", "SITE_CAPACITY_UNAVAILABLE", "POOL_MEMBER_BUSY",
+                                   # The placement ceiling ran out (0.2.266): `_next_machine` records
+                                   # the wait so the site joins the tried set, but nothing was sent, so
+                                   # it must not spend one of the three tries — that was the whole of
+                                   # 0.2.263's refusal rule, and a ceiling is the same kind of refusal.
+                                   "PLACEMENT_TIMEOUT"})
 #: What the retry ceiling does not count: the hand-backs above, the one free deadline move, and
 #: every refusal that accepted nothing.
 _UNCOUNTED_ATTEMPT_CODES = _UNCOUNTED_CODES | _NO_REROUTE_CODES | _UNSENT_REFUSAL_CODES
@@ -2207,6 +2212,9 @@ class Worker:
         #: 2,758 times per job, every 0.4 s pass). Dropped once the job moves or is admitted.
         #: ponytail: a job that ends while backed off leaves its entry (bytes); prune if that matters.
         self._rebind_backoff: dict[str, tuple[float, float]] = {}
+        #: `job id -> time.time()` when a fleet job first sat waiting for placement. Dropped on
+        #: admit, rebind success, move or fail. The placement ceiling reads this live.
+        self._placement_wait_started: dict[str, float] = {}
         #: `(model, modality) -> (read at, eligibility)` for the fail-fast check. The fleet
         #: snapshot is warm but the walk is per queued job per pass; a few seconds of reuse
         #: cannot change a structural absence, and it keeps a long queue from re-deriving it
@@ -3035,9 +3043,11 @@ class Worker:
                     if not self._admit(job) and not (self._rebind(job) and self._admit(job)):
                         key = (str(job.get("provider_id") or ""), str(job.get("model_id") or ""))
                         self._ahead[key] = self._ahead.get(key, 0) + 1
+                        self._placement_wait_started.setdefault(job["id"], time.time())
                         self._note_waiting(job)
                         continue
                     self._rebind_backoff.pop(job["id"], None)
+                    self._placement_wait_started.pop(job["id"], None)
                     self._start_job(job)
                 self.pass_failures = 0
             except Exception:  # noqa: BLE001 - the next pass must still happen
@@ -3163,6 +3173,10 @@ class Worker:
         due) and only when it differs from what the row already says, so a stable wait
         costs one UPDATE rather than one per 0.4 s pass.
 
+        **Placement ceiling (0.2.266):** past `placement_wait_ceiling_seconds` the job
+        either moves to another eligible Mac or fails `PLACEMENT_TIMEOUT` retryable —
+        never waits forever on `retry_in 0`. No attempt is consumed on this path.
+
         Never raises: a job that cannot be written is tried again next pass.
         """
         provider_id = str(job.get("provider_id") or "")
@@ -3171,12 +3185,45 @@ class Worker:
         defer = getattr(self.store, "defer", None)
         if defer is None:
             return
+        job_id = job["id"]
+        model_id = str(job.get("model_id") or "")
         try:
-            reason = fleet.site_wait_reason(provider_id, str(job.get("model_id") or ""))
+            # Placement ceiling: move or fail retryable, never wait forever.
+            started = self._placement_wait_started.get(job_id)
+            if (started is not None
+                    and job.get("state") == "accepted"
+                    and not job.get("upstream_job_id")):
+                ceiling = float(concurrency.queue_wait_budget()["placement_wait_ceiling_seconds"])
+                waited = time.time() - started
+                if waited >= ceiling:
+                    modality = str(_job_params(job).get("modality") or "tts")
+                    moved = _next_machine(
+                        self.store, job_id, model_id, modality, provider_id,
+                        code="PLACEMENT_TIMEOUT",
+                        detail=f"No Mac freed in {int(waited // 60)} min",
+                    )
+                    if moved:
+                        self._placement_wait_started.pop(job_id, None)
+                        log.warning("job %s: placement ceiling hit after %d min; moving to %s",
+                                    job_id, int(waited // 60), moved)
+                        return
+                    detail = (f"{fleet.site_wait_reason(provider_id, model_id)} waited "
+                              f"{int(waited // 60)} min; nothing was sent to any provider, "
+                              f"so retrying is safe.")
+                    _fail(self.store, job_id, code="PLACEMENT_TIMEOUT",
+                          retryable=True, detail=detail)
+                    self._placement_wait_started.pop(job_id, None)
+                    return
+                remaining = ceiling - waited
+                reason = fleet.site_wait_reason(provider_id, model_id)
+                suffix = f" — {int(remaining // 60)} min of {int(ceiling // 60)} allowed"
+                reason = f"{reason}{suffix}" if reason else suffix
+            else:
+                reason = fleet.site_wait_reason(provider_id, model_id)
             if reason and reason[:300] != str(job.get("defer_reason") or ""):
-                defer(job["id"], delay_s=0, reason=reason)
+                defer(job_id, delay_s=0, reason=reason)
         except Exception:  # noqa: BLE001 - a sentence is never a reason to lose a job
-            log.debug("could not record why %s is waiting", job.get("id"), exc_info=True)
+            log.debug("could not record why %s is waiting", job_id, exc_info=True)
 
     def _stranded_on_paused(self, job: dict[str, Any]) -> bool:
         """End a queued job whose voice exists only on a location the owner has since paused."""
