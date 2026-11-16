@@ -5353,15 +5353,23 @@ def _no_disk_for_output(row: dict, model_id: str, modality: str) -> bool:
     """
     if modality not in _STORAGE_BACKED_MODALITIES:
         return False
+
+    def stopped(machine: dict) -> str:
+        disk = machine_disk(machine) or {}
+        # Only the Hub's own state is acted on; a state this gateway derived is for showing.
+        return str(disk.get("state") or "") if disk.get("state_source") == "hub" else ""
+
+    machines = [m for m in row.get("machines") or [] if isinstance(m, dict)]
+    # **The controller's own disk gates its whole site.** A work POST is refused
+    # `OUTPUT_STORAGE_BLOCKED` by the Mac that receives it, and the controller receives every one:
+    # measured 2026-11-16, terranash-1300 (disk "stop", 4.1 GB free) refused nine voice jobs
+    # fifteen times each while its own nodes were green.
+    if any(str(m.get("machine") or "") == LOCAL_ID and stopped(m) in _DISK_STOPPED for m in machines):
+        return True
     able = set(_eligible_macs(row, model_id, modality))
     if not able:
         return False
-    states = set()
-    for machine in row.get("machines") or []:
-        if isinstance(machine, dict) and str(machine.get("machine") or "") in able:
-            disk = machine_disk(machine) or {}
-            # Only the Hub's own state is acted on; a state this gateway derived is for showing.
-            states.add(str(disk.get("state") or "") if disk.get("state_source") == "hub" else "")
+    states = {stopped(m) for m in machines if str(m.get("machine") or "") in able}
     return bool(states) and states <= _DISK_STOPPED
 
 

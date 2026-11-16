@@ -551,6 +551,28 @@ class OutputSpaceTest(_Case):
             site["machines"][0]["disk"]["state"] = "green"
             self.assertFalse(fleet.routing_candidates(HEAVY, "tts")[0]["spent"])
 
+    def test_a_controller_out_of_disk_spends_its_whole_site_for_voice_output(self) -> None:
+        """terranash-1300 (disk "stop") refused at its door while its nodes were green (2026-11-16)."""
+        site = _site("a", op_total=1, supply={HEAVY: 1})
+        site["machines"] = [
+            {"machine": "local", "label": "ctl", "reachable": True, "health": "up",
+             "disk": {"state": "stop", "state_source": "hub", "free_gb": 4.1, "total_gb": 245.0}},
+            {"machine": "node-1", "label": "node-1", "reachable": True, "health": "up", "available_gb": 8.0,
+             "disk": {"state": "green", "state_source": "hub", "free_gb": 113.0, "total_gb": 245.0}}]
+        site["local_models"] = [{"machine": "node-1", "model_id": HEAVY, "modality": "tts",
+                                 "memory_eligible": True, "runtime_ready": True}]
+        self.sites = [site]
+        with patch.object(registry.models, "enabled_models", lambda modality: self._rows("a")), \
+                patch.object(fleet, "_takes_customer_jobs", lambda row: True):
+            self.assertTrue(fleet.routing_candidates(HEAVY, "tts")[0]["spent"],
+                            "a stopped controller makes its site a last resort, never skipped outright")
+            site["machines"][0]["disk"]["state"] = "green"
+            self.assertFalse(fleet.routing_candidates(HEAVY, "tts")[0]["spent"])
+            del site["machines"][0]["disk"]
+            site["machines"][0].update(disk_free_gb=1.0, disk_total_gb=245.0)   # derived here, not the Hub's
+            self.assertFalse(fleet.routing_candidates(HEAVY, "tts")[0]["spent"],
+                             "a derived state is still only shown")
+
     def test_a_disk_state_this_gateway_derived_is_shown_but_not_acted_on(self) -> None:
         site = _site("a", op_total=1, supply={HEAVY: 1})
         site["machines"] = [{"machine": "mac-1", "label": "mac-1", "reachable": True,

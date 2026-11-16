@@ -15,6 +15,12 @@ every feature title, and they are left as they were written.
 - **Fleet has a Trash tab: every Mac's trash on one page.** One row per Mac, with the Studio Hub Trash Folder, macOS Trash, free disk and free memory as separate columns, so a shortfall in memory never reads as a disk one. A field a Mac does not report says "not reported" rather than 0, and a Mac that cannot be read says why.
 - **Empty All Trash: one button for every Mac at every linked site.** It reaches every node and controller, this Mac included, and removes the Studio Hub Trash Folder and everything in macOS Trash (needs Studio Hub 0.6.243). One confirmation lists each Mac's count and bytes and the total; each Mac's own Empty stays. A Mac whose switch is off, whose Hub is older, or that is offline is skipped and says why; every Mac ends emptied, skipped or failed, and a failure says what is left. Agents can run it too with the gateway key (`POST /admin/api/fleet/trash/empty`); each run writes one audit line naming who asked. Every other delete still needs this app's own window.
 
+## 0.2.263 — 2026-11-16
+
+- **A Mac that refused a job without starting it no longer uses up one of its three tries.** Out of memory, out of disk, not ready, unreachable or busy: nothing was sent, so the job moves to another Mac and keeps all three tries for real failures. Each Mac that refused is still named, and a job no Mac could take ends with "Nothing was charged; run it again".
+- **A full disk is named and avoided.** A Mac with no room for the result now says `OUTPUT_STORAGE_FULL` and is left alone for 15 minutes. A site whose controller's disk is stopped, or whose every able Mac is out of disk, is offered voice, music and video work only when nothing else can take it. A job already waiting on such a site moves on instead of waiting there.
+- **Every lost-contact hold can be swept.** Each one now keeps the batch it is waiting on, so the hold sweep can collect a batch that finished instead of leaving the hold for a person to close.
+
 ## 0.2.262 — 2026-11-16
 
 - **The Launcher can request an update pause with its own private token.** It works only for pausing and resuming Gateway's queue, and cannot open Gateway's other settings. Gateway never creates or copies this token.

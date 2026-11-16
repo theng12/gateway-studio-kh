@@ -330,6 +330,12 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
                                    "about 3.0 GB free (it refused 3 times).",
                                    code="INSUFFICIENT_MEMORY", retryable=True,
                                    upstream_accepted=False, upstream_settled=True)
+            if self.behaviour == "storage_blocked":
+                # The Hub's door, word for word from Production 2026-11-16 (terranash-1300).
+                raise BackendError("the location cannot serve this model right now (OUTPUT_STORAGE_BLOCKED): "
+                                   "managed output storage has insufficient free space; empty the Trash "
+                                   "Folder to free space", code="LOCATION_NOT_READY", status=507,
+                                   retryable=True, upstream_accepted=False)
             if self.behaviour == "engine":
                 raise BackendError("ffmpeg not found on PATH", code="PROVIDER_FAILED",
                                    upstream_accepted=False, upstream_settled=True)
@@ -338,12 +344,14 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
     def _run_single_site(self, behaviour: str, *, params=None, extra_sites=False):
         return self._run([behaviour], sites=["a", "b"] if extra_sites else ["a"], params=params)
 
-    def _run(self, behaviours: list[str], *, sites=None, params=None):
+    def _run(self, behaviours: list[str], *, sites=None, params=None, before=()):
         store = _Store({
             "id": "job-e2e", "modality": "image", "model_id": "z-image-turbo-6b-mlx-4bit",
             "provider_id": "studio-hub-a", "params": json.dumps(params or {}), "state": "running",
             "attempt_count": 1,
         })
+        for location, code in before:   # an attempt log the job already carries
+            store.record_attempt("job-e2e", location_id=location, code=code, detail="earlier")
         store.succeed = lambda job_id, **kwargs: store.succeeded.append(
             {"job_id": job_id, **kwargs})
         store.succeeded = []
@@ -446,6 +454,21 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
         self.assertEqual(dispatch, ["studio-hub-a"], "a pinned job never moves")
         self.assertEqual(store.deferred, [])
         self.assertEqual([f["code"] for f in store.failed], ["INSUFFICIENT_MEMORY"])
+
+    def test_a_job_held_for_a_storage_blocked_site_moves_on_instead_of_waiting(self) -> None:
+        """Production 2026-11-16, job 7dd410fb's shape: two counted attempts elsewhere, then fifteen
+        refusals from terranash-1300's full disk while 23 Macs were eligible. Under 0.2.260 the
+        refusals spent the third attempt, so the job could only wait on the same full Mac."""
+        before = [("studio-hub-b", "PROVIDER_FAILED"), ("studio-hub-c", "PROVIDER_SUBMISSION_UNCERTAIN")]
+        before += [("studio-hub-a", "LOCATION_NOT_READY")] * 15
+        self.addCleanup(worker_module.fleet._STORAGE_COOLDOWN.clear)
+        store, dispatch = self._run(["storage_blocked", "ok"], sites=["a", "b", "c", "d"], before=before)
+        self.assertEqual(dispatch, ["studio-hub-a", "studio-hub-d"],
+                         "the refusal moves the job to an untried site; it does not wait on the full one")
+        self.assertEqual((store.failed, store.deferred), ([], []))
+        self.assertTrue(worker_module.fleet.storage_cooled(
+            worker_module.fleet.controller_id_from("studio-hub-a") or "studio-hub-a",
+            "z-image-turbo-6b-mlx-4bit"), "and the full site rests, so the next asset is not sent there")
 
     def test_three_failures_produce_one_proper_failure_naming_all_three(self) -> None:
         store, dispatch = self._run(["busy", "engine", "engine"])
