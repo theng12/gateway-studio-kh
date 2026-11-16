@@ -517,6 +517,48 @@ echo "$BUILD_ID" > "$APP/Contents/Resources/gateway/BUILD"
 # spawn an ad-hoc-signed build: macOS records the requirement (the cdhash) at registration, and an
 # update changes it, so launchd refused the app with `OS_REASON_CODESIGNING` on 1301 (2026-11-16).
 # A plain agent runs a path and is not held to a code requirement. No certificate, no Keychain item.
+#
+# The bundle still carries the agent plist, but only so `SMAppService.agent(plistName:)` can find
+# it: an older build registered `kh.gateway.menubar` through SMAppService, and that registration
+# can only be cleared by a bundle that has the plist. With the plist gone the status was
+# `.notFound`, the old row was never cleared, the label stayed taken and the plist could never be
+# imported (measured on 1301, 2026-11-17). The app never registers through SMAppService again
+# (owner ruling 2026-11-16: stay certificate-free); the keys below are the ones
+# `LaunchAgent.writePlist` writes, so the two never disagree (`tests/test_login_default.py`).
+# `BundleProgram` is Apple's documented bundle-relative program path, so the plist survives the
+# app being moved.
+LAGENTS="$APP/Contents/Library/LaunchAgents"
+mkdir -p "$LAGENTS"
+cat > "$LAGENTS/kh.gateway.menubar.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>kh.gateway.menubar</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/${APP_NAME}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>Contents/MacOS/${APP_NAME}</string>
+		<string>--background</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+</dict>
+</plist>
+PLIST
 # `gateway.__version__` (and so `/api/version`) reads `VERSION` from beside the package.
 [ -f "$ROOT/VERSION" ] && cp "$ROOT/VERSION" "$APP/Contents/Resources/gateway/VERSION"
 echo "    build $BUILD_ID"
