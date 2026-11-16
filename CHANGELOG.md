@@ -13,6 +13,7 @@ every feature title, and they are left as they were written.
 ## 0.2.264 — 2026-11-16
 
 - **Fleet has a Trash tab: every Mac's trash on one page.** One row per Mac, with the Studio Hub Trash Folder, macOS Trash, free disk and free memory as separate columns, so a shortfall in memory never reads as a disk one. A field a Mac does not report says "not reported" rather than 0, and a Mac that cannot be read says why.
+- **Every Mac starts with remote emptying switched Off.** Nothing in its trash is deleted from Gateway until that Mac's switch is turned on in its own Studio Hub window, so a first run of Empty All Trash skips Macs that are still Off — the row reads "not enabled yet", not a failure. Turn it on per Mac when you are ready.
 - **Empty All Trash: one button for every Mac at every linked site.** It reaches every node and controller, this Mac included, and removes the Studio Hub Trash Folder and everything in macOS Trash (needs Studio Hub 0.6.243). One confirmation lists each Mac's count and bytes and the total; each Mac's own Empty stays. A Mac whose switch is off, whose Hub is older, or that is offline is skipped and says why; every Mac ends emptied, skipped or failed, and a failure says what is left. Agents can run it too with the gateway key (`POST /admin/api/fleet/trash/empty`); each run writes one audit line naming who asked. Every other delete still needs this app's own window.
 
 ## 0.2.263 — 2026-11-16
