@@ -2593,9 +2593,13 @@ def _macos_trash_fact(machine: dict) -> dict | None:
     # Hub-moved-items spelling of a first cut is still read so one naming mismatch hides nothing.
     count = count_or_bytes(raw.get("count", raw.get("hub_items_count", machine.get("macos_trash_count"))))
     size = count_or_bytes(raw.get("bytes", raw.get("hub_items_bytes", machine.get("macos_trash_bytes"))))
-    if count is None and size is None:
+    # Hub 0.6.243 states why when it cannot read the Trash at all (`FULL_DISK_ACCESS_NEEDED`,
+    # `TRASH_UNREADABLE`): that is a reason, not a size, and never 0.
+    code = raw.get("code")
+    code = code.strip() if isinstance(code, str) and code.strip() else None
+    if count is None and size is None and code is None:
         return None
-    return {"count": count, "bytes": size}
+    return {"count": count, "bytes": size, "code": code}
 
 
 def _startup_fact(machine: dict, node: dict) -> dict | None:

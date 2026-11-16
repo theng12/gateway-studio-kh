@@ -123,6 +123,19 @@ let macosBool = decodeMachine("""
 """)
 check(makeRow(macosBool, nil).macosTrashText == "not reported", "a boolean macOS Trash size is not a reading")
 
+// 10b. A Hub that states a reason instead of a size says so, never 0 and never "not reported".
+let needsAccess = decodeMachine("""
+{"location_id":"ctl1","machine":"node-6",
+ "macos_trash":{"count":null,"bytes":null,"code":"FULL_DISK_ACCESS_NEEDED"}}
+""")
+check(makeRow(needsAccess, nil).macosTrashText == "needs Full Disk Access",
+      "a macOS Trash the Hub cannot read names the permission it needs")
+let unreadable = decodeMachine("""
+{"location_id":"ctl1","machine":"node-7","macos_trash":{"count":null,"bytes":null,"code":"TRASH_UNREADABLE"}}
+""")
+check(makeRow(unreadable, nil).macosTrashText == "cannot be read",
+      "an unreadable macOS Trash says so rather than claiming it is empty")
+
 // 11. The confirmation: each Mac's line, and a total of stated figures only.
 let lines = [full.emptyLine, macosRow.emptyLine, olderHub.emptyLine, makeRow(bare, nil).emptyLine]
 check(lines[0].text.contains("Hub folder 3 items") && lines[0].text.contains("macOS Trash not reported"),

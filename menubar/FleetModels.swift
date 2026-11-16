@@ -762,15 +762,18 @@ struct FleetHistory: Decodable {
 struct FleetMacosTrash: Decodable {
     var count: Int?
     var bytes: Int64?
+    /// Why the Hub could not read it (`FULL_DISK_ACCESS_NEEDED`, `TRASH_UNREADABLE`), when it says.
+    var code: String?
 
     private enum CodingKeys: String, CodingKey {
-        case count, bytes
+        case count, bytes, code
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         count = try? c.decode(Int.self, forKey: .count)
         bytes = try? c.decode(Int64.self, forKey: .bytes)
+        code = try? c.decode(String.self, forKey: .code)
     }
 }
 

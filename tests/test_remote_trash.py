@@ -276,14 +276,46 @@ class EmptyTrashTests(_Isolated):
             self.assertEqual((answer.status_code, answer.json()["code"]), (400, code), body)
         self.assertEqual(self.seen, [])
 
+    def test_the_hubs_own_skip_codes_and_row_code_ride_through(self) -> None:
+        """Hub 0.6.243 names each Mac's outcome with its own code; none of its skips is a failure."""
+        answer = httpx.Response(200, json={"ok": True, "hub_version": "0.6.243", "machines": [
+            {"machine": "node-1", "state": "skipped", "code": "REMOTE_EMPTY_OFF",
+             "reason": "remote empty is off on this Mac"},
+            {"machine": "node-2", "state": "skipped", "code": "QUEUED",
+             "reason": "waiting for the Mac to check in"},
+            {"machine": "node-3", "state": "emptied", "freed_bytes": 10, "deleted_count": 1,
+             "locations": ["trash", "macos_trash"]}]})
+        got = self.run_route("10.9.8.7", self.KEY, {}, {"local": answer, "ctl2": answer, "ctl3": answer}).json()
+        rows = {(row["location_id"], row["machine"]): row for row in got["machines"]}
+        self.assertEqual((rows[("local", "node-1")]["state"], rows[("local", "node-1")]["code"]),
+                         ("skipped", "REMOTE_EMPTY_OFF"))
+        self.assertEqual(rows[("local", "node-2")]["code"], "QUEUED")
+        self.assertEqual(rows[("local", "node-3")]["locations"], ["trash", "macos_trash"])
+        self.assertEqual((got["totals"]["failed"], got["totals"]["skipped"]), (0, 6))
+
+    def test_a_controller_level_skip_code_is_a_skip_not_a_failure(self) -> None:
+        for code in ("REMOTE_EMPTY_OFF", "NODE_UNREACHABLE", "QUEUED", "HUB_TOO_OLD"):
+            got = self.run_route("10.9.8.7", self.KEY, {"location_id": "ctl2", "machine": "node-1"},
+                                 {"ctl2": httpx.Response(409, json={"ok": False, "code": code,
+                                                                    "detail": "not now"})}).json()
+            self.assertEqual((got["machines"][0]["state"], got["machines"][0]["code"]),
+                             ("skipped", code), code)
+            self.assertTrue(got["ok"], code)
+
     def test_a_mac_row_states_its_macos_trash_or_none_never_zero(self) -> None:
         self.assertEqual(fleet._macos_trash_fact({"macos_trash": {"count": 4, "bytes": 1500}}),
-                         {"count": 4, "bytes": 1500})
+                         {"count": 4, "bytes": 1500, "code": None})
         self.assertEqual(fleet._macos_trash_fact({"macos_trash": {"hub_items_bytes": 7}}),
-                         {"count": None, "bytes": 7}, "a first Hub cut's spelling is still read")
+                         {"count": None, "bytes": 7, "code": None}, "a first Hub cut's spelling is still read")
         self.assertIsNone(fleet._macos_trash_fact({}), "an older Hub states nothing: None, never 0")
         self.assertIsNone(fleet._macos_trash_fact({"macos_trash": {"count": True, "bytes": -1}}),
                           "a boolean or a negative is not a size")
+        # Hub 0.6.243 states a reason when it cannot read the Trash: a reason, never 0.
+        self.assertEqual(fleet._macos_trash_fact(
+            {"macos_trash": {"count": None, "bytes": None, "code": "FULL_DISK_ACCESS_NEEDED"}}),
+            {"count": None, "bytes": None, "code": "FULL_DISK_ACCESS_NEEDED"})
+        self.assertEqual(fleet._macos_trash_fact({"macos_trash": {"count": 2, "bytes": 9}}),
+                         {"count": 2, "bytes": 9, "code": None})
 
 
 class OwnerConsoleTests(_Isolated):

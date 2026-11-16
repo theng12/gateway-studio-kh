@@ -1108,12 +1108,16 @@ def _trash_rows(answer: dict[str, Any], controller_id: str) -> list[dict[str, An
         reason = row.get("reason") or row.get("detail")
         if state not in {"emptied", "skipped", "failed"}:
             state, reason = "failed", f"the Hub answered an unknown state ({state or 'none'})"
+        code = row.get("code")
         out.append({
             "location_id": controller_id,
             "machine": row.get("machine"),
             "label": row.get("label"),
             "state": state,
+            # The Hub's own code (`REMOTE_EMPTY_OFF`, `NODE_UNREACHABLE`, ...) rides with the row.
+            "code": code.strip() if isinstance(code, str) and code.strip() else None,
             "reason": reason or (None if state == "emptied" else "the Hub gave no reason"),
+            "locations": row.get("locations") if isinstance(row.get("locations"), list) else None,
             # `None` is "not reported", never 0: a partial failure must say what is left only if it knows.
             "freed_bytes": _size(row.get("freed_bytes")),
             "deleted_count": _size(row.get("deleted_count")),
@@ -1132,7 +1136,10 @@ def _size(value: object) -> int | None:
 
 #: A controller that never got the request attempted nothing: offline or too old to know the route.
 #: Anything else it refuses (a credential, a server error) is a failure with its reason.
-_TRASH_SKIP_CODES = {"HUB_TOO_OLD", "CONTROLLER_UNREACHABLE"}
+#: Hub 0.6.243's own skip codes: its switch is off, the Mac is offline, its Hub is older, or the
+#: request is waiting for that Mac's check-in. None of them means anything was attempted.
+_TRASH_SKIP_CODES = {"HUB_TOO_OLD", "CONTROLLER_UNREACHABLE", "REMOTE_EMPTY_OFF",
+                     "NODE_UNREACHABLE", "QUEUED"}
 
 
 def _controller_row(controller_id: str, state: str, reason: str, code: str | None = None) -> dict[str, Any]:

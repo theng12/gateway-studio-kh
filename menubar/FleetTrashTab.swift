@@ -42,6 +42,11 @@ struct FleetTrashRow {
     var macosTrashBytes: Int64? { machine.macosTrash?.bytes }
     /// The macOS Trash column. `not reported` from a Hub older than 0.6.243 — never 0.
     var macosTrashText: String {
+        // A Hub that states a reason rather than a size says so: a permission it has not been
+        // given is not "nothing in the Trash".
+        if macosTrashBytes == nil, let code = machine.macosTrash?.code, !code.isEmpty {
+            return code == "FULL_DISK_ACCESS_NEEDED" ? "needs Full Disk Access" : "cannot be read"
+        }
         guard let bytes = macosTrashBytes else { return "not reported" }
         if bytes == 0 { return "empty" }
         let count = machine.macosTrash?.count ?? 0
