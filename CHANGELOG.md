@@ -24,6 +24,7 @@ every feature title, and they are left as they were written.
 - **A restart no longer fails queued work.** Right after Gateway starts, a site it has not read yet is "not read yet", not offline. Queued jobs wait for the first fleet check (at most five minutes) instead of failing with "No reachable Mac".
 - **A paused site gets no new work after a restart either.** A job whose send was cut by the restart goes back to the queue and moves to a live site, instead of being sent again to the site the owner paused.
 - **A stop now leaves a reason behind.** The app writes who asked it to quit into its log, and the gateway writes a line when it is told to shut down.
+- **Launch at login works for this build, and no longer depends on a signing certificate.** The login item is now a standard macOS login item file that names the app; the previous kind recorded a code signature that changes with every build, so macOS refused to start the app at login after an update. Uninstalling still removes it.
 - **Launch at login keeps working after an update.** The app registers its login item again once for each new build, so the record macOS keeps always matches the installed app. A login launch that macOS refuses now stops after one try instead of retrying for ever.
 - **Every lost-contact hold can be swept.** Each one now keeps the batch it is waiting on, so the hold sweep can collect a batch that finished instead of leaving the hold for a person to close.
 

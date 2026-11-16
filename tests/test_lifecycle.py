@@ -51,15 +51,17 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('json["build"] as? String', probe)
         self.assertIn("self?.probedBuild = build", probe)
 
-    def test_uninstall_unregisters_the_login_agent(self):
-        """SMAppService.unregister is what clears the background-item row; deleting a raw plist is not."""
+    def test_uninstall_removes_the_login_agent_and_leaves_one_record(self):
+        """The login item is a plist; uninstall boots the job out, deletes the plist, and drops any
+        SMAppService record an older build registered, so no row and no job outlives the app."""
         uninstall = MAIN[MAIN.index("static func uninstall()"):]
-        uninstall = uninstall[:uninstall.index("private static func removeLegacyPlist()")]
-        self.assertIn("service.unregister()", uninstall)
-        self.assertIn("removeLegacyPlist()", uninstall)
-        self.assertIn('SMAppService.agent(plistName:', MAIN)
+        uninstall = uninstall[:uninstall.index("private static func writePlist(")]
+        self.assertIn('"bootout", "gui/', uninstall)
+        self.assertIn("removeItem(at: plistURL)", uninstall)
+        self.assertIn("record.unregister()", uninstall)
         build = (ROOT.parent / "menubar" / "build.sh").read_text()
-        self.assertIn("Contents/Library/LaunchAgents", build)
+        self.assertNotIn("Contents/Library/LaunchAgents", build,
+                         "the bundled plist was the SMAppService mechanism and is not read now")
 
     def test_uninstall_keeps_the_users_data(self):
         """Nothing in the app may delete the Application Support folder or its config/logins."""
@@ -67,7 +69,7 @@ class LifecycleTests(unittest.TestCase):
                           "removeItem(at: FileManager.default.homeDirectoryForCurrentUser",
                           "admin-sessions.json\"", "menubar.json\""):
             segment = MAIN[MAIN.index("static func uninstall()"):]
-            self.assertNotIn(forbidden, segment[:segment.index("private static func removeLegacyPlist()")])
+            self.assertNotIn(forbidden, segment[:segment.index("private static func writePlist(")])
 
 
 

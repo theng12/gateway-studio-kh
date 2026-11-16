@@ -43,45 +43,61 @@ class TheAppAppliesIt(unittest.TestCase):
         self.assertIn("launchAtLoginOptedOut = true", handler)
 
 
-class ReregisterOncePerBuild(unittest.TestCase):
-    """1301, 2026-11-16: `kh.gateway.menubar` at "spawn failed", last exit 78, runs 10 060, with
-    "needs LWCR update" and "inferred program". The app never redid the registration after an
-    update, the plist named an absolute program, and KeepAlive retried a refused spawn for ever."""
+class LoginItemIsAPlistAgent(unittest.TestCase):
+    """1301, 2026-11-16: the app is ad-hoc signed, so an SMAppService agent cannot spawn it.
+
+    `job state = spawn failed`, `last exit reason = OS_REASON_CODESIGNING`, even after 0.2.263 made
+    the app re-register once per build: an ad-hoc signature's designated requirement is its cdhash,
+    and that changes with every build. A plain LaunchAgent runs a path and is not held to a code
+    requirement, so it starts an ad-hoc build at login with no certificate and no Keychain item.
+    """
 
     def setUp(self) -> None:
         main = (MENUBAR / "main.swift").read_text()
         start = main.index("enum LaunchAgent {")
         self.agent = main[start:main.index("// MARK: - Settings window", start)]
-        self.refresh = self.agent[self.agent.index("static func refresh("):self.agent.index("static func install()")]
         self.plist = (MENUBAR / "build.sh").read_text()
-        self.plist = self.plist[self.plist.index("kh.gateway.menubar.plist\" <<'PLIST'"):]
-        self.plist = self.plist[:self.plist.index("\nPLIST\n")]
 
-    def test_an_installed_agent_is_refreshed_at_launch(self) -> None:
-        repair = self.agent[self.agent.index("static func repairIfNeeded("):self.agent.index("static var currentBuild")]
-        self.assertIn("return refresh(executable: current)", repair)
-        self.assertIn("LoginDefault.shouldReregister(", self.refresh)
+    def _function(self, name: str, end: str) -> str:
+        return self.agent[self.agent.index(f"static func {name}("):self.agent.index(end, self.agent.index(f"static func {name}("))]
 
-    def test_it_goes_through_smappservice_and_never_launchctl(self) -> None:
-        self.assertIn("try service.unregister()", self.refresh)
-        self.assertIn("try service.register()", self.refresh)
-        for raw in ("launchctl", "runLaunchctl", "bootout", "bootstrap", "kickstart"):
-            self.assertNotIn(raw, self.refresh)
+    def test_the_login_item_is_a_plist_in_the_users_launch_agents(self) -> None:
+        self.assertIn("Library/LaunchAgents", self.agent)
+        write = self._function("writePlist", "private static func bootstrap(")
+        self.assertIn('"Label": label', write)
+        self.assertIn('"ProgramArguments": [executable, "--background"]', write)
+        self.assertIn('"RunAtLoad": true', write)
+        self.assertIn('"KeepAlive": ["Crashed": true]', write,
+                      "a crash restarts; a spawn launchd refused must not loop")
+        self.assertNotIn("SuccessfulExit", write)
 
-    def test_it_records_the_build_and_says_what_happened(self) -> None:
-        self.assertIn("$0.launchAgentBuild = build", self.refresh)
-        self.assertIn('NSLog("launch-at-login re-registered', self.refresh)
-        self.assertIn('NSLog("launch-at-login could not be re-registered', self.refresh)
-        install = self.agent[self.agent.index("static func install()"):]
-        self.assertIn("$0.launchAgentBuild = currentBuild", install[:install.index("installLegacyPlist()")])
+    def test_it_loads_the_job_without_needing_a_certificate(self) -> None:
+        install = self._function("install", "static func uninstall(")
+        self.assertIn("writePlist(executable: executable)", install)
+        self.assertIn("bootstrap(executable: executable)", install)
+        boot = self._function("bootstrap", "@discardableResult")
+        self.assertIn('"bootstrap", "gui/', boot)
+        self.assertIn("status != 37", boot, "already-loaded is not a failure")
 
-    def test_the_plist_names_the_program_inside_the_bundle(self) -> None:
-        self.assertIn("<key>BundleProgram</key>\n\t<string>Contents/MacOS/Gateway Studio KH</string>", self.plist)
-        self.assertNotIn("/Applications/", self.plist, "an absolute path is what launchd had to infer")
+    def test_one_record_only_and_nothing_left_behind(self) -> None:
+        install = self._function("install", "static func uninstall(")
+        self.assertIn("record.unregister()", install, "an older SMAppService record is dropped")
+        uninstall = self._function("uninstall", "private static func writePlist(")
+        self.assertIn('"bootout", "gui/', uninstall)
+        self.assertIn("removeItem(at: plistURL)", uninstall)
+        self.assertIn("record.unregister()", uninstall)
 
-    def test_a_spawn_launchd_refused_is_not_retried_for_ever(self) -> None:
-        self.assertIn("<key>Crashed</key>\n\t\t<true/>", self.plist)
-        self.assertNotIn("SuccessfulExit", self.plist)
+    def test_the_copy_launchd_started_never_rewrites_its_own_job(self) -> None:
+        refresh = self._function("refresh", "static func install(")
+        self.assertIn("if runningAsAgent { return }", refresh)
+        self.assertIn('"bootout", "gui/', refresh, "a moved app is re-pointed once")
+        self.assertIn("writePlist(executable: executable)", refresh)
+
+    def test_the_old_bundled_smappservice_plist_is_gone_from_the_build(self) -> None:
+        self.assertNotIn("SMAppService.agent(plistName:", self._function("writePlist", "private static func bootstrap("))
+        self.assertNotIn("Contents/Library/LaunchAgents", self.plist,
+                         "the bundled agent could not start an ad-hoc build; it is not shipped")
+        self.assertIn("Library/LaunchAgents", self.plist, "and the build says where the item lives now")
 
 
 if __name__ == "__main__":

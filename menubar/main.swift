@@ -1166,35 +1166,29 @@ enum QuitSource {
 
 enum LaunchAgent {
     static let label = "kh.gateway.menubar"
-    /// The agent registered through `SMAppService`: its plist ships inside this bundle at
-    /// `Contents/Library/LaunchAgents/`, so it travels with the app and **unregistering removes the
-    /// background-item record**. The old raw `~/Library/LaunchAgents` plist did not — measured
-    /// 2026-11-12, three stale `kh.gateway.menubar` rows survived an uninstall.
-    /// The registered agent, on macOS 13 and later; older systems use the raw plist below.
-    @available(macOS 13.0, *)
-    static var service: SMAppService { SMAppService.agent(plistName: "\(label).plist") }
 
-    /// Where the plist lives now, in the bundle (for messages and tests).
+    /// **A login item, as a plist in `~/Library/LaunchAgents`** (2026-11-16).
+    ///
+    /// The app is **ad-hoc signed** unless `GATEWAY_SIGN_IDENTITY` names an identity, and an ad-hoc
+    /// signature's designated requirement is its cdhash — which changes with every build. An
+    /// `SMAppService` agent records the requirement Launch Services saw when it was registered, so
+    /// after an update launchd refuses to spawn the app: `job state = spawn failed`,
+    /// `last exit reason = OS_REASON_CODESIGNING`, and the job retried until the loop was bounded.
+    /// Measured on 1301 after 0.2.263: `runs = 1`, still `spawn failed`, still `OS_REASON_CODESIGNING`.
+    ///
+    /// A plain LaunchAgent runs the program at a path; launchd applies no such constraint to it, so
+    /// an ad-hoc build starts at login with no certificate. The cost the SMAppService move was made
+    /// to remove — a stale row left behind by an uninstall — is paid back by `uninstall()`, which
+    /// boots the job out and deletes the plist. **No Keychain item, no signing identity.**
     static var plistURL: URL {
-        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LaunchAgents/\(label).plist")
-    }
-
-    /// The pre-SMAppService location. Nothing writes it any more; it is removed so a machine that
-    /// had one keeps a single launch-at-login record instead of two.
-    static var legacyPlistURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
             .appendingPathComponent("\(label).plist")
     }
 
-    static var isInstalled: Bool {
-        if #available(macOS 13.0, *), service.status == .enabled { return true }
-        return FileManager.default.fileExists(atPath: legacyPlistURL.path)
-    }
-
-    /// The legacy plist's program, read only to decide whether it still points at this app.
-    static var legacyExecutable: String? {
-        guard let data = try? Data(contentsOf: legacyPlistURL),
+    /// The program the plist names, so a build in a different place can be spotted and rewritten.
+    static var plistExecutable: String? {
+        guard let data = try? Data(contentsOf: plistURL),
               let plist = try? PropertyListSerialization.propertyList(
                   from: data, options: [], format: nil
               ) as? [String: Any],
@@ -1203,19 +1197,29 @@ enum LaunchAgent {
         return arguments.first
     }
 
-    /// Registering is idempotent, so "repair" is: drop the legacy plist if one is left, and make
-    /// sure the service is registered. The executable path is no longer stored anywhere by hand —
-    /// that is what let an old path strand the agent after a rename.
-    static func repairIfNeeded(current: String?) {
-        removeLegacyPlist()
-        guard !isInstalled else { return refresh(executable: current) }
-        if ConfigStore.shared.config.launchAtLoginOptedOut != true {
-            install()
-        }
+    static var isInstalled: Bool {
+        FileManager.default.fileExists(atPath: plistURL.path) && plistExecutable != nil
     }
 
-    /// This bundle's build stamp (`Contents/Resources/gateway/BUILD`, commit + minute): it changes
-    /// with every build, so it changes whenever the code identity does.
+    /// Whether launchd currently has the job loaded (`launchctl print` exits 0 only for a real job).
+    static var isLoaded: Bool {
+        runLaunchctl(["print", "gui/\(getuid())/\(label)"]) == 0
+    }
+
+    /// Whether a login launch may be started now: macOS 13+ has `SMAppService` but it cannot spawn an
+    /// ad-hoc build, so the plist is the only mechanism on every version.
+    static var launchAtLoginMechanism: String { "launchd agent plist" }
+
+    static func repairIfNeeded(current: String?) {
+        guard isInstalled else {
+            if ConfigStore.shared.config.launchAtLoginOptedOut != true { install() }
+            return
+        }
+        if ConfigStore.shared.config.launchAtLoginOptedOut == true { return }
+        refresh(executable: current)
+    }
+
+    /// A build stamp (`Contents/Resources/gateway/BUILD`), for the log line only.
     static var currentBuild: String? {
         let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/gateway/BUILD")
         let stamp = (try? String(contentsOf: url, encoding: .utf8))?
@@ -1228,76 +1232,80 @@ enum LaunchAgent {
         ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == label
     }
 
-    /// Redo the registration once per new build, through `SMAppService` only, so the record
-    /// macOS keeps always describes the app on disk. One log line says what happened.
+    /// **Make the record match the app on disk, and make sure launchd has it.** The copy launchd
+    /// itself started never rewrites its own job (that would boot out this very process).
     static func refresh(executable: String?) {
-        guard #available(macOS 13.0, *) else { return }
-        let build = currentBuild
-        let recorded = ConfigStore.shared.config.launchAgentBuild
-        if runningAsAgent || service.status != .enabled {
-            if runningAsAgent, let build, recorded != build {
-                ConfigStore.shared.update { $0.launchAgentBuild = build }   // it spawned: the record matches
-            }
+        if runningAsAgent { return }
+        guard let executable, plistExecutable != executable else {
+            if !isLoaded { _ = bootstrap(executable: executable) }
             return
         }
-        guard LoginDefault.shouldReregister(enabled: true, registeredBuild: recorded, currentBuild: build,
-                                            executable: executable, runningAsAgent: false) else { return }
-        do {
-            try service.unregister()
-            try service.register()
-            ConfigStore.shared.update { $0.launchAgentBuild = build }
-            NSLog("launch-at-login re-registered for build %@ (was %@)", build ?? "?", recorded ?? "none")
-        } catch {
-            NSLog("launch-at-login could not be re-registered for build %@: %@",
-                  build ?? "?", error.localizedDescription)
+        // The app moved (or an older build's path): one rewrite, one reboot of the job.
+        writePlist(executable: executable)
+        _ = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
+        if bootstrap(executable: executable) {
+            NSLog("launch-at-login points at %@ now (build %@)", executable, currentBuild ?? "?")
         }
     }
 
     static func install() {
-        removeLegacyPlist()
+        guard let executable = Bundle.main.executableURL?.resolvingSymlinksInPath().path else { return }
+        writePlist(executable: executable)
+        // An SMAppService registration from an older build cannot spawn an ad-hoc app and would be a
+        // second record for one app; drop it so there is exactly one.
         if #available(macOS 13.0, *) {
-            do {
-                try service.register()
-                ConfigStore.shared.update { $0.launchAgentBuild = currentBuild }
-            } catch {
-                NSLog("launch-at-login could not be registered: %@", error.localizedDescription)
-            }
-            return
+            let record = SMAppService.agent(plistName: "\(label).plist")
+            if record.status != .notRegistered { try? record.unregister() }
         }
-        installLegacyPlist()
+        if bootstrap(executable: executable) {
+            NSLog("launch-at-login installed for %@ (build %@)", executable, currentBuild ?? "?")
+        }
     }
 
-    /// macOS 12 and older: the only option there, and the path that leaves a row behind on delete.
-    private static func installLegacyPlist() {
-        guard let executable = Bundle.main.executableURL?.resolvingSymlinksInPath().path else { return }
-        try? FileManager.default.createDirectory(at: legacyPlistURL.deletingLastPathComponent(),
+    static func uninstall() {
+        _ = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
+        try? FileManager.default.removeItem(at: plistURL)
+        if #available(macOS 13.0, *) {
+            let record = SMAppService.agent(plistName: "\(label).plist")
+            if record.status != .notRegistered { try? record.unregister() }
+        }
+    }
+
+    /// One plist, one program. `KeepAlive: Crashed` restarts a crash but **not** a spawn launchd
+    /// itself refused: `SuccessfulExit: false` retried an exit-78 spawn failure 10 060 times on 1301.
+    private static func writePlist(executable: String) {
+        try? FileManager.default.createDirectory(at: plistURL.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [executable, "--background"],
             "RunAtLoad": true,
-            "KeepAlive": ["SuccessfulExit": false],
+            "KeepAlive": ["Crashed": true],
             "ProcessType": "Interactive",
+            "LimitLoadToSessionType": "Aqua",
         ]
         if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) {
-            try? data.write(to: legacyPlistURL)
+            try? data.write(to: plistURL)
         }
     }
 
-    static func uninstall() {
-        // Unregistering is what clears the background-item row; removing the old plist alone did not.
-        if #available(macOS 13.0, *) { try? service.unregister() }
-        removeLegacyPlist()
-    }
-
-    private static func removeLegacyPlist() {
-        guard FileManager.default.fileExists(atPath: legacyPlistURL.path) else { return }
-        _ = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
-        try? FileManager.default.removeItem(at: legacyPlistURL)
+    /// Load the job now, so a install takes effect without a logout. One log line either way; never
+    /// retried here (launchd owns retries, and its KeepAlive above is bounded by `Crashed`).
+    private static func bootstrap(executable: String?) -> Bool {
+        guard executable != nil else { return false }
+        let status = runLaunchctl(["bootstrap", "gui/\(getuid())", plistURL.path])
+        if status != 0 {
+            // 37 is "service already loaded"; anything else is a real refusal and is said once.
+            if status != 37 {
+                NSLog("launch-at-login could not be loaded (launchctl exit %d): %@", status, plistURL.path)
+            }
+            return false
+        }
+        return true
     }
 
     @discardableResult
-    private static func runLaunchctl(_ arguments: [String]) -> Int32 {
+    static func runLaunchctl(_ arguments: [String]) -> Int32 {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         task.arguments = arguments

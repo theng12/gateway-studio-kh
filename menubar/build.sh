@@ -512,41 +512,11 @@ echo "==> stamping the build"
 BUILD_ID="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)-$(date -u +%Y%m%d%H%M)"
 echo "$BUILD_ID" > "$APP/Contents/Resources/gateway/BUILD"
 
-# Launch at login is an SMAppService agent: its plist lives inside the bundle, so it travels with
-# the app and unregistering removes the background-item record. A raw ~/Library/LaunchAgents plist
-# does not — measured 2026-11-12, three stale kh.gateway.menubar rows survived an uninstall.
-# `BundleProgram` is the path SMAppService resolves inside the registered bundle (an absolute
-# ProgramArguments path left launchd "inferring" the program). `KeepAlive: Crashed` restarts a
-# crash but not a spawn launchd itself refused: on 1301 `SuccessfulExit: false` retried an exit-78
-# spawn failure 10 060 times (2026-11-16). The app's own exits are all 0 (a second copy included).
-LAGENTS="$APP/Contents/Library/LaunchAgents"
-mkdir -p "$LAGENTS"
-cat > "$LAGENTS/kh.gateway.menubar.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>kh.gateway.menubar</string>
-	<key>BundleProgram</key>
-	<string>Contents/MacOS/Gateway Studio KH</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>Contents/MacOS/Gateway Studio KH</string>
-		<string>--background</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-	<key>KeepAlive</key>
-	<dict>
-		<key>Crashed</key>
-		<true/>
-	</dict>
-	<key>ProcessType</key>
-	<string>Interactive</string>
-</dict>
-</plist>
-PLIST
+# Launch at login is a **launchd agent plist the app writes into ~/Library/LaunchAgents**
+# (`menubar/main.swift`, `LaunchAgent`). The bundled SMAppService agent that lived here could not
+# spawn an ad-hoc-signed build: macOS records the requirement (the cdhash) at registration, and an
+# update changes it, so launchd refused the app with `OS_REASON_CODESIGNING` on 1301 (2026-11-16).
+# A plain agent runs a path and is not held to a code requirement. No certificate, no Keychain item.
 # `gateway.__version__` (and so `/api/version`) reads `VERSION` from beside the package.
 [ -f "$ROOT/VERSION" ] && cp "$ROOT/VERSION" "$APP/Contents/Resources/gateway/VERSION"
 echo "    build $BUILD_ID"

@@ -16,16 +16,4 @@ enum LoginDefault {
         !installed && optedOut != true && executable == appExecutable
     }
 
-    /// **Register again once per new build** (2026-11-16: 1301's agent sat at "spawn failed",
-    /// exit 78, 10 060 runs). macOS keeps the registered bundle's launch constraint with the
-    /// record, and an update replaces the code, so a record from an older build can stop matching
-    /// the app on disk; `service.status` still reads `.enabled`, so the app never redid it.
-    ///
-    /// Not from the copy launchd itself started (`runningAsAgent`): it evidently spawns, and
-    /// unregistering would stop this very process. That copy only records the build.
-    static func shouldReregister(enabled: Bool, registeredBuild: String?, currentBuild: String?,
-                                 executable: String?, runningAsAgent: Bool) -> Bool {
-        enabled && !runningAsAgent && executable == appExecutable
-            && currentBuild != nil && registeredBuild != currentBuild
-    }
 }
