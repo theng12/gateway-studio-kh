@@ -1921,7 +1921,17 @@ def _publish_attempt_evidence(body: dict[str, Any], job: dict[str, Any]) -> None
         }
         for index, entry in enumerate(attempts)
     ]
-    body["attempts_used"] = sum(1 for entry in attempts if entry.get("code") != "RESTART_DEADLINE")
+    from .worker import _UNCOUNTED_ATTEMPT_CODES
+
+    # **The figure is the ceiling's own count** (`worker._next_machine`): this round only, and
+    # without the refusals that accepted nothing. Counting every log line published "6 of 3"
+    # (Production 2026-11-16) for jobs the ceiling had not ended. Every entry is still listed above.
+    counted = sum(1 for entry in attempts if not entry.get("waited")
+                  and entry.get("code") != "RESTART_DEADLINE"
+                  and entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES)
+    # A log written by an older build may count past today's rule; the contract is "n of limit".
+    body["attempts_used"] = min(counted, limit)
+    body["attempts_refused"] = sum(1 for entry in attempts if entry.get("code") in _UNCOUNTED_ATTEMPT_CODES)
     body["attempts_allowed"] = limit
     body["attempt_policy"] = concurrency.retry_policy_wording()
 

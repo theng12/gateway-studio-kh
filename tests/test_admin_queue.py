@@ -159,6 +159,22 @@ class QueueView(unittest.TestCase):
         self.assertEqual(row["attempts"], [])
         self.assertIn("different machine", row["attempt_policy"])
 
+    def test_the_published_count_is_the_ceilings_and_never_passes_it(self) -> None:
+        """Production 2026-11-16 published "6 of 3" for job 8eb32470, whose log held refusals."""
+        job = self.submit()
+        for location, code in (("studio-hub-x", "OUTPUT_STORAGE_FULL"),
+                               ("studio-hub-a", "PROVIDER_SUBMISSION_UNCERTAIN"),
+                               ("studio-hub-y", "INSUFFICIENT_MEMORY"),
+                               ("studio-hub-z", "LOCATION_NOT_READY"),
+                               ("studio-hub-a", "PROVIDER_SUBMISSION_UNCERTAIN")):
+            store.record_attempt(job["id"], location_id=location, code=code, detail="x")
+        row = self.queue()["jobs"][0]
+        self.assertEqual((row["attempts_used"], row["attempts_refused"], row["attempts_allowed"]), (2, 3, 3))
+        self.assertEqual(len(row["attempts"]), 5, "every attempt is still listed")
+        for location in ("studio-hub-b", "studio-hub-c", "studio-hub-d"):
+            store.record_attempt(job["id"], location_id=location, code="PROVIDER_FAILED", detail="x")
+        self.assertEqual(self.queue()["jobs"][0]["attempts_used"], 3, "never past attempts_allowed")
+
     def test_a_job_that_has_been_tried_names_the_machine_and_the_reason(self) -> None:
         job = self.submit()
         store.record_attempt(job["id"], location_id="studio-hub-blue-room",
