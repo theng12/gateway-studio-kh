@@ -13,8 +13,7 @@ every feature title, and they are left as they were written.
 ## 0.2.262 — 2026-11-16
 
 - **The Launcher can request an update pause with its own private token.** It works only for pausing and resuming Gateway's queue, and cannot open Gateway's other settings. Gateway never creates or copies this token.
-- **Missing, incorrect or replaced update tokens leave the queue untouched.** Gateway reads the Launcher's current token for each request, so a replacement takes effect without restarting Gateway. Requests from a browser or another machine are refused.
-- **An update pause waits at most 30 seconds for work in flight.** Queued work stays queued, and a pause expires by itself if an update is abandoned. The release feed names Gateway's actual pause address so the Launcher can find it.
+- **Missing, incorrect or replaced update tokens leave the queue untouched.** Gateway reads the Launcher's current token for each request, so a replacement takes effect without restarting Gateway. Requests from a browser or another machine are refused. An update pause waits at most 30 seconds for work in flight; queued work stays queued, and the pause expires by itself if an update is abandoned.
 
 ## 0.2.261 — 2026-11-15
 

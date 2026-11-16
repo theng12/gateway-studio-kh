@@ -27,7 +27,9 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
   `ff62b3632df229226332a6d20f8a6e6f36da217032b1bf3cfb3883f3d344f1f2`, 61,535,461 bytes.
   Served bytes independently hash identically. Gate: 248 files, 3,728 unit tests and 586 e2e checks.
   Its feed entry lacks `holdURL` and remains immutable; do not rebuild, republish or edit its metadata.
-  Receipt: `_orchestra/youtube-stack/release-261/release-receipt.json`.
+  Receipt: `_orchestra/youtube-stack/release-261/release-receipt.json`. Installed acceptance remains
+  pending; an unauthenticated drain call must refuse even on loopback, and the Launcher holds the
+  private token required by this release's code.
 - **0.2.260** — previous feed release; last intended-host measurement on 1301 still named build
   `10289af-202611150645`. Installation of 0.2.261 was not verified. Retained 0.2.259/0.2.260 installers,
   source, caches and rollback evidence stay untouched under the owner's stable-version hold.

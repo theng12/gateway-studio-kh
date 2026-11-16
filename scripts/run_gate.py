@@ -125,6 +125,9 @@ def child_env(root: Path, profile: Path) -> dict[str, str]:
     Paths only: no API key, so no file can decide another's auth.
     """
     env = dict(os.environ)
+    # The Launcher file and browser worker endpoint are ambient credentials, not source.
+    env.pop("KHU_HOLD_TOKEN_FILE", None)
+    env.pop("GATEWAY_ENDPOINT_FILE", None)
     for derived in ("GATEWAY_ARTIFACTS", "GATEWAY_DB", "GATEWAY_CREDENTIALS", "GATEWAY_MODEL_CACHE",
                     "GATEWAY_ENV_FILE", "GATEWAY_FLEET", "GATEWAY_VOICES", "GATEWAY_VOICES_OUT"):
         env.pop(derived, None)
@@ -141,6 +144,7 @@ def child_env(root: Path, profile: Path) -> dict[str, str]:
         GATEWAY_BACKUP_TRASH=str(profile / "backup-trash"),
         PYTHONDONTWRITEBYTECODE="1",
     )
+    env["KHU_HOLD_TOKEN_FILE"] = str(profile / "launcher-hold-token")
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [str(root), str(root / "tests"), env.get("PYTHONPATH")])
     )

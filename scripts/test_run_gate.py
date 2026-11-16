@@ -50,11 +50,13 @@ print("All 3 end-to-end checks passed.")
 '''
 
 PROBE = '''
-import os, time, unittest
+import os, time, unittest, pathlib
 
 class Probe(unittest.TestCase):
     def test_sleep(self):
         path = os.environ["GATE_PROBE"]
+        assert os.environ["KHU_HOLD_TOKEN_FILE"] == str(pathlib.Path(os.environ["GATEWAY_APP_SUPPORT"]) / "launcher-hold-token")
+        assert not pathlib.Path(os.environ["KHU_HOLD_TOKEN_FILE"]).exists()
         with open(path, "a") as handle:
             handle.write(f"start {__file__} {time.time()}\\n")
         time.sleep(0.4)
