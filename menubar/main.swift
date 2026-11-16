@@ -183,6 +183,8 @@ struct AppConfig: Codable {
     /// The owner's explicit "off" for launch at login — not a mirror of the plist, which stays
     /// the one record of whether it is on. `nil` (never chosen) means on (`LoginDefault`).
     var launchAtLoginOptedOut: Bool?
+    /// The build whose bundle the login item was last registered from (`LaunchAgent.refresh`).
+    var launchAgentBuild: String?
 
     /// Whether quitting the app leaves the gateway running.
     ///
@@ -1181,16 +1183,58 @@ enum LaunchAgent {
     /// that is what let an old path strand the agent after a rename.
     static func repairIfNeeded(current: String?) {
         removeLegacyPlist()
-        guard !isInstalled else { return }
+        guard !isInstalled else { return refresh(executable: current) }
         if ConfigStore.shared.config.launchAtLoginOptedOut != true {
             install()
+        }
+    }
+
+    /// This bundle's build stamp (`Contents/Resources/gateway/BUILD`, commit + minute): it changes
+    /// with every build, so it changes whenever the code identity does.
+    static var currentBuild: String? {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/gateway/BUILD")
+        let stamp = (try? String(contentsOf: url, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return stamp?.isEmpty == false ? stamp : nil
+    }
+
+    /// launchd names the job it spawned in the child's environment.
+    static var runningAsAgent: Bool {
+        ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == label
+    }
+
+    /// Redo the registration once per new build, through `SMAppService` only, so the record
+    /// macOS keeps always describes the app on disk. One log line says what happened.
+    static func refresh(executable: String?) {
+        guard #available(macOS 13.0, *) else { return }
+        let build = currentBuild
+        let recorded = ConfigStore.shared.config.launchAgentBuild
+        if runningAsAgent || service.status != .enabled {
+            if runningAsAgent, let build, recorded != build {
+                ConfigStore.shared.update { $0.launchAgentBuild = build }   // it spawned: the record matches
+            }
+            return
+        }
+        guard LoginDefault.shouldReregister(enabled: true, registeredBuild: recorded, currentBuild: build,
+                                            executable: executable, runningAsAgent: false) else { return }
+        do {
+            try service.unregister()
+            try service.register()
+            ConfigStore.shared.update { $0.launchAgentBuild = build }
+            NSLog("launch-at-login re-registered for build %@ (was %@)", build ?? "?", recorded ?? "none")
+        } catch {
+            NSLog("launch-at-login could not be re-registered for build %@: %@",
+                  build ?? "?", error.localizedDescription)
         }
     }
 
     static func install() {
         removeLegacyPlist()
         if #available(macOS 13.0, *) {
-            do { try service.register() } catch {
+            do {
+                try service.register()
+                ConfigStore.shared.update { $0.launchAgentBuild = currentBuild }
+            } catch {
                 NSLog("launch-at-login could not be registered: %@", error.localizedDescription)
             }
             return
