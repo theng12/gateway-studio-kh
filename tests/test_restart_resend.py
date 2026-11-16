@@ -147,6 +147,20 @@ class AFleetSendUnansweredAtShutdownIsReSent(_Case):
         self.assertIsNotNone(job["restart_resent_at"], "recorded on the job")
         self.assertEqual(moves, [])
 
+    def test_a_send_to_a_site_the_owner_paused_is_not_resent_there(self) -> None:
+        """1301, 2026-11-16: sections were accepted on 1300 after its pause, by the restart re-send."""
+        store, job_id = self.interrupted("paused", modality="tts")
+        hub = _Hub()
+        with patch.object(worker_module.fleet, "is_paused_provider", lambda pid: pid == SITE):
+            moves = self.start(store, hub)
+        job = store.get(job_id)
+        self.assertEqual(hub.posts, [], "nothing is sent to the paused site")
+        self.assertEqual((job["state"], job["dispatch_started_at"], job["upstream_job_id"]),
+                         ("accepted", None, None), "back in the queue, unsent, so a late rebind may move it")
+        self.assertIsNone(job["restart_resent_at"])
+        self.assertEqual(moves, [])
+        self.assertFalse(job["recovery_required"], "a pause is not a hold")
+
     def test_one_the_hub_never_got_runs_once(self) -> None:
         store, job_id = self.interrupted("fresh", modality="tts")
         hub = _Hub()

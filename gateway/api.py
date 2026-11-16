@@ -746,6 +746,10 @@ def _pause_dispatch_on_term() -> None:
 
     def on_term(sig: int, frame: Any) -> None:
         worker.pause_dispatch()
+        # One line, so a stop leaves its kind behind (1301, 2026-11-16: an unexplained stop with no
+        # crash report and nothing in Gateway's logs). TERM is a quit or a kill -15; no line is KILL.
+        logging.getLogger("gateway.api").warning("TERM received (pid %s): dispatch paused, shutting down",
+                                                 os.getpid())
         if callable(previous):
             previous(sig, frame)
 
