@@ -1210,7 +1210,20 @@ enum LaunchAgent {
     /// ad-hoc build, so the plist is the only mechanism on every version.
     static var launchAtLoginMechanism: String { "launchd agent plist" }
 
+    /// **One owner for the label.** An older build registered `kh.gateway.menubar` through
+    /// `SMAppService`; that registration is cleared here, once, on every launch where one exists, so
+    /// the plist below is the only thing that owns the label. This app never registers through
+    /// `SMAppService` again (owner ruling 2026-11-16: stay certificate-free).
+    static func clearLegacyRegistration() {
+        guard #available(macOS 13.0, *) else { return }
+        let record = SMAppService.agent(plistName: "\(label).plist")
+        guard record.status != .notRegistered else { return }
+        try? record.unregister()
+        NSLog("launch-at-login: cleared the old SMAppService registration for \(label)")
+    }
+
     static func repairIfNeeded(current: String?) {
+        clearLegacyRegistration()
         guard isInstalled else {
             if ConfigStore.shared.config.launchAtLoginOptedOut != true { install() }
             return
@@ -1251,12 +1264,7 @@ enum LaunchAgent {
     static func install() {
         guard let executable = Bundle.main.executableURL?.resolvingSymlinksInPath().path else { return }
         writePlist(executable: executable)
-        // An SMAppService registration from an older build cannot spawn an ad-hoc app and would be a
-        // second record for one app; drop it so there is exactly one.
-        if #available(macOS 13.0, *) {
-            let record = SMAppService.agent(plistName: "\(label).plist")
-            if record.status != .notRegistered { try? record.unregister() }
-        }
+        clearLegacyRegistration()   // one owner for the label, never two registrations
         if bootstrap(executable: executable) {
             NSLog("launch-at-login installed for %@ (build %@)", executable, currentBuild ?? "?")
         }
@@ -1265,10 +1273,7 @@ enum LaunchAgent {
     static func uninstall() {
         _ = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
         try? FileManager.default.removeItem(at: plistURL)
-        if #available(macOS 13.0, *) {
-            let record = SMAppService.agent(plistName: "\(label).plist")
-            if record.status != .notRegistered { try? record.unregister() }
-        }
+        clearLegacyRegistration()
     }
 
     /// One plist, one program.
@@ -1276,9 +1281,9 @@ enum LaunchAgent {
     /// `KeepAlive: SuccessfulExit false` is the **self-healing** half (Developer, 2026-11-16): a
     /// crash *or* a failed spawn is retried, so a Gateway down at 3 a.m. comes back with no timer
     /// and nobody watching, and a deliberate Quit (exit 0) stays quit. `ThrottleInterval` is what
-    /// makes that safe: on 1301 a refused spawn under this same KeepAlive ran **10 060 times**, once
-    /// a minute, because launchd's default throttle is 10 s and nothing bounded the count. One
-    /// attempt a minute is still self-healing within a minute and cannot spin.
+    /// makes that safe: on 1301 a refused spawn under this same KeepAlive ran **10 060 times**, because
+    /// launchd's default throttle is 10 s and nothing bounded the count. 15 s keeps a crash restart
+    /// "within seconds" and caps a failing spawn at four attempts a minute, not sixty.
     private static func writePlist(executable: String) {
         try? FileManager.default.createDirectory(at: plistURL.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
@@ -1287,7 +1292,7 @@ enum LaunchAgent {
             "ProgramArguments": [executable, "--background"],
             "RunAtLoad": true,
             "KeepAlive": ["SuccessfulExit": false],
-            "ThrottleInterval": 60,
+            "ThrottleInterval": 15,
             "ProcessType": "Interactive",
             "LimitLoadToSessionType": "Aqua",
         ]

@@ -58,7 +58,7 @@ class LifecycleTests(unittest.TestCase):
         uninstall = uninstall[:uninstall.index("private static func writePlist(")]
         self.assertIn('"bootout", "gui/', uninstall)
         self.assertIn("removeItem(at: plistURL)", uninstall)
-        self.assertIn("record.unregister()", uninstall)
+        self.assertIn("clearLegacyRegistration()", uninstall)
         build = (ROOT.parent / "menubar" / "build.sh").read_text()
         self.assertNotIn("Contents/Library/LaunchAgents", build,
                          "the bundled plist was the SMAppService mechanism and is not read now")

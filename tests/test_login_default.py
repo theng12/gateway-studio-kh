@@ -69,8 +69,8 @@ class LoginItemIsAPlistAgent(unittest.TestCase):
         self.assertIn('"RunAtLoad": true', write)
         self.assertIn('"KeepAlive": ["SuccessfulExit": false]', write,
                       "a crash or a failed spawn restarts; a deliberate Quit (exit 0) stays quit")
-        self.assertIn('"ThrottleInterval": 60', write,
-                      "one attempt a minute: a refused spawn self-heals, never spins (1301 ran 10 060 times)")
+        self.assertIn('"ThrottleInterval": 15', write,
+                      "seconds, not launchd's 10 s default that ran 10 060 times on 1301")
 
     def test_it_loads_the_job_without_needing_a_certificate(self) -> None:
         install = self._function("install", "static func uninstall(")
@@ -80,13 +80,22 @@ class LoginItemIsAPlistAgent(unittest.TestCase):
         self.assertIn('"bootstrap", "gui/', boot)
         self.assertIn("status != 37", boot, "already-loaded is not a failure")
 
+    def test_the_app_never_registers_through_smappservice_and_clears_an_old_row(self) -> None:
+        """Owner ruling 2026-11-16: stay certificate-free; one thing owns the label."""
+        self.assertNotIn(".register()", self.agent, "never registers through SMAppService again")
+        clear = self._function("clearLegacyRegistration", "static func repairIfNeeded(")
+        self.assertIn("record.unregister()", clear)
+        self.assertIn(".notRegistered", clear, "only when a row exists")
+        repair = self._function("repairIfNeeded", "static var currentBuild")
+        self.assertIn("clearLegacyRegistration()", repair, "cleared on launch")
+
     def test_one_record_only_and_nothing_left_behind(self) -> None:
         install = self._function("install", "static func uninstall(")
-        self.assertIn("record.unregister()", install, "an older SMAppService record is dropped")
+        self.assertIn("clearLegacyRegistration()", install, "an older SMAppService record is dropped")
         uninstall = self._function("uninstall", "private static func writePlist(")
         self.assertIn('"bootout", "gui/', uninstall)
         self.assertIn("removeItem(at: plistURL)", uninstall)
-        self.assertIn("record.unregister()", uninstall)
+        self.assertIn("clearLegacyRegistration()", uninstall)
 
     def test_the_copy_launchd_started_never_rewrites_its_own_job(self) -> None:
         refresh = self._function("refresh", "static func install(")
