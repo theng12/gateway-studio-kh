@@ -37,6 +37,23 @@ struct FleetTrashRow {
     }
     var deletable: Bool { report?.deletable ?? false }
 
+    /// The items this Hub moved into macOS Trash, when it states both a count and a size and holds
+    /// something. `nil` is "nothing this app can delete" — an older Hub, an unstated figure, or none.
+    var macosTrashPart: FleetTrash.MacosTrashPart? {
+        guard let stated = machine.macosTrash, let count = stated.hubItemsCount,
+              let bytes = stated.hubItemsBytes, count > 0 else { return nil }
+        return FleetTrash.MacosTrashPart(count: count, bytes: bytes)
+    }
+    /// The macOS Trash column. `not reported` from a Hub older than 0.6.243 — never 0.
+    var macosTrashText: String {
+        guard let stated = machine.macosTrash, let bytes = stated.hubItemsBytes else { return "not reported" }
+        if bytes == 0 { return "empty" }
+        let count = stated.hubItemsCount ?? 0
+        return "\(count) item\(count == 1 ? "" : "s") · \(FleetTrash.size(bytes))"
+    }
+    /// One step can empty either part, so the row's button is live when either holds something.
+    var canEmpty: Bool { deletable || macosTrashPart != nil }
+
     /// What the Trash column says. A Mac that cannot be read says why instead of a size.
     var trashText: String {
         guard let report else { return "not read" }
@@ -140,7 +157,7 @@ final class FleetTrashTab: FleetTabView {
     /// bytes — the number is re-measured by the Mac, not taken from the delete's own receipt.
     private func empty(_ row: FleetTrashRow) {
         guard let report = row.report else { return }
-        FleetTrash.empty(report) { [weak self] outcome in
+        FleetTrash.empty(report, macos: row.macosTrashPart) { [weak self] outcome in
             guard let self else { return }
             self.statusLabel.stringValue = "\(row.name): \(outcome)"
             self.reports[row.key] = nil
@@ -161,6 +178,10 @@ final class FleetTrashTab: FleetTabView {
             FleetColumn(id: "trash", title: "Trash", width: 190, minWidth: 120, flex: 3,
                         text: { ($0 as? FleetTrashRow)?.trashText ?? "" },
                         sortValue: { .number(Double(($0 as? FleetTrashRow)?.trashBytes ?? -1)) }),
+            FleetColumn(id: "macos", title: "macOS Trash", width: 160, minWidth: 110, flex: 2,
+                        text: { ($0 as? FleetTrashRow)?.macosTrashText ?? "" },
+                        sortValue: { .number(Double(($0 as? FleetTrashRow)?.macosTrashPart?.bytes ?? -1)) },
+                        tooltip: { _ in "Only the items this Hub moved there — never anything else in Finder's Trash." }),
             FleetColumn(id: "disk", title: "Free disk", width: 130, minWidth: 96,
                         text: { ($0 as? FleetTrashRow)?.diskText ?? "" },
                         sortValue: { .number(($0 as? FleetTrashRow)?.freeDiskBytes.map(Double.init) ?? -1) }),
@@ -170,7 +191,7 @@ final class FleetTrashTab: FleetTabView {
             FleetColumn(id: "empty", title: "", width: 118, minWidth: 104, flex: 0, sortable: false,
                         text: { _ in "" },
                         cell: { [weak self] any in
-                            guard let row = any as? FleetTrashRow, row.deletable else {
+                            guard let row = any as? FleetTrashRow, row.canEmpty else {
                                 let none = NSTextField(labelWithString: "—")
                                 none.textColor = .tertiaryLabelColor
                                 none.toolTip = (any as? FleetTrashRow)?.trashText
@@ -180,7 +201,8 @@ final class FleetTrashTab: FleetTabView {
                                 guard let self else { return }
                                 self.empty(row)
                             }
-                            button.toolTip = "Permanently delete what this Mac's Studio Hub Trash Folder holds."
+                            button.toolTip = "Permanently delete what this Mac's Trash holds, and what the Hub "
+                                + "moved to macOS Trash."
                             return button
                         })
         ]

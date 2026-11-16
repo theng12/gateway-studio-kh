@@ -12,8 +12,8 @@ every feature title, and they are left as they were written.
 
 ## 0.2.264 — 2026-11-16
 
-- **Fleet has a Trash tab: every Mac's Trash Folder on one page.** One row per Mac, with the trash it holds, its free disk and its free memory as separate columns, so a shortfall in memory never reads as a disk one. A field a Mac does not report says "not reported" rather than 0, and a Mac that cannot be read says why.
-- **Empty one Mac's Trash Folder in a step.** One confirmation names the exact item count and bytes; the Mac re-measures and deletes nothing if either changed. It needs this app's own window: an API key or a browser session still cannot delete anything. Every run ends with the bytes freed or the reason it could not.
+- **Fleet has a Trash tab: every Mac's Trash on one page.** One row per Mac, with the Studio Hub Trash Folder, the items the Hub moved to macOS Trash, free disk and free memory as separate columns, so a shortfall in memory never reads as a disk one. A field a Mac does not report says "not reported" rather than 0, and a Mac that cannot be read says why.
+- **Empty one Mac's Trash in a step, including what the Hub moved to macOS Trash.** One confirmation names the exact item counts and bytes; each part re-measures and deletes nothing if it changed. The macOS part needs Studio Hub 0.6.243 and removes only what the Hub put there, never anything else in Finder's Trash; an older Hub shows "not reported". It needs this app's own window: an API key or a browser session still cannot delete anything. Every run ends with the bytes freed or the reason it could not.
 
 ## 0.2.262 — 2026-11-16
 

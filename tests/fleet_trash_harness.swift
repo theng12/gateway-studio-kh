@@ -12,7 +12,9 @@ let arguments = CommandLine.arguments
 let launchWindow: String? = nil
 
 var failures = 0
+var checks = 0
 func check(_ condition: Bool, _ what: String) {
+    checks += 1
     if condition { print("ok: \(what)") } else { failures += 1; print("FAIL: \(what)") }
 }
 
@@ -88,8 +90,40 @@ let memoryOnly = makeRow(bare, ["supported": true, "status": "fresh", "measured_
 check(memoryOnly.diskText == "not reported", "a memory figure is never drawn as free disk")
 check(memoryOnly.memoryText != "not reported", "and it is drawn in its own column")
 
+// 7. The items the Hub moved into macOS Trash (Hub 0.6.243), read from the fleet row it publishes.
+let withMacos = decodeMachine("""
+{"location_id":"ctl1","machine":"node-3","label":"terranash-1300",
+ "macos_trash":{"hub_items_count":4,"hub_items_bytes":1500000000}}
+""")
+let macosRow = makeRow(withMacos, ["supported": true, "status": "fresh", "measured_at": fresh,
+                                   "count": 0, "bytes": 0])
+check(macosRow.macosTrashPart?.count == 4 && macosRow.macosTrashPart?.bytes == 1_500_000_000,
+      "the Hub's macOS Trash items are read from the fleet row")
+check(macosRow.canEmpty, "a Mac whose Hub Trash Folder is empty can still be emptied for the macOS items")
+check(macosRow.macosTrashText != "not reported", "and the macOS column states them")
+
+// 8. A Hub older than 0.6.243 states none: "not reported", and nothing this app may delete.
+let olderHub = makeRow(bare, ["supported": true, "status": "fresh", "measured_at": fresh,
+                              "count": 0, "bytes": 0])
+check(olderHub.macosTrashText == "not reported", "an unreported macOS Trash reads not reported")
+check(olderHub.macosTrashPart == nil && !olderHub.canEmpty, "and there is nothing to delete from it")
+
+// 9. A stated 0 is a reading: "empty", never "not reported" and never a delete offer.
+let macosZero = decodeMachine("""
+{"location_id":"ctl1","machine":"node-4","macos_trash":{"hub_items_count":0,"hub_items_bytes":0}}
+""")
+let zeroRow = makeRow(macosZero, nil)
+check(zeroRow.macosTrashText == "empty", "a stated 0 in macOS Trash reads empty")
+check(zeroRow.macosTrashPart == nil, "and is not offered as a delete")
+
+// 10. A boolean is not a number here either.
+let macosBool = decodeMachine("""
+{"location_id":"ctl1","machine":"node-5","macos_trash":{"hub_items_count":true,"hub_items_bytes":true}}
+""")
+check(makeRow(macosBool, nil).macosTrashText == "not reported", "a boolean macOS Trash size is not a reading")
+
 if failures > 0 {
     print("FAIL: \(failures) check(s) failed")
     exit(1)
 }
-print("PASS: 17 checks - three fields, not reported, never 0")
+print("PASS: \(checks) checks - three fields, macOS Trash, not reported, never 0")

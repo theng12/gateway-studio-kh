@@ -6007,6 +6007,25 @@ def fleet_machine_trash_delete(controller_id: str, machine_id: str, payload: dic
 
 
 @router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/macos-trash/delete",
+    dependencies=[Depends(require_admin), Depends(require_owner_console)],
+)
+def fleet_machine_macos_trash_delete(controller_id: str, machine_id: str, payload: dict[str, Any]) -> Any:
+    """Permanently delete the items **this Hub** moved to that Mac's macOS Trash (Studio Hub 0.6.243).
+
+    Body `{"confirm": true, "expected_count", "expected_bytes"}`. Owner's app window only
+    (`require_owner_console`): an API key, a browser session or a local process cannot. The Mac
+    re-measures; a different count or bytes is 409 `TRASH_CHANGED` and nothing is deleted. It never
+    touches anything else in Finder's Trash.
+    """
+    try:
+        return startup_control.macos_trash_delete(controller_id, machine_id, payload.get("confirm"),
+                                                  payload.get("expected_count"), payload.get("expected_bytes"))
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
+
+
+@router.post(
     "/api/fleet/controllers/{controller_id}/machines/{machine_id}/macos-trash-auto-empty/enable",
     dependencies=[Depends(require_admin)],
 )

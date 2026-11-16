@@ -33,7 +33,7 @@ os.environ["GATEWAY_API_KEY"] = "trash-fixture-key"
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from gateway import admin_session, api, config, startup_control  # noqa: E402
+from gateway import admin_session, api, config, fleet, startup_control  # noqa: E402
 
 SECRET = "s" * 64
 LISTING = {"ok": True, "count": 2, "bytes": 8192, "items": [], "by_kind": {}, "by_age": {},
@@ -129,6 +129,90 @@ class RelayTests(_Isolated):
         with self.assertRaises(startup_control.StartupError):
             startup_control.trash_list("ctl1", "../../etc", client=self.client(httpx.Response(200)))
         self.assertEqual(self.seen, [])
+
+
+class MacosHubTrashTests(_Isolated):
+    """The items the Hub moved into macOS Trash (Studio Hub 0.6.243): owner-only, same re-check.
+
+    Owner, 2026-11-16: the cleanup must actually free space, including items already moved to macOS
+    Trash. The Hub states the count and bytes per Mac and offers a route that deletes **only** what it
+    put there; the Gateway relays it behind the same owner app-window secret as the Trash Folder delete.
+    """
+    #: The real relay, kept before `setUp` replaces the module attribute for the route tests.
+    REAL = staticmethod(startup_control.macos_trash_delete)
+    KEY = {"Authorization": "Bearer trash-fixture-key"}
+    DELETE = "/admin/api/fleet/controllers/ctl1/machines/node-1/macos-trash/delete"
+    BODY = {"confirm": True, "expected_count": 4, "expected_bytes": 1_500_000_000}
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.calls: list[tuple] = []
+        patcher = patch.object(startup_control, "macos_trash_delete",
+                               lambda *a, **k: self.calls.append(a) or {"ok": True, "deleted_count": 4,
+                                                                        "freed_bytes": 1_500_000_000})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def client(self, host: str):
+        client = TestClient(api.app, client=(host, 50000))
+        self.addCleanup(client.close)
+        return client
+
+    def test_only_the_owner_app_window_can_use_it(self) -> None:
+        admin_session._owner_secret = SECRET
+        for host in ("10.9.8.7", "127.0.0.1"):
+            answer = self.client(host).post(self.DELETE, headers=self.KEY, json=self.BODY)
+            self.assertEqual(answer.status_code, 403, host)
+        local = self.client("127.0.0.1")
+        self.assertEqual(local.post(self.DELETE, json=self.BODY).status_code, 403)
+        token = admin_session.create_session()
+        self.assertEqual(local.post(self.DELETE, json=self.BODY, cookies={admin_session.COOKIE: token},
+                                    headers={"Origin": "http://testserver"}).status_code, 403)
+        self.assertEqual(self.calls, [], "a gateway key or a browser session cannot reach this delete")
+        owner = {**self.KEY, admin_session.OWNER_HEADER: SECRET}
+        self.assertEqual(local.post(self.DELETE, headers=owner, json=self.BODY).status_code, 200)
+        self.assertEqual(self.calls, [("ctl1", "node-1", True, 4, 1_500_000_000)])
+
+    def test_the_relay_sends_only_the_confirmed_count_and_bytes(self) -> None:
+        seen: list[httpx.Request] = []
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: seen.append(request) or httpx.Response(200, json={"ok": True, "deleted_count": 4})))
+        with patch.object(startup_control, "_target", lambda c: ("http://100.64.0.2:47873", "fleet-token")):
+            got = self.REAL("ctl1", "node-1", True, 4, 1_500_000_000, client=client)
+        self.assertEqual(got["deleted_count"], 4)
+        self.assertTrue(str(seen[0].url).endswith("/api/hub/fleet/nodes/node-1/macos-trash/delete"))
+        self.assertEqual(json.loads(seen[0].content),
+                         {"confirm": True, "expected_count": 4, "expected_bytes": 1_500_000_000},
+                         "no item ids: the Hub deletes only what it moved there")
+
+    def test_a_changed_folder_is_a_409_that_deletes_nothing(self) -> None:
+        answer = httpx.Response(409, json={"ok": False, "code": "TRASH_CHANGED", "count": 5, "bytes": 2})
+        client = httpx.Client(transport=httpx.MockTransport(lambda request: answer))
+        with patch.object(startup_control, "_target", lambda c: ("http://100.64.0.2:47873", "t")):
+            with self.assertRaises(startup_control.StartupError) as caught:
+                self.REAL("ctl1", "node-1", True, 4, 1_500_000_000, client=client)
+        self.assertEqual((caught.exception.status, caught.exception.body["code"]), (409, "TRASH_CHANGED"))
+
+    def test_a_malformed_request_is_refused_before_anything_is_sent(self) -> None:
+        seen: list[httpx.Request] = []
+        client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: seen.append(request) or httpx.Response(200)))
+        for args in ((False, 4, 1), (True, None, 1), (True, 4, "1"), (True, True, 1)):
+            with self.assertRaises(startup_control.StartupError) as caught:
+                self.REAL("ctl1", "node-1", *args, client=client)
+            self.assertEqual(caught.exception.status, 400, args)
+        self.assertEqual(seen, [])
+
+    def test_a_mac_row_states_the_hub_items_or_none_never_zero(self) -> None:
+        self.assertEqual(fleet._macos_trash_fact(
+            {"macos_trash": {"hub_items_count": 4, "hub_items_bytes": 1500}}),
+            {"hub_items_count": 4, "hub_items_bytes": 1500})
+        self.assertEqual(fleet._macos_trash_fact({"macos_trash_hub_items_bytes": 7}),
+                         {"hub_items_count": None, "hub_items_bytes": 7})
+        self.assertIsNone(fleet._macos_trash_fact({}), "an older Hub states nothing: None, never 0")
+        self.assertIsNone(fleet._macos_trash_fact(
+            {"macos_trash": {"hub_items_count": True, "hub_items_bytes": True}}),
+            "a boolean is not a size")
 
 
 class OwnerConsoleTests(_Isolated):

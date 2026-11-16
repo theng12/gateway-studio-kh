@@ -754,6 +754,26 @@ struct FleetHistory: Decodable {
     var measured: Bool { observed == true }
 }
 
+/// The items **the Hub itself** moved into this Mac's macOS Trash (Studio Hub 0.6.243).
+///
+/// Every retirement a Hub makes ends in Finder's Trash, so a Mac whose Trash is never emptied fills
+/// its disk even after the Studio Hub Trash Folder is empty. Both fields are optional: a Hub that
+/// states neither leaves them `nil` — unknown, never drawn as 0.
+struct FleetMacosTrash: Decodable {
+    var hubItemsCount: Int?
+    var hubItemsBytes: Int64?
+
+    private enum CodingKeys: String, CodingKey {
+        case hubItemsCount, hubItemsBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        hubItemsCount = try? c.decode(Int.self, forKey: .hubItemsCount)
+        hubItemsBytes = try? c.decode(Int64.self, forKey: .hubItemsBytes)
+    }
+}
+
 struct FleetMachine: Decodable {
     var locationId: String?
     var location: String?
@@ -783,6 +803,9 @@ struct FleetMachine: Decodable {
     /// The Mac's disk state and top consumers (see `FleetDisk`); nil from a gateway that
     /// predates the field, in which case `diskFreeGb` still draws.
     var disk: FleetDisk?
+    /// What the Hub moved into this Mac's macOS Trash (see `FleetMacosTrash`); nil from a Hub older
+    /// than 0.6.243 that reports nothing — unknown, never 0.
+    var macosTrash: FleetMacosTrash?
     /// How this Mac is connected — its interface, its kind and the media its Ethernet negotiated
     /// (see `FleetConnection`). `nil` from a Hub older than 0.6.206, which is unknown, never "fine".
     var connection: FleetConnection?

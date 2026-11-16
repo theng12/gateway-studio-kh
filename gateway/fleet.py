@@ -2566,6 +2566,30 @@ def _update_error_fact(raw: object) -> dict | None:
     return {"phase": phase, "reason": reason, "build": text("build", 40), "at": at}
 
 
+def _macos_trash_fact(machine: dict) -> dict | None:
+    """What **the Hub itself** moved into this Mac's macOS Trash (Studio Hub 0.6.243).
+
+    Every retirement a Hub makes ends in Finder's Trash, so a Mac whose Trash is never emptied fills
+    its disk even after its Studio Hub Trash Folder is empty. The Hub states the count and bytes per
+    Mac; `None` from a Hub that does not — unknown, never 0. Read from the Hub's object, and from a
+    flat spelling a first Hub cut may use, so one naming mismatch does not hide the figure.
+    """
+    raw = machine.get("macos_trash")
+    raw = raw if isinstance(raw, dict) else {}
+
+    def count_or_bytes(value: object) -> int | None:
+        # A boolean is not a size, and neither is a negative: unstated, never 0.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value) if value >= 0 else None
+
+    count = count_or_bytes(raw.get("hub_items_count", machine.get("macos_trash_hub_items_count")))
+    size = count_or_bytes(raw.get("hub_items_bytes", machine.get("macos_trash_hub_items_bytes")))
+    if count is None and size is None:
+        return None
+    return {"hub_items_count": count, "hub_items_bytes": size}
+
+
 def _startup_fact(machine: dict, node: dict) -> dict | None:
     """What starts when this Mac starts, as the Hub reported it - or `None` when it did not.
 
@@ -3192,6 +3216,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "disk_free_gb": machine.get("disk_free_gb"),
                 "disk_total_gb": machine.get("disk_total_gb"),
                 "disk": machine_disk(machine),
+                # The items the Hub moved into macOS Trash (see `_macos_trash_fact`): its own count
+                # and bytes, or None when it does not report them.
+                "macos_trash": _macos_trash_fact(machine),
                 "health": machine.get("health"),
                 # How this Mac is actually connected (see `machine_connection`): the interface, its
                 # kind and, for Ethernet, the media the OS says it negotiated. `None` from a Hub
@@ -3232,7 +3259,8 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "average_seconds": None,
                 "median_runtime_s": entry.get("median_runtime_s"),
                 "chip": None, "memory_gb": None, "available_gb": None,
-                "disk_free_gb": None, "disk_total_gb": None, "disk": None, "health": None,
+                "disk_free_gb": None, "disk_total_gb": None, "disk": None, "macos_trash": None,
+                "health": None,
                 # A machine known only from the activity list carries no host snapshot, so its
                 # link is unknown rather than borrowed from another Mac.
                 "connection": None,

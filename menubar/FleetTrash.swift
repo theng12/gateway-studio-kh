@@ -294,46 +294,98 @@ enum FleetTrash {
         }, title: "Delete permanently", done: done)
     }
 
+    /// The items the Hub moved into macOS Trash, as the fleet row states them (Hub 0.6.243).
+    struct MacosTrashPart {
+        let count: Int
+        let bytes: Int64
+    }
+
     // MARK: One step, one Mac
 
     /// **Empty this Mac's Trash Folder in one step** (owner, 2026-11-16: "i want to add a feature so
     /// that we can delete it through the gateway or the hub").
     ///
-    /// One confirmation, then the Mac empties what it holds — `items: "all"` — through the same route
-    /// as the per-Mac menu, with the same re-check: the Mac re-measures and deletes nothing if the
-    /// count or bytes differ from what was shown here (409 `TRASH_CHANGED`). The request carries the
-    /// owner-console secret this app alone holds, so an API key or a browser session still cannot
-    /// delete anything. Every run ends in freed bytes or a named refusal, in this app's own dialog.
-    static func empty(_ report: Report, done: @escaping (String) -> Void) {
-        guard report.error == nil, report.supported else { return done(report.line) }
-        guard report.deletable else { return done("Nothing to empty on \(report.name).") }
+    /// One confirmation, then two deletes when the Mac holds both: the Studio Hub Trash Folder
+    /// (`items: "all"`) and the items **this Hub** moved into macOS Trash — Finder's Trash, which
+    /// keeps filling the disk after the folder is emptied. Each goes through its own route with the
+    /// same re-check: the Mac re-measures and deletes nothing if the count or bytes differ from what
+    /// was shown here (409 `TRASH_CHANGED`). Both carry the owner-console secret this app alone
+    /// holds, so an API key or a browser session still cannot delete anything. The macOS part deletes
+    /// only what the Hub put there, never a file the owner dropped in Finder's Trash.
+    ///
+    /// Every run ends in the bytes freed or a named refusal, in this app's own dialog.
+    static func empty(_ report: Report, macos: MacosTrashPart? = nil, done: @escaping (String) -> Void) {
+        let hasFolder = report.error == nil && report.supported && report.deletable
+        let hasMacos = (macos?.count ?? 0) > 0
+        guard hasFolder || hasMacos else {
+            return done(report.error == nil && report.supported
+                        ? "Nothing to empty on \(report.name)." : report.line)
+        }
         let sure = NSAlert()
         sure.alertStyle = .critical
-        sure.messageText = "Empty \(report.name)'s Trash Folder?"
-        sure.informativeText = "Permanently deletes \(report.count) item\(report.count == 1 ? "" : "s") "
-            + "(\(exact(report.bytes)) — \(size(report.bytes))) from the Studio Hub Trash Folder on \(report.name). "
-            + "They do not go to macOS Trash and cannot be recovered. If the folder changed since it was "
-            + "measured, nothing is deleted."
+        sure.messageText = "Empty \(report.name)'s Trash?"
+        var what: [String] = []
+        if hasFolder {
+            what.append("\(report.count) item\(report.count == 1 ? "" : "s") "
+                        + "(\(exact(report.bytes)) — \(size(report.bytes))) in the Studio Hub Trash Folder")
+        }
+        if let macos, macos.count > 0 {
+            what.append("\(macos.count) item\(macos.count == 1 ? "" : "s") "
+                        + "(\(exact(macos.bytes)) — \(size(macos.bytes))) the Hub moved to macOS Trash")
+        }
+        sure.informativeText = "Permanently deletes " + what.joined(separator: ", and ")
+            + " on \(report.name). They cannot be recovered. If either changed since it was measured, "
+            + "nothing is deleted from it."
         sure.addButton(withTitle: "Cancel")
         sure.closeOnEscape()
         let empty = sure.addButton(withTitle: "Empty Trash")
         if #available(macOS 11.0, *) { empty.hasDestructiveAction = true }
         guard sure.runModal() == .alertSecondButtonReturn else { return done("Nothing was deleted.") }
-        guard let path = path(report.machine, "/delete") else { return done("this row has no machine id") }
-        GatewayAPI.post(path, body: ["items": "all", "confirm": true,
+
+        var freed: Int64 = 0
+        var deleted = 0
+        var problems: [String] = []
+        func finish() {
+            if freed == 0 && deleted == 0 && !problems.isEmpty {
+                return done("could not empty it: " + problems.joined(separator: "; "))
+            }
+            var text = "freed \(size(freed)) (\(deleted) item\(deleted == 1 ? "" : "s"))"
+            if !problems.isEmpty { text += "; " + problems.joined(separator: "; ") }
+            done(text)
+        }
+        func take(_ payload: [String: Any]) {
+            freed += (payload["freed_bytes"] as? NSNumber)?.int64Value ?? 0
+            deleted += (payload["deleted_count"] as? NSNumber)?.intValue ?? 0
+            let said = failures(payload)
+            if !said.isEmpty { problems.append(said) }
+        }
+        func deleteMacos() {
+            guard let macos, macos.count > 0 else { return finish() }
+            guard let macosPath = path(report.machine, "/macos-trash/delete") else {
+                problems.append("macOS Trash: no machine id")
+                return finish()
+            }
+            GatewayAPI.post(macosPath, body: ["confirm": true, "expected_count": macos.count,
+                                         "expected_bytes": macos.bytes],
+                            timeout: 900, ownerConsole: true) { result in
+                switch result {
+                case .success(let payload): take(payload)
+                case .failure(let error): problems.append("macOS Trash: \(error.localizedDescription)")
+                }
+                finish()
+            }
+        }
+        guard hasFolder, let folderPath = path(report.machine, "/delete") else {
+            return deleteMacos()
+        }
+        GatewayAPI.post(folderPath, body: ["items": "all", "confirm": true,
                                      "expected_count": report.count, "expected_bytes": report.bytes],
                         timeout: 900, ownerConsole: true) { result in
             switch result {
-            case .success(let payload):
-                let freed = (payload["freed_bytes"] as? NSNumber)?.int64Value ?? 0
-                let deleted = (payload["deleted_count"] as? NSNumber)?.intValue ?? 0
-                guard deleted > 0 || freed > 0 else {
-                    return done("Nothing was deleted: \(payload["detail"] as? String ?? "the Mac reported an empty folder")")
-                }
-                done("freed \(size(freed)) (\(deleted) item\(deleted == 1 ? "" : "s"))" + failures(payload))
-            case .failure(let error):
-                done("could not empty it: \(error.localizedDescription)")
+            case .success(let payload): take(payload)
+            case .failure(let error): problems.append("Trash Folder: \(error.localizedDescription)")
             }
+            deleteMacos()
         }
     }
 }

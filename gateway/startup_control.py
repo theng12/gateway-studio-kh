@@ -979,10 +979,11 @@ def _trash_freshness(answer: dict[str, Any], *, now: float | None = None) -> dic
 
 
 def _trash(controller_id: str, machine_id: str, route: str, body: dict[str, Any] | None, *, event: str,
-           audit_fields: dict[str, Any], method: str = "POST", client: httpx.Client | None = None) -> dict[str, Any]:
+           audit_fields: dict[str, Any], method: str = "POST", client: httpx.Client | None = None,
+           too_old: str = TRASH_TOO_OLD) -> dict[str, Any]:
     if not _MACHINE_ID.fullmatch(machine_id or ""):
         raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
-    return _node_post(controller_id, machine_id, route, body, event=event, too_old=TRASH_TOO_OLD,
+    return _node_post(controller_id, machine_id, route, body, event=event, too_old=too_old,
                       refused="The controller refused this gateway's credential for Trash Folder actions.",
                       audit_fields=audit_fields, client=client, method=method, timeout=_TRASH_TIMEOUT)
 
@@ -1035,6 +1036,35 @@ def trash_delete(controller_id: str, machine_id: str, items: object, confirm: ob
                   event="trash_delete", client=client,
                   audit_fields={"items": items if items == "all" else len(items), "count": expected_count,
                                 "bytes": expected_bytes})
+
+
+#: **The items the Hub itself moved into macOS Trash** (Studio Hub 0.6.243). Every retirement a Hub
+#: makes ends there, so a Mac whose Finder never empties that Trash still fills its disk even after its
+#: Studio Hub Trash Folder is emptied. The Hub states the count and bytes per Mac, and offers an
+#: owner-only route that deletes **only** what the Hub put there — never a file the owner put in
+#: Finder's Trash. A Hub older than this answers `HUB_TOO_OLD`.
+MACOS_HUB_TRASH_HUB = "0.6.243"
+MACOS_HUB_TRASH_TOO_OLD = (f"Needs Studio Hub {MACOS_HUB_TRASH_HUB} to empty the items it moved to "
+                           "macOS Trash.")
+
+
+def macos_trash_delete(controller_id: str, machine_id: str, confirm: object, expected_count: object,
+                       expected_bytes: object, *, client: httpx.Client | None = None) -> dict[str, Any]:
+    """Permanently delete the items **this Hub** moved to that Mac's macOS Trash.
+
+    The same contract as the Studio Hub Trash Folder's delete: `confirm: true` plus the count and
+    bytes the owner saw, and the Mac re-measures — a folder that changed deletes nothing (409
+    `TRASH_CHANGED`). It never touches anything else in Finder's Trash. Answers `deleted_count`,
+    `freed_bytes`, `failed`.
+    """
+    if confirm is not True or any(type(v) is not int or v < 0 for v in (expected_count, expected_bytes)):
+        raise StartupError(400, {"ok": False, "code": "CONFIRM_REQUIRED",
+                                 "detail": "Permanent delete needs confirm: true, expected_count and "
+                                           "expected_bytes."})
+    return _trash(controller_id, machine_id, "macos-trash/delete",
+                  {"confirm": True, "expected_count": expected_count, "expected_bytes": expected_bytes},
+                  event="macos_trash_delete", client=client, too_old=MACOS_HUB_TRASH_TOO_OLD,
+                  audit_fields={"count": expected_count, "bytes": expected_bytes})
 
 
 # A Mac's macOS Trash preference (owner request 2026-10-19, Studio Hub 0.6.187). Every retirement a Hub
