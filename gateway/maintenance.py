@@ -49,6 +49,12 @@ def _read_token_file() -> str | None:
     return token if len(raw) <= 66 and is_token_form(token) else None
 
 
+def matches_current(token: str) -> bool:
+    """Is this the live token? A stale token is indistinguishable from any other bearer."""
+    expected = _read_token_file()
+    return expected is not None and hmac.compare_digest(token, expected)
+
+
 def verify(authorization: str | None, hub_token: str | None, request: Any) -> bool:
     """One or two matching headers, a direct local peer, and no ambient credential paths."""
     headers = request.headers

@@ -5255,29 +5255,15 @@ _GUEST_ALLOWED = re.compile(
 
 @app.middleware("http")
 async def guest_scope(request: Request, call_next):
-    """Confine guest credentials to Create and Launcher hold credentials to maintenance.
+    """A guest is confined to Create, whatever route is asked for.
 
-    Explicit owner keys retain their existing route guards; scoped credentials never inherit
-    the console's ambient loopback trust.
+    Only a *guest* is filtered here. The owner, the app's window and the gateway key pass
+    through untouched — their access is decided by the routes themselves.
     """
     path = request.url.path
-    from . import maintenance
-    from .admin import _key_matches, guest_identity
-
-    authorization = request.headers.get("authorization", "")
-    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    # Explicit hold credentials never inherit the console's ambient loopback trust. Unknown
-    # 64-hex bearers are scoped too, so an old token stays confined after Launcher rotation.
-    hold_credential = ("x-hub-token" in request.headers
-                       or (maintenance.is_token_form(bearer) and not _key_matches(bearer)))
-    if hold_credential and not (path == "/admin/api/maintenance/drain"
-                                and request.method in {"POST", "DELETE"}):
-        return JSONResponse(status_code=401, content={
-            "detail": "The Launcher hold token only authorizes Gateway's maintenance drain.",
-            "code": "MAINTENANCE_SCOPE_REFUSED",
-        })
     if not path.startswith("/admin"):
         return await call_next(request)
+    from .admin import guest_identity
 
     # The browser's cookie and a guest's API key are one identity (review 2026-10-30): the
     # key is the same guest, so it is confined by the same list rather than by a second one.

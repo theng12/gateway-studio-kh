@@ -86,6 +86,15 @@ def _refuse_worker_key(authorization: str | None) -> None:
                          "WORKER_SCOPE_REFUSED")
 
 
+def refuse_hold_credential(request: Request, authorization: str | None) -> None:
+    """The Launcher token opens the drain route and nothing else."""
+    bearer = (authorization or "")
+    bearer = bearer[7:].strip() if bearer.lower().startswith("bearer ") else ""
+    if "x-hub-token" in request.headers or (bearer and maintenance.matches_current(bearer)):
+        raise AdminError(401, "The Launcher hold token only authorizes Gateway's maintenance drain.",
+                         "MAINTENANCE_SCOPE_REFUSED")
+
+
 def require_admin(
     request: Request, authorization: str | None = Header(default=None)
 ) -> None:
@@ -107,6 +116,7 @@ def require_admin(
     owner-level on the owner's own Mac.
     """
     _refuse_worker_key(authorization)
+    refuse_hold_credential(request, authorization)
     if bearer_guest(request) is not None:
         raise AdminError(403, "A guest account may only use the Create page.",
                          "GUEST_NOT_ALLOWED")
@@ -202,6 +212,7 @@ def require_local_app(
     Used for the browser password itself, so a signed-in browser cannot change it.
     """
     _refuse_worker_key(authorization)
+    refuse_hold_credential(request, authorization)
     if bearer_guest(request) is not None:
         raise AdminError(403, "A guest account may only use the Create page.",
                          "GUEST_NOT_ALLOWED")
