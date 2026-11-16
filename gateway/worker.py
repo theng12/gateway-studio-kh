@@ -1069,6 +1069,11 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     return chosen.id
 
 
+#: How long a job whose model no Mac can run waits before it is looked at again. Short: the fleet
+#: changes on its own (a Mac comes back, a pause lifts, a model finishes installing), and this costs
+#: one eligibility read per pass.
+_NO_ELIGIBLE_RETRY_S = 30.0
+
 #: How long after start an unread location keeps a queued job waiting instead of failing it. The
 #: first fleet read normally lands in seconds; past this an unread fleet is itself the fault, named.
 _FIRST_READ_WAIT_S = 300.0
@@ -3272,22 +3277,22 @@ class Worker:
             # A location this Gateway has not read yet may well be up: wait for the first read,
             # on its own short ceiling, rather than fail queued work at every restart.
             return False
-        detail = (f"No reachable Mac can run '{model_id}' right now — "
+        # **No Mac can run it right now is a wait, not a failure** (owner, 2026-11-16: Story "doesn't
+        # need to know the failure behind"). This used to fail the job with
+        # `DISPATCH_NO_ELIGIBLE_MACHINE` after a 30 s grace, which told Story a verdict the Gateway had
+        # no business giving: a Mac that is paused, offline, out of memory or not read yet may fit in a
+        # minute. The job stays queued with its reason on the row and is ended only by its own time
+        # limit (`_expired_in_queue`), which is the one ceiling the owner approved.
+        detail = (f"No Mac can run '{model_id}' right now — "
                   + fleet.dispatch_reason_summary(eligibility))
-        _fail(
-            self.store, job["id"], code="DISPATCH_NO_ELIGIBLE_MACHINE", detail=detail,
-            retryable=True,
-            evidence={"dispatch": {
-                "code": "DISPATCH_NO_ELIGIBLE_MACHINE",
-                "model_id": model_id,
-                "modality": modality,
-                "origin": "gateway",
-                "checked_at": eligibility["checked_at"],
-                "candidates": eligibility["rejections"],
-                "selected": None,
-            }},
-        )
-        return True
+        defer = getattr(self.store, "defer", None)
+        if defer is None:
+            return False
+        self.store.note_attempt_event(
+            job["id"], location_id="", code="DISPATCH_NO_ELIGIBLE_MACHINE", detail=detail,
+        ) if hasattr(self.store, "note_attempt_event") else None
+        deferred = defer(job["id"], delay_s=float(_NO_ELIGIBLE_RETRY_S), reason=detail[:300])
+        return bool(deferred)
 
     def _start_superseded_sweep(self) -> bool:
         """Start the 0.2.211 cleanup on its own thread, at most one at a time.

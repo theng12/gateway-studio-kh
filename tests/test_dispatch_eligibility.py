@@ -115,22 +115,24 @@ class _Base(unittest.TestCase):
 
 
 class EligibilityTests(_Base):
-    def test_no_candidate_fails_fast_with_reason(self) -> None:
+    def test_a_model_no_mac_can_run_waits_with_its_reason_instead_of_failing(self) -> None:
+        """0.2.265 (owner, 2026-11-16): Story must never see "no eligible Mac" as a failure.
+
+        It used to fail here after a 30 s grace. A Mac that is paused, offline out of memory or not
+        read yet may fit in a minute, so the job stays queued with its reason on the row and is ended
+        only by its own time limit (`_expired_in_queue`).
+        """
         self.sites.append(_site("a", reachable=False))
         job = self.job()
+        # True means "this pass is dealt with" — the job was deferred, not failed.
         self.assertTrue(self.worker._no_eligible_machine(job))
-        settled = self.store.get(job["id"])
-        self.assertEqual(settled["state"], "failed")
-        self.assertEqual(settled["error_code"], "DISPATCH_NO_ELIGIBLE_MACHINE")
-        self.assertIsNotNone(settled["finished_at"])
-        self.assertIn("offline", settled["error_detail"])
-        dispatch = json.loads(settled["result_json"])["payload"]["dispatch"]
-        self.assertEqual(dispatch["code"], "DISPATCH_NO_ELIGIBLE_MACHINE")
-        self.assertEqual(dispatch["origin"], "gateway")
-        self.assertTrue(dispatch["checked_at"])
-        self.assertIsNone(dispatch["selected"])
-        self.assertEqual(dispatch["candidates"][0]["reason"], "offline")
-        self.assertEqual(dispatch["candidates"][0]["location_id"], "a")
+        waiting = self.store.get(job["id"])
+        self.assertEqual(waiting["state"], "accepted", "queued, not failed")
+        self.assertIsNone(waiting["finished_at"])
+        self.assertIsNone(waiting["error_code"])
+        self.assertIn(MODEL, waiting["defer_reason"], "the row says what it is waiting for")
+        self.assertIn("offline", waiting["defer_reason"], "and why each site cannot take it")
+        self.assertGreater(waiting["next_action_at"], time.time() - 1, "it comes back on its own")
 
     def test_a_restart_with_queued_work_fails_nothing_before_the_first_read(self) -> None:
         """1301, 2026-11-16: ten hours-old queued sections failed "offline (not read yet)" at start."""
@@ -144,11 +146,13 @@ class EligibilityTests(_Base):
         eligibility = fleet.dispatch_eligibility(MODEL, MODALITY)
         self.assertEqual([(r["reason"], r["detail"]) for r in eligibility["rejections"]],
                          [("unknown", "not read yet")])
-        # Its own ceiling: a fleet still unread long after start is the fault, and it is named.
+        # Its own ceiling: a fleet still unread long after start is the fault, and it is named —
+        # but still as a wait: the time limit, not this check, ends the job.
         self.worker._started_at -= worker_module._FIRST_READ_WAIT_S + 1
         self.worker._eligibility_cache.clear()
-        self.assertTrue(self.worker._no_eligible_machine(job))
-        self.assertIn("not read yet", self.store.get(job["id"])["error_detail"])
+        self.assertTrue(self.worker._no_eligible_machine(job), "past its wait, it says so as a wait")
+        self.assertEqual(self.store.get(job["id"])["state"], "accepted")
+        self.assertIn("not read yet", self.store.get(job["id"])["defer_reason"])
 
     def test_a_young_job_gets_the_grace(self) -> None:
         self.sites.append(_site("a", reachable=False))
@@ -276,15 +280,17 @@ class CancellationTests(_Base):
         self.assertIsNone(answer["selected_machine"])
         self.assertIsNone(answer["dispatch_trace"])
 
-    def test_upstream_endpoint_reports_the_dispatch_refusal(self) -> None:
+    def test_upstream_endpoint_reports_the_waiting_dispatch(self) -> None:
         self.sites.append(_site("a", reachable=False))
         job = self.job()
         self.worker._no_eligible_machine(job)
         with patch.object(admin, "store", self.store), \
                 patch.object(admin.registry, "definition", lambda pid: _definition(pid)):
             answer = admin.upstream_job_trace(job["id"])
-        self.assertEqual(answer["error_code"], "DISPATCH_NO_ELIGIBLE_MACHINE")
-        self.assertEqual(answer["candidates"][0]["reason"], "offline")
+        self.assertIsNone(answer["error_code"], "a wait is not a failure code")
+        # No dispatch evidence exists yet: the job is still queued, so nothing was decided.
+        self.assertEqual(answer["candidates"], [])
+        self.assertIn(MODEL, self.store.get(job["id"])["defer_reason"])
         self.assertIsNone(answer["cancellation"])
         self.assertIsNone(answer["selected_machine"])
 

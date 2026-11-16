@@ -1709,6 +1709,18 @@ def _served_model_fields(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_live_hold(job: dict[str, Any]) -> bool:
+    """A hold nothing has settled yet: the Gateway is still reconciling its unknown outcome.
+
+    Its row reads `failed` with `recovery_state = unknown_outcome` (worker._fail), which is the
+    operator's evidence. A hold that has been closed is a real verdict and is published as one.
+    """
+    # A closed hold has its `recovery_state` cleared (store.close_recovery_hold), so a set one on a
+    # `failed` row is exactly "still waiting on the Gateway's own reconciliation".
+    return (str(job.get("recovery_state") or "") == "unknown_outcome"
+            and str(job.get("state") or "") == "failed")
+
+
 def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any]:
     """The job as Story Studio reads it.
 
@@ -1725,10 +1737,17 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
     # `state: "cancelled"` body to failed + cancelled and settles on `cancelled: true`), so a
     # caller keyed on either one still stops polling. `failure_code: CANCELLED` stays for them.
     is_cancelled = job["state"] == "cancelled"
+    # **A live hold is `running` to Story** (owner, 2026-11-16: "story studio doesn't need to know the
+    # failure behind. it's only consuming assets and sending work"). An unknown-outcome hold is the
+    # Gateway's own problem to reconcile: it is recorded `failed` with `recovery_state` so the operator
+    # and the Jobs page see it, but publishing that to Story told it a job had failed that may still
+    # deliver. The database keeps the truth; only Story's reading is steadied.
+    held = _is_live_hold(job)
+    public_state = job["state"] if native else ("running" if held else job["state"])
 
     body: dict[str, Any] = {
         "id": job["id"],
-        "state": job["state"],
+        "state": public_state,
         "model_id": catalog_encode(job),
         **_served_model_fields(job),
         "priority": job.get("priority") or NORMAL,
@@ -1743,13 +1762,29 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         "retry_at": None,
         "poll_after_ms": _POLL_AFTER_MS.get(modality, 3000) if job["state"] not in TERMINAL_STATES
         else 1000,
-        **_lifecycle_fields(job),
+        # A hold is published as a running job, so Story is told nothing about it: no hold flag, no
+        # recovery state, no interruption code. The operator's own reading keeps all of it below.
+        **({} if (held and not native) else _lifecycle_fields(job)),
         **_contract_fields(job),
+        "time_limit_s": None,
+        "time_left_s": None,
         # **Who asked**, or `null` for a job recorded before the Gateway knew. The page prints
         # "not recorded" for null; it never falls back to "owner", which would be a claim.
         "requested_by": requested_by_of(job),
         **ZERO_SETTLEMENT,
     }
+
+    _publish_time_limit(body, job)
+
+    if held and not native:
+        # Nothing about the interruption reaches Story: not the code, not the sentence, not the hold.
+        for key in ("recovery_required", "recovery_state", "recovery_detail", "recovery_action",
+                    "upstream_job_id", "late_result_state", "failure_code", "failure_class",
+                    "failure_reason", "recovery_context"):
+            body.pop(key, None)
+        body["failure_code"] = None
+        body["failure_class"] = None
+        body["failure_reason"] = None
 
     if job["state"] == "succeeded":
         if modality == "chat":
@@ -1855,7 +1890,12 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         # What the provider says it *charged* for this job — stated, never computed from tokens.
         body.update(job_cost(payload))
 
-    if job["state"] == "failed":
+    if held and not native:
+        # A live hold is published as a running job: no failure code, no sentence, no hold. This
+        # branch runs before the `failed` one below, which would otherwise fill them back in from
+        # the row's `error_code` (the hold's own interruption code).
+        pass
+    elif job["state"] == "failed":
         body["failure_code"] = job.get("error_code") or "PROVIDER_FAILED"
         body["failure_class"] = {
             "POLICY_REFUSAL": "content_refused",
@@ -1938,6 +1978,27 @@ def _publish_attempt_evidence(body: dict[str, Any], job: dict[str, Any]) -> None
     body["attempts_refused"] = sum(1 for entry in attempts if entry.get("code") in _UNCOUNTED_ATTEMPT_CODES)
     body["attempts_allowed"] = limit
     body["attempt_policy"] = concurrency.retry_policy_wording()
+
+
+def _publish_time_limit(body: dict[str, Any], job: dict[str, Any]) -> None:
+    """The one ceiling the owner approved, on the row, with what is left of it (0.2.265).
+
+    It is `queue.wait_ceiling_seconds` — already editable in settings, long for free local work —
+    and the job ends at it with the plain sentence `_expired_in_queue` writes. Publishing it means a
+    queued job can say "3 h allowed, 40 min left" instead of looking stuck; nothing new ends a job.
+    """
+    if str(job.get("state") or "") in TERMINAL_STATES:
+        return
+    try:
+        from . import concurrency
+        limit = float(concurrency.queue_wait_budget()["wait_ceiling_seconds"])
+    except Exception:  # noqa: BLE001 - an unreadable setting must never fail a job response
+        return
+    started = job.get("created_at")
+    body["time_limit_s"] = int(limit)
+    body["time_left_s"] = (max(0, int(limit - (time.time() - float(started))))
+                           if isinstance(started, (int, float)) and not isinstance(started, bool)
+                           else None)
 
 
 def _publish_queue_evidence(body: dict[str, Any], job: dict[str, Any]) -> None:

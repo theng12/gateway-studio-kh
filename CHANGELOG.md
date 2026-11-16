@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.265 — 2026-11-16
+
+- **Story no longer sees the interruption behind a job.** A work item whose Mac, site or Gateway was interrupted stays `running` until the Gateway has settled it, and reaches Story as one of `queued`, `running`, `done`, or a failure no retry can fix. The reconciliation hold is still recorded and still shown on the Jobs page for the operator.
+- **"No Mac can run this right now" is a wait, not a failure.** A paused, offline, out-of-memory or not-yet-read Mac used to fail the job with "No reachable Mac can run …" after 30 seconds. The job now stays queued with that reason on its row and is ended only by its own time limit.
+- **The one time limit is on the row.** Every queued job now says how long it may wait and how much of that is left. It is the same editable ceiling in Settings.
+
 ## 0.2.264 — 2026-11-16
 
 - **Fleet has a Trash tab: every Mac's trash on one page.** One row per Mac, with the Studio Hub Trash Folder, macOS Trash, free disk and free memory as separate columns, so a shortfall in memory never reads as a disk one. A field a Mac does not report says "not reported" rather than 0, and a Mac that cannot be read says why.
