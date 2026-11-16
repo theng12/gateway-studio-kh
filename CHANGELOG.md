@@ -10,7 +10,7 @@ every feature title, and they are left as they were written.
 
 ---
 
-## 0.2.265 — 2026-11-16
+## 0.2.266 — 2026-11-17
 
 - **Story no longer sees the interruption behind a job.** A work item whose Mac, site or Gateway was interrupted stays `running` until the Gateway has settled it, and reaches Story as one of `queued`, `running`, `done`, or a failure no retry can fix. The reconciliation hold is still recorded and still shown on the Jobs page for the operator.
 - **"No Mac can run this right now" is a wait, not a failure.** A paused, offline, out-of-memory or not-yet-read Mac used to fail the job with "No reachable Mac can run …" after 30 seconds. The job now stays queued with that reason on its row and is ended only by its own time limit.
