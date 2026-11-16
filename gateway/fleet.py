@@ -5825,10 +5825,15 @@ def routing_candidates(
             reject(definition, location_id, row, "location_mismatch",
                    f"this location does not offer {require_capability} for the model")
             continue
+        if not row:
+            # **Not read yet is not offline** (1301, 2026-11-16: ten queued voice sections failed
+            # `DISPATCH_NO_ELIGIBLE_MACHINE` "offline (not read yet)" right after a restart, 1100
+            # included, which was up). Skipped for routing, but stated as unknown.
+            reject(definition, location_id, row, "unknown", "not read yet")
+            continue
         if not row.get("reachable"):
             reject(definition, location_id, row, "offline",
-                   f"{'not answering' if row else 'not read yet'}"
-                   + (f": {row.get('error')}" if row.get("error") else ""),
+                   "not answering" + (f": {row.get('error')}" if row.get("error") else ""),
                    last_seen_at=_last_machine_seen(row))
             continue
         # A site that cannot accept customer work is not a candidate: an agent-mode

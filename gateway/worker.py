@@ -1069,6 +1069,10 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     return chosen.id
 
 
+#: How long after start an unread location keeps a queued job waiting instead of failing it. The
+#: first fleet read normally lands in seconds; past this an unread fleet is itself the fault, named.
+_FIRST_READ_WAIT_S = 300.0
+
 #: `_next_machine`'s answer when every lane that could take the job is full: it is queued here again.
 QUEUED_IN_GATEWAY = "queued-in-gateway"
 #: How far back a send counts as "just sent", i.e. one the fleet snapshot may not show yet.
@@ -2203,6 +2207,8 @@ class Worker:
         #: cannot change a structural absence, and it keeps a long queue from re-deriving it
         #: dozens of times a second.
         self._eligibility_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+        #: When this worker started: a fleet it has not read yet is unknown for `_FIRST_READ_WAIT_S`.
+        self._started_at = time.monotonic()
         #: `job id -> job` for every job thread alive in this process: what a drain waits on.
         self._running: dict[str, dict[str, Any]] = {}
         #: Dispatch takes no new work before this `time.time()` (a drain; `inf` on shutdown).
@@ -2281,6 +2287,18 @@ class Worker:
                 if restart_can_follow(job):
                     log.warning("job %s: resuming upstream %s on %s after a restart",
                                 job_id, job.get("upstream_job_id"), job.get("provider_id"))
+                elif restart_can_resend(job) and _takes_no_new_work(str(job.get("provider_id") or "")):
+                    # **The owner's pause is honoured at restart too** (1301, 2026-11-16: sections
+                    # were accepted on 1300 after it was paused at 21:37, by this re-send). A pause
+                    # says no new work there, and a send that never landed would be new work, so it
+                    # goes back to the queue unsent and dispatch moves it to a live site. Free work:
+                    # if the first send did land, the Hub there runs it once more at most.
+                    self.store.defer(job_id, delay_s=0, unsent=True,
+                                     reason="its site is paused or installing; sent elsewhere")
+                    log.warning("job %s: its send to %s was unanswered at shutdown and that site takes "
+                                "no new work now; back in the queue for another site",
+                                job_id, job.get("provider_id"))
+                    continue
                 elif restart_can_resend(job):
                     self.store.note_restart_resend(job_id)
                     log.warning("job %s: its send to %s was unanswered at shutdown; re-sending it "
@@ -3248,6 +3266,11 @@ class Worker:
                 return False
             self._eligibility_cache[cache_key] = (time.monotonic(), eligibility)
         if eligibility["available"] or eligibility["busy_only"] or not eligibility["rejections"]:
+            return False
+        if (any(r.get("reason") == "unknown" for r in eligibility["rejections"])
+                and time.monotonic() - self._started_at < _FIRST_READ_WAIT_S):
+            # A location this Gateway has not read yet may well be up: wait for the first read,
+            # on its own short ceiling, rather than fail queued work at every restart.
             return False
         detail = (f"No reachable Mac can run '{model_id}' right now — "
                   + fleet.dispatch_reason_summary(eligibility))

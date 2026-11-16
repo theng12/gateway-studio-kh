@@ -20,6 +20,16 @@ class LifecycleTests(unittest.TestCase):
         # A wedged backend must not hold the app open forever.
         self.assertIn("asyncAfter(deadline: .now() + 25)", quit_path)
 
+    def test_a_quit_writes_down_who_asked(self):
+        """1301, 2026-11-16: Gateway stopped before 21:38 and no log said why."""
+        quit_path = MAIN[MAIN.index("func applicationShouldTerminate("):]
+        quit_path = quit_path[:quit_path.index("func applicationShouldTerminateAfterLastWindowClosed")]
+        self.assertIn('noteInLog("quit requested by \\(QuitSource.describe())"', quit_path)
+        self.assertIn("keySenderPIDAttr", MAIN[MAIN.index("enum QuitSource"):])
+        api = (ROOT.parent / "gateway/api.py").read_text()
+        term = api[api.index("def on_term("):api.index("signal.signal(signal.SIGTERM, on_term)")]
+        self.assertIn("TERM received", term)
+
     def test_a_second_instance_exits_quietly_without_taking_the_screen(self):
         guard = MAIN[MAIN.index("let duplicates = NSRunningApplication"):]
         guard = guard[:guard.index("signal(SIGPIPE")]

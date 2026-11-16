@@ -132,6 +132,24 @@ class EligibilityTests(_Base):
         self.assertEqual(dispatch["candidates"][0]["reason"], "offline")
         self.assertEqual(dispatch["candidates"][0]["location_id"], "a")
 
+    def test_a_restart_with_queued_work_fails_nothing_before_the_first_read(self) -> None:
+        """1301, 2026-11-16: ten hours-old queued sections failed "offline (not read yet)" at start."""
+        self.sites.append(_site("a"))
+        for patcher in (patch.object(fleet, "snapshot", lambda *a, **k: {"locations": []}),):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        job = self.job(created_ago=3600.0)
+        self.assertFalse(self.worker._no_eligible_machine(job), "an unread fleet is unknown, not offline")
+        self.assertEqual(self.store.get(job["id"])["state"], "accepted")
+        eligibility = fleet.dispatch_eligibility(MODEL, MODALITY)
+        self.assertEqual([(r["reason"], r["detail"]) for r in eligibility["rejections"]],
+                         [("unknown", "not read yet")])
+        # Its own ceiling: a fleet still unread long after start is the fault, and it is named.
+        self.worker._started_at -= worker_module._FIRST_READ_WAIT_S + 1
+        self.worker._eligibility_cache.clear()
+        self.assertTrue(self.worker._no_eligible_machine(job))
+        self.assertIn("not read yet", self.store.get(job["id"])["error_detail"])
+
     def test_a_young_job_gets_the_grace(self) -> None:
         self.sites.append(_site("a", reachable=False))
         job = self.job(created_ago=1.0)

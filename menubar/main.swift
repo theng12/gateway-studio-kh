@@ -442,6 +442,17 @@ final class GatewayController {
     private(set) var process: Process?
     private(set) var state: GatewayState = .stopped
     private var logHandle: FileHandle?
+
+    /// One line in `gateway-kh.log` from the app itself (the helper writes the rest of the file).
+    func noteInLog(_ line: String) {
+        let stamped = "\(ISO8601DateFormatter().string(from: Date())) app: \(line)\n"
+        let data = Data(stamped.utf8)
+        if let handle = logHandle { handle.write(data); return }
+        guard let handle = FileHandle(forWritingAtPath: logPath) else { return }
+        handle.seekToEndOfFile()
+        handle.write(data)
+        try? handle.close()
+    }
     private var logRotationTimer: Timer?
     private var healthTimer: Timer?
     private var onStateChange: (() -> Void)?
@@ -1137,6 +1148,20 @@ enum OrphanSweep {
     }
 }
 
+// MARK: - Who asked to quit
+
+enum QuitSource {
+    static func describe() -> String {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              let pid = event.attributeDescriptor(forKeyword: AEKeyword(keySenderPIDAttr))?.int32Value,
+              pid > 0, pid != getpid() else {
+            return "this app's own menu or macOS"
+        }
+        let sender = NSRunningApplication(processIdentifier: pid)
+        return "\(sender?.bundleIdentifier ?? sender?.localizedName ?? "a process") (pid \(pid))"
+    }
+}
+
 // MARK: - Launch at login
 
 enum LaunchAgent {
@@ -1503,6 +1528,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // actually be seen (the app is active and its window is up); otherwise go straight to
         // stopping the gateway.
         let attended = NSApp.isActive && MainWindow.shared.isShown
+        // **Who asked, written down** (1301, 2026-11-16: Gateway stopped before 21:38 and nothing
+        // said why). A Quit AppleEvent names its sender; no sender is this app's own menu or macOS.
+        GatewayController.shared.noteInLog("quit requested by \(QuitSource.describe())"
+                                           + (attended ? "" : " (unattended)"))
         // Armed **before** any dialog, and shorter than the installer's wait: whatever happens
         // below, termination is answered within 40 seconds. A modal can never hang it again.
         DispatchQueue.main.asyncAfter(deadline: .now() + 40) { finish(true) }
