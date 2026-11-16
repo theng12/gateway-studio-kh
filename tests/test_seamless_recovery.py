@@ -77,6 +77,14 @@ class AHoldLooksRunningToStory(unittest.TestCase):
         done = dict(queued, state="succeeded")
         self.assertIsNone(api._job_envelope(done)["time_limit_s"])
 
+    def test_the_placement_wait_ceiling_is_configurable_and_sized_from_measurement(self) -> None:
+        """Worst normal placement 2,300 s; three stuck ones 7,320-8,040 s. 45 min is the default."""
+        self.assertEqual(concurrency.queue_wait_budget()["placement_wait_ceiling_seconds"], 45 * 60.0)
+        self.assertGreater(concurrency.queue_wait_budget()["placement_wait_ceiling_seconds"], 2_300)
+        self.assertLess(concurrency.queue_wait_budget()["placement_wait_ceiling_seconds"], 7_320)
+        with self.assertRaises(concurrency.SettingsRefused):
+            concurrency.save_settings({"queue": {"placement_wait_ceiling_seconds": 30}})
+
     def test_a_running_job_is_untouched(self) -> None:
         running = dict(HOLD, state="running", recovery_state=None, failure_code=None, failure_reason=None)
         self.assertEqual(api._job_envelope(running)["state"], "running")

@@ -135,6 +135,14 @@ DEFAULT_DEFER_CAP_S = 300.0
 #:     {"global": 60, "queue": {"wait_ceiling_seconds": 10800}}
 DEFAULT_QUEUE_WAIT_CEILING_S = 3 * 3600.0
 
+#: **How long one placement may wait at the Mac it was bound to** (0.2.265). Measured 2026-11-16:
+#: jobs that did start after a defer placed in at most 2,300 s, while three image jobs sat at
+#: 7,320-8,040 s on a Mac that kept placing newer work beside them. 45 minutes sits comfortably above
+#: the worst normal wait and far below the stuck ones, and the owner edits it like the other ceilings
+#: (`queue.placement_wait_ceiling_seconds`). It is not a retry count: past it the job moves to another
+#: fit Mac, or fails retryable with the reason — never `retry_in 0` under a sentence.
+DEFAULT_PLACEMENT_WAIT_CEILING_S = 45 * 60.0
+
 #: **How long an empty candidate set may persist before the job fails** (0.2.257).
 #:
 #: Not a queue wait: a job whose model no reachable location can run is waiting for something
@@ -463,6 +471,8 @@ def queue_wait_budget() -> dict[str, Any]:
     attempts = _positive_int(entry.get("max_deferrals"))
     cap = entry.get("defer_cap_seconds")
     cap_seconds = float(cap) if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0 else None
+    placement = entry.get("placement_wait_ceiling_seconds")
+    placement_seconds = float(placement) if isinstance(placement, (int, float)) and not isinstance(placement, bool) and placement > 0 else None
     ceiling = entry.get("wait_ceiling_seconds")
     ceiling_seconds = float(ceiling) if isinstance(ceiling, (int, float)) and not isinstance(ceiling, bool) and ceiling > 0 else None
     # **The grace before an empty candidate set ends a job** (0.2.257). A job whose model no
@@ -476,10 +486,13 @@ def queue_wait_budget() -> dict[str, Any]:
         "defer_cap_seconds": cap_seconds if cap_seconds is not None else DEFAULT_DEFER_CAP_S,
         "wait_ceiling_seconds": (ceiling_seconds if ceiling_seconds is not None
                                  else DEFAULT_QUEUE_WAIT_CEILING_S),
+        "placement_wait_ceiling_seconds": (placement_seconds if placement_seconds is not None
+                                           else DEFAULT_PLACEMENT_WAIT_CEILING_S),
         "no_eligible_grace_seconds": (grace_seconds if grace_seconds is not None
                                       else DEFAULT_NO_ELIGIBLE_GRACE_S),
         "source": SOURCE_CURATED if (attempts is not None or cap_seconds is not None
-                                     or ceiling_seconds is not None or grace_seconds is not None)
+                                     or ceiling_seconds is not None or grace_seconds is not None
+                                     or placement_seconds is not None)
         else SOURCE_GATEWAY,
         "path": str(SETTINGS_PATH),
     }
@@ -1081,17 +1094,28 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
     if "queue" in payload:
         # Only the wait ceiling is editable from the page; the other queue numbers are kept as written.
         stated = payload["queue"]
-        if not isinstance(stated, dict) or set(stated) != {"wait_ceiling_seconds"}:
-            raise SettingsRefused("queue takes only wait_ceiling_seconds")
+        allowed = {"wait_ceiling_seconds", "placement_wait_ceiling_seconds"}
+        if not isinstance(stated, dict) or not set(stated) <= allowed:
+            raise SettingsRefused("queue takes only wait_ceiling_seconds and placement_wait_ceiling_seconds")
         entry = dict(current.get("queue") or {}) if isinstance(current.get("queue"), dict) else {}
-        value = stated["wait_ceiling_seconds"]
-        if value in (None, 0):
-            entry.pop("wait_ceiling_seconds", None)
-        elif (isinstance(value, bool) or not isinstance(value, (int, float))
-              or not 60 <= value <= 7 * 86400):
-            raise SettingsRefused("the queue wait limit must be between 1 minute and 7 days, in seconds")
-        else:
-            entry["wait_ceiling_seconds"] = int(value)
+        if "placement_wait_ceiling_seconds" in stated:
+            placed = stated["placement_wait_ceiling_seconds"]
+            if placed in (None, 0):
+                entry.pop("placement_wait_ceiling_seconds", None)
+            elif (isinstance(placed, bool) or not isinstance(placed, (int, float))
+                  or not 60 <= placed <= 7 * 86400):
+                raise SettingsRefused("the placement wait limit must be between 1 minute and 7 days, in seconds")
+            else:
+                entry["placement_wait_ceiling_seconds"] = int(placed)
+        if "wait_ceiling_seconds" in stated:   # one key at a time: the other is left as written
+            value = stated["wait_ceiling_seconds"]
+            if value in (None, 0):
+                entry.pop("wait_ceiling_seconds", None)
+            elif (isinstance(value, bool) or not isinstance(value, (int, float))
+                  or not 60 <= value <= 7 * 86400):
+                raise SettingsRefused("the queue wait limit must be between 1 minute and 7 days, in seconds")
+            else:
+                entry["wait_ceiling_seconds"] = int(value)
         if entry:
             current["queue"] = entry
         else:
