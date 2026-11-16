@@ -1116,6 +1116,10 @@ def _trash_rows(answer: dict[str, Any], controller_id: str) -> list[dict[str, An
             "state": state,
             # The Hub's own code (`REMOTE_EMPTY_OFF`, `NODE_UNREACHABLE`, ...) rides with the row.
             "code": code.strip() if isinstance(code, str) and code.strip() else None,
+            # This Mac's own "Allow remote empty" decision, as the Hub states it: whether it may be
+            # emptied from here and who decided. It rides with the row so the page can tell "off because
+            # nobody enabled it" from "off because the owner turned it off" (Hub 0.6.243).
+            "remote_empty": row.get("remote_empty"),
             "reason": reason or (None if state == "emptied" else "the Hub gave no reason"),
             "locations": row.get("locations") if isinstance(row.get("locations"), list) else None,
             # `None` is "not reported", never 0: a partial failure must say what is left only if it knows.

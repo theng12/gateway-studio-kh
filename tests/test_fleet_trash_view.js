@@ -16,6 +16,8 @@
  * 5. Each Mac's outcome is drawn on that Mac's row, with its state, code/reason and freed bytes.
  * 6. Both actions go to the one route (`/fleet/trash/empty`), and count and bytes are never
  *    invented for a Mac that did not state them.
+ * 7. The Mac's own "Allow remote empty" decision is drawn in plain words, and the two "off" states
+ *    (never enabled, turned off by the owner) are not drawn as one.
  */
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -45,7 +47,7 @@ function trashHelpers() {
   };
   vm.createContext(context);
   vm.runInContext(`${code}
-    globalThis.__t = { trashSize, trashMacText, trashFolderText, trashGB, trashKey };`, context);
+    globalThis.__t = { trashSize, trashMacText, trashFolderText, trashGB, trashKey, remoteEmptyText };`, context);
   return context.__t;
 }
 
@@ -91,6 +93,18 @@ test('a macOS Trash the Hub cannot read names the reason, not a size', () => {
                    { text: 'cannot be read', bad: true });
   assert.deepEqual(plain(t.trashMacText({ macos_trash: { count: 3, bytes: 900_000_000 } })),
                    { text: '3 items, 900 MB', bad: false });
+});
+
+test('the remote-empty switch reads as plain words, and the two "off" states are not one', () => {
+  assert.equal(t.remoteEmptyText({ effective: true, source: 'you' }), 'On');
+  assert.equal(t.remoteEmptyText({ effective: false, source: 'off until you enable it' }), 'Off — never enabled');
+  assert.equal(t.remoteEmptyText({ effective: false, source: 'you' }), 'Off — you turned this off');
+  assert.equal(t.remoteEmptyText({ effective: false, source: 'automatic' }), 'Off — automatic');
+  assert.equal(t.remoteEmptyText(undefined), '', 'an older Hub states nothing: nothing, never a guess');
+  assert.equal(t.remoteEmptyText({}), '', 'and a half-stated one is not read as a state');
+  const render = between('function renderFleetTrash(', 'async function loadTrash(');
+  assert.match(render, /remoteEmptyText\(result && result\.remote_empty\)/, 'the row reads its own Mac\'s decision');
+  assert.match(render, /switchLine/, 'and draws it on its own line');
 });
 
 test('each Mac\'s outcome is drawn on that Mac\'s own row', () => {

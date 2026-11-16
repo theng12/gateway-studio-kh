@@ -11137,6 +11137,18 @@ function trashFolderText(m) {
 
 function trashGB(gb) { return gb == null ? 'not reported' : `${Number(gb).toFixed(1)} GB free`; }
 
+// The Mac's own "Allow remote empty" decision, as the Hub states it (Hub 0.6.243). Two "off" states
+// that must not read as one: nobody ever enabled it, or the owner turned it off. A Mac whose Hub does
+// not say (an older one) shows nothing, never a guess.
+function remoteEmptyText(info) {
+  if (!info || typeof info !== 'object' || typeof info.effective !== 'boolean') return '';
+  if (info.effective) return 'On';
+  if (info.source === 'off until you enable it') return 'Off — never enabled';
+  if (info.source === 'you') return 'Off — you turned this off';
+  if (info.source === 'automatic') return 'Off — automatic';
+  return '';
+}
+
 function renderFleetTrash(d) {
   const wrap = document.getElementById('fleet-trash-wrap');
   const status = document.getElementById('fleet-trash-status');
@@ -11157,6 +11169,12 @@ function renderFleetTrash(d) {
     const state = result ? `<span class="pill">${esc(result.state)}</span> ${esc(said)}`
       + (result.freed_bytes && !/freed/i.test(said) ? ` · freed ${esc(trashSize(result.freed_bytes))}` : '')
       + (result.left_bytes && !/left/i.test(said) ? ` · ${esc(trashSize(result.left_bytes))} left` : '') : '';
+    // The Mac's own "Allow remote empty" switch, on its own line under the outcome: the two "off"
+    // states are different facts, and an untouched Mac's "off" is not a fault.
+    const switchText = remoteEmptyText(result && result.remote_empty);
+    const switchLine = switchText
+      ? `<div class="muted" title="Whether this Mac's trash may be emptied from the Gateway — its own Allow remote empty switch">${esc(switchText)}</div>`
+      : '';
     // A Mac with both parts stated empty has nothing to empty; a Mac that states nothing may.
     const nothing = m.hub_trash && m.hub_trash.bytes === 0 && m.macos_trash && m.macos_trash.bytes === 0;
     const where = (m.location && m.location !== m.label) ? `<div class="muted">${esc(m.location)}</div>` : '';
@@ -11170,7 +11188,7 @@ function renderFleetTrash(d) {
         ? '<span class="muted" title="Its Hub folder and macOS Trash are both stated empty">nothing to empty</span>'
         : `<button type="button" class="sm danger" onclick='emptyTrashOne(${JSON.stringify(key).replace(/'/g, "&#39;")})'
              ${trashRunning ? 'disabled' : ''}>Empty permanently…</button>`}</td>
-      <td id="trash-row-${esc(key)}">${state}</td>
+      <td id="trash-row-${esc(key)}">${state}${switchLine}</td>
     </tr>`;
   }).join('');
   wrap.innerHTML = `<table class="table"><thead><tr>
