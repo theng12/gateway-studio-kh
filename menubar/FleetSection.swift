@@ -89,6 +89,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
     private let macTrashBar = FleetMacTrashBar(frame: .zero)
     private lazy var modelsTab = FleetModelsTab(frame: .zero)
     private lazy var jobsTab = FleetJobsTab(frame: .zero)
+    private lazy var trashTab = FleetTrashTab(frame: .zero)
 
     lazy var view: NSView = buildContent()
 
@@ -260,6 +261,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         case .machines: return machinesTab
         case .models: return modelsTab
         case .jobs: return jobsTab
+        case .trash: return trashTab
         }
     }
 
@@ -324,6 +326,8 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         // The location and search filter narrows the three tables; Groups and Locations have no use for it
         // (Groups has its own search).
         filterRowHolder.isHidden = ![.machines, .models, .jobs].contains(tab)
+        // The Trash tab reads each Mac's own folder when it is first shown, not on every fleet read.
+        if tab == .trash { trashTab.load() }
     }
 
     /// Locations tab: add a location through the form (used by the render harness).
@@ -551,6 +555,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
         macTrashBar.update(machines: [])
         modelsTab.update(models: [], workers: [], filter: filter)
         jobsTab.update(snapshot: empty, filter: filter)
+        trashTab.update(machines: [])
         // A location filter that outlived its locations would hide the next read's
         // rows for a reason nothing on the page explains.
         rebuildLocationPopup()
@@ -603,6 +608,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             filter: filter, installs: snapshot.modelInstalls)
         followSpread(snapshot.modelInstalls)
         jobsTab.update(snapshot: snapshot, filter: filter)
+        trashTab.update(machines: snapshot.machines)
     }
 
     /// While an "Install on every Mac" runs, re-read the (cached) fleet every few seconds so its card moves; this

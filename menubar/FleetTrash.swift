@@ -8,6 +8,7 @@
 // shows "needs Hub 0.6.182".
 
 import AppKit
+import CoreFoundation
 
 enum FleetTrash {
     /// Every Mac the Machines tab last showed, for "Trash on All Macs…" (set in `FleetMachinesTab.update`).
@@ -39,6 +40,26 @@ enum FleetTrash {
         }
         var free: String? {
             ((payload?["disk"] as? [String: Any])?["free_bytes"] as? NSNumber).map { FleetTrash.size($0.int64Value) + " free" }
+        }
+        /// A number the answer stated, or `nil`. `true`/`false` bridge to `NSNumber` and would read as
+        /// 1/0 — a size nobody measured — so they are refused here rather than drawn.
+        static func number(_ value: Any?) -> NSNumber? {
+            guard let number = value as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            return number
+        }
+        /// What the folder holds, as the Mac stated it. `nil` when it stated no size (unsupported or
+        /// unreachable) — 0 would claim a measurement nobody made.
+        var trashBytes: Int64? { Report.number(payload?["bytes"])?.int64Value }
+        /// The Mac's free disk from this reading; `nil` when the answer carries none.
+        var freeDiskBytes: Int64? {
+            Report.number((payload?["disk"] as? [String: Any])?["free_bytes"])?.int64Value
+        }
+        /// The Mac's free **memory** from this reading (Studio Hub 0.6.243 states it beside the disk).
+        /// `nil` from a Hub that does not report it — and memory is never shown in the disk's column,
+        /// so a shortfall in one never reads as a shortfall in the other.
+        var freeMemoryBytes: Int64? {
+            Report.number((payload?["memory"] as? [String: Any])?["free_bytes"])?.int64Value
         }
         var line: String {
             if let error { return "\(name): could not read (\(error))" }
@@ -271,5 +292,48 @@ enum FleetTrash {
                 }
             }
         }, title: "Delete permanently", done: done)
+    }
+
+    // MARK: One step, one Mac
+
+    /// **Empty this Mac's Trash Folder in one step** (owner, 2026-11-16: "i want to add a feature so
+    /// that we can delete it through the gateway or the hub").
+    ///
+    /// One confirmation, then the Mac empties what it holds — `items: "all"` — through the same route
+    /// as the per-Mac menu, with the same re-check: the Mac re-measures and deletes nothing if the
+    /// count or bytes differ from what was shown here (409 `TRASH_CHANGED`). The request carries the
+    /// owner-console secret this app alone holds, so an API key or a browser session still cannot
+    /// delete anything. Every run ends in freed bytes or a named refusal, in this app's own dialog.
+    static func empty(_ report: Report, done: @escaping (String) -> Void) {
+        guard report.error == nil, report.supported else { return done(report.line) }
+        guard report.deletable else { return done("Nothing to empty on \(report.name).") }
+        let sure = NSAlert()
+        sure.alertStyle = .critical
+        sure.messageText = "Empty \(report.name)'s Trash Folder?"
+        sure.informativeText = "Permanently deletes \(report.count) item\(report.count == 1 ? "" : "s") "
+            + "(\(exact(report.bytes)) — \(size(report.bytes))) from the Studio Hub Trash Folder on \(report.name). "
+            + "They do not go to macOS Trash and cannot be recovered. If the folder changed since it was "
+            + "measured, nothing is deleted."
+        sure.addButton(withTitle: "Cancel")
+        sure.closeOnEscape()
+        let empty = sure.addButton(withTitle: "Empty Trash")
+        if #available(macOS 11.0, *) { empty.hasDestructiveAction = true }
+        guard sure.runModal() == .alertSecondButtonReturn else { return done("Nothing was deleted.") }
+        guard let path = path(report.machine, "/delete") else { return done("this row has no machine id") }
+        GatewayAPI.post(path, body: ["items": "all", "confirm": true,
+                                     "expected_count": report.count, "expected_bytes": report.bytes],
+                        timeout: 900, ownerConsole: true) { result in
+            switch result {
+            case .success(let payload):
+                let freed = (payload["freed_bytes"] as? NSNumber)?.int64Value ?? 0
+                let deleted = (payload["deleted_count"] as? NSNumber)?.intValue ?? 0
+                guard deleted > 0 || freed > 0 else {
+                    return done("Nothing was deleted: \(payload["detail"] as? String ?? "the Mac reported an empty folder")")
+                }
+                done("freed \(size(freed)) (\(deleted) item\(deleted == 1 ? "" : "s"))" + failures(payload))
+            case .failure(let error):
+                done("could not empty it: \(error.localizedDescription)")
+            }
+        }
     }
 }

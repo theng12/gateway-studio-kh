@@ -14,7 +14,7 @@ set -euo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(cd -- "$HERE/../.." && pwd)
 PAGE="${1:-overview}"
-[ "$PAGE" = "all" ] && PAGE="overview,audio,subtitle,image,music,video,chat,jobs,analytics,voices,models,providers,fleet:groups,fleet:groups-problems,fleet:locations,fleet:machines,fleet:models,fleet:jobs,fleet:story,settings,content-packs,whatsnew"
+[ "$PAGE" = "all" ] && PAGE="overview,audio,subtitle,image,music,video,chat,jobs,analytics,voices,models,providers,fleet:groups,fleet:groups-problems,fleet:locations,fleet:machines,fleet:models,fleet:jobs,fleet:trash,fleet:story,settings,content-packs,whatsnew"
 OUT="${2:-/tmp/gateway-render}"
 shift 2 2>/dev/null || true
 PY="${GATEWAY_RENDER_PYTHON:-}"
