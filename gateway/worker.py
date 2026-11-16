@@ -1691,6 +1691,11 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 # 80 minutes. The rest is recorded only for the Hub's own install sentence — a
                 # Mac that is merely busy is a moment and stays a candidate.
                 fleet.note_drain_refusal(provider_id, str(exc))
+                if "OUTPUT_STORAGE_BLOCKED" in str(exc):
+                    # The site's own door refused for output space (measured 2026-11-16: nine voice
+                    # jobs waited on terranash-1300, disk "stop", while 23 Macs were eligible). Rest
+                    # it like a storage-full item, so the next asset and this job's next try go on.
+                    fleet.note_storage_refusal(provider_id, model_id)
             current = store.get(job_id) if hasattr(store, "get") else job
             current = current or {}
             # **A job that has already settled never dispatches again.** This thread can still be

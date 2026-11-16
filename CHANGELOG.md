@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.263 — 2026-11-16
+
+- **A Mac that refused a job without starting it no longer uses up one of its three tries.** Out of memory, out of disk, not ready, unreachable or busy: nothing was sent, so the job moves to another Mac and keeps all three tries for real failures. Each Mac that refused is still named, and a job no Mac could take ends with "Nothing was charged; run it again".
+- **A full disk is named and avoided.** A Mac with no room for the result now says `OUTPUT_STORAGE_FULL` and is left alone for 15 minutes. A site whose controller's disk is stopped, or whose every able Mac is out of disk, is offered voice, music and video work only when nothing else can take it. A job already waiting on such a site moves on instead of waiting there.
+- **Every lost-contact hold can be swept.** Each one now keeps the batch it is waiting on, so the hold sweep can collect a batch that finished instead of leaving the hold for a person to close.
+
 ## 0.2.262 — 2026-11-16
 
 - **The Launcher can request an update pause with its own private token.** It works only for pausing and resuming Gateway's queue, and cannot open Gateway's other settings. Gateway never creates or copies this token.
