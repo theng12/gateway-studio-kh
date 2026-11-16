@@ -2602,6 +2602,27 @@ def _macos_trash_fact(machine: dict) -> dict | None:
     return {"count": count, "bytes": size, "code": code}
 
 
+def _hub_trash_fact(machine: dict) -> dict | None:
+    """What this Mac's Studio Hub Trash Folder holds, as the Hub states it (Studio Hub 0.6.243).
+
+    `hub_trash: {count, bytes}` on the machine row; `None` from a Hub that does not state it —
+    unknown, never 0. A boolean or a negative is not a size.
+    """
+    raw = machine.get("hub_trash")
+    if not isinstance(raw, dict):
+        return None
+
+    def size(value: object) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            return None
+        return int(value)
+
+    count, total = size(raw.get("count")), size(raw.get("bytes"))
+    if count is None and total is None:
+        return None
+    return {"count": count, "bytes": total}
+
+
 def _startup_fact(machine: dict, node: dict) -> dict | None:
     """What starts when this Mac starts, as the Hub reported it - or `None` when it did not.
 
@@ -3231,6 +3252,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 # The items the Hub moved into macOS Trash (see `_macos_trash_fact`): its own count
                 # and bytes, or None when it does not report them.
                 "macos_trash": _macos_trash_fact(machine),
+                # The Mac's Studio Hub Trash Folder, as the Hub states it (0.6.243, `hub_trash`),
+                # so the Trash page is one fleet read rather than a request per Mac.
+                "hub_trash": _hub_trash_fact(machine),
                 "health": machine.get("health"),
                 # How this Mac is actually connected (see `machine_connection`): the interface, its
                 # kind and, for Ethernet, the media the OS says it negotiated. `None` from a Hub

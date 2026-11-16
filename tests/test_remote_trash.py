@@ -302,6 +302,17 @@ class EmptyTrashTests(_Isolated):
                              ("skipped", code), code)
             self.assertTrue(got["ok"], code)
 
+    def test_a_mac_row_states_its_hub_folder_or_none_never_zero(self) -> None:
+        """Hub 0.6.243's `hub_trash`: the page draws it from the fleet read, not a request per Mac."""
+        self.assertEqual(fleet._hub_trash_fact({"hub_trash": {"count": 14, "bytes": 2_400_000_000}}),
+                         {"count": 14, "bytes": 2_400_000_000})
+        self.assertEqual(fleet._hub_trash_fact({"hub_trash": {"count": 0, "bytes": 0}}),
+                         {"count": 0, "bytes": 0}, "a stated 0 is a reading")
+        self.assertIsNone(fleet._hub_trash_fact({}), "an older Hub states nothing: None, never 0")
+        self.assertIsNone(fleet._hub_trash_fact({"hub_trash": {"count": True, "bytes": -1}}),
+                          "a boolean or a negative is not a size")
+        self.assertIsNone(fleet._hub_trash_fact({"hub_trash": None}))
+
     def test_a_mac_row_states_its_macos_trash_or_none_never_zero(self) -> None:
         self.assertEqual(fleet._macos_trash_fact({"macos_trash": {"count": 4, "bytes": 1500}}),
                          {"count": 4, "bytes": 1500, "code": None})

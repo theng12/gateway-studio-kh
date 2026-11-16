@@ -43,11 +43,16 @@ def startup(*, login=True, services=True, stale=False):
 
 
 def machine(mid, label, chip, mem, avail, disk_free, *, reachable=True, health="up", modalities=None,
-            disk_total=460.0, start=None, current=None, connection=None):
+            disk_total=460.0, start=None, current=None, connection=None, hub_trash=None, macos_trash=None):
     row = {"machine": mid, "label": label, "reachable": reachable, "chip": chip, "memory_gb": mem,
            "available_gb": avail, "disk_free_gb": disk_free, "disk_total_gb": disk_total, "health": health,
            "modalities": modalities or {}, "disk": disk(disk_free, disk_total),
            "startup": start if start is not None else startup()}
+    # Hub 0.6.243's two trash figures. Unstated stays absent: the page must read "not reported".
+    if hub_trash is not None:
+        row["hub_trash"] = hub_trash
+    if macos_trash is not None:
+        row["macos_trash"] = macos_trash
     if current:
         row["current"] = current
     if connection is not None:
@@ -258,6 +263,17 @@ def health(flavour: str) -> list:
                           start=start(version, services=mid not in startup_off))
             if mid in stops:
                 row["last_stop"] = stops[mid]
+            # A spread the Trash page has to read honestly: one full, one stated empty, one the Hub
+            # cannot read (a permission), and the rest reporting nothing at all.
+            if i == 1:
+                row["hub_trash"] = {"count": 14, "bytes": 2_400_000_000}
+                row["macos_trash"] = {"count": 3, "bytes": 900_000_000}
+            elif i == 2:
+                row["hub_trash"] = {"count": 0, "bytes": 0}
+                row["macos_trash"] = {"count": 0, "bytes": 0}
+            elif i == 3:
+                row["hub_trash"] = {"count": 2, "bytes": 120_000_000}
+                row["macos_trash"] = {"count": None, "bytes": None, "code": "FULL_DISK_ACCESS_NEEDED"}
             machines.append(row)
             activities.append(idle(mid, (16 + i) * HOUR, error=i in (1, 2)) if not off else
                               {**idle(mid, 30 * HOUR, state="offline"), "limitation_code": "waiting_for_worker",
@@ -508,8 +524,14 @@ def build() -> dict:
     )
     blue = location(
         "ctrl-blue", "Blue Room", "http://100.64.0.11:47873",
-        machines=[machine("blue-ctl", "Blue Room mini", "Apple M4", 16.0, 7.1, 188.0, modalities={"voice": 40}),
+        # The Trash page's own spread: a full folder and a full macOS Trash, a stated empty, a macOS
+        # Trash the Hub cannot read (a permission), and a Mac that reports neither.
+        machines=[machine("blue-ctl", "Blue Room mini", "Apple M4", 16.0, 7.1, 188.0, modalities={"voice": 40},
+                          hub_trash={"count": 14, "bytes": 2_400_000_000},
+                          macos_trash={"count": 3, "bytes": 900_000_000}),
                   machine("blue-1", "Blue Room 1", "Apple M4", 16.0, 9.8, 142.0, modalities={"voice": 61, "image": 8},
+                          hub_trash={"count": 2, "bytes": 120_000_000},
+                          macos_trash={"count": None, "bytes": None, "code": "FULL_DISK_ACCESS_NEEDED"},
                           # A measured fast link, so the Network filter has a positive case to prove.
                           connection={"status": "measured", "kind": "ethernet", "interface": "en0",
                                       "speed_mbps": 1000, "duplex": "full", "slow": False,
@@ -518,6 +540,7 @@ def build() -> dict:
                                    "started_at": NOW - 9 * MIN}),
                   machine("blue-2", "Blue Room 2", "Apple M2", 8.0, 2.2, 21.0, health="up",
                           modalities={"voice": 30}, disk_total=256.0, start=startup(services=False),
+                          hub_trash={"count": 0, "bytes": 0}, macos_trash={"count": 0, "bytes": 0},
                           connection={"status": "measured", "kind": "wifi", "interface": "en1",
                                       "speed_mbps": 432, "slow": False, "text": "Wi-Fi 432 Mb/s"}),
                   machine("blue-3", "Blue Room 3", "Apple M2", 8.0, 0.0, 0.0, reachable=False, health="down",

@@ -983,6 +983,22 @@
       <div class="tablewrap" id="fleet-models-wrap"></div>
     </div>
 
+    <!-- Trash: every Mac's Hub Trash Folder and macOS Trash, and one way to empty either. It is
+         permanent on that Mac, so the word is on the page and in the button's own label. -->
+    <div class="fleet-pane" id="fleet-pane-trash" hidden>
+      <div class="stat" id="fleet-trash-status"></div>
+      <p class="muted" id="fleet-trash-note">
+        <strong>Emptying is permanent.</strong> It deletes what that Mac's Studio Hub Trash Folder holds
+        and everything in its macOS Trash. Nothing is kept, and neither can be undone.</p>
+      <div class="row" id="fleet-trash-actions">
+        <button type="button" class="danger" id="fleet-trash-empty-all"
+                onclick="emptyTrashEverywhere()">Empty all trash…</button>
+        <button type="button" class="sm" onclick="loadTrash(true)">Read every Mac again</button>
+      </div>
+      <div class="tablewrap" id="fleet-trash-wrap"></div>
+      <div id="fleet-trash-result" role="status" aria-live="polite"></div>
+    </div>
+
     <!-- Jobs: the batches in flight, and the ones that stopped. -->
     <div class="fleet-pane" id="fleet-pane-jobs" hidden>
       <div class="stat" id="fleet-jobs-status"></div>
@@ -7249,7 +7265,7 @@ const FLEET_SORTS = [['issues', 'Issues (worst first)'], ['offline', 'Offline fi
   ['problematic', 'Most flapping'], ['site', 'Site'], ['lastseen', 'Longest unseen'],
   ['drops', 'Most drops'], ['name', 'Name']];
 const FLEET_TABS = [['groups', 'Groups'], ['locations', 'Locations'], ['machines', 'Machines'],
-  ['models', 'Models'], ['jobs', 'Jobs']];
+  ['models', 'Models'], ['jobs', 'Jobs'], ['trash', 'Trash']];
 const FLEET_STATE_WORDS = { working: 'Working', ready: 'Ready', long_idle: 'Idle',
   offline: 'Offline', needs_attention: 'Needs attention', just_finished: 'Just finished' };
 
@@ -10641,6 +10657,7 @@ function selectFleetTab(tab) {
   const show = document.getElementById('fleet-show-wrap');
   if (show) show.hidden = tab === 'machines';
   if (tab === 'jobs') loadAutoStops();
+  if (tab === 'trash') loadTrash();
 }
 
 function renderFleetTabs() {
@@ -11068,6 +11085,7 @@ function fleetSummaryHtml(s, issues, q, d, problematic) {
 
 function renderFleet(d) {
   if (!d) return;
+  renderFleetTrash(d);
   renderFleetGroups(d);
   renderFleetMachines(d);
   renderFleetWarningSettings(d);
@@ -11076,6 +11094,167 @@ function renderFleet(d) {
   renderFleetInstalls(d);
   renderFleetJobs(d);
   renderFleetOrphans(d);
+}
+
+// ---- Trash: every Mac's Hub Trash Folder and its macOS Trash -----------------
+//
+// One row per Mac from the fleet read (`hub_trash`, `macos_trash`, `disk`, `available_gb`); a
+// per-Mac outcome from "Empty all trash" stays on that Mac's row, so a skipped Mac says why there
+// and not only in a log. A figure the Mac does not report reads "not reported", never 0.
+let trashResults = {};          // machine key -> {state, code, reason, freed_bytes, left_bytes}
+let trashRunning = false;
+
+function trashKey(m) { return `${m.location_id || ''}|${m.machine || ''}`; }
+
+function trashSize(bytes) {
+  if (bytes == null) return null;
+  if (bytes <= 0) return 'empty';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes, unit = 0;
+  while (value >= 1000 && unit < units.length - 1) { value /= 1000; unit += 1; }
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+function trashMacText(m) {
+  const t = m.macos_trash;
+  if (t && t.bytes == null && t.code) {
+    return { text: t.code === 'FULL_DISK_ACCESS_NEEDED' ? 'needs Full Disk Access' : 'cannot be read',
+             bad: true };
+  }
+  if (!t || t.bytes == null) return { text: 'not reported', bad: true };
+  if (t.bytes === 0) return { text: 'empty', bad: false };
+  return { text: `${t.count == null ? '' : `${t.count} item${t.count === 1 ? '' : 's'}, `}${trashSize(t.bytes)}`,
+           bad: false };
+}
+
+function trashFolderText(m) {
+  const t = m.hub_trash;
+  if (!t || t.bytes == null) return { text: 'not reported', bad: true };
+  if (t.bytes === 0) return { text: 'empty', bad: false };
+  return { text: `${t.count == null ? '' : `${t.count} item${t.count === 1 ? '' : 's'}, `}${trashSize(t.bytes)}`,
+           bad: false };
+}
+
+function trashGB(gb) { return gb == null ? 'not reported' : `${Number(gb).toFixed(1)} GB free`; }
+
+function renderFleetTrash(d) {
+  const wrap = document.getElementById('fleet-trash-wrap');
+  const status = document.getElementById('fleet-trash-status');
+  if (!wrap) return;
+  const machines = (d && d.machines) || [];
+  if (!machines.length) {
+    wrap.innerHTML = '<div class="empty">No Macs are being reported yet.</div>';
+    if (status) status.textContent = '';
+    return;
+  }
+  let folder = 0, macos = 0, counted = 0;
+  const rows = machines.map(m => {
+    const key = trashKey(m), result = trashResults[key];
+    const f = trashFolderText(m), t = trashMacText(m);
+    if (f.text !== 'not reported') { folder += (m.hub_trash && m.hub_trash.bytes) || 0; counted += 1; }
+    if (t.text !== 'not reported' && !t.bad) macos += (m.macos_trash && m.macos_trash.bytes) || 0;
+    const said = String((result && result.reason) || '');
+    const state = result ? `<span class="pill">${esc(result.state)}</span> ${esc(said)}`
+      + (result.freed_bytes && !/freed/i.test(said) ? ` · freed ${esc(trashSize(result.freed_bytes))}` : '')
+      + (result.left_bytes && !/left/i.test(said) ? ` · ${esc(trashSize(result.left_bytes))} left` : '') : '';
+    // A Mac with both parts stated empty has nothing to empty; a Mac that states nothing may.
+    const nothing = m.hub_trash && m.hub_trash.bytes === 0 && m.macos_trash && m.macos_trash.bytes === 0;
+    const where = (m.location && m.location !== m.label) ? `<div class="muted">${esc(m.location)}</div>` : '';
+    return `<tr>
+      <td>${esc(m.label || m.machine || 'This Mac')}${where}</td>
+      <td class="${f.bad ? 'muted' : ''}">${esc(f.text)}</td>
+      <td class="${t.bad ? 'muted' : ''}">${esc(t.text)}</td>
+      <td class="muted">${esc(trashGB(m.disk && m.disk.free_gb != null ? m.disk.free_gb : m.disk_free_gb))}</td>
+      <td class="muted">${esc(trashGB(m.available_gb))}</td>
+      <td>${nothing
+        ? '<span class="muted" title="Its Hub folder and macOS Trash are both stated empty">nothing to empty</span>'
+        : `<button type="button" class="sm danger" onclick='emptyTrashOne(${JSON.stringify(key).replace(/'/g, "&#39;")})'
+             ${trashRunning ? 'disabled' : ''}>Empty permanently…</button>`}</td>
+      <td id="trash-row-${esc(key)}">${state}</td>
+    </tr>`;
+  }).join('');
+  wrap.innerHTML = `<table class="table"><thead><tr>
+      <th>Mac</th><th>Hub folder</th><th>macOS Trash</th><th>Free disk</th><th>Free memory</th>
+      <th></th><th>Last empty</th></tr></thead><tbody>${rows}</tbody></table>`;
+  if (status) {
+    status.textContent = `${trashSize(folder) || 'nothing reported'} in Hub Trash Folders across `
+      + `${counted} Mac${counted === 1 ? '' : 's'} · ${trashSize(macos) || 'nothing reported'} in macOS Trash. `
+      + 'Counted from the Macs that reported a size.';
+  }
+}
+
+async function loadTrash(force) {
+  const status = document.getElementById('fleet-trash-status');
+  if (status && !lastFleetPayload) status.textContent = 'Reading every Mac…';
+  if (force) await loadFleet(true);
+  else if (!lastFleetPayload) await loadFleet();
+  if (lastFleetPayload) renderFleetTrash(lastFleetPayload);
+}
+
+function trashPayload(m) {
+  return m ? { location_id: m.location_id, machine: m.machine } : { scope: 'all' };
+}
+
+function trashAnswer(answer, machines) {
+  const named = {};
+  for (const row of (answer && answer.machines) || []) {
+    named[`${row.location_id || ''}|${row.machine || ''}`] = row;
+  }
+  for (const [key, row] of Object.entries(named)) trashResults[key] = row;
+  const totals = (answer && answer.totals) || {};
+  const said = `emptied ${totals.emptied || 0} · skipped ${totals.skipped || 0} · failed ${totals.failed || 0}`
+    + (totals.freed_bytes ? ` · freed ${trashSize(totals.freed_bytes)}` : '')
+    + (totals.left_bytes ? ` · ${trashSize(totals.left_bytes)} left` : '');
+  const box = document.getElementById('fleet-trash-result');
+  if (box) box.textContent = said;
+  if (machines) renderFleetTrash({ machines });
+}
+
+async function emptyTrashEverywhere() {
+  if (trashRunning) return;
+  const machines = (lastFleetPayload && lastFleetPayload.machines) || [];
+  const yes = await uiConfirm(
+    "This permanently deletes every Mac's Studio Hub Trash Folder and everything in its macOS Trash. "
+      + 'Nothing is kept, and it cannot be undone. A Mac whose switch is off, whose Hub is older than '
+      + '0.6.243, or that is offline is skipped and says why on its row.',
+    { title: 'Empty trash on every Mac? This is permanent.', confirmLabel: 'Empty permanently', danger: true });
+  if (!yes) return;
+  trashRunning = true;
+  renderFleetTrash({ machines });
+  try {
+    const done = await api('/fleet/trash/empty', fleetPayload({ scope: 'all' }));
+    trashAnswer(done, machines);
+  } catch (e) {
+    const box = document.getElementById('fleet-trash-result');
+    if (box) box.textContent = `Could not empty trash: ${e.message}`;
+  } finally {
+    trashRunning = false;
+    renderFleetTrash({ machines: (lastFleetPayload && lastFleetPayload.machines) || machines });
+  }
+}
+
+async function emptyTrashOne(key) {
+  if (trashRunning) return;
+  const machines = (lastFleetPayload && lastFleetPayload.machines) || [];
+  const mac = machines.find(m => trashKey(m) === key);
+  if (!mac) return;
+  const yes = await uiConfirm(
+    "This permanently deletes that Mac's Studio Hub Trash Folder and everything in its macOS Trash. "
+      + 'Nothing is kept, and it cannot be undone.',
+    { title: `Empty ${mac.label || mac.machine}? This is permanent.`, confirmLabel: 'Empty permanently',
+      danger: true });
+  if (!yes) return;
+  trashRunning = true;
+  try {
+    const done = await api('/fleet/trash/empty', fleetPayload(trashPayload(mac)));
+    trashAnswer(done, machines);
+  } catch (e) {
+    const box = document.getElementById('fleet-trash-result');
+    if (box) box.textContent = `Could not empty trash: ${e.message}`;
+  } finally {
+    trashRunning = false;
+    renderFleetTrash({ machines: (lastFleetPayload && lastFleetPayload.machines) || machines });
+  }
 }
 
 async function loadFleet(force) {

@@ -276,7 +276,54 @@ class Overlay(BaseHTTPRequestHandler):
             return
         self._proxy()
 
+    def _empty_trash(self, scope: dict) -> bytes:
+        """The Gateway's empty-trash answer over the fixture fleet, mixed on purpose.
+
+        Every state a row can end in is shown at least once — emptied, skipped for each of the Hub's
+        own reasons, and a partial failure that says what is left — so a reviewer reads the words the
+        real route produces without a real Hub.
+        """
+        snapshot = json.loads(self.fleet_body)
+        macs = [m for m in snapshot.get("machines") or [] if m.get("location_id") and m.get("machine")]
+        if scope.get("scope") == "machine":
+            macs = [m for m in macs if m.get("location_id") == scope.get("location_id")
+                    and m.get("machine") == scope.get("machine")]
+        states = [
+            ("emptied", None, "freed 2.4 GB from the Hub folder and 900 MB from macOS Trash", 3_300_000_000, None),
+            ("skipped", "REMOTE_EMPTY_OFF", "remote empty is off on this Mac", None, None),
+            ("skipped", "NODE_UNREACHABLE", "the Mac did not answer", None, None),
+            ("failed", "PERMISSION_DENIED", "Operation not permitted", 120_000_000, 480_000_000),
+            ("skipped", "QUEUED", "waiting for the Mac to check in", None, None),
+        ]
+        machines = []
+        for index, mac in enumerate(macs):
+            state, code, reason, freed, left = states[index % len(states)]
+            machines.append({"location_id": mac["location_id"], "machine": mac["machine"],
+                             "label": mac.get("label"), "state": state,
+                             "code": code, "reason": reason, "freed_bytes": freed,
+                             "deleted_count": 3 if state == "emptied" else None,
+                             "left_bytes": left, "left_count": 2 if left else None,
+                             "locations": ["hub_trash", "macos_trash"] if state == "emptied" else []})
+        totals = {"emptied": sum(1 for m in machines if m["state"] == "emptied"),
+                  "skipped": sum(1 for m in machines if m["state"] == "skipped"),
+                  "failed": sum(1 for m in machines if m["state"] == "failed"),
+                  "freed_bytes": sum(m["freed_bytes"] or 0 for m in machines),
+                  "left_bytes": sum(m["left_bytes"] or 0 for m in machines)}
+        time.sleep(float(os.environ.get("GATEWAY_RENDER_EMPTY_DELAY", "2.5")))
+        return json.dumps({"ok": totals["failed"] == 0, "scope": scope.get("scope") or "all",
+                           "caller": "owner", "machines": machines, "totals": totals}).encode()
+
     def do_POST(self):
+        if self.path == "/admin/api/fleet/trash/empty":
+            length = int(self.headers.get("Content-Length") or 0)
+            scope = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            body = self._empty_trash(scope if isinstance(scope, dict) else {})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/admin/api/fleet/controllers" and self.add_answer:
             self.rfile.read(int(self.headers.get("Content-Length") or 0))
             # Long enough for the harness to draw the in-flight state, as a slow controller would be.
