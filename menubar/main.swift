@@ -1271,8 +1271,14 @@ enum LaunchAgent {
         }
     }
 
-    /// One plist, one program. `KeepAlive: Crashed` restarts a crash but **not** a spawn launchd
-    /// itself refused: `SuccessfulExit: false` retried an exit-78 spawn failure 10 060 times on 1301.
+    /// One plist, one program.
+    ///
+    /// `KeepAlive: SuccessfulExit false` is the **self-healing** half (Developer, 2026-11-16): a
+    /// crash *or* a failed spawn is retried, so a Gateway down at 3 a.m. comes back with no timer
+    /// and nobody watching, and a deliberate Quit (exit 0) stays quit. `ThrottleInterval` is what
+    /// makes that safe: on 1301 a refused spawn under this same KeepAlive ran **10 060 times**, once
+    /// a minute, because launchd's default throttle is 10 s and nothing bounded the count. One
+    /// attempt a minute is still self-healing within a minute and cannot spin.
     private static func writePlist(executable: String) {
         try? FileManager.default.createDirectory(at: plistURL.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
@@ -1280,7 +1286,8 @@ enum LaunchAgent {
             "Label": label,
             "ProgramArguments": [executable, "--background"],
             "RunAtLoad": true,
-            "KeepAlive": ["Crashed": true],
+            "KeepAlive": ["SuccessfulExit": false],
+            "ThrottleInterval": 60,
             "ProcessType": "Interactive",
             "LimitLoadToSessionType": "Aqua",
         ]

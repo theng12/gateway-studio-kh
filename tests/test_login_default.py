@@ -67,9 +67,10 @@ class LoginItemIsAPlistAgent(unittest.TestCase):
         self.assertIn('"Label": label', write)
         self.assertIn('"ProgramArguments": [executable, "--background"]', write)
         self.assertIn('"RunAtLoad": true', write)
-        self.assertIn('"KeepAlive": ["Crashed": true]', write,
-                      "a crash restarts; a spawn launchd refused must not loop")
-        self.assertNotIn("SuccessfulExit", write)
+        self.assertIn('"KeepAlive": ["SuccessfulExit": false]', write,
+                      "a crash or a failed spawn restarts; a deliberate Quit (exit 0) stays quit")
+        self.assertIn('"ThrottleInterval": 60', write,
+                      "one attempt a minute: a refused spawn self-heals, never spins (1301 ran 10 060 times)")
 
     def test_it_loads_the_job_without_needing_a_certificate(self) -> None:
         install = self._function("install", "static func uninstall(")
@@ -92,6 +93,20 @@ class LoginItemIsAPlistAgent(unittest.TestCase):
         self.assertIn("if runningAsAgent { return }", refresh)
         self.assertIn('"bootout", "gui/', refresh, "a moved app is re-pointed once")
         self.assertIn("writePlist(executable: executable)", refresh)
+
+    def test_a_missing_stale_or_misdirected_plist_is_put_right(self) -> None:
+        # Missing: install writes it.
+        install = self._function("install", "static func uninstall(")
+        self.assertIn("writePlist(executable: executable)", install)
+        # Stale (a plist exists but the app moved) and misdirected (it names another path):
+        # `refresh` compares the program the plist names and rewrites it once.
+        refresh = self._function("refresh", "static func install(")
+        self.assertIn("guard let executable, plistExecutable != executable else {", refresh)
+        self.assertIn("writePlist(executable: executable)", refresh)
+        # A stale plist whose job is no longer loaded is loaded again without being rewritten.
+        self.assertIn("if !isLoaded { _ = bootstrap(executable: executable) }", refresh)
+        # And a plist at the right path that the app cannot read is not counted as installed.
+        self.assertIn("plistExecutable != nil", self.agent.split("static var isInstalled")[1].split("}")[0])
 
     def test_the_old_bundled_smappservice_plist_is_gone_from_the_build(self) -> None:
         self.assertNotIn("SMAppService.agent(plistName:", self._function("writePlist", "private static func bootstrap("))
