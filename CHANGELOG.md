@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.262 — 2026-11-16
+
+- **The Launcher can request an update pause with its own private token.** It works only for pausing and resuming Gateway's queue, and cannot open Gateway's other settings. Gateway never creates or copies this token.
+- **Missing, incorrect or replaced update tokens leave the queue untouched.** Gateway reads the Launcher's current token for each request, so a replacement takes effect without restarting Gateway. Requests from a browser or another machine are refused.
+- **An update pause waits at most 30 seconds for work in flight.** Queued work stays queued, and a pause expires by itself if an update is abandoned. The release feed names Gateway's actual pause address so the Launcher can find it.
+
 ## 0.2.261 — 2026-11-15
 
 - **The Models page stops showing blank cards and counts it cannot draw.** Empty categories were full-height cards holding one sentence, and the chat card said "8 of 1613 offered" above a single inline model row, because the count came from the server summary while the list came from the rendered rows. One list now drives both: the count is the rows drawn, a subset says how many it is showing, and the rest is one action to see them; a category with nothing offered is a compact line with a Discover action, and the full-catalogue link is the primary action.

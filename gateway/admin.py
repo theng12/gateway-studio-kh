@@ -49,7 +49,7 @@ from . import price_evidence
 from . import pricing
 from .pricing import row_price
 from . import qualification
-from . import admin_session, model_share, render_optin, startup_control
+from . import admin_session, maintenance, model_share, render_optin, startup_control
 from . import orphans
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
@@ -273,6 +273,37 @@ def require_owner_console(request: Request) -> None:
                               "> … > Trash…). If the app did not start this gateway, restart it from the app.")
 
 
+def require_maintenance(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_hub_token: str | None = Header(default=None, alias="X-Hub-Token"),
+) -> None:
+    """The Launcher's hold token only — no owner fallback, no ambient loopback trust.
+
+    The maintenance drain route is safety-critical: an unauthenticated or mis-scoped caller
+    must never be able to pause dispatch. This guard accepts ONLY a valid hold-token verified
+    by reading the Launcher's 0600 file per request. It refuses worker keys, guest credentials,
+    cookies, query parameters, Origin headers, forwarded headers, non-loopback peers and
+    conflicting/malformed tokens BEFORE any side effect. There is no owner-key or session
+    fallback: an invalid scoped attempt cannot become valid through another credential path.
+    """
+    _refuse_worker_key(authorization)
+    if bearer_guest(request) is not None:
+        raise AdminError(403, "A guest account may only use the Create page.",
+                         "GUEST_NOT_ALLOWED")
+    identity = admin_session.session(request.cookies.get(admin_session.COOKIE))
+    if identity is not None and identity.get("role") == "guest":
+        raise AdminError(403, "A guest account may only use the Create page.",
+                         "GUEST_NOT_ALLOWED")
+    if maintenance.verify(authorization, x_hub_token, request):
+        return
+    raise AdminError(
+        401,
+        "Maintenance requires a valid Launcher hold token.",
+        "MAINTENANCE_UNAUTHORIZED",
+    )
+
+
 # FastAPI needs the exception registered on the app, so the router returns a
 # plain JSONResponse from handlers that can fail instead of raising a custom type.
 def _error(status: int, detail: str, code: str | None = None) -> JSONResponse:
@@ -492,20 +523,20 @@ def remove_browser_password() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
-@router.post("/api/maintenance/drain", dependencies=[Depends(require_admin)])
-def maintenance_drain(timeout_s: float = 15.0, pause_s: float = 120.0) -> dict[str, Any]:
+@router.post("/api/maintenance/drain", dependencies=[Depends(require_maintenance)])
+def maintenance_drain(timeout_s: float = 20.0, pause_s: float = 120.0) -> dict[str, Any]:
     """Prepare a restart: take no new work, wait for in-flight sends, say when a restart is safe.
 
     `safe` means a restart now holds nothing: every running job has an id the next start resumes.
     Queued jobs stay queued. Dispatch resumes by itself after `pause_s`, so an install that aborts
     never leaves the queue paused, or at once on `DELETE`."""
-    pause_s = min(max(pause_s, 1.0), 900.0)
-    left = worker.drain(min(max(timeout_s, 0.0), 60.0), pause_s=pause_s)
+    timeout_s, pause_s = maintenance.clamp_drain_params(timeout_s, pause_s)
+    left = worker.drain(timeout_s, pause_s=pause_s)
     return {"safe": not left, "unsettled": left, "dispatch_paused_s": pause_s,
             "in_flight": worker.active()}
 
 
-@router.delete("/api/maintenance/drain", dependencies=[Depends(require_admin)])
+@router.delete("/api/maintenance/drain", dependencies=[Depends(require_maintenance)])
 def maintenance_resume() -> dict[str, Any]:
     worker.resume_dispatch()
     return {"dispatch_paused": worker.dispatch_paused()}

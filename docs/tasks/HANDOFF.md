@@ -8,30 +8,39 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 ## Where it runs
 
-- **This Mac** — development and test installs.
-- **1301** (`127.0.0.1`) — the gateway machine, 645 GB free, 2–3 parallel sessions available. Also the updater feed host.
+- **This Mac** — development and isolated tests; no installed Gateway is claimed here.
+- **1301** (`127.0.0.1`) — the live gateway and updater feed host. Intended-host updates belong to the Launcher's safe automatic install path; never restart live work to manufacture proof.
 
 ## Versions
 
-- **0.2.258** — current: built from `c0e13e7`, accepted, installed here and published to the 1301
-  feed (2026-11-15). `release.json` gateway 0.2.258, sha
-  `7fbc55b1c4d58d7d25b249fba2e277edaef3b36d9b2e9e149eab0e70ea9bd8ab`, 61,968,765 bytes; served
-  artifact hashes identically. Packet: `_orchestra/gateway-lead/release-0257-20261114/packet-0258.md`.
-  The live capped gpt-6-luna check was **not run** (paid; needs the owner's go).
-- **0.2.257** — previous published build, kept in `dist/` beside 0.2.258 (`cb41b570…`, 61,498,949).
-- **0.2.256** — older published build (`2cd548aea731-gw-0256.dmg`, sha `2cd548ae…`, 63,254,947,
-  2026-11-13), retired from `dist/` to `~/Desktop/_trash/dist/` when 0.2.258 was accepted; the
-  e0d4232 candidate of the same version was never published and is in `_trash/dist/`.
+- **0.2.262** — source prepared, not yet built or published at this checkpoint. The Launcher owns
+  `~/Library/KHUpdater/state/hold-token` (0600, 64 hex) and atomically replaces it; Gateway reads it
+  per request. Only direct-loopback POST/DELETE `/admin/api/maintenance/drain` accepts it, via
+  `X-Hub-Token` and/or matching Bearer. Missing/invalid/replaced credentials, Origin, forwarded
+  headers, cookies and credential query parameters are refused before queue changes. No Gateway
+  issuance, enrollment, verifier, generation or rotation exists. Publish this release with
+  `HOLD_URL=http://127.0.0.1:8787/admin/api/maintenance/drain`; read the field and artifact hash back.
+  The Launcher owner also needs that exact admin path in its URL allowlist and a test proving a
+  refused hold starts no download, quit or replacement. Gateway's focused checks: 55 auth tests
+  plus 11 drain/restart tests; this is not packaged or intended-host update proof.
+- **0.2.261** — published from `01f1b32`, build `01f1b32-202611160820`, SHA-256
+  `ff62b3632df229226332a6d20f8a6e6f36da217032b1bf3cfb3883f3d344f1f2`, 61,535,461 bytes.
+  Served bytes independently hash identically. Gate: 248 files, 3,728 unit tests and 586 e2e checks.
+  Its feed entry lacks `holdURL` and remains immutable; do not rebuild, republish or edit its metadata.
+  Receipt: `_orchestra/youtube-stack/release-261/release-receipt.json`.
+- **0.2.260** — previous feed release; last intended-host measurement on 1301 still named build
+  `10289af-202611150645`. Installation of 0.2.261 was not verified. Retained 0.2.259/0.2.260 installers,
+  source, caches and rollback evidence stay untouched under the owner's stable-version hold.
 - **1301 login item:** the bundled `SMAppService.agent` plist is correct (`RunAtLoad`, `KeepAlive
   SuccessfulExit=false`). The broken `partial import`/`EX_CONFIG 78` record was replaced on
   2026-11-15 by `launchctl bootout` + `bootstrap` of the bundled plist; `/health` stayed up.
   Remaining proof (quiet point only): fully quit the app or reboot 1301 and confirm `/health`
   without a kickstart. See `_orchestra/gateway-lead/release-0257-20261114/1301-login-item-finding.md`.
-- **1301 route:** SSH and the feed answer over the LAN at `terranash-1301-m1-16-1000`
-  (192.168.0.105) with `~/.ssh/id_ed25519_gateway1301`; the `100.x` IP and the HTTP feed port
-  time out even when Tailscale is off. Tailscale is not a prerequisite.
-- Release builds come from `menubar/build.sh`; `dist/` keeps the **latest two** verified DMGs,
-  older ones go to `_trash` after reference checks.
+- **1301 route:** the live Gateway answers at `http://127.0.0.1:8787`, and the authoritative
+  feed at `http://127.0.0.1:8790/release.json`. Use the existing pinned publisher SSH identity;
+  do not copy credentials between apps or change network settings.
+- Release builds come from `menubar/build.sh --no-install` and stage exact candidates under
+  `dist/.candidates/`. Preserve retained stable installers and caches; no automatic cleanup here.
 
 ## 0.2.257 — what changed (source `0cedfe5..980379b`)
 

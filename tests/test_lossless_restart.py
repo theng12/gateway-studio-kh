@@ -211,31 +211,76 @@ class TermStopsDispatchAtOnce(unittest.TestCase):
 
 
 class TheDrainRoute(unittest.TestCase):
+    """The maintenance drain route now requires a valid hold-token (0.2.262).
+
+    These tests create a temp fixture file and pass it via KHU_HOLD_TOKEN_FILE,
+    sending both X-Hub-Token and Authorization: Bearer headers as the real
+    Launcher does. Without a valid token the route returns 401.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import tempfile
+        cls._token_dir = tempfile.TemporaryDirectory(prefix="gateway-drain-test-")
+        cls._token_file = Path(cls._token_dir.name) / "hold-token"
+        cls._token = "a" * 64
+        cls._token_file.write_text(cls._token + "\n", encoding="utf-8")
+        os.chmod(cls._token_file, 0o600)
+        cls._prev_env = os.environ.get("KHU_HOLD_TOKEN_FILE")
+        os.environ["KHU_HOLD_TOKEN_FILE"] = str(cls._token_file)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._prev_env is None:
+            os.environ.pop("KHU_HOLD_TOKEN_FILE", None)
+        else:
+            os.environ["KHU_HOLD_TOKEN_FILE"] = cls._prev_env
+        cls._token_dir.cleanup()
+
+    def _headers(self) -> dict[str, str]:
+        return {"X-Hub-Token": self._token, "Authorization": f"Bearer {self._token}"}
+
     def test_drain_reports_safe_pauses_dispatch_and_resumes(self) -> None:
         self.addCleanup(live_worker.resume_dispatch)
         client = TestClient(api.app, client=("127.0.0.1", 50123))
         self.addCleanup(client.close)
-        answer = client.post("/admin/api/maintenance/drain", params={"timeout_s": 1, "pause_s": 30})
+        answer = client.post("/admin/api/maintenance/drain",
+                             params={"timeout_s": 1, "pause_s": 30},
+                             headers=self._headers())
         self.assertEqual(answer.status_code, 200, answer.text)
         body = answer.json()
         self.assertEqual((body["safe"], body["unsettled"]), (True, []))
         self.assertTrue(live_worker.dispatch_paused())
         self.assertTrue(client.get("/health").json()["worker"]["dispatch_paused"])
-        self.assertEqual(client.delete("/admin/api/maintenance/drain").json(), {"dispatch_paused": False})
+        self.assertEqual(
+            client.delete("/admin/api/maintenance/drain", headers=self._headers()).json(),
+            {"dispatch_paused": False},
+        )
 
     def test_the_pause_expires_by_itself(self) -> None:
         self.addCleanup(live_worker.resume_dispatch)
         client = TestClient(api.app, client=("127.0.0.1", 50124))
         self.addCleanup(client.close)
-        client.post("/admin/api/maintenance/drain", params={"timeout_s": 0, "pause_s": 1})
+        client.post("/admin/api/maintenance/drain",
+                    params={"timeout_s": 0, "pause_s": 1},
+                    headers=self._headers())
         self.assertTrue(live_worker.dispatch_paused())
         time.sleep(1.1)
         self.assertFalse(live_worker.dispatch_paused(), "an aborted install never leaves the queue paused")
 
-    def test_the_route_is_admin_only(self) -> None:
-        client = TestClient(api.app, client=("203.0.113.9", 50125))
+    def test_the_route_refuses_without_token(self) -> None:
+        client = TestClient(api.app, client=("127.0.0.1", 50125))
         self.addCleanup(client.close)
-        self.assertIn(client.post("/admin/api/maintenance/drain").status_code, (401, 403, 503))
+        # No headers at all — bare loopback must NOT work anymore
+        self.assertIn(client.post("/admin/api/maintenance/drain").status_code, (401, 403))
+
+    def test_the_route_refuses_non_loopback_even_with_token(self) -> None:
+        client = TestClient(api.app, client=("203.0.113.9", 50126))
+        self.addCleanup(client.close)
+        self.assertIn(
+            client.post("/admin/api/maintenance/drain", headers=self._headers()).status_code,
+            (401, 403),
+        )
 
 
 if __name__ == "__main__":
