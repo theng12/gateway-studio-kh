@@ -12,9 +12,16 @@ every feature title, and they are left as they were written.
 
 ## 0.2.266 — 2026-11-17
 
+- **The app can no longer break its own signature.** A Python file written inside the signed app makes macOS refuse it at the next launch — on the release Mac that took Gateway down for three minutes on 2026-11-17. The bundled Python now refuses to write those files whoever starts it: the app, a script, or a person at a shell. A 30-second run of the built app now leaves the signature valid and writes nothing.
+- **A job waiting for a Mac that never frees now ends instead of waiting for ever.** Past 45 minutes (editable in Settings) it either moves to another Mac that can run it or ends as retryable with the site and the minutes waited — "nothing was sent, retrying is safe". It no longer sits on "waiting for a free Mac" with no deadline.
 - **Story no longer sees the interruption behind a job.** A work item whose Mac, site or Gateway was interrupted stays `running` until the Gateway has settled it, and reaches Story as one of `queued`, `running`, `done`, or a failure no retry can fix. The reconciliation hold is still recorded and still shown on the Jobs page for the operator.
 - **"No Mac can run this right now" is a wait, not a failure.** A paused, offline, out-of-memory or not-yet-read Mac used to fail the job with "No reachable Mac can run …" after 30 seconds. The job now stays queued with that reason on its row and is ended only by its own time limit.
 - **The one time limit is on the row.** Every queued job now says how long it may wait and how much of that is left. It is the same editable ceiling in Settings.
+
+## 0.2.265 — 2026-11-17
+
+- **Gateway starts at login again, and still needs no certificate.** After an update to 0.2.264 the app stayed down until someone started it by hand: an older registration was still holding the app's name, and 0.2.264 no longer carried the file it needed to cancel it, so its attempt to load its own login item was refused every time. The app carries that file again, cancels the old registration, and loads its own login item; if the old row is still in the way it is cleared once and the load is tried again. Both outcomes are written to the log instead of failing quietly.
+- **The Fleet Trash page says which "off" a Mac is in.** One Mac's trash can be off because nobody ever turned it on, because the owner turned it off, or because the automatic rule is not running. The row said one sentence for all three; it now says **Off — never enabled**, **Off — you turned this off**, or **Off — automatic**, and a Mac that does not report it shows nothing rather than a guess.
 
 ## 0.2.264 — 2026-11-16
 

@@ -1164,6 +1164,22 @@ enum QuitSource {
 
 // MARK: - Launch at login
 
+// BEGIN launch-agent-job-check (compiled on its own by tests/test_login_default.swift)
+/// Whether `launchctl print` describes **the plist's own job**.
+///
+/// A row left behind by an `SMAppService` registration wears the same label but prints
+/// `path = (submitted by smd.93)`, so "a job with the label" is not "our job": a `refresh()`
+/// that believed it was would conclude all is well while the plist was never loaded
+/// (measured on 1301, 2026-11-17).
+enum LaunchAgentJobCheck {
+    static func isPlistJob(printOutput: String, plistPath: String) -> Bool {
+        printOutput.split(separator: "\n").contains { line in
+            line.trimmingCharacters(in: .whitespaces) == "path = \(plistPath)"
+        }
+    }
+}
+// END launch-agent-job-check
+
 enum LaunchAgent {
     static let label = "kh.gateway.menubar"
 
@@ -1201,9 +1217,21 @@ enum LaunchAgent {
         FileManager.default.fileExists(atPath: plistURL.path) && plistExecutable != nil
     }
 
-    /// Whether launchd currently has the job loaded (`launchctl print` exits 0 only for a real job).
+    /// Whether launchd currently has **the plist's job** loaded.
+    ///
+    /// `launchctl print` exits 0 for any job wearing the label — including one left behind by an
+    /// `SMAppService` registration, which prints `path = (submitted by smd.93)`. Only a line that
+    /// names our own plist counts, or `refresh()` concludes all is well while the plist was never
+    /// loaded (measured on 1301, 2026-11-17).
     static var isLoaded: Bool {
-        runLaunchctl(["print", "gui/\(getuid())/\(label)"]) == 0
+        let printed = launchctlOutput(["print", "gui/\(getuid())/\(label)"])
+        return printed.status == 0 && LaunchAgentJobCheck.isPlistJob(printOutput: printed.output,
+                                                                     plistPath: plistURL.path)
+    }
+
+    /// Whether **any** job wears the label, ours or a leftover.
+    static var labelIsTaken: Bool {
+        launchctlOutput(["print", "gui/\(getuid())/\(label)"]).status == 0
     }
 
     /// Whether a login launch may be started now: macOS 13+ has `SMAppService` but it cannot spawn an
@@ -1214,12 +1242,24 @@ enum LaunchAgent {
     /// `SMAppService`; that registration is cleared here, once, on every launch where one exists, so
     /// the plist below is the only thing that owns the label. This app never registers through
     /// `SMAppService` again (owner ruling 2026-11-16: stay certificate-free).
+    ///
+    /// `SMAppService.agent(plistName:)` finds the agent **in the app bundle**, so the bundle has to
+    /// carry the plist for this to resolve at all (`menubar/build.sh` writes it). With the plist
+    /// gone the status is `.notFound`, the old row was never cleared, the label stayed taken and
+    /// the plist could never be imported (measured on 1301, 2026-11-17).
     static func clearLegacyRegistration() {
         guard #available(macOS 13.0, *) else { return }
         let record = SMAppService.agent(plistName: "\(label).plist")
         guard record.status != .notRegistered else { return }
-        try? record.unregister()
-        NSLog("launch-at-login: cleared the old SMAppService registration for \(label)")
+        do {
+            try record.unregister()
+            NSLog("launch-at-login: cleared the old SMAppService registration for \(label)")
+        } catch {
+            // A refusal is said out loud: silently swallowing it left the old row holding the
+            // label, and every later import was refused with "same label as an existing service".
+            NSLog("launch-at-login: could not clear the old SMAppService registration for %@: %@",
+                  label, error.localizedDescription)
+        }
     }
 
     static func repairIfNeeded(current: String?) {
@@ -1250,13 +1290,13 @@ enum LaunchAgent {
     static func refresh(executable: String?) {
         if runningAsAgent { return }
         guard let executable, plistExecutable != executable else {
-            if !isLoaded { _ = bootstrap(executable: executable) }
+            if !isLoaded { loadPlist(executable: executable) }
             return
         }
         // The app moved (or an older build's path): one rewrite, one reboot of the job.
         writePlist(executable: executable)
         _ = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
-        if bootstrap(executable: executable) {
+        if loadPlist(executable: executable) {
             NSLog("launch-at-login points at %@ now (build %@)", executable, currentBuild ?? "?")
         }
     }
@@ -1265,7 +1305,7 @@ enum LaunchAgent {
         guard let executable = Bundle.main.executableURL?.resolvingSymlinksInPath().path else { return }
         writePlist(executable: executable)
         clearLegacyRegistration()   // one owner for the label, never two registrations
-        if bootstrap(executable: executable) {
+        if loadPlist(executable: executable) {
             NSLog("launch-at-login installed for %@ (build %@)", executable, currentBuild ?? "?")
         }
     }
@@ -1274,6 +1314,30 @@ enum LaunchAgent {
         _ = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
         try? FileManager.default.removeItem(at: plistURL)
         clearLegacyRegistration()
+    }
+
+    /// **Load the plist, and make sure it ends up owning the label.**
+    ///
+    /// A leftover row — an old `SMAppService` registration — wears the same label and makes the
+    /// import fail: "Caller tried to import service with same label as an existing service"
+    /// (measured on 1301, 2026-11-17, 00:54:50). It is booted out once, and the import is tried
+    /// again. If the plist still is not the loaded job afterwards, that is said out loud.
+    @discardableResult
+    private static func loadPlist(executable: String?) -> Bool {
+        guard let executable else { return false }
+        if !isLoaded, !bootstrap(executable: executable), labelIsTaken {
+            NSLog("launch-at-login: %@ was still taken by another row; booting it out", label)
+            let status = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
+            if status != 0 {
+                NSLog("launch-at-login: could not boot the old row out (launchctl exit %d)", status)
+            }
+            _ = bootstrap(executable: executable)
+        }
+        guard isLoaded else {
+            NSLog("launch-at-login: %@ did not end up loaded from %@", label, plistURL.path)
+            return false
+        }
+        return true
     }
 
     /// One plist, one program.
@@ -1329,6 +1393,24 @@ enum LaunchAgent {
             return task.terminationStatus
         } catch {
             return -1
+        }
+    }
+
+    /// `launchctl` with its output kept, for reading what launchd thinks about the job.
+    private static func launchctlOutput(_ arguments: [String]) -> (status: Int32, output: String) {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = arguments
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        do {
+            try task.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
+            return (task.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+        } catch {
+            return (-1, "")
         }
     }
 }

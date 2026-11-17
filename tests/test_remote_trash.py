@@ -293,6 +293,29 @@ class EmptyTrashTests(_Isolated):
         self.assertEqual(rows[("local", "node-3")]["locations"], ["trash", "macos_trash"])
         self.assertEqual((got["totals"]["failed"], got["totals"]["skipped"]), (0, 6))
 
+    def test_the_hubs_own_remote_empty_decision_survives_the_rebuilt_row(self) -> None:
+        """Hub 0.6.243 states each Mac's own "Allow remote empty" decision on its row: the page has to
+        be able to tell "off because nobody enabled it" from "off because the owner turned it off"."""
+        answer = httpx.Response(200, json={"ok": True, "machines": [
+            {"machine": "node-1", "state": "skipped", "code": "REMOTE_EMPTY_OFF",
+             "reason": "remote empty is off on this Mac",
+             "remote_empty": {"effective": False, "source": "off until you enable it",
+                              "reason": "remote empty is off", "rule": {"enabled": True, "window_days": 7}}},
+            {"machine": "node-2", "state": "emptied", "freed_bytes": 10, "deleted_count": 1,
+             "remote_empty": {"effective": True, "source": "you", "reason": None,
+                              "rule": {"enabled": True, "window_days": 7}}}]})
+        got = self.run_route("10.9.8.7", self.KEY, {}, {"local": answer, "ctl2": answer, "ctl3": answer}).json()
+        rows = {(row["location_id"], row["machine"]): row for row in got["machines"]}
+        never = rows[("local", "node-1")]["remote_empty"]
+        self.assertEqual((never["effective"], never["source"]), (False, "off until you enable it"))
+        self.assertEqual(never["rule"], {"enabled": True, "window_days": 7}, "the Hub's own words ride along")
+        self.assertEqual(rows[("local", "node-2")]["remote_empty"]["source"], "you")
+
+    def test_an_older_hub_states_no_remote_empty_decision(self) -> None:
+        old = httpx.Response(200, json={"ok": True, "machines": [{"machine": "node-1", "state": "emptied"}]})
+        got = self.run_route("10.9.8.7", self.KEY, {}, {"local": old, "ctl2": old, "ctl3": old}).json()
+        self.assertIsNone(got["machines"][0].get("remote_empty"), "nothing said is nothing, never a guess")
+
     def test_a_controller_level_skip_code_is_a_skip_not_a_failure(self) -> None:
         for code in ("REMOTE_EMPTY_OFF", "NODE_UNREACHABLE", "QUEUED", "HUB_TOO_OLD"):
             got = self.run_route("10.9.8.7", self.KEY, {"location_id": "ctl2", "machine": "node-1"},

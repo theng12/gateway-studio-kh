@@ -60,8 +60,11 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("removeItem(at: plistURL)", uninstall)
         self.assertIn("clearLegacyRegistration()", uninstall)
         build = (ROOT.parent / "menubar" / "build.sh").read_text()
-        self.assertNotIn("Contents/Library/LaunchAgents", build,
-                         "the bundled plist was the SMAppService mechanism and is not read now")
+        self.assertIn("Contents/Library/LaunchAgents", build,
+                      "the bundle carries the agent plist so SMAppService.agent(plistName:) resolves "
+                      "and the old registration can be cleared on 1301-shaped Macs")
+        # ...but the app never registers through it again: the plist is there to be found, not used.
+        self.assertNotIn(".register()", MAIN, "no SMAppService registration: stay certificate-free")
 
     def test_the_bundled_python_cannot_write_bytecode_into_its_own_bundle(self):
         """The bundle is signed: a `.pyc` written inside it breaks the seal and macOS kills the
