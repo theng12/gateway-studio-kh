@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.268 — 2026-11-17
+
+- **The Fleet page says who paused a location.** A pause now records who made it: the app's own signed-in session reads "Paused by you", and a pause made through the API names its caller — "Paused by an API key", "Paused by a local API client (no credential)", or a name the caller gives. Before this, every pause, whoever made it, said "Paused by you"; three locations read that way on 2026-11-17 when no person had touched the page. Resume clears the name along with the pause.
+- **A job no longer waits 45 minutes on a site that answers nothing.** If the site a job is waiting on cannot take it at all — it is not answering, or it says it has no Mac that can run the model — the job is moved or ended within five minutes, saying which it was, instead of standing in a line that will not move. A site whose Macs are merely busy still keeps the full wait.
+
 ## 0.2.267 — 2026-11-17
 
 - **The Fleet page says when each warning was measured, and stops repeating old ones.** Every attention row now shows the cause with the time it was measured. A Mac nobody has heard from inside Hub's reporting interval reads "Not checked in since HH:MM" instead of looking broken, and a fault that has cleared disappears instead of waiting for the next successful job. How old a reading may be is adjustable.
