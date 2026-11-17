@@ -63,6 +63,17 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn("Contents/Library/LaunchAgents", build,
                          "the bundled plist was the SMAppService mechanism and is not read now")
 
+    def test_the_bundled_python_cannot_write_bytecode_into_its_own_bundle(self):
+        """The bundle is signed: a `.pyc` written inside it breaks the seal and macOS kills the
+        app at its next launch (measured on 1301, 2026-11-17: 9 `__pycache__` dirs, codesign -v
+        failed, the app killed at launch). `-B` covers the process the app spawns; `sitecustomize`
+        covers every other caller of the bundled interpreter."""
+        build = (ROOT.parent / "menubar" / "build.sh").read_text()
+        self.assertIn("sitecustomize.py", build,
+                      "the bundled interpreter needs sitecustomize, or a bare run writes .pyc")
+        self.assertIn("sys.dont_write_bytecode = True", build,
+                      "sitecustomize must switch bytecode writing off, not merely warn")
+
     def test_uninstall_keeps_the_users_data(self):
         """Nothing in the app may delete the Application Support folder or its config/logins."""
         for forbidden in ("Application Support/gateway-kh\", \"",
