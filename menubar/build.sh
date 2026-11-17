@@ -693,6 +693,15 @@ codesign --force --timestamp=none --sign "$SIGN" "$HELPER"
 codesign --force --timestamp=none --sign "$SIGN" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
+# **The runtime is read-only, so nothing can be written into the signed resources.** `-B` and
+# `sitecustomize` cover the interpreter the app starts and everything imported after `site`; this
+# covers the handful of modules Python compiles *before* `site` runs (5 files, measured), whoever
+# starts the interpreter and in whatever environment. `codesign --verify` still passes with the
+# mode changed: the seal covers content, not permissions. Must come after signing, which needs to
+# write the signature into the Mach-O files.
+chmod -R a-w "$APP/Contents/Resources/python"
+codesign --verify --deep --strict --verbose=2 "$APP"
+
 # Each build is a **candidate**, not an accepted release: it lands outside the
 # canonical accepted names (`dist/Gateway Studio KH-<version>.dmg`), because a
 # same-version rebuild that fails must not cost either of the two verified DMGs
