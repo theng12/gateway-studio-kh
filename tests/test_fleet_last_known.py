@@ -137,6 +137,10 @@ class ASlowSiteKeepsItsMachinesTest(_Case):
             self.assertEqual(row["last_known_state"], "ready")
             self.assertRegex(row["state_text"], r"^Last report \d{2}:\d{2}$")
             self.assertEqual(row["location_id"], "c1")
+            # A carried row's attention verdict is stale: marked so the page draws
+            # "not checked in since HH:MM" instead of a fault sentence.
+            self.assertEqual(row["attention_source"], "last_known")
+            self.assertAlmostEqual(row["attention_measured_at"], answered_at, places=3)
 
         # The location row still carries what it last reported and why, in its own sentence.
         row = next(r for r in value["locations"] if r["id"] == "c1")

@@ -7629,7 +7629,8 @@ function fleetMac(m) {
       </div>
     </div>
     ${doing ? `<div class="cat">${esc(doing)}</div>` : ''}
-    ${m.attention ? `<div class="msg warn">${esc(m.attention)}</div>` : ''}
+    ${m.attention && m.attention_source !== 'last_known' ? `<div class="msg warn">${esc(m.attention)}${m.attention_measured_at ? ` <span class="hint">· measured ${new Date(m.attention_measured_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>` : ''}</div>` : ''}
+    ${m.attention_source === 'last_known' ? `<div class="hint">Not checked in since ${new Date((m.attention_measured_at || 0) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>` : ''}
     ${offlineSince}
     ${conn && conn.slow ? `<div class="msg warn">Slow link — check cable/port (${esc(connText)})</div>` : ''}
     ${fleetCause({ kind: 'machine', row: m })}
@@ -8186,8 +8187,13 @@ function fleetMachineRow(m) {
       <div><div class="cell-line">${carried ? '—' : fleetStrip(m.history)}</div>
       <div class="ft-sub">${esc(carried ? 'Not measured this read' : fleetShortSummary(m.history))}</div></div></td>
     <td data-label="Likely cause" title="${esc(causeTip)}">
-      <div class="ft-cause" title="${esc(cause)}"
-        style="${carried ? '' : fleetCauseStyle(fleetCauseHealth(m.causes, m))}">${esc(cause)}</div></td>
+      <div class="ft-cause" title="${esc(m.attention && m.attention_source !== 'last_known' ? m.attention : cause)}"
+        style="${carried ? '' : fleetCauseStyle(fleetCauseHealth(m.causes, m))}">${esc(m.attention && m.attention_source !== 'last_known' ? m.attention : cause)}</div>${
+      !carried && m.attention && m.attention_source !== 'last_known'
+        ? `<div class="ft-sub hint">measured ${new Date((m.attention_measured_at || 0) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
+        : carried && m.attention_source === 'last_known'
+        ? `<div class="ft-sub hint">Not checked in since ${new Date((m.attention_measured_at || 0) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
+        : ''}</td>
     <td class="nowrap" data-label="Version"><div>${carried
       ? esc(m.hub_version || '—')
       : (version ? fleetBadge(version.text, version.health) : esc(m.hub_version || '—'))}${

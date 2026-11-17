@@ -351,3 +351,47 @@ test('the location filter offers every location and keeps the owner\'s choice', 
   assert.match(html, /Blue Room/);
   assert.match(html, /Studio 2/);
 });
+
+test('a current attention row shows the cause and measured time', async () => {
+  const measuredAt = Math.floor(Date.now() / 1000) - 120;
+  const ctx = context(payload([machine({
+    state: 'needs_attention',
+    attention: 'Last job failed: disk_full',
+    attention_source: 'current',
+    attention_measured_at: measuredAt,
+  })]));
+  await ctx.loadFleet();
+  const html = ctx.nodes.get('fleet-machines-wrap').innerHTML;
+  assert.match(html, /Last job failed: disk_full/);
+  assert.match(html, /measured \d{1,2}:\d{2}/);
+  assert.doesNotMatch(html, /Not checked in since/);
+});
+
+test('a last_known attention row shows not-checked-in instead of the fault', async () => {
+  const asOf = Math.floor(Date.now() / 1000) - 300;
+  const ctx = context(payload([machine({
+    state: 'last_known',
+    last_known: true,
+    attention: 'Flagged by its Hub',
+    attention_source: 'last_known',
+    attention_measured_at: asOf,
+  })]));
+  await ctx.loadFleet();
+  const html = ctx.nodes.get('fleet-machines-wrap').innerHTML;
+  assert.match(html, /Not checked in since \d{1,2}:\d{2}/);
+  assert.doesNotMatch(html, /Flagged by its Hub/);
+});
+
+test('a cleared attention row draws no marker at all', async () => {
+  const ctx = context(payload([machine({
+    state: 'ready',
+    attention: null,
+    attention_source: 'current',
+    attention_measured_at: Math.floor(Date.now() / 1000),
+  })]));
+  await ctx.loadFleet();
+  const html = ctx.nodes.get('fleet-machines-wrap').innerHTML;
+  assert.doesNotMatch(html, /msg warn/);
+  assert.doesNotMatch(html, /Not checked in since/);
+  assert.doesNotMatch(html, /measured \d{1,2}:\d{2}/);
+});

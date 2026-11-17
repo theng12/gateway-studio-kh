@@ -3064,15 +3064,19 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
         return ("needs_attention", "Last job failed" + (f": {reason[:80]}" if reason else ""),
                 "recent_job_failed")
     old_failure = latest.get("state") == "error"
-    if not phantom and not old_failure:
-        # The Hub saw something this Gateway cannot: keep its verdict, and say only that.
-        return "needs_attention", "Flagged by its Hub", "hub_flagged"
+    # **Cleared clears.** A row whose latest job succeeded or whose health is up does not carry
+    # an old "needs attention" sentence into this measurement. `hub_flagged` stays only when the
+    # Hub's *current* answer states it (the entry itself arrived as `needs_attention` from the
+    # Hub and nothing above found a visible cause); a carried row re-measured as healthy clears.
     if isinstance(entry.get("current_job"), dict):
         return "working", None, None
     if age is None:
         return "ready", None, None
-    if latest.get("state") == "done" and age < ATTENTION_ERROR_S:
-        return "just_finished", None, None
+    if latest.get("state") == "done":
+        return ("just_finished" if age < ATTENTION_ERROR_S else "ready"), None, None
+    if not phantom and not old_failure:
+        # No visible cause found but the Hub said needs_attention: keep its verdict.
+        return "needs_attention", "Flagged by its Hub", "hub_flagged"
     return ("long_idle" if age >= _LONG_IDLE_S else "ready"), None, None
 
 
@@ -3198,6 +3202,11 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                     w.get("online") is False and w not in phantom for w in workers):
                 limitation = {key: None for key in limitation}
             reachable = machine.get("reachable") if machine else None
+            # **When this verdict was measured.** A current row is measured at this fan-out's own
+            # time; a carried row keeps its `as_of` so the page can say "not checked in since HH:MM"
+            # rather than drawing a stale fault as live.
+            attention_measured_at = now
+            attention_source = "current"
             return {
                 "state": state,
                 "attention": why,
@@ -3206,6 +3215,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 # Gateway watched go down. `None` with `attention` set means an older row that never
                 # carried one: the reader falls back to the Hub's own wording.
                 "attention_code": code,
+                "attention_measured_at": attention_measured_at,
+                "attention_source": attention_source,
+                "checked_in_at": node.get("last_seen_at"),
                 "hub_version": version,
                 "version_status": version_status(
                     version, latest,
@@ -4147,6 +4159,10 @@ def _carry_last_known_machines(rows: list[dict], previous: dict | None) -> list[
                 "state_text": time.strftime("Last report %H:%M", time.localtime(as_of)),
                 "reachable": None,
                 "location_reachable": row.get("reachable"),
+                # A carried row's attention verdict is stale by definition: mark it so the page
+                # draws "not checked in since HH:MM" instead of a fault sentence.
+                "attention_source": "last_known",
+                "attention_measured_at": float(as_of),
             })
     return carried
 
