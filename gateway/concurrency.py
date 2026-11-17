@@ -143,6 +143,10 @@ DEFAULT_QUEUE_WAIT_CEILING_S = 3 * 3600.0
 #: fit Mac, or fails retryable with the reason — never `retry_in 0` under a sentence.
 DEFAULT_PLACEMENT_WAIT_CEILING_S = 45 * 60.0
 
+#: **How old an attention verdict may be before it reads as stale** (0.2.266).
+#: Follows Hub's 30-minute unprompted push interval; must move if Hub's does.
+DEFAULT_ATTENTION_MAX_AGE_S = 2100
+
 #: **How long an empty candidate set may persist before the job fails** (0.2.257).
 #:
 #: Not a queue wait: a job whose model no reachable location can run is waiting for something
@@ -481,6 +485,8 @@ def queue_wait_budget() -> dict[str, Any]:
     # fleet snapshot that is warming; busy locations are never failed by this.
     grace = entry.get("no_eligible_grace_seconds")
     grace_seconds = float(grace) if isinstance(grace, (int, float)) and not isinstance(grace, bool) and grace > 0 else None
+    attention_age = entry.get("attention_max_age_seconds")
+    attention_age_seconds = float(attention_age) if isinstance(attention_age, (int, float)) and not isinstance(attention_age, bool) and attention_age > 0 else None
     return {
         "max_deferrals": attempts if attempts is not None else DEFAULT_MAX_DEFERRALS,
         "defer_cap_seconds": cap_seconds if cap_seconds is not None else DEFAULT_DEFER_CAP_S,
@@ -490,9 +496,11 @@ def queue_wait_budget() -> dict[str, Any]:
                                            else DEFAULT_PLACEMENT_WAIT_CEILING_S),
         "no_eligible_grace_seconds": (grace_seconds if grace_seconds is not None
                                       else DEFAULT_NO_ELIGIBLE_GRACE_S),
+        "attention_max_age_seconds": (attention_age_seconds if attention_age_seconds is not None
+                                      else DEFAULT_ATTENTION_MAX_AGE_S),
         "source": SOURCE_CURATED if (attempts is not None or cap_seconds is not None
                                      or ceiling_seconds is not None or grace_seconds is not None
-                                     or placement_seconds is not None)
+                                     or placement_seconds is not None or attention_age_seconds is not None)
         else SOURCE_GATEWAY,
         "path": str(SETTINGS_PATH),
     }
@@ -1094,9 +1102,9 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
     if "queue" in payload:
         # Only the wait ceiling is editable from the page; the other queue numbers are kept as written.
         stated = payload["queue"]
-        allowed = {"wait_ceiling_seconds", "placement_wait_ceiling_seconds"}
+        allowed = {"wait_ceiling_seconds", "placement_wait_ceiling_seconds", "attention_max_age_seconds"}
         if not isinstance(stated, dict) or not set(stated) <= allowed:
-            raise SettingsRefused("queue takes only wait_ceiling_seconds and placement_wait_ceiling_seconds")
+            raise SettingsRefused("queue takes only wait_ceiling_seconds, placement_wait_ceiling_seconds and attention_max_age_seconds")
         entry = dict(current.get("queue") or {}) if isinstance(current.get("queue"), dict) else {}
         if "placement_wait_ceiling_seconds" in stated:
             placed = stated["placement_wait_ceiling_seconds"]
@@ -1116,6 +1124,15 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
                 raise SettingsRefused("the queue wait limit must be between 1 minute and 7 days, in seconds")
             else:
                 entry["wait_ceiling_seconds"] = int(value)
+        if "attention_max_age_seconds" in stated:
+            value = stated["attention_max_age_seconds"]
+            if value in (None, 0):
+                entry.pop("attention_max_age_seconds", None)
+            elif (isinstance(value, bool) or not isinstance(value, (int, float))
+                  or not 60 <= value <= 7 * 86400):
+                raise SettingsRefused("the attention age limit must be between 1 minute and 7 days, in seconds")
+            else:
+                entry["attention_max_age_seconds"] = int(value)
         if entry:
             current["queue"] = entry
         else:

@@ -85,6 +85,14 @@ class AHoldLooksRunningToStory(unittest.TestCase):
         with self.assertRaises(concurrency.SettingsRefused):
             concurrency.save_settings({"queue": {"placement_wait_ceiling_seconds": 30}})
 
+    def test_the_attention_max_age_is_configurable_and_rejects_non_integer(self) -> None:
+        """Default 2100 s follows Hub's 30-min push; non-integer is refused."""
+        self.assertEqual(concurrency.queue_wait_budget()["attention_max_age_seconds"], 2100)
+        concurrency.save_settings({"queue": {"attention_max_age_seconds": 1800}})
+        self.assertEqual(concurrency.queue_wait_budget()["attention_max_age_seconds"], 1800)
+        with self.assertRaises(concurrency.SettingsRefused):
+            concurrency.save_settings({"queue": {"attention_max_age_seconds": "not_a_number"}})
+
     def test_a_running_job_is_untouched(self) -> None:
         running = dict(HOLD, state="running", recovery_state=None, failure_code=None, failure_reason=None)
         self.assertEqual(api._job_envelope(running)["state"], "running")

@@ -3111,6 +3111,10 @@ def machines_flat(rows: list[dict]) -> list[dict]:
     only its pause flag comes from its own authenticated work policy. Other node
     fields stay `None`, and missing policy evidence stays unknown.
     """
+    # One settings read for the whole fan-out, not one per machine row.
+    from . import concurrency as _conc
+    _attention_max_age = float(_conc.queue_wait_budget().get(
+        "attention_max_age_seconds", _conc.DEFAULT_ATTENTION_MAX_AGE_S))
     out: list[dict] = []
     baseline = counters_since()
     for row in rows:
@@ -3207,6 +3211,25 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             # rather than drawing a stale fault as live.
             attention_measured_at = now
             attention_source = "current"
+            # Hub's relay may answer with source="unreachable" for a node it cannot reach (HTTP 502,
+            # code LOCATION_UNREACHABLE): that is an un-measured row, not a fault — treat it like
+            # a cached/carried row so the page draws "Not checked in since" instead of attention.
+            node_source = node.get("source")
+            if isinstance(node_source, str) and node_source.lower() == "unreachable":
+                attention_source = "last_known"
+            # Age the verdict: Hub pushes every 30 min, so a measurement older than the configured
+            # ceiling is stale even if the row itself arrived fresh. Effective time prefers the Hub's
+            # own measured_at, falls back to checked_in_at, then to this read's now (no regression
+            # for Hubs predating these fields).
+            _hub_measured = node.get("measured_at")
+            _effective = (float(_hub_measured) if isinstance(_hub_measured, (int, float)) and not isinstance(_hub_measured, bool) and _hub_measured > 0
+                          else (node.get("last_seen_at") if isinstance(node.get("last_seen_at"), (int, float)) and not isinstance(node.get("last_seen_at"), bool) and node.get("last_seen_at") and node.get("last_seen_at") > 0
+                                else now))
+            if attention_source == "current" and now - _effective > _attention_max_age:
+                attention_source = "last_known"
+                attention_measured_at = _effective
+            elif attention_source == "last_known" and attention_measured_at == now:
+                attention_measured_at = _effective
             return {
                 "state": state,
                 "attention": why,

@@ -274,5 +274,54 @@ class TheFleetRouteCarriesThemOnlyOnItsCopiesTest(_Case):
         self.assertNotIn("gone", [row["location_id"] for row in body["machines"]])
 
 
+class AttentionAgingTest(_Case):
+    """A verdict older than attention_max_age_seconds reads last_known, not current."""
+
+    def _node(self, mid: str, **fields) -> dict:
+        return {"id": mid, **fields}
+
+    def test_fresh_row_stays_current(self) -> None:
+        now = time.time()
+        loc = _location("c1", "Terranash", [_machine("m1")],
+                        nodes=[self._node("m1", last_seen_at=now)])
+        value = self._read([loc])
+        row = self._by_location(value, "c1")[0]
+        self.assertEqual(row["attention_source"], "current")
+        self.assertAlmostEqual(row["attention_measured_at"], now, delta=2)
+
+    def test_old_measurement_ages_to_last_known(self) -> None:
+        now = time.time()
+        old = now - 3600  # one hour ago, well past 2100 s default
+        loc = _location("c1", "Terranash", [_machine("m1")],
+                        nodes=[self._node("m1", measured_at=old, last_seen_at=old)])
+        value = self._read([loc])
+        row = self._by_location(value, "c1")[0]
+        self.assertEqual(row["attention_source"], "last_known")
+        self.assertAlmostEqual(row["attention_measured_at"], old, places=1)
+
+    def test_no_hub_fields_keeps_current_at_read_time(self) -> None:
+        """A Hub predating measured_at/last_seen_at: no regression, current at now."""
+        loc = _location("c1", "Terranash", [_machine("m1")], nodes=[self._node("m1")])
+        before = time.time()
+        value = self._read([loc])
+        after = time.time()
+        row = self._by_location(value, "c1")[0]
+        self.assertEqual(row["attention_source"], "current")
+        self.assertGreaterEqual(row["attention_measured_at"], before)
+        self.assertLessEqual(row["attention_measured_at"], after)
+
+    def test_unreachable_source_maps_to_last_known(self) -> None:
+        """Hub relay source='unreachable' is an un-measured row, not a fault."""
+        now = time.time()
+        old = now - 120
+        loc = _location("c1", "Terranash", [_machine("m1")],
+                        nodes=[self._node("m1", source="unreachable",
+                                          state="unknown", last_seen_at=old)])
+        value = self._read([loc])
+        row = self._by_location(value, "c1")[0]
+        self.assertEqual(row["attention_source"], "last_known")
+        self.assertAlmostEqual(row["attention_measured_at"], old, places=1)
+
+
 if __name__ == "__main__":
     unittest.main()
