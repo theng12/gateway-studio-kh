@@ -73,6 +73,34 @@ class WorkerLaunchGuardTests(unittest.TestCase):
         self.assertEqual(self.store.get(next_job["id"])["state"], "running")
         self.assertEqual(self.worker.pass_failures, 0)
 
+    def test_a_failed_due_read_leaves_health_red_until_a_clean_pass(self):
+        """A due() that raises must count as a failed pass — for the whole pass.
+
+        The pass read `due` in one try and dispatched in another, and the second one ended with
+        `self.pass_failures = 0`. So a persistent read failure left every job parked in `accepted`,
+        dispatched nothing, and `/health` published `consecutive_failures: 0` with a fresh
+        `last_pass_at` — a lying page about the whole app's ability to work.
+        """
+        worker = self.worker
+        worker._stop.clear()
+        worker._last_hold_sweep = time.time()
+        worker._last_superseded_sweep = time.time()
+        worker._last_liveness = time.time()
+        with patch.object(self.store, "due",
+                          side_effect=sqlite3.OperationalError("database is locked")), \
+                patch.object(worker._stop, "wait", side_effect=lambda _: worker._stop.set()), \
+                self.assertLogs("gateway.worker", level="ERROR"):
+            worker._loop()
+        self.assertEqual(worker.pass_failures, 1, "the failed pass must stay counted")
+        self.assertEqual(worker.liveness()["consecutive_failures"], 1,
+                         "/health must not read green when nothing was dispatched for a reason")
+
+        worker._stop.clear()   # the first loop stopped itself at the end of its pass
+        with patch.object(self.store, "due", return_value=[]), \
+                patch.object(worker._stop, "wait", side_effect=lambda _: worker._stop.set()):
+            worker._loop()
+        self.assertEqual(worker.pass_failures, 0, "a clean pass clears the count")
+
     def test_locked_claim_releases_booking_and_next_pass_can_start(self):
         with patch.object(self.store, "mark_running", side_effect=sqlite3.OperationalError("database is locked")), \
                 self.assertLogs("gateway.worker", level="ERROR"):

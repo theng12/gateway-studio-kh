@@ -3011,6 +3011,7 @@ class Worker:
             self._nowhere.clear()
             self._ahead.clear()
             self._normal_waiting = None
+            due_read_failed = False
             try:
                 with self._budget_lock:
                     groups = dict(self._per_group)
@@ -3023,6 +3024,13 @@ class Worker:
             except Exception:  # noqa: BLE001
                 log.exception("worker could not read due jobs")
                 due = []
+                # **A failed read is a failed pass, and the pass must not undo it.** The dispatch
+                # block below used to end with `pass_failures = 0` unconditionally; with a read that
+                # raised, `due` was empty, nothing was dispatched, and `/health` published
+                # `consecutive_failures: 0` with a fresh `last_pass_at` — green while the whole app
+                # could not move a job. Counted here, and the reset below is skipped.
+                due_read_failed = True
+                self.pass_failures += 1
 
             try:
                 if self._render_service is not None and not self.dispatch_paused():
@@ -3051,7 +3059,8 @@ class Worker:
                     self._rebind_backoff.pop(job["id"], None)
                     self._placement_wait_started.pop(job["id"], None)
                     self._start_job(job)
-                self.pass_failures = 0
+                if not due_read_failed:
+                    self.pass_failures = 0
             except Exception:  # noqa: BLE001 - the next pass must still happen
                 self.pass_failures += 1
                 log.exception("worker dispatch pass failed (consecutive: %s)",
