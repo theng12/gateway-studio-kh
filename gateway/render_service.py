@@ -73,6 +73,10 @@ _HUB_SELF_LABEL = "local"
 #: enough to outlast a transient Hub 5xx, short enough that Story's `remote_wait` cannot hang on
 #: an answer that will never become acceptable.
 _HUB_STATUS_REJECTION_LIMIT = 30
+#: Wall-clock ceiling for a non-terminal render: an alternating destination or a lost in-memory
+#: counter after restart would otherwise keep the row polling forever. Two hours is well past any
+#: legitimate render while short enough that Story's wait cannot hang overnight.
+_RENDER_NON_TERMINAL_CEILING_SECONDS = 7_200
 #: How much of an unacceptable answer is quoted in the log: the Hub's words, never the whole body.
 _ANSWER_EXCERPT_CHARACTERS = 240
 _HUB_JOB_KEYS = frozenset((
@@ -1528,7 +1532,7 @@ class FinalRenderService:
     def _status_answer_refused(
         self, row: dict[str, Any], delivery: dict[str, Any], answer: Any,
         error: RenderServiceError,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         """Log an answer the Gateway cannot accept, and end the render after a bounded run of them.
 
         Raising out of the monitor thread is what made this expensive: the dispatch clock restarts
@@ -1536,32 +1540,45 @@ class FinalRenderService:
         stayed `accepted` for ever and Story waited. The Hub's own words go to the log every time;
         a run that never becomes acceptable settles `failed`, which is the delivery state Story
         already reads as a remote refusal and falls back locally from.
+
+        Returns a settlement dict when the delivery should be marked failed, or None when the
+        refusal is counted but the bound has not yet been reached. The caller performs the write
+        so it runs outside any implicit transaction left open by the delivery read at the top of
+        the accepted block — Python's sqlite3 default isolation_level starts one on every SELECT,
+        and BEGIN IMMEDIATE inside it would raise "cannot start a transaction within a transaction".
         """
         count = self._status_rejections.get(row["id"], 0) + 1
         self._status_rejections[row["id"]] = count
-        log.warning(
-            "render %s: cannot accept the destination's answer for Hub job %s (%s; %s); "
-            "answer %d of %d before the render is reported failed",
-            row["id"], row.get("hub_job_id"), error.code, _answer_excerpt(answer), count,
-            _HUB_STATUS_REJECTION_LIMIT,
-        )
-        if count < _HUB_STATUS_REJECTION_LIMIT:
-            return
+        # Rate-limit: first refusal, every 10th, and the final one that triggers settlement.
+        if count == 1 or count % 10 == 0 or count >= _HUB_STATUS_REJECTION_LIMIT:
+            log.warning(
+                "render %s: cannot accept the destination's answer for Hub job %s (%s; %s); "
+                "answer %d of %d before the render is reported failed",
+                row["id"], row.get("hub_job_id"), error.code, _answer_excerpt(answer), count,
+                _HUB_STATUS_REJECTION_LIMIT,
+            )
+        # Age ceiling: even if answers alternate (so the count resets or never reaches the limit),
+        # a row that has been non-terminal longer than the ceiling must settle failed. The
+        # in-memory counter is also lost on restart, so wall-clock time is the only reliable bound.
+        age_seconds = time.time() - float(row["created_at"])
+        if count < _HUB_STATUS_REJECTION_LIMIT \
+                and age_seconds < _RENDER_NON_TERMINAL_CEILING_SECONDS:
+            return None
         if delivery.get("output_asset_handle") is not None:
             # An imported output is not un-settled by a later answer: nothing here is allowed to
             # replace the receipt that was already proved.
-            return
-        try:
-            self.store.update_render_delivery(
-                row["id"], expected_revision=delivery["revision"], remote_state="failed",
-            )
-        except RenderJournalConflict:
-            return
-        self._status_rejections.pop(row["id"], None)
-        log.warning(
-            "render %s: the destination never answered acceptably, so it is reported failed; "
-            "Story falls back to a local render", row["id"],
-        )
+            return None
+        if delivery.get("remote_state") in ("failed", "cancelled"):
+            # Terminal is terminal: a refusal after settlement does not move the delivery back.
+            return None
+        reason = (f"refusal_count={count} after {age_seconds:.0f}s"
+                  if age_seconds >= _RENDER_NON_TERMINAL_CEILING_SECONDS
+                  else f"refusal_count={count}")
+        return {
+            "revision": delivery["revision"],
+            "remote_attempt_id": delivery.get("remote_attempt_id"),
+            "reason": reason,
+        }
 
     def _one_step(self, row: dict[str, Any]) -> None:
         destination = self._destination(row)
@@ -1880,7 +1897,32 @@ class FinalRenderService:
                 answer = self.hub.status(destination, row["hub_job_id"], error_body=True)
                 answer = self._hub_job(row, answer)
             except RenderServiceError as exc:
-                self._status_answer_refused(row, delivery, answer, exc)
+                settle = self._status_answer_refused(row, delivery, answer, exc)
+                if settle is not None:
+                    # The delivery read at the top of this block started an implicit
+                    # transaction (Python sqlite3 default isolation_level); commit it
+                    # so _render_write's BEGIN IMMEDIATE does not nest and raise.
+                    if self.store._conn.in_transaction:
+                        self.store._conn.commit()
+                    # Re-read delivery: an acceptable non-terminal answer on a previous
+                    # _one_step call may have advanced the revision since we read it at
+                    # the top of this block, so settling with the stale snapshot would
+                    # conflict silently and leave the row polling forever.
+                    fresh = self.store.get_render_delivery(row["id"]) or {"revision": 0}
+                    try:
+                        self.store.update_render_delivery(
+                            row["id"], expected_revision=fresh["revision"],
+                            remote_state="failed",
+                            remote_attempt_id=fresh.get("remote_attempt_id"),
+                            remote_descriptor={"reason": settle["reason"]},
+                        )
+                    except RenderJournalConflict:
+                        return
+                    self._status_rejections.pop(row["id"], None)
+                    log.warning(
+                        "render %s: the destination never answered acceptably, so it is reported failed; "
+                        "Story falls back to a local render", row["id"],
+                    )
                 return
             except Exception as exc:  # noqa: BLE001 - retried on the next pass, never fatal
                 # No acceptable answer arrived (the Mac is unreachable, the relay timed out, or a
@@ -1890,10 +1932,21 @@ class FinalRenderService:
                 log.warning("render %s: the status step failed (%s); retrying",
                             row["id"], type(exc).__name__)
                 return
-            self._status_rejections.pop(row["id"], None)
             remote = answer["state"]
+            # Terminal is terminal: if the delivery was already settled failed (e.g. by
+            # _status_answer_refused on a previous pass), a later non-terminal answer must
+            # not overwrite it back to rendering — that would un-settle the row and let it
+            # poll forever. Re-read to catch settlements from earlier in this same step.
+            current_delivery = self.store.get_render_delivery(row["id"]) or {}
+            if current_delivery.get("remote_state") in ("failed", "cancelled"):
+                return
+            if remote in ("output_ready", "failed", "cancelled", "stopped"):
+                # Reset the refusal counter only when the delivery settles terminal. A
+                # non-terminal acceptable answer (e.g. `rendering`) must not erase the count,
+                # because an alternating destination would otherwise keep the row polling forever.
+                self._status_rejections.pop(row["id"], None)
             self.store.update_render_delivery(
-                row["id"], expected_revision=delivery["revision"], remote_state=remote,
+                row["id"], expected_revision=current_delivery["revision"], remote_state=remote,
                 remote_attempt_id=answer.get("attempt_id"),
                 remote_descriptor=(answer["output_receipt"]
                                    if remote == "output_ready" else None),

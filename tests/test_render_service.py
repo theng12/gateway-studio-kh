@@ -62,6 +62,7 @@ from gateway.render_service import (  # noqa: E402
     RenderServiceError,
 )
 from gateway.store import JobStore, RenderJournalConflict  # noqa: E402
+from gateway.render_service import log as render_log  # noqa: E402
 
 
 OWNER = "11111111-1111-4111-8111-111111111111"
@@ -2265,15 +2266,21 @@ class DispatchLifecycleTests(RenderServiceCase):
                           captured.output[-1])
             self.assertIn("answer 1 of %d" % limit, captured.output[-1])
             # An answer whose body is the problem is quoted, bounded, in the Hub's own words.
+            # The second refusal is rate-limited (only 1st, every 10th, and final are logged),
+            # so this step does not produce a new warning line — but it still counts.
             self.hub.answers["status"] = [{"state": "rendering"}]
             self.service._one_step(self._row(job_id))
-            self.assertIn('body {"state": "rendering"}', captured.output[-1])
+            # Non-terminal acceptable answers no longer reset the rejection counter, so the
+            # count carries forward. The row stays non-terminal because the count is only 2.
             self.assertIsNone(self.store.get_render_delivery(job_id)["remote_state"])
             for _ in range(2, limit - 1):
                 self.hub.answers["status"] = [{"accepted": False, "http_status": 503}]
                 self.service._one_step(self._row(job_id))
-            self.assertIn("the Hub answered HTTP 503", captured.output[-1])
-            self.assertIsNone(self.store.get_render_delivery(job_id)["remote_state"])
+            # Refusals 3–29 are rate-limited; only 10 and 20 produced log lines in that range.
+            # The last logged line before the final one is refusal 20.
+            refusal_lines = [line for line in captured.output
+                             if "answer" in line and "of" in line and "before the render" in line]
+            self.assertIn("answer 20 of %d" % limit, refusal_lines[-1])
             self.hub.answers["status"] = [{"accepted": False, "http_status": 404}]
             self.service._one_step(self._row(job_id))
             self.assertEqual(
@@ -2285,13 +2292,19 @@ class DispatchLifecycleTests(RenderServiceCase):
         public = self.service.status(principal(), job_id)
         self.assertEqual((public["state"], public["remote_state"]), ("accepted", "failed"))
 
-    def test_an_accepted_status_answer_resets_the_rejection_count(self) -> None:
-        job_id, hub_id = self._accepted_at_the_hub("gateway-status-reset")
+    def test_an_accepted_status_answer_does_not_reset_the_rejection_count(self) -> None:
+        """A non-terminal acceptable answer must not erase the refusal counter.
+
+        The old code popped the counter on every acceptable answer, so an alternating
+        destination kept the row polling forever. Now only terminal answers reset it.
+        """
+        job_id, hub_id = self._accepted_at_the_hub("gateway-status-no-reset")
         limit = _HUB_STATUS_REJECTION_LIMIT
         with self.assertLogs("gateway.render_service", level="WARNING"):
             for _ in range(limit - 1):
                 self.hub.answers["status"] = [{"accepted": False, "http_status": 404}]
                 self.service._one_step(self._row(job_id))
+            # A non-terminal acceptable answer: the count must carry forward.
             self.hub.answers["status"] = [self._hub_job(
                 self._row(job_id), job_id=hub_id, state="rendering",
                 attempt_id="abcdefabcdefabcdefabcdefabcdefab",
@@ -2300,11 +2313,10 @@ class DispatchLifecycleTests(RenderServiceCase):
             self.assertEqual(
                 self.store.get_render_delivery(job_id)["remote_state"], "rendering",
             )
-            for _ in range(limit - 1):
-                self.hub.answers["status"] = [{"accepted": False, "http_status": 404}]
-                self.service._one_step(self._row(job_id))
-        self.assertEqual(self.store.get_render_delivery(job_id)["remote_state"], "rendering")
-        self.assertEqual([item["id"] for item in self.store.render_due(limit=64)], [job_id])
+            # One more refusal pushes the count to the limit and settles failed.
+            self.hub.answers["status"] = [{"accepted": False, "http_status": 404}]
+            self.service._one_step(self._row(job_id))
+        self.assertEqual(self.store.get_render_delivery(job_id)["remote_state"], "failed")
 
     def test_a_transport_failure_is_retried_and_never_counts_as_a_refusal(self) -> None:
         job_id, _hub_id = self._accepted_at_the_hub("gateway-status-transport")
@@ -2559,6 +2571,98 @@ class DispatchLifecycleTests(RenderServiceCase):
                     "HUB_OUTPUT_UNKNOWN", self.service._import_output, row, delivery,
                     self.destination,
                 )
+
+    def test_alternating_answers_still_settle_failed_at_the_rejection_limit(self) -> None:
+        """An acceptable non-terminal answer between refusals must not reset the count."""
+        hub_id = "aaaa1111-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        attempt = "b1" * 16
+        row = self._advance_to_accepted("gateway-alternating-refusals",
+                                        hub_id=hub_id, attempt_id=attempt)
+        # Alternate: refusal, acceptable-rendering, refusal, acceptable-rendering, ...
+        # The old code popped the counter on every acceptable answer, so it never reached 30.
+        answers: list[object] = []
+        for i in range(60):
+            if i % 2 == 0:
+                answers.append(RenderServiceError("HUB_RESPONSE_UNKNOWN", 503))
+            else:
+                answers.append(self._hub_job(row, job_id=hub_id, state="rendering",
+                                             attempt_id=attempt))
+        self.hub.answers["status"] = answers
+        for _ in range(60):
+            self.service._one_step(self._row(row["id"]))
+        delivery = self.store.get_render_delivery(row["id"])
+        self.assertEqual(delivery["remote_state"], "failed")
+        descriptor = json.loads(delivery["remote_descriptor_json"])
+        self.assertIn("refusal_count=30", descriptor["reason"])
+
+    def test_age_ceiling_settles_failed_even_when_answers_alternate(self) -> None:
+        """A row older than the ceiling settles failed regardless of the refusal count."""
+        hub_id = "bbbb2222-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        attempt = "c2" * 16
+        row = self._advance_to_accepted("gateway-age-ceiling",
+                                        hub_id=hub_id, attempt_id=attempt)
+        # Backdate created_at to 3 hours ago so the age ceiling fires on the first refusal.
+        three_hours_ago = time.time() - 10_800
+        self.store._conn.execute(
+            "UPDATE render_staging SET created_at=? WHERE id=?", (three_hours_ago, row["id"])
+        )
+        self.hub.answers["status"] = [RenderServiceError("HUB_RESPONSE_UNKNOWN", 503)]
+        self.service._one_step(self._row(row["id"]))
+        delivery = self.store.get_render_delivery(row["id"])
+        self.assertEqual(delivery["remote_state"], "failed")
+        descriptor = json.loads(delivery["remote_descriptor_json"])
+        self.assertIn("after", descriptor["reason"])
+        self.assertIn("s", descriptor["reason"])
+
+    def test_refusal_after_terminal_settlement_does_not_move_delivery_back(self) -> None:
+        """Terminal is terminal: a refusal after failed cannot un-fail the delivery."""
+        hub_id = "cccc3333-cccc-4ccc-8ccc-cccccccccccc"
+        attempt = "d3" * 16
+        row = self._advance_to_accepted("gateway-terminal-is-terminal",
+                                        hub_id=hub_id, attempt_id=attempt)
+        # First: settle failed via the rejection limit (pre-seed the counter).
+        self.service._status_rejections[row["id"]] = 29
+        self.hub.answers["status"] = [
+            RenderServiceError("HUB_RESPONSE_UNKNOWN", 503),
+            RenderServiceError("HUB_RESPONSE_UNKNOWN", 503),
+        ]
+        self.service._one_step(self._row(row["id"]))
+        delivery = self.store.get_render_delivery(row["id"])
+        self.assertEqual(delivery["remote_state"], "failed")
+        revision_after_fail = delivery["revision"]
+        # Now send another refusal — it must not change anything.
+        self.service._one_step(self._row(row["id"]))
+        delivery_after = self.store.get_render_delivery(row["id"])
+        self.assertEqual(delivery_after["remote_state"], "failed")
+        self.assertEqual(delivery_after["revision"], revision_after_fail)
+
+    def test_refusal_log_is_rate_limited_to_first_every_tenth_and_final(self) -> None:
+        """The warning line fires on refusal 1, 10, 20, 30 — not on 2–9, 11–19, 21–29."""
+        hub_id = "dddd4444-dddd-4ddd-8ddd-dddddddddddd"
+        attempt = "e4" * 16
+        row = self._advance_to_accepted("gateway-rate-limited-log",
+                                        hub_id=hub_id, attempt_id=attempt)
+        logged_lines: list[str] = []
+        original_warning = render_log.warning
+
+        def capture_warning(msg, *args, **kwargs):
+            logged_lines.append(msg % args if args else msg)
+            original_warning(msg, *args, **kwargs)
+
+        refusals = [RenderServiceError("HUB_RESPONSE_UNKNOWN", 503) for _ in range(30)]
+        self.hub.answers["status"] = refusals
+        with patch.object(render_log, "warning", side_effect=capture_warning):
+            for _ in range(30):
+                self.service._one_step(self._row(row["id"]))
+        refusal_lines = [line for line in logged_lines
+                         if "answer" in line and "of" in line and "before the render" in line]
+        counts = []
+        import re as _re
+        for line in refusal_lines:
+            match = _re.search(r'answer (\d+) of \d+ before the render', line)
+            self.assertIsNotNone(match, f"could not parse count from: {line}")
+            counts.append(int(match.group(1)))
+        self.assertEqual(counts, [1, 10, 20, 30])
 
 
 class PhysicalRoutingTests(unittest.TestCase):
