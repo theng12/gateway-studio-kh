@@ -77,9 +77,13 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("sys.dont_write_bytecode = True", build,
                       "sitecustomize must switch bytecode writing off, not merely warn")
         # `sitecustomize` runs after `site`, so a handful of modules are compiled before it can set
-        # the flag (5 files, measured on a real bundle). A read-only runtime covers those too.
-        self.assertIn('chmod -R a-w "$APP/Contents/Resources/python"', build,
-                      "the bundled runtime must be read-only, or the pre-site modules still write")
+        # the flag (5 files, measured). A `__pycache__` *file* in each directory blocks those without
+        # freezing the tree — a read-only runtime stops the writes but makes `rm -rf` fail, which the
+        # updater's cleanup needs.
+        self.assertIn('[ -e "$DIR/__pycache__" ] || : > "$DIR/__pycache__"', build,
+                      "every directory that could receive a cache needs a blocker file")
+        self.assertNotIn("chmod -R a-w", build,
+                         "a frozen runtime cannot be removed by the updater's cleanup")
 
     def test_uninstall_keeps_the_users_data(self):
         """Nothing in the app may delete the Application Support folder or its config/logins."""

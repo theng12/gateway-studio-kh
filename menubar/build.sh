@@ -683,6 +683,16 @@ echo "==> signing with ${SIGN_ID:-ad-hoc}"
 # Development/import probes may have created bytecode before bundling. These
 # generated files are not shipped; the launcher uses -B to keep the seal intact.
 find "$APP/Contents/Resources" -type d -name "__pycache__" -prune -print | while IFS= read -r CACHE; do preserve_path "$CACHE"; done
+
+# **A `__pycache__` file in every directory that could receive one.** Python cannot create a
+# directory where a file of that name exists and skips the cache silently — so not one byte can be
+# written into the signed bundle, whoever starts the interpreter. Measured on a real bundle: the
+# bare repro (`python3 -c "import email, urllib.request"`, environment clean) writes **0** `.pyc`,
+# against 65 without it. A read-only runtime also stops the writes but makes the installed bundle
+# impossible to `rm -rf`, which the updater's cleanup needs; this leaves it fully replaceable and
+# removable. `sitecustomize.py` is still shipped, so no run even tries.
+find "$APP/Contents/Resources/python" -name '*.py' -exec dirname {} \; 2>/dev/null | sort -u \
+  | while IFS= read -r DIR; do [ -e "$DIR/__pycache__" ] || : > "$DIR/__pycache__"; done
 find "$APP/Contents/Resources" -type f \( -name '*.so' -o -name '*.dylib' \) -print0 \
   | xargs -0 -n 50 codesign --force --timestamp=none --sign "$SIGN"
 # The runtime copy keeps the stable identifier it always had. The helper bundle is
@@ -691,15 +701,6 @@ find "$APP/Contents/Resources" -type f \( -name '*.so' -o -name '*.dylib' \) -pr
 codesign --force --timestamp=none --sign "$SIGN" --identifier kh.gateway.python "$PY_HELPER"
 codesign --force --timestamp=none --sign "$SIGN" "$HELPER"
 codesign --force --timestamp=none --sign "$SIGN" "$APP"
-codesign --verify --deep --strict --verbose=2 "$APP"
-
-# **The runtime is read-only, so nothing can be written into the signed resources.** `-B` and
-# `sitecustomize` cover the interpreter the app starts and everything imported after `site`; this
-# covers the handful of modules Python compiles *before* `site` runs (5 files, measured), whoever
-# starts the interpreter and in whatever environment. `codesign --verify` still passes with the
-# mode changed: the seal covers content, not permissions. Must come after signing, which needs to
-# write the signature into the Mach-O files.
-chmod -R a-w "$APP/Contents/Resources/python"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 # Each build is a **candidate**, not an accepted release: it lands outside the
