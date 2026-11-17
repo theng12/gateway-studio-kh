@@ -1902,8 +1902,7 @@ class FinalRenderService:
                     # The delivery read at the top of this block started an implicit
                     # transaction (Python sqlite3 default isolation_level); commit it
                     # so _render_write's BEGIN IMMEDIATE does not nest and raise.
-                    if self.store._conn.in_transaction:
-                        self.store._conn.commit()
+                    self.store.commit()
                     # Re-read delivery: an acceptable non-terminal answer on a previous
                     # _one_step call may have advanced the revision since we read it at
                     # the top of this block, so settling with the stale snapshot would

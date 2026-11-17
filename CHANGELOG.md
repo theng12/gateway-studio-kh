@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.267 — 2026-11-17
+
+- **The Fleet page says when each warning was measured, and stops repeating old ones.** Every attention row now shows the cause with the time it was measured. A Mac nobody has heard from inside Hub's reporting interval reads "Not checked in since HH:MM" instead of looking broken, and a fault that has cleared disappears instead of waiting for the next successful job. How old a reading may be is adjustable.
+- **Gateway no longer reports itself healthy while it is not dispatching.** If it cannot read its own queue, its health says so — it used to show a fresh check with no failures while every job sat waiting.
+- **A render the destination keeps refusing ends, with a reason.** One render produced six thousand log lines over eighteen hours because a single good answer reset the failure count. It now ends after 30 refusals or two hours, says what the destination kept answering, and Story falls back to a local render.
+
 ## 0.2.266 — 2026-11-17
 
 - **The app can no longer break its own signature.** A Python file written inside the signed app makes macOS refuse it at the next launch — on the release Mac that took Gateway down for three minutes on 2026-11-17. The bundled Python now refuses to write those files whoever starts it: the app, a script, or a person at a shell. A 30-second run of the built app now leaves the signature valid and writes nothing.

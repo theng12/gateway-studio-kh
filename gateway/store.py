@@ -1156,6 +1156,15 @@ class JobStore:
             log.warning("held %d extension account reservation(s) after restart", held)
         return debited + held
 
+    def commit(self) -> None:
+        """Commit the implicit transaction the shared connection may be holding.
+
+        Python's sqlite3 starts one on the first read; a writer that needs `BEGIN IMMEDIATE`
+        must not find it already open. One public name, so callers never reach into `_conn`.
+        """
+        with self._lock:
+            self._conn.commit()
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
