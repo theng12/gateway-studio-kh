@@ -3064,19 +3064,15 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
         return ("needs_attention", "Last job failed" + (f": {reason[:80]}" if reason else ""),
                 "recent_job_failed")
     old_failure = latest.get("state") == "error"
-    # **Cleared clears.** A row whose latest job succeeded or whose health is up does not carry
-    # an old "needs attention" sentence into this measurement. `hub_flagged` stays only when the
-    # Hub's *current* answer states it (the entry itself arrived as `needs_attention` from the
-    # Hub and nothing above found a visible cause); a carried row re-measured as healthy clears.
+    if not phantom and not old_failure:
+        # The Hub saw something this Gateway cannot: keep its verdict, and say only that.
+        return "needs_attention", "Flagged by its Hub", "hub_flagged"
     if isinstance(entry.get("current_job"), dict):
         return "working", None, None
     if age is None:
         return "ready", None, None
-    if latest.get("state") == "done":
-        return ("just_finished" if age < ATTENTION_ERROR_S else "ready"), None, None
-    if not phantom and not old_failure:
-        # No visible cause found but the Hub said needs_attention: keep its verdict.
-        return "needs_attention", "Flagged by its Hub", "hub_flagged"
+    if latest.get("state") == "done" and age < ATTENTION_ERROR_S:
+        return "just_finished", None, None
     return ("long_idle" if age >= _LONG_IDLE_S else "ready"), None, None
 
 
