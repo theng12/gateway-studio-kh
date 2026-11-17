@@ -19,8 +19,9 @@ struct GroupSummary {
     var name: String { location.label ?? location.id ?? "Location" }
     var id: String { location.id ?? name }
     /// Down = the controller does not answer, or the Gateway paused it after it stopped answering.
-    /// A group the owner paused by hand is not down: it answers, it simply gets no new work.
-    var isDown: Bool { location.reachable != true || (location.pausedAt != nil && !location.isPausedByOwner) }
+    /// A group paused by hand is not down, whether the owner paused it or an agent did: it is
+    /// paused, which is its own state and carries its own sentence.
+    var isDown: Bool { location.reachable != true || (location.pausedAt != nil && location.pausedBy == "outage") }
     var isPausedByOwner: Bool { location.isPausedByOwner }
 
     /// What the table lists. A group that is down lists the roster the gateway remembers (last known
@@ -99,7 +100,9 @@ struct GroupSummary {
     /// group cannot be trusted. Everything else is healthy.
     var health: Health {
         if isDown { return .bad }
-        if isPausedByOwner { return .off }   // paused by you: quiet grey, never "needs attention"
+        // Paused at all — by you or by an agent — is quiet grey, never "needs attention"; the row's
+        // sentence says who, so a pause nobody meant to make is still readable.
+        if location.pausedAt != nil { return .off }
         var worst = Health.ok
         for machine in machines where (machine.reachable != false || machine.isNode) && machine.liteOff != true {
             for state in [nodeHealth(machine), machine.diskHealth, machine.faultMemoryHealth] where state == .warn || state == .bad {
@@ -114,10 +117,10 @@ struct GroupSummary {
     }
 
     /// Whether the banner and the "Needs attention" filter count this group. A group paused by hand is grey, not a fault.
-    var needsLook: Bool { health != .ok && !isPausedByOwner }
+    var needsLook: Bool { health != .ok && location.pausedAt == nil }
 
     /// The badge word for the group.
-    var stateWord: String { isDown ? "Down" : isPausedByOwner ? "Paused" : health == .ok ? "Healthy" : "Attention" }
+    var stateWord: String { isDown ? "Down" : location.pausedAt != nil ? "Paused" : health == .ok ? "Healthy" : "Attention" }
 
     /// The Gateway's own sentences for what is wrong (never paraphrased), for the expanded body.
     var notes: [(health: Health, text: String)] {
@@ -145,6 +148,9 @@ struct GroupSummary {
             return [(location.pausedAt != nil ? "Paused, not answering" : "Not answering") + since]
         }
         if isPausedByOwner { return ["Paused by you · gets no new work"] }
+        // Paused by something else — an agent or an API client: say so in the gateway's own words
+        // rather than falling through to machine problems that are not why it is not working.
+        if location.pausedAt != nil { return [location.pauseReason ?? "Paused · gets no new work"] }
         func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
         var out: [String] = []
         let live = machines.filter { $0.reachable != false }
@@ -874,10 +880,11 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             let menu = NSMenu()
             menu.addItem(ClosureMenuItem("Test") { self.onTest?(location) })
             menu.addItem(ClosureMenuItem("Refresh Group") { self.onRefreshGroup?(location) })
-            if location.isPausedByOwner {
+            // Paused is paused, whoever paused it (a pause by an agent is not the owner's quiet
+            // state, but it is still not something to pause again).
+            if location.pausedAt != nil {
                 menu.addItem(ClosureMenuItem("Resume Group") { self.onResume?(location) })
             } else {
-                if location.pausedAt != nil { menu.addItem(ClosureMenuItem("Resume") { self.onResume?(location) }) }
                 menu.addItem(ClosureMenuItem("Pause Group") { self.onPause?(location) })
             }
             if location.local != true {

@@ -513,12 +513,15 @@ _ROSTER_LOCK = threading.RLock()
 _KEEP = object()
 
 
-def _write(rows: list[dict], *, local_name: str | None = None, local_paused_at: object = _KEEP) -> None:
+def _write(rows: list[dict], *, local_name: str | None = None, local_paused_at: object = _KEEP,
+           local_paused_by: object = _KEEP) -> None:
     with _ROSTER_LOCK:
-        _write_locked(rows, local_name=local_name, local_paused_at=local_paused_at)
+        _write_locked(rows, local_name=local_name, local_paused_at=local_paused_at,
+                      local_paused_by=local_paused_by)
 
 
-def _write_locked(rows: list[dict], *, local_name: str | None = None, local_paused_at: object = _KEEP) -> None:
+def _write_locked(rows: list[dict], *, local_name: str | None = None, local_paused_at: object = _KEEP,
+                  local_paused_by: object = _KEEP) -> None:
     global _revision
     _revision += 1
     FLEET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -537,6 +540,10 @@ def _write_locked(rows: list[dict], *, local_name: str | None = None, local_paus
     held = _read_payload().get("local_paused_at") if local_paused_at is _KEEP else local_paused_at
     if held:
         payload["local_paused_at"] = held
+    # Who made that pause, beside it, so the row can say so and a resume can clear both.
+    by = _read_payload().get("local_paused_by") if local_paused_by is _KEEP else local_paused_by
+    if by:
+        payload["local_paused_by"] = by
     # The roster carries no secrets, but it is written 0600 anyway: which sites
     # this gateway talks to is nobody else's business on a shared Mac.
     # Written beside the roster and renamed over it, so a reader on another thread sees the old file
@@ -4325,6 +4332,17 @@ OWNER_PAUSE_REASON = (
 )
 
 
+def other_pause_reason(actor: str) -> str:
+    """The same sentence for a pause made by an agent or any other caller — **never "you"**.
+
+    The reason is stored once and read back on the owner's own Fleet page, so a pause an agent made
+    must not address him as its author. Two pauses read "Paused by you" live on 1301 on 2026-11-17
+    when no person had touched the page; that is the class this wording must not repeat.
+    """
+    return (f"Paused by {actor}. It gets no new work; jobs already running there finish. "
+            f"Resume it from the Fleet page.")
+
+
 def owner_paused_at(controller_id: str) -> float | None:
     """When the owner paused this location by hand, or `None`.
 
@@ -4340,15 +4358,45 @@ def owner_paused_at(controller_id: str) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value else None
 
 
-def set_owner_pause(controller_id: str, paused: bool) -> dict | None:
+def owner_paused_by(controller_id: str) -> str | None:
+    """Who made the hand-pause: `"owner"` from the app, or the caller the route named.
+
+    `None` when the location is not hand-paused, and also for a pause written before this field
+    existed — the caller treats `None` as `"owner"` so an upgrade does not rewrite history.
+    """
+    if controller_id == LOCAL_ID:
+        value = _read_payload().get("local_paused_by")
+    else:
+        value = next((r.get("owner_paused_by") for r in _read() if str(r.get("id")) == controller_id), None)
+    return str(value) if isinstance(value, str) and value.strip() else None
+
+
+def _stamp_pause(result: dict, controller_id: str) -> None:
+    """Say on a published location row who paused it: the page's owner, a named caller, or `outage`."""
+    at = owner_paused_at(controller_id)
+    if at:
+        actor = owner_paused_by(controller_id) or "owner"
+        result.update(paused_at=at, paused_by=actor,
+                      pause_reason=OWNER_PAUSE_REASON if actor == "owner" else other_pause_reason(actor))
+    elif result.get("paused_at"):
+        result["paused_by"] = "outage"
+
+
+def set_owner_pause(controller_id: str, paused: bool, *, actor: str = "owner") -> dict | None:
     """Pause or resume a location by hand (`local` is this Mac); `None` when there is no such location.
 
     Persisted in the roster, so it survives a restart. Jobs already dispatched there are not touched.
+
+    `actor` is **who** did it: `"owner"` only for a pause made in the app, otherwise the authenticated
+    caller the route named (`an API key`, `a local API client (no credential)`, or a declared name).
+    It is stored beside the stamp and read back by `_stamp_pause`; without it every hand-pause
+    published as the owner's, which is exactly what the live Fleet page showed on 2026-11-17.
     """
     stamp = time.time() if paused else None
+    actor = (actor or "owner") if paused else None
     with _ROSTER_LOCK:
         if controller_id == LOCAL_ID:
-            _write(_read(), local_paused_at=stamp)
+            _write(_read(), local_paused_at=stamp, local_paused_by=actor)
             row: dict = {"id": LOCAL_ID, "label": local_label(), "local": True}
         else:
             rows = _read()
@@ -4357,22 +4405,15 @@ def set_owner_pause(controller_id: str, paused: bool) -> dict | None:
                 return None
             if paused:
                 found["owner_paused_at"] = stamp
+                found["owner_paused_by"] = actor
             else:
                 found.pop("owner_paused_at", None)
+                found.pop("owner_paused_by", None)
             _write(rows)
             row = _masked(found)
     invalidate()
-    row.update(paused_at=stamp, paused_by="owner" if paused else None)
+    row.update(paused_at=stamp, paused_by=actor)
     return row
-
-
-def _stamp_pause(result: dict, controller_id: str) -> None:
-    """Say on a published location row who paused it: `owner` (by hand) or `outage` (automatic)."""
-    at = owner_paused_at(controller_id)
-    if at:
-        result.update(paused_at=at, paused_by="owner", pause_reason=OWNER_PAUSE_REASON)
-    elif result.get("paused_at"):
-        result["paused_by"] = "outage"
 
 
 def pause_message_for_voice(params: dict) -> str | None:
@@ -4415,6 +4456,7 @@ def resume_location(controller_id: str) -> dict | None:
         row.pop("pause_reason", None)
         row.pop("unreachable_since", None)
         row.pop("owner_paused_at", None)
+        row.pop("owner_paused_by", None)
         _write(rows)
     invalidate()
     return _masked(row)
@@ -4659,6 +4701,27 @@ def site_wait_reason(provider_id: str, model_id: str) -> str:
     if publishes_model(row, model_id) is False:
         return f"waiting for a Mac at {label} that can run {model_id}"
     return f"waiting for a free Mac at {label}"
+
+
+def site_cannot_take(provider_id: str, model_id: str) -> bool:
+    """True when this location could not take this model even if one of its Macs were free.
+
+    Not answering, or stating it has no Mac for the model. Those are not a queue to stand in: only
+    a fresh answer from the site or a different route changes them, so a job bound here must be
+    moved or ended quickly instead of waiting out the placement ceiling (2026-11-17: two image jobs
+    spent 45 minutes at terranash-1500, which answered nothing). **Unknown is not a refusal** — no
+    row, or supply it does not state, leaves this `False` and the job keeps its normal line.
+    """
+    try:
+        row = next((r for r in snapshot(allow_stale=True).get("locations") or []
+                    if str(r.get("provider_id") or "") == provider_id), None)
+    except Exception:  # noqa: BLE001 - a routing hint must never break a job
+        return False
+    if not isinstance(row, dict):
+        return False
+    if row.get("reachable") is False:
+        return True
+    return publishes_model(row, model_id) is False
 
 
 def location_publishes_model(provider_id: str, model_id: str) -> bool | None:

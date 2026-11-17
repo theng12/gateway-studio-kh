@@ -1079,6 +1079,16 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
 #: one eligibility read per pass.
 _NO_ELIGIBLE_RETRY_S = 30.0
 
+#: How long a job may wait on a site that **cannot take it at all** — not answering, or stating it
+#: has no Mac for the model — before it is moved or ended. A site with busy Macs is a line worth
+#: standing in; a site that answers nothing is not, and the full placement ceiling spent on one is
+#: what turned two image jobs into 45 minutes of nothing at terranash-1500 (2026-11-17).
+#:
+#: Longer than one snapshot refresh (15 s) by design: a controller that misses a probe while busy
+#: is not gone, and the routing row it publishes reads the live answer. Five minutes is several
+#: refreshes of silence — a real outage, not a blip — and still a ninth of the ceiling.
+_UNUSABLE_SITE_WAIT_S = 300.0
+
 #: How long after start an unread location keeps a queued job waiting instead of failing it. The
 #: first fleet read normally lands in seconds; past this an unread fleet is itself the fault, named.
 _FIRST_READ_WAIT_S = 300.0
@@ -3205,6 +3215,10 @@ class Worker:
                     and job.get("state") == "accepted"
                     and not job.get("upstream_job_id")):
                 ceiling = float(concurrency.queue_wait_budget()["placement_wait_ceiling_seconds"])
+                if fleet.site_cannot_take(provider_id, model_id):
+                    # Nothing here will free up by waiting: only a new answer from the site or
+                    # another route changes it. The ceiling is for busy Macs (see the constant).
+                    ceiling = min(ceiling, _UNUSABLE_SITE_WAIT_S)
                 waited = time.time() - started
                 if waited >= ceiling:
                     modality = str(_job_params(job).get("modality") or "tts")

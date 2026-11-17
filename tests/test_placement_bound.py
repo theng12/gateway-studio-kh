@@ -86,6 +86,38 @@ class PlacementBoundTests(unittest.TestCase):
         self.assertIn(self.job["id"], self.worker._placement_wait_started,
                        "the clock stays while the job waits")
 
+    def test_a_site_that_cannot_take_the_job_is_not_waited_on_for_the_ceiling(self) -> None:
+        """A site that answers nothing is not a queue: 45 minutes at terranash-1500 (2026-11-17)."""
+        from gateway.worker import _UNUSABLE_SITE_WAIT_S
+        self.worker._placement_wait_started[self.job["id"]] = time.time() - _UNUSABLE_SITE_WAIT_S - 1
+        with patch.object(fleet, "site_cannot_take", return_value=True), \
+             patch.object(fleet, "site_wait_reason", lambda pid, mid: "waiting for A to answer"), \
+             patch("gateway.worker._next_machine", return_value=None):
+            self.worker._note_waiting(self._row())
+        row = self._row()
+        self.assertEqual(row["state"], "failed")
+        self.assertEqual(row["error_code"], "PLACEMENT_TIMEOUT")
+        self.assertTrue(row.get("retryable"), "nothing was sent; retrying is safe")
+        self.assertIn("waiting for A to answer", row.get("error_detail") or "")
+
+    def test_inside_the_short_grace_an_unusable_site_still_waits(self) -> None:
+        from gateway.worker import _UNUSABLE_SITE_WAIT_S
+        self.worker._placement_wait_started[self.job["id"]] = time.time() - _UNUSABLE_SITE_WAIT_S / 2
+        with patch.object(fleet, "site_cannot_take", return_value=True), \
+             patch.object(fleet, "site_wait_reason", lambda pid, mid: "waiting for A to answer"):
+            self.worker._note_waiting(self._row())
+        self.assertEqual(self._row()["state"], "accepted",
+                         "a site that missed one probe is not gone")
+
+    def test_a_busy_site_keeps_the_full_ceiling(self) -> None:
+        from gateway.worker import _UNUSABLE_SITE_WAIT_S
+        self.worker._placement_wait_started[self.job["id"]] = time.time() - _UNUSABLE_SITE_WAIT_S - 1
+        with patch.object(fleet, "site_cannot_take", return_value=False), \
+             patch.object(fleet, "site_wait_reason", lambda pid, mid: "waiting for a free Mac at A"):
+            self.worker._note_waiting(self._row())
+        self.assertEqual(self._row()["state"], "accepted",
+                         "busy Macs do free up; the placement ceiling is for that wait")
+
     def test_admission_closed_ends_in_retryable_refusal_not_permanent_gate(self) -> None:
         """(d) A pinned job with admission closed gets a retryable refusal, not a dead end."""
         ceiling = float(concurrency.queue_wait_budget()["placement_wait_ceiling_seconds"])

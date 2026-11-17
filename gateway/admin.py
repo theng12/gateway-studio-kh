@@ -5247,12 +5247,37 @@ def fleet_resume(controller_id: str) -> Any:
     return {"controller": row, "controllers": fleet.controllers()}
 
 
+def pause_actor(request: Request) -> str:
+    """Who is making this hand-pause, as the Fleet page will name them.
+
+    `"owner"` is reserved for the app's own signed-in session — the door a person uses. Every other
+    admitted caller is named by the evidence this Gateway actually holds, never by a generic phrase:
+    a declared `X-Actor` names an agent or operator, else `an API key` for the bearer door, else
+    `a local API client (no credential)` for loopback without one. A caller cannot claim to be the
+    owner: `owner`, `you` and `me` are refused as declarations, because the reason is stored once and
+    read back on the owner's own page.
+    """
+    declared = " ".join(str(request.headers.get("x-actor") or "").split())[:60]
+    cookies = getattr(request, "cookies", None) or {}
+    identity = admin_session.session(cookies.get(admin_session.COOKIE))
+    if declared and declared.lower() not in {"owner", "you", "me"}:
+        return declared
+    if identity is not None and identity.get("role") == "owner":
+        return "owner"
+    if str(request.headers.get("authorization") or "").lower().startswith("bearer "):
+        return "an API key"
+    return "a local API client (no credential)"
+
+
 @router.post("/api/fleet/controllers/{controller_id}/pause", dependencies=[Depends(require_admin)])
-def fleet_pause(controller_id: str) -> Any:
+def fleet_pause(controller_id: str, request: Request) -> Any:
     """**Pause a location by hand** (`local` is this Mac). It gets no new work: routing, late binding and
     retry-elsewhere skip it, while jobs already running there finish. Kept across restarts; the automatic
-    outage resume never lifts it — only `/resume` does. Nothing is removed, so it comes back as it was."""
-    row = fleet.set_owner_pause(controller_id, True)
+    outage resume never lifts it — only `/resume` does. Nothing is removed, so it comes back as it was.
+
+    The row records **who** paused it (`pause_actor`), so an agent's pause never reads "Paused by you".
+    """
+    row = fleet.set_owner_pause(controller_id, True, actor=pause_actor(request))
     if row is None:
         return _error(404, "No such controller.")
     return {"controller": row, "controllers": fleet.controllers()}

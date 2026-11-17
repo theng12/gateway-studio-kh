@@ -84,11 +84,51 @@ class PauseTest(_Paused):
         self.assertNotIn("paused_by", plain)
 
     def test_admin_routes(self) -> None:
-        self.assertEqual(admin.fleet_pause("local")["controller"]["paused_by"], "owner")
+        request = httpx.Request("POST", "http://127.0.0.1/admin/api/fleet/controllers/local/pause")
+        with patch.object(admin.admin_session, "session", return_value={"role": "owner"}):
+            self.assertEqual(admin.fleet_pause("local", request)["controller"]["paused_by"], "owner")
         self.assertIsNotNone(fleet.owner_paused_at("local"))
-        self.assertEqual(admin.fleet_pause("ghost").status_code, 404)
+        self.assertEqual(admin.fleet_pause("ghost", request).status_code, 404)
         self.assertIsNone(admin.fleet_resume("local")["controller"]["paused_by"])
         self.assertIsNone(fleet.owner_paused_at("local"))
+
+    def test_an_api_pause_names_the_caller_and_never_says_you(self) -> None:
+        """Measured live 2026-11-17: three locations read "Paused by you" that no person paused."""
+        request = httpx.Request("POST", "http://127.0.0.1/admin/api/fleet/controllers/a/pause")
+        self.assertEqual(admin.pause_actor(request), "a local API client (no credential)")
+        admin.fleet_pause("a", request)
+        published: dict = {}
+        fleet._stamp_pause(published, "a")
+        self.assertEqual(published["paused_by"], "a local API client (no credential)")
+        self.assertNotIn("you", published["pause_reason"].lower())
+        self.assertIn("a local API client (no credential)", published["pause_reason"])
+
+    def test_an_owner_pause_still_reads_paused_by_you(self) -> None:
+        request = httpx.Request("POST", "http://127.0.0.1/admin/api/fleet/controllers/a/pause")
+        with patch.object(admin.admin_session, "session", return_value={"role": "owner"}):
+            self.assertEqual(admin.pause_actor(request), "owner")
+            admin.fleet_pause("a", request)
+        published: dict = {}
+        fleet._stamp_pause(published, "a")
+        self.assertEqual(published["paused_by"], "owner")
+        self.assertIn("Paused by you", published["pause_reason"])
+
+    def test_a_declared_name_is_used_but_cannot_claim_to_be_the_owner(self) -> None:
+        def actor(headers: dict) -> str:
+            return admin.pause_actor(httpx.Request(
+                "POST", "http://127.0.0.1/admin/api/fleet/controllers/a/pause", headers=headers))
+        self.assertEqual(actor({"X-Actor": "story-agent"}), "story-agent")
+        self.assertEqual(actor({"X-Actor": "owner"}), "a local API client (no credential)")
+        self.assertEqual(actor({"Authorization": "Bearer key"}), "an API key")
+
+    def test_resume_clears_the_actor_as_well_as_the_stamp(self) -> None:
+        admin.fleet_pause("a", httpx.Request("POST", "http://127.0.0.1/admin/api/fleet/controllers/a/pause"))
+        self.assertIsNotNone(fleet.owner_paused_by("a"))
+        admin.fleet_resume("a")
+        self.assertIsNone(fleet.owner_paused_by("a"))
+        published: dict = {}
+        fleet._stamp_pause(published, "a")
+        self.assertNotIn("paused_by", published, "a resumed location is not paused at all")
 
 
 class RoutingTest(_Paused):

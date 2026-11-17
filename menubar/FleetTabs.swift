@@ -863,7 +863,9 @@ final class FleetLocationsTab: FleetTabView {
             let menu = NSMenu()
             menu.addItem(ClosureMenuItem("Rename…") { self?.onRename?(row) })
             menu.addItem(ClosureMenuItem("Network…") { self?.onNetwork?(row) })
-            if !row.isPausedByOwner { menu.addItem(ClosureMenuItem("Pause") { self?.onPause?(row) }) }
+            // Already paused is already paused, whoever paused it: an agent's pause must not
+            // leave a "Pause" item that does nothing new.
+            if row.pausedAt == nil { menu.addItem(ClosureMenuItem("Pause") { self?.onPause?(row) }) }
             if row.local != true {
                 // One credentials action, not two: the overflow of five buttons was once left out of the
                 // hierarchy entirely, so Remove was unreachable while its endpoint worked.
