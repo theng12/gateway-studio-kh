@@ -20,8 +20,12 @@ struct GroupSummary {
     var id: String { location.id ?? name }
     /// Down = the controller does not answer, or the Gateway paused it after it stopped answering.
     /// A group paused by hand is not down, whether the owner paused it or an agent did: it is
-    /// paused, which is its own state and carries its own sentence.
-    var isDown: Bool { location.reachable != true || (location.pausedAt != nil && location.pausedBy == "outage") }
+    /// paused, which is its own state and carries its own sentence. When an older Gateway or
+    /// fixture states a pause with no `pausedBy`, it predates hand-pauses and is an outage.
+    var isDown: Bool {
+        location.reachable != true
+            || (location.pausedAt != nil && (location.pausedBy == nil || location.pausedBy == "" || location.pausedBy == "outage"))
+    }
     var isPausedByOwner: Bool { location.isPausedByOwner }
 
     /// What the table lists. A group that is down lists the roster the gateway remembers (last known
@@ -116,8 +120,9 @@ struct GroupSummary {
         return worst
     }
 
-    /// Whether the banner and the "Needs attention" filter count this group. A group paused by hand is grey, not a fault.
-    var needsLook: Bool { health != .ok && location.pausedAt == nil }
+    /// Whether the banner and the "Needs attention" filter count this group. Any paused group that is
+    /// still answering is quiet grey (`.off`), not a fault; an outage-paused group (`.bad`) still needs a look.
+    var needsLook: Bool { health != .ok && health != .off }
 
     /// The badge word for the group.
     var stateWord: String { isDown ? "Down" : location.pausedAt != nil ? "Paused" : health == .ok ? "Healthy" : "Attention" }
@@ -621,8 +626,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         func stat(_ value: String, _ caption: String, _ health: Health = .ok) -> NSView {
             let figure = PageKit.label(value, .figure, colour: health == .ok || health == .off ? .labelColor : health.text)
             let text = PageKit.label(caption, .caption, colour: .secondaryLabelColor)
-            text.lineBreakMode = .byTruncatingTail
-            figure.lineBreakMode = .byTruncatingTail
+            Self.allowShrink(figure, truncate: true)
+            Self.allowShrink(text, truncate: true)
             let stack = NSStackView(views: [figure, text])
             stack.orientation = .vertical
             stack.alignment = .leading
@@ -789,6 +794,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         sub.maximumNumberOfLines = 2
         // Pinned to the card's width below, so it wraps there rather than at the label default.
         sub.preferredMaxLayoutWidth = 0
+        Self.allowShrink(sub)
 
         func metric(_ caption: String, _ value: NSView, width: CGFloat) -> NSView {
             let stack = NSStackView(views: [PageKit.label(caption, .caption, colour: .secondaryLabelColor), value])
@@ -914,12 +920,15 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         var sharing: [NSView] = []
         for column in activeColumns {
             let holder = NSView()
+            let flexible = column.grows || column.width == 0
             if let cell = cells[column.title] {
                 cell.translatesAutoresizingMaskIntoConstraints = false
                 holder.addSubview(cell)
                 NSLayoutConstraint.activate([
                     cell.leadingAnchor.constraint(equalTo: holder.leadingAnchor),
-                    cell.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor),
+                    flexible
+                        ? cell.trailingAnchor.constraint(equalTo: holder.trailingAnchor)
+                        : cell.trailingAnchor.constraint(lessThanOrEqualTo: holder.trailingAnchor),
                     cell.topAnchor.constraint(equalTo: holder.topAnchor),
                     cell.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
                 ])
@@ -929,6 +938,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
                 atLeast.priority = Self.widthPriority(compact)
                 atLeast.isActive = true
                 holder.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                holder.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
                 sharing.append(holder)
             } else if column.width > 0 {
                 pinned(holder, column.width)
@@ -937,6 +947,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
                 atLeast.priority = Self.widthPriority(compact)
                 atLeast.isActive = true
                 holder.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                holder.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
                 sharing.append(holder)
             }
             row.addArrangedSubview(holder)
@@ -1021,6 +1032,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         if !machine.isNode { facts += (facts.isEmpty ? "" : " · ") + "controller" }
         var nameViews: [NSView] = [PageKit.label(machine.label ?? machine.machine ?? "node", .rowTitle),
                                    PageKit.label(facts, .caption, colour: factsColour)]
+        for case let label as NSTextField in nameViews { Self.allowShrink(label, truncate: true) }
         // Workstation mode: "[Working] Today: 3 jobs · 1 step-aside" (a resting Mac's chip is its State badge).
         if let workstation = machine.workstation, let today = workstation.today {
             var parts: [NSView] = []
@@ -1037,7 +1049,7 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
             line.toolTip = machine.workstationLine
             nameViews.append(line)
         }
-        let name = stack(nameViews)
+        let name = stack(nameViews, fillLabels: true)
         name.toolTip = machine.stateReason ?? machine.limitation
         // Why it is offline, in plain English; the controller's raw sentence still shows for any other fault.
         let offlineWhy = FleetOffline.why(machine)
@@ -1055,7 +1067,8 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         var doingViews = [PageKit.label(headline, .secondary,
                                         colour: machine.badgeHealth == .bad || machine.badgeHealth == .warn ? machine.badgeHealth.text : .labelColor)]
         if let detail { doingViews.append(PageKit.label(detail, .caption, colour: .secondaryLabelColor)) }
-        let doing = stack(doingViews)
+        for label in doingViews { Self.allowShrink(label, truncate: true) }
+        let doing = stack(doingViews, fillLabels: true)
         doing.toolTip = detail
 
         let diskCell = offline ? dash() : meter("\(FleetFormat.gb(machine.diskFree)) free", machine.diskUsedFraction, machine.diskHealth)
@@ -1171,11 +1184,26 @@ final class FleetGroupsTab: NSView, NSSearchFieldDelegate {
         return holder
     }
 
-    private func stack(_ views: [NSView]) -> NSStackView {
+    /// Keep flexible-column labels below `fittingSizeCompression` (50) so long text truncates or wraps
+    /// inside the pane rather than inflating `fittingSize` past the window's width.
+    private static func allowShrink(_ label: NSTextField, truncate: Bool = false) {
+        if truncate { label.lineBreakMode = .byTruncatingTail }
+        label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        label.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+    }
+
+    private func stack(_ views: [NSView], fillLabels: Bool = false) -> NSStackView {
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = DS.Space.xs / 2
+        if fillLabels {
+            for case let label as NSTextField in views {
+                let fill = label.widthAnchor.constraint(equalTo: stack.widthAnchor)
+                fill.priority = NSLayoutConstraint.Priority(200)
+                fill.isActive = true
+            }
+        }
         return stack
     }
 }

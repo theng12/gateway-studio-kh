@@ -397,6 +397,30 @@ enum GatewayAPI {
             .map { $0.numberOfRows }.reduce(0, +)
         assert(rows == 2, "location filter drew \(rows) machine rows, expected 2")
 
+        // **An agent-paused group with a long pause_reason reads Paused (not Down) and stays in the pane.**
+        var agentPayload = payload
+        if var locs = agentPayload["locations"] as? [[String: Any]], locs.count > 1 {
+            let reason = "Paused by a local API client (no credential). It gets no new work; jobs already running there finish. Resume it from the Fleet page."
+            locs[1]["paused_by"] = "a local API client (no credential)"
+            locs[1]["pause_reason"] = reason
+            locs[1].removeValue(forKey: "unreachable_since")
+            agentPayload["locations"] = locs
+            guard let agentSnapshot = FleetSnapshot.from(agentPayload) else {
+                print("FAIL: the agent-paused fixture did not decode"); exit(1)
+            }
+            guard let agentGroup = agentSnapshot.groups.first(where: { $0.id == "ctrl-1" }) else {
+                print("FAIL: agent-paused group missing"); exit(1)
+            }
+            assert(!agentGroup.isDown, "an agent-paused reachable group must not read as down")
+            assert(agentGroup.health == .off, "an agent-paused group must be quiet grey (.off)")
+            assert(agentGroup.stateWord == "Paused", "agent-paused badge must say Paused, got \(agentGroup.stateWord)")
+            assert(!agentGroup.needsLook, "an agent-paused group must not count as needing attention")
+            assert(agentGroup.problems == [reason], "agent-paused problems must carry the gateway sentence: \(agentGroup.problems)")
+            let agentGroups = FleetGroupsTab(frame: .zero)
+            agentGroups.update(snapshot: agentSnapshot)
+            _ = layout("Groups (agent paused)", agentGroups)
+        }
+
         print("PASS: the Fleet tabs fit the pane, filter works, card tint follows appearance")
     }
 }

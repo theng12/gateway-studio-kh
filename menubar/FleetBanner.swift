@@ -329,7 +329,8 @@ final class FleetWarningList: CardView {
         let label = PageKit.label(warning.line, .secondary, colour: warning.health.text, wrapping: true)
         label.preferredMaxLayoutWidth = 0
         label.maximumNumberOfLines = 0
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        label.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         var views: [NSView] = [icon, label, NSView()]
         let open = expanded.contains(warning.id)
@@ -378,7 +379,8 @@ final class FleetWarningList: CardView {
         let label = PageKit.label("Hidden by you: \(names) (\(FleetWarnings.macs(set.hiddenMacs)))",
                                   .caption, colour: .secondaryLabelColor, wrapping: true)
         label.preferredMaxLayoutWidth = 0
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        label.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let show = link("Show Again") { [weak self] in self?.onShowHidden?() }
         let row = NSStackView(views: [label, NSView(), show])
         row.orientation = .horizontal
