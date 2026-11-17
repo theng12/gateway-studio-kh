@@ -169,10 +169,17 @@ class ScrubTests(_Case):
                        recovery_state="unknown_outcome",
                        recovery_detail="reconcile /api/hub/jobs/b/items/0/reconcile")
         body = self.get(f"/v1/images/{job['id']}")
-        blob = repr([body["failure_reason"], body["recovery_detail"]])
-        self.assertNotRegex(blob, r"47873|/api/hub|100\.103")
+        # 0.2.266: a live hold is not merely scrubbed for Story — it is not there at all. The job
+        # reads as running and carries none of the hold's fields, so there is no sentence left to
+        # scrub and no second address to leak. The operator's view still has every one of them.
+        self.assertNotIn("recovery_detail", body, "a live hold carries no hold fields to Story")
+        self.assertIsNone(body["failure_reason"], "a held job has no failure sentence to read")
+        self.assertEqual(body["state"], "running", "Story sees the interruption as a running job")
+        self.assertNotRegex(repr(body), r"47873|/api/hub|100\.103",
+                            "and nothing about it leaks anywhere else in the envelope")
         native = api._job_envelope(api.store.get(job["id"]), native=True)
         self.assertIn("47873", native["failure_reason"], "the operator still sees the location")
+        self.assertEqual(native["recovery_detail"], "reconcile /api/hub/jobs/b/items/0/reconcile")
 
 
 class LateResultTests(_Case):
