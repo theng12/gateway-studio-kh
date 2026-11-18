@@ -1134,7 +1134,11 @@ def _poll_batch(
                 f"The batch is recorded so the cleanup stops it first; running the job again "
                 f"after that is safe, and a late answer is kept beside this failure.",
                 code="UPSTREAM_STALLED",
-                retryable=False,
+                # Retryable **because the cleanup stops the old batch first**: the sentence and
+                # the flag say the same thing, which is the rule ("past the bound: fail
+                # retryable with the reason"). Not re-routed automatically (`_NO_REROUTE_CODES`):
+                # a second submission is the caller's decision, not a silent move.
+                retryable=True,
                 upstream_accepted=True,
                 upstream_settled=True,
                 recovery={"batch_id": batch_id, "item_index": item_index,
