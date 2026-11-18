@@ -1085,7 +1085,12 @@
       <option value="">All modes</option><option value="text-to-image">Text to image</option>
       <option value="reference-to-image">Reference to image</option>
     </select></label></div>
-    <div id="jobs-body"><div class="empty">Reading jobs…</div></div>
+    <!-- The answer before the list, in Fleet's shape: what these jobs are doing now, and each
+         number is the filter for it. Counted over the rows actually loaded, never the whole
+         history, and the line says so when it is the 100-row page rather than everything. -->
+    <div class="row" id="jobs-lead" role="status" aria-live="polite" style="gap:8px;align-items:center;margin:0 0 10px">
+      <span class="empty">Reading jobs…</span></div>
+    <div id="jobs-body"></div>
   </section>
   <section id="view-analytics" style="display:none">
     <div class="heading"><h1>Analytics</h1><p>Recorded generation usage and image jobs.</p></div>
@@ -4520,25 +4525,32 @@ function toggleCardMenu(button, id) {
   if (!menu || !button) return;
   const open = menu.hidden;
   closeMenus();
+  menu.hidden = !open;                 // visible first: a hidden menu measures 0 wide and 0 tall
   if (open) placeMenuUnderButton(menu, button);
-  menu.hidden = !open;
   button.setAttribute?.('aria-expanded', String(open));
 }
 
 // **A menu inside a table opened off the table and could not be seen.** The roster lives in a
 // `.tablewrap` that scrolls, and an absolutely positioned menu is clipped by it — the owner's
-// "i clicked and nth happened". A fixed menu under its own button is always in view; it is
-// re-placed on every open, and the document's outside-click closes it.
+// "i clicked and nth happened". A fixed menu under its own button is always in view. It is
+// measured after it is shown, so it can flip above a button near the window's bottom, and a
+// scroll (any container) or a resize closes it: a fixed menu would otherwise hang where its
+// button used to be.
 function placeMenuUnderButton(menu, button) {
   if (!button.getBoundingClientRect || !menu.style) return;
   const rect = button.getBoundingClientRect();
   const width = menu.offsetWidth || 240;
+  const height = menu.offsetHeight || 0;
   const viewport = (typeof window !== 'undefined' && window.innerWidth) || 1024;
+  const viewportH = (typeof window !== 'undefined' && window.innerHeight) || 768;
   const left = Math.max(8, Math.min(rect.right - width, viewport - width - 8));
+  const below = rect.bottom + 4;
+  const above = rect.top - height - 4;
+  const top = height && below + height > viewportH - 8 && above >= 8 ? above : below;
   menu.style.position = 'fixed';
   menu.style.left = `${left}px`;
   menu.style.right = 'auto';
-  menu.style.top = `${rect.bottom + 4}px`;
+  menu.style.top = `${top}px`;
 }
 document.addEventListener?.('click', event => {
   // Every control whose own click opens a .more-menu must be exempt here, or the document
@@ -4550,6 +4562,10 @@ document.addEventListener?.('click', event => {
   closeMenus();
 });
 document.addEventListener?.('keydown', event => { if (event.key === 'Escape') closeMenus(); });
+// Capture hears every scroll, including a `.tablewrap`'s own; a fixed menu must not outlive the
+// position it was placed at.
+document.addEventListener?.('scroll', closeMenus, true);
+if (typeof window !== 'undefined') window.addEventListener?.('resize', closeMenus);
 
 function toggleKeylessFilter() {
   state.keyFilter = state.keyFilter === 'missing' ? 'all' : 'missing';
@@ -7116,7 +7132,7 @@ function renderCreateResult(job) {
   }
   if (job.state !== 'succeeded') {
     box.innerHTML = `<div class="row"><span class="spin">◐</span>
-      <span class="badge ${stateBadgeClass(job.state)}">${esc(job.state)}…</span><span class="hint">${esc(job.id.slice(0, 8))}</span></div>`;
+      <span class="badge ${stateBadgeClass(job.state)}" title="${esc(job.state)}">${esc(jobsStateWord(job.state))}…</span><span class="hint">${esc(job.id.slice(0, 8))}</span></div>`;
     return;
   }
   if (modality === 'chat') {
@@ -7178,8 +7194,8 @@ async function renderCreateRecent() {
     box.innerHTML = '<div class="hint" style="margin-bottom:6px">Recent ' + esc(currentTab().title) + '</div>' +
       rows.map(j => `<div class="item">
         <span class="mid">${esc(j.short_id || j.id.slice(0, 8))}</span>
-        <span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span>
-        ${j.defer_reason ? `<span class="badge warn" title="${esc(j.defer_reason)}">waiting${j.queue_position ? ' #' + j.queue_position : ''}</span>` : ''}
+        <span class="badge ${stateBadgeClass(j.state)}" title="${esc(j.state)}">${esc(jobsStateWord(j.state))}</span>
+        ${j.defer_reason ? `<span class="badge warn" title="${esc(j.defer_reason)}">${j.queue_position ? `queue #${j.queue_position}` : 'in queue'}</span>` : ''}
         <span class="hint">${esc(j.model_name || j.model_id || '')}</span>
         <span class="hint">by ${esc(requesterLabel(j))}</span>
         <button class="sm" onclick="openCreateJob('${j.id}')">Open</button>
@@ -11792,14 +11808,27 @@ function tokensCell(job) {
   return lines.join('');
 }
 
-function jobsTable(rows, filtered = false) {
+// The Gateway's own words are `accepted`, `queued`, `running` — the first two mean one thing to a
+// person, and neither is a word anyone says. The badge shows the plain word and keeps the raw
+// value in its tooltip, so nothing diagnostic is lost.
+function jobsStateWord(state) {
+  const word = String(state || '').toLowerCase();
+  if (word === 'accepted' || word === 'queued') return 'Waiting';
+  if (word === 'running') return 'Running';
+  if (word === 'succeeded') return 'Succeeded';
+  if (word === 'failed') return 'Failed';
+  if (word === 'cancelled') return 'Cancelled';
+  return word ? word.charAt(0).toUpperCase() + word.slice(1).replace(/_/g, ' ') : 'Unknown';
+}
+
+function jobsTable(rows, filtered = false, emptyText = '') {
   return rows.length ? `<div class="tablewrap"><table style="min-width:1100px"><thead><tr>
       <th>Job</th><th>Image mode / references</th><th>State</th><th>Model</th><th>Tokens</th><th>Location</th><th>Serving machine</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
     </tr></thead><tbody>${rows.map(j => `<tr>
       <td class="mid">${esc(j.short_id || String(j.id).slice(0, 8))}${
         j.retry_of ? `<div class="hint">Retry of ${esc(String(j.retry_of).slice(0, 8))}</div>` : ''}</td>
       <td>${imageJobEvidence(j)}</td>
-      <td><span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span>${
+      <td><span class="badge ${stateBadgeClass(j.state)}" title="${esc(j.state)}">${esc(jobsStateWord(j.state))}</span>${
         ['succeeded', 'failed', 'cancelled'].includes(j.state) && !j.recovery_required
           ? ` <button class="sm" onclick="retryJob('${esc(j.id)}', this)">Retry</button>` : ''}</td>
       <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}</td>
@@ -11816,7 +11845,7 @@ function jobsTable(rows, filtered = false) {
         j.started_at == null && j.state === 'accepted'
           ? '<div class="hint">Not dispatched yet</div>' : ''}</td>
     </tr>`).join('')}</tbody></table></div>`
-    : `<div class="empty">${filtered ? 'No jobs match this image mode.'
+    : `<div class="empty">${emptyText ? esc(emptyText) : filtered ? 'No jobs match this image mode.'
       : 'No jobs have run yet — they appear here after a Create job.'}</div>`;
 }
 
@@ -11825,13 +11854,67 @@ function imageModeQuery(controlId) {
   return mode ? '&image_mode=' + encodeURIComponent(mode) : '';
 }
 
+// What the Jobs page has loaded, and the state the lead's numbers filter by. Kept here so a
+// count click re-draws the same read instead of asking the Gateway again.
+let jobsLastRows = [];
+let jobsStateFilter = '';
+
+function jobsFilterState(word) {
+  jobsStateFilter = jobsStateFilter === word ? '' : word;
+  renderJobsLead(jobsLastRows);
+  renderJobsBody();
+}
+
+function renderJobsLead(rows) {
+  const box = document.getElementById('jobs-lead');
+  if (!box) return;
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const counts = new Map();
+  for (const job of rows) counts.set(jobsStateWord(job.state), (counts.get(jobsStateWord(job.state)) || 0) + 1);
+  const order = ['Running', 'Waiting', 'Succeeded', 'Failed', 'Cancelled'];
+  const words = [...order.filter(word => counts.has(word)),
+    ...[...counts.keys()].filter(word => !order.includes(word))];
+  const total = rows.length;
+  const hundred = total >= 100;
+  // While a word is selected the table is shorter than the read, so the line says how much of
+  // it is shown rather than leaving a reader to wonder why 9 counts sit over 2 rows.
+  const tail = jobsStateFilter
+    ? `showing ${counts.get(jobsStateFilter) || 0} of ${hundred ? 'the latest 100' : `${total} job${total === 1 ? '' : 's'}`}, newest first.`
+    : hundred
+      ? 'the latest 100 loaded jobs, newest first — not every job this gateway has run.'
+      : `${total} job${total === 1 ? '' : 's'} recorded, newest first.`;
+  box.innerHTML = `<span class="stat">${total} job${total === 1 ? '' : 's'}</span>` +
+    words.map(word => `<button type="button" class="chip" aria-pressed="${jobsStateFilter === word}"
+        title="Show only ${esc(word.toLowerCase())} jobs"
+        onclick="jobsFilterState('${esc(word)}')">${esc(word.toLowerCase())}<span class="n">${counts.get(word)}</span></button>`).join('') +
+    (jobsStateFilter ? `<button type="button" class="sm" onclick="jobsFilterState('')">Show all</button>` : '') +
+    `<span class="hint">${tail}</span>`;
+}
+
+function renderJobsBody() {
+  const box = document.getElementById('jobs-body');
+  if (!box) return;
+  const rows = jobsStateFilter
+    ? jobsLastRows.filter(job => jobsStateWord(job.state) === jobsStateFilter)
+    : jobsLastRows;
+  box.innerHTML = jobsTable(rows, !!jobsStateFilter || !!imageModeQuery('jobs-image-mode'),
+    jobsStateFilter ? `No jobs are ${jobsStateFilter.toLowerCase()} in this read.` : '');
+}
+
 async function loadJobs() {
   const box = document.getElementById('jobs-body');
+  const lead = document.getElementById('jobs-lead');
   const filter = imageModeQuery('jobs-image-mode');
   try {
     const d = await api('/jobs?limit=100' + filter);
-    if (state.view === 'jobs' && filter === imageModeQuery('jobs-image-mode')) box.innerHTML = jobsTable(d.jobs || [], !!filter);
-  } catch (e) { box.innerHTML = `<div class="empty">Could not read jobs: ${esc(e.message)}</div>`; }
+    if (state.view !== 'jobs' || filter !== imageModeQuery('jobs-image-mode')) return;
+    jobsLastRows = Array.isArray(d.jobs) ? d.jobs : [];
+    renderJobsLead(jobsLastRows);
+    renderJobsBody();
+  } catch (e) {
+    if (lead) lead.innerHTML = '';
+    box.innerHTML = `<div class="empty">Could not read jobs: ${esc(e.message)}</div>`;
+  }
 }
 
 async function retryJob(id, btn) {

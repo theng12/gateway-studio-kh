@@ -10,6 +10,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.279 — 2026-11-18
+
+- **Jobs leads with its answer.** The page opened on a bare "latest 100 jobs" table, with the state spelled the Gateway's way (`accepted`, `queued`). It now opens with the count of what the loaded rows are doing — running · waiting · succeeded · failed · cancelled — and each count is the filter for it: click "waiting" and the table holds only those, say how many of the read it is showing, and a Show all restores it. The raw Gateway word stays in the badge's tooltip. The line says plainly when it is the latest 100 and not every job the Gateway has run.
+- **States read as words on the Create page too.** Its in-progress line and its recent list use the same words ("Waiting", "Running"), and a deferred job's badge now says `queue #3` beside the state instead of repeating "waiting".
+- **A menu stays with its button.** Fixed-position overflow menus keep the coordinates they were given, so a menu left open while the page or a table scrolled sat away from its button, and one on a row near the window's bottom opened past the edge. Placement now measures the menu after it is shown and flips it above the button when there is no room below; any scroll or resize closes it. (0.2.278's note said scroll closed them; no listener existed.)
+- **The audit is held by tests, not memory.** A new page-wide check fails if the console ever uses the browser's own `confirm`/`alert`/`prompt` (silent no-ops in the packaged webview) or if any inline handler names a function that does not exist, and every sortable header must be a real button that sorts its own table. The rest of the console was walked page by page in the same pass and needed no change.
+
+---
+
 ## 0.2.278 — 2026-11-18
 
 - **The Fleet page now answers the owner's question first.** A large "running now" count and its split (generating · ready · idle · need attention · just finished · offline) sit above the panes, then a worst-first list of what is failing per location ("Main — 1 offline", "1300 — whole site unreachable 46 h"). Each number and location filters the table to those rows; the page says how many it is showing.
