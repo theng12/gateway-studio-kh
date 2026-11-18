@@ -659,9 +659,9 @@ def _require_private_host(host: str, port: int | None) -> None:
     and nothing else is a location.
 
     **A hostname is allowed if, and only if, every address it resolves to is private.** Tailscale's
-    MagicDNS names (`mac.tailnet.ts.net`) are the reason: the owner's live roster uses Tailscale
-    *literals* (`a tailnet address`), but a name is a reasonable thing to type and refusing all names
-    would break a working setup. Resolution happens once, at add/re-point time — never on the probe
+    MagicDNS names (a Mac's tailnet hostname) are the reason: the owner's live roster uses Tailscale
+    *literals* (an address in the tailnet range), but a name is a reasonable thing to type and
+    refusing all names would break a working setup. Resolution happens once, at add/re-point time — never on the probe
     path — and a name that resolves to nothing is refused rather than accepted on faith.
     """
     import ipaddress
