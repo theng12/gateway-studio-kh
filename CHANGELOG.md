@@ -12,7 +12,8 @@ every feature title, and they are left as they were written.
 
 ## 0.2.283 — 2026-11-19
 
-- **A shipped name is a name in any capitalisation.** The scan that clears a release looked for the machine names in lower case only, so 0.2.282 shipped a line in its own history that named a Mac with a capital first letter — and the same gap sat in the release check. The names are now matched regardless of case, a sweep of every file the app bundles was run with that rule, and the release check reads the bundled files directly. The two lines that still named a Mac now say "one Mac" and "a busy fleet Mac".
+- **A shipped name is a name in any capitalisation.** The scan that clears a release looked for the machine names in lower case only, so 0.2.282 shipped a line in its own history that named a Mac with a capital first letter — and the same gap sat in the release check. Names are now matched regardless of case and of how they are separated, and the two lines that still named a Mac read "one Mac" and "a busy fleet Mac".
+- **The build now refuses to ship one.** The history inside the app is appended every release, so a scrub done once can be undone by the next entry. The build reads the files it has just copied into the app — both copies of the history and the gateway source — and stops with the file and line if any of them names a Mac, a tailnet host or address, or carries a home path. The same rules drive the release test, so the two cannot drift.
 - **The scan itself was tightened, not loosened.** Making the whole scan case-blind also made it treat part of pip's own recorded checksum as an API key. Names are matched case-blind; key and address shapes are matched exactly as before.
 
 ---
