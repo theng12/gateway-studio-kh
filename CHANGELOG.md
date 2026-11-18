@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.284 — 2026-11-19
+
+- **The build checks everything it copies, not a list of places.** 0.2.283's check named three paths inside the app; a directory copied in later would have been outside it. The build now scans the whole bundled resources tree, as its last step before signing, so the tree checked is the tree that ships — including text copied in by a future release.
+- **A placeholder is not a private path.** The connector README's copy-paste block uses `/Users/YOUR-NAME/…`, which the build-path rule now allows; a real home directory still stops the build.
+
+---
+
 ## 0.2.283 — 2026-11-19
 
 - **A shipped name is a name in any capitalisation.** The scan that clears a release looked for the machine names in lower case only, so 0.2.282 shipped a line in its own history that named a Mac with a capital first letter — and the same gap sat in the release check. Names are now matched regardless of case and of how they are separated, and the two lines that still named a Mac read "one Mac" and "a busy fleet Mac".

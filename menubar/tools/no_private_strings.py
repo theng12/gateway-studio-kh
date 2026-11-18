@@ -20,7 +20,13 @@ FORBIDDEN: list[tuple[str, re.Pattern[str]]] = [
     # Stem only, case-blind: `Terranash-1600`, `TERRANASH_1600` and `Terranash 1600` all hit.
     ("machine name", re.compile(r"terranash|macmini|angkor|story-mini", re.I)),
     ("tailnet hostname", re.compile(r"[a-z0-9-]+\.ts\.net", re.I)),
-    ("build path", re.compile(r"/Users/[A-Za-z0-9_.-]")),
+    # A real home directory. The docs' `/Users/YOUR-NAME/…` and `/Users/…` are placeholders.
+    (
+        "build path",
+        re.compile(
+            r"/Users/(?!(?:your-name|yourname|you|username|name|example|me)\b)[A-Za-z0-9_.-]", re.I
+        ),
+    ),
     (
         "tailnet address",
         re.compile(r"100\.(?:6[5-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+"),
@@ -46,9 +52,12 @@ def scan_paths(paths: list[Path]) -> list[str]:
     for path in paths:
         if not path.is_file() or SKIP_PARTS & set(path.parts):
             continue
-        failures.extend(
-            scan_text(path.read_text(encoding="utf-8", errors="ignore"), path.as_posix())
-        )
+        raw = path.read_bytes()
+        # A binary (Mach-O, dylib, .pyc, image) is not text the build copies for a reader; skipping
+        # it keeps the whole-bundle scan under a couple of seconds on an 89 MB runtime.
+        if b"\0" in raw[:8192]:
+            continue
+        failures.extend(scan_text(raw.decode("utf-8", errors="ignore"), path.as_posix()))
     return failures
 
 

@@ -60,11 +60,13 @@ class TheShippedFilesCarryNoOwnerDataTest(unittest.TestCase):
                 self.assertTrue(strings.scan_text(text), f"{variant!r} was not caught")
 
     def test_the_generic_placeholders_are_still_allowed(self):
-        # Pinned so a later sweep does not "clean" the range or the placeholder out of the UI.
+        # Pinned so a later sweep does not "clean" the range or the placeholder out of the UI
+        # or out of the connector README's copy-paste block.
         for allowed in (
             "100.64.0.0/10",
             "100.64.0.9",
             "/Users/…/.env",
+            "/Users/YOUR-NAME/Developer/gateway-kh/repository/connectors/mcp/server.py",
             "the tailnet address",
             "a Mac's tailnet hostname",
         ):
@@ -74,10 +76,27 @@ class TheShippedFilesCarryNoOwnerDataTest(unittest.TestCase):
     def test_the_scan_covers_the_changelog(self):
         # The 0.2.282 miss was in the changelog specifically; keep it in the set explicitly.
         self.assertIn(ROOT / "CHANGELOG.md", shipped_files())
-        # And the build runs the same rules on the copies it puts in the app.
+
+    def test_the_build_scans_everything_it_copies(self):
+        # Not a list of paths: a copy added later must be covered without anyone remembering it.
         build = (ROOT / "menubar" / "build.sh").read_text(encoding="utf-8")
         self.assertIn("no_private_strings.py", build)
-        self.assertIn("Contents/Resources/CHANGELOG.md", build)
+        self.assertIn('"$APP/Contents/Resources"', build)
+        # Last, so the tree scanned is the tree that is signed.
+        self.assertLess(build.index("checking the bundle for owner data"), build.index("==> signing"))
+
+    def test_a_binary_is_skipped_and_a_new_copied_file_is_not(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "binary.dylib").write_bytes(b"\xcf\xfa\xed\xfe\0\0" + b"terranash" * 4)
+            self.assertEqual(strings.scan_tree(root), [])
+            (root / "newdir").mkdir()
+            (root / "newdir" / "NOTES.md").write_text("ran on Terranash 1600\n", encoding="utf-8")
+            hits = strings.scan_tree(root)
+            self.assertEqual(len(hits), 1)
+            self.assertIn("NOTES.md", hits[0])
 
 
 if __name__ == "__main__":

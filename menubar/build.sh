@@ -600,16 +600,6 @@ echo "==> bundling what's new"
 cp "$ROOT/CHANGELOG.md" "$APP/Contents/Resources/CHANGELOG.md"
 cp "$ROOT/CHANGELOG.md" "$APP/Contents/Resources/gateway/CHANGELOG.md"
 
-# The changelog is appended every release and ships verbatim, so a later entry can put back a name
-# an earlier release scrubbed (0.2.282 did exactly that). Read the bytes that are now inside the
-# app — every shipped file, not a list — and fail the build rather than produce an app that cannot
-# be mirrored. Rules live in menubar/tools/no_private_strings.py, shared with the release test.
-echo "==> checking the bundle for owner data"
-"$RUNTIME_PYTHON" "$HERE/tools/no_private_strings.py" \
-  "$APP/Contents/Resources/CHANGELOG.md" \
-  "$APP/Contents/Resources/gateway/CHANGELOG.md" \
-  "$APP/Contents/Resources/gateway/gateway"
-
 echo "==> writing Info.plist"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -695,6 +685,15 @@ if [ -n "$SIGN_ID" ] && ! security find-identity -p codesigning | grep -qF "\"$S
   exit 1
 fi
 SIGN="${SIGN_ID:--}"
+# The changelog is appended every release and ships verbatim, so a later entry can put back a name
+# an earlier release scrubbed (0.2.282 did exactly that). Scan the whole Resources tree rather than
+# a list of paths: every leak found tonight was in text this build *copies*, so a new copy added
+# later must be covered without anyone remembering to add it here. Runs last, so the tree scanned
+# is the tree that is signed and imaged. Rules live in menubar/tools/no_private_strings.py,
+# shared with the release test.
+echo "==> checking the bundle for owner data"
+"$RUNTIME_PYTHON" "$HERE/tools/no_private_strings.py" "$APP/Contents/Resources"
+
 echo "==> signing with ${SIGN_ID:-ad-hoc}"
 # Development/import probes may have created bytecode before bundling. These
 # generated files are not shipped; the launcher uses -B to keep the seal intact.
