@@ -896,7 +896,7 @@ class PoolPaidLastResortTests(_TempEnv):
         pool = result.payload["pool"]
         self.assertEqual("haiku::x", pool["used"], "the member that actually served the call")
         self.assertEqual(
-            [{"member": "haiku::x", "outcome": "answered", "paid": True}], pool["attempts"],
+            [{"member": "haiku::x", "outcome": "answered", "paid": True, "usage": None}], pool["attempts"],
             "one attempt, and it is the one that answered",
         )
 
@@ -1041,7 +1041,7 @@ class PoolPaidLastResortTests(_TempEnv):
         self.assertEqual(0, self.slept, "nothing worth waiting for")
         pool = result.payload["pool"]
         self.assertTrue(pool["paid"])
-        self.assertEqual({"member": "paid::x", "outcome": "answered", "paid": True}, pool["attempts"][-1])
+        self.assertEqual({"member": "paid::x", "outcome": "answered", "paid": True, "usage": None}, pool["attempts"][-1])
         self.assertIn("free members out for the day → used paid member paid::x", logs.output[0])
 
     def test_unavailable_or_broken_free_members_fall_through_to_paid(self):
@@ -1113,7 +1113,7 @@ class PoolPaidLastResortTests(_TempEnv):
         self.assertTrue(pool["paid"])
         outcomes = [a["outcome"] for a in pool["attempts"]]
         self.assertEqual(["wait-ceiling", "answered"], outcomes[-2:])
-        self.assertEqual({"member": "paid::x", "outcome": "answered", "paid": True}, pool["attempts"][-1])
+        self.assertEqual({"member": "paid::x", "outcome": "answered", "paid": True, "usage": None}, pool["attempts"][-1])
         self.assertIn("free members rate-limited for 15 min → used paid member paid::x", logs.output[0])
 
     def test_the_ceiling_fallback_goes_through_the_paid_members_in_order(self):

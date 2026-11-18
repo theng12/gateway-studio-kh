@@ -11403,9 +11403,41 @@ function servingMachineCell(job) {
   return '<div class="hint">—</div>';
 }
 
+// **Tokens, as the provider stated them** (owner, 2026-11-18: "add the Token usage per job
+// records so it's accurate and has data"). A figure nobody reported reads "not reported by the
+// provider", never 0 — "no data" must not look like "it cost nothing". A pool walk is shown
+// member by member, because the ones that refused spent tokens too.
+function tokenCount(value) {
+  return typeof value === 'number' ? value.toLocaleString() : 'not reported';
+}
+
+function tokensCell(job) {
+  const usage = job.usage;
+  const lines = [];
+  if (usage && typeof usage === 'object') {
+    lines.push(`<div>${esc(tokenCount(usage.input_tokens))} in · ${esc(tokenCount(usage.output_tokens))} out</div>`);
+    if (typeof usage.cache_read_input_tokens === 'number' || typeof usage.cache_creation_input_tokens === 'number') {
+      lines.push(`<div class="hint">${esc(tokenCount(usage.cache_read_input_tokens))} cached read · ${
+        esc(tokenCount(usage.cache_creation_input_tokens))} cached write</div>`);
+    }
+  } else if (job.modality === 'chat') {
+    lines.push('<div class="hint">Not reported by the provider</div>');
+  } else {
+    lines.push('<div class="hint">—</div>');
+  }
+  for (const member of (Array.isArray(job.pool_usage) ? job.pool_usage : [])) {
+    if (!member || !member.member) continue;
+    const per = member.usage && typeof member.usage === 'object'
+      ? `${tokenCount(member.usage.input_tokens)} in · ${tokenCount(member.usage.output_tokens)} out`
+      : 'not reported';
+    lines.push(`<div class="hint">${esc(member.member)} — ${esc(per)}</div>`);
+  }
+  return lines.join('');
+}
+
 function jobsTable(rows, filtered = false) {
   return rows.length ? `<div class="tablewrap"><table style="min-width:1100px"><thead><tr>
-      <th>Job</th><th>Image mode / references</th><th>State</th><th>Model</th><th>Location</th><th>Serving machine</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
+      <th>Job</th><th>Image mode / references</th><th>State</th><th>Model</th><th>Tokens</th><th>Location</th><th>Serving machine</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
     </tr></thead><tbody>${rows.map(j => `<tr>
       <td class="mid">${esc(j.short_id || String(j.id).slice(0, 8))}${
         j.retry_of ? `<div class="hint">Retry of ${esc(String(j.retry_of).slice(0, 8))}</div>` : ''}</td>
@@ -11414,6 +11446,7 @@ function jobsTable(rows, filtered = false) {
         ['succeeded', 'failed', 'cancelled'].includes(j.state) && !j.recovery_required
           ? ` <button class="sm" onclick="retryJob('${esc(j.id)}', this)">Retry</button>` : ''}</td>
       <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}</td>
+      <td>${tokensCell(j)}</td>
       <td>${esc(j.provider_name || '—')}</td>
       <td>${servingMachineCell(j)}</td>
       <td>${esc(requesterLabel(j))}</td>

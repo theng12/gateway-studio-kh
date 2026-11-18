@@ -377,6 +377,11 @@ class PoolBackend(Backend):
                         "status": exc.status,
                         "retryable": bool(exc.retryable),
                         "detail": str(exc)[:400],
+                        # **What this member's attempt cost** (0.2.274), even when it failed or
+                        # was filtered: the provider reports the tokens it burned. `None` when it
+                        # reported none, never 0.
+                        "usage": ((exc.evidence or {}).get("usage")
+                                  if isinstance(exc.evidence, dict) else None),
                         **({"evidence": dict(exc.evidence)} if exc.evidence else {}),
                     }
                 )
@@ -406,7 +411,9 @@ class PoolBackend(Backend):
                     requests_started() != sends_before and paid
                 )  # a free member's silence is not the job's unknown outcome (see above)
                 attempts.append(
-                    {"member": member, "outcome": "error", "detail": f"{type(exc).__name__}: {exc}"[:400]}
+                    # An adapter bug says nothing about tokens: not reported, not zero.
+                    {"member": member, "outcome": "error", "usage": None,
+                     "detail": f"{type(exc).__name__}: {exc}"[:400]}
                 )
                 if paid and requests_started() != sends_before:
                     raise BackendError(
@@ -424,7 +431,8 @@ class PoolBackend(Backend):
             payload = dict(result.payload or {})
             payload["pool"] = {
                 "name": request.model_id,
-                "attempts": attempts + [{"member": member, "outcome": "answered", "paid": paid}],
+                "attempts": attempts + [{"member": member, "outcome": "answered", "paid": paid,
+                                         "usage": payload.get("usage")}],
                 "used": member,
                 "paid": paid,
                 "tried": walk["tried"],

@@ -2930,6 +2930,8 @@ def _generate_chat(request: BackendRequest) -> BackendResult:
         )
         error.evidence = {
             "finish_reason": finish_reason,
+            # What the cut answer cost, or `None` when this Hub reported nothing (0.2.274).
+            "usage": payload.get("usage"),
             # The partial text travels with the verdict: a caller that can salvage a cut answer
             # should not have to re-run a job whose text was already produced and paid for.
             "partial_response": {

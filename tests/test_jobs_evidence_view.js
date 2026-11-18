@@ -66,6 +66,23 @@ test('execution labels are escaped', async () => {
   assert.doesNotMatch(result, /<script>/);
 });
 
+test('tokens are drawn per job and per pool member, and an unreported figure is not 0', async () => {
+  const reported = await render({
+    ...job, modality: 'chat',
+    usage: { input_tokens: 18, output_tokens: 4 },
+    pool_usage: [
+      { member: 'anthropic-direct::claude-haiku-5-5', outcome: 'failed', usage: null },
+      { member: 'openai-direct::gpt-6-luna', outcome: 'answered', usage: { input_tokens: 18, output_tokens: 4 } },
+    ],
+  });
+  assert.match(reported, /18 in · 4 out/);
+  assert.match(reported, /anthropic-direct::claude-haiku-5-5 — not reported/);
+  assert.match(reported, /openai-direct::gpt-6-luna — 18 in · 4 out/);
+  const missing = await render({ ...job, modality: 'chat', usage: null, pool_usage: [] });
+  assert.match(missing, /Not reported by the provider/);
+  assert.doesNotMatch(missing, /\b0 in\b|· 0 out/, 'no figure a provider did not report may render as 0');
+});
+
 test('terminal rows offer Retry and show retry_of; live or held rows do not offer Retry', async () => {
   const retried = await render({ ...job, state: 'cancelled', retry_of: '1234567890abcdef' });
   assert.match(retried, /Retry of 12345678/);

@@ -1841,6 +1841,27 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         **ZERO_SETTLEMENT,
     }
 
+    # **Tokens are recorded for every job that reached a provider, whatever the outcome** (owner,
+    # 2026-11-18: "add the Token usage per job records so it's accurate and has data"). A
+    # content-filtered or timed-out answer burned tokens too, and those figures sit in the
+    # failure evidence. A figure the provider did not report is **`null`, never 0** — "no data"
+    # must not read as "it cost nothing" — and `usage_source` says who stated it.
+    usage = payload.get("usage")
+    body["usage"] = usage if isinstance(usage, dict) and usage else None
+    body["usage_source"] = "provider" if body["usage"] else None
+    # **A pool walk's cost, member by member** — on a success and a failure alike, because the
+    # members that refused spent tokens too. Each entry carries its own usage or `null`.
+    walk = payload.get("pool_attempts")
+    if not isinstance(walk, list):
+        pool = payload.get("pool") if isinstance(payload.get("pool"), dict) else {}
+        walk = pool.get("attempts") if isinstance(pool.get("attempts"), list) else None
+    if isinstance(walk, list) and walk:
+        body["pool_usage"] = [
+            {"member": entry.get("member"), "outcome": entry.get("outcome"),
+             "usage": (entry.get("usage") if isinstance(entry.get("usage"), dict) else None)}
+            for entry in walk if isinstance(entry, dict)
+        ]
+
     _publish_time_limit(body, job)
 
     if held and not native:
@@ -1881,8 +1902,11 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
             # must not render alike.
             if payload.get("generation_seconds") is not None:
                 body["generation_seconds"] = payload.get("generation_seconds")
-            usage = payload.get("usage")
-            if isinstance(usage, dict) and usage:
+            # **What `verified_token_usage` means, said plainly** (0.2.274): the number published
+            # in `usage` is what the provider *stated* and was passed through, not counted again
+            # here — so it is `false` while `usage_source` says "provider". A provider that
+            # reported nothing publishes no usage and no claim at all.
+            if body["usage"]:
                 body["verified_token_usage"] = False
         elif modality == "image":
             url = f"/v1/images/{job['id']}/file"
@@ -1939,8 +1963,6 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         # the response instead of having to guess why.
         if payload.get("variations_failed"):
             body["variations_failed"] = payload["variations_failed"]
-        if payload.get("usage"):
-            body["usage"] = payload["usage"]
         # **What was actually sent, when it is not what the caller asked for.** The adapter has
         # written these onto the result payload all along (`studio_hub._generate_chat`,
         # `anthropic`), but `_job_envelope` published only `output_text`, `finish_reason`,

@@ -392,7 +392,8 @@ class AnthropicBackend:
                 # advances past it rather than ending the walk.
                 refusal_scope="response" if code == "POLICY_REFUSAL" else None,
             )
-            error.evidence = {"finish_reason": stop}
+            # What the refused/cut answer cost, or `None` when the model reported nothing.
+            error.evidence = {"finish_reason": stop, "usage": payload.get("usage")}
             if stop == "max_tokens":
                 error.evidence["partial_response"] = {
                     "text": text,

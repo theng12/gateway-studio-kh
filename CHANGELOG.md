@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.274 — 2026-11-18
+
+- **Token usage is now recorded for every job, including the ones that fail.** A job that ran out of room, was stopped, timed out or was cut short by a content filter has burned tokens too — until now only a successful job carried a usage block, so the cost of the ones that went wrong was invisible. Every job that reached a model now shows what it used, with the partial answer's figure kept on a filter stop.
+- **A pooled model shows what each model in it cost.** A walk that stops on the third model records what the first two spent before they gave up, one line per model, and says "not reported" where a model stated nothing.
+- **"Not reported" never reads as zero.** A number the provider did not state is blank and labelled, so an empty figure cannot be mistaken for a cheap one. The `verified_token_usage` flag now sits beside a `usage_source` field saying the figure came from the provider and was passed through rather than re-measured.
+- **The Jobs page shows the tokens.** Each row gains a Tokens column with the job's own total and a line per attempted model in a pool.
+
 ## 0.2.273 — 2026-11-18
 
 - **A job whose model is a pool is tried once, not three times.** The pool has already asked every model in it before it gives up, so running the whole chain three more times pays each provider again and again. A pool job now ends after one walk, and its row says "1" allowed so the number is visible; other models keep the three machines. The number is a setting, one by default.

@@ -340,6 +340,9 @@ def _chat(request: BackendRequest) -> BackendResult:
         asked = caller_max_output_tokens(request.params)
         error.evidence = {
             "finish_reason": finish_reason or "refusal",
+            # **What this refused answer cost** (0.2.274): a filtered or truncated answer still
+            # burned the tokens the provider reports. `None` when it reported none — never 0.
+            "usage": payload.get("usage"),
             **({"max_tokens_asked": asked} if asked else {}),
             **({"max_tokens_sent": max_tokens} if max_tokens else {}),
         }

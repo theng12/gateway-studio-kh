@@ -4290,6 +4290,11 @@ def list_jobs(
         # name the site controller, not the node that did the work.
         executed_by: str | None = None
         reference_count: int | None = None
+        # **What the job cost in tokens, and what each pool member cost** (0.2.274). Present on
+        # a failed or filtered job too (it burned tokens), `None` when the provider reported
+        # nothing — the page prints "not reported by the provider" for that, never 0.
+        usage: dict[str, Any] | None = None
+        pool_usage: list[dict[str, Any]] = []
         result_raw = job.get("result_json")
         if isinstance(result_raw, str):
             try:
@@ -4303,6 +4308,19 @@ def list_jobs(
                         candidate = payload.get("hub_machine")
                         if isinstance(candidate, str) and candidate:
                             executed_by = candidate
+                        if isinstance(payload.get("usage"), dict) and payload["usage"]:
+                            usage = payload["usage"]
+                        walk = payload.get("pool_attempts")
+                        if not isinstance(walk, list):
+                            pool = payload.get("pool") if isinstance(payload.get("pool"), dict) else {}
+                            walk = pool.get("attempts")
+                        if isinstance(walk, list):
+                            pool_usage = [
+                                {"member": entry.get("member"), "outcome": entry.get("outcome"),
+                                 "usage": (entry.get("usage")
+                                           if isinstance(entry.get("usage"), dict) else None)}
+                                for entry in walk if isinstance(entry, dict)
+                            ]
             except (json.JSONDecodeError, TypeError):
                 pass
         execution = None
@@ -4382,6 +4400,10 @@ def list_jobs(
                     else None
                 ),
                 "has_artifact": bool(job.get("asset_path")),
+                # Tokens: the job's own total, and each pool member's, as the lane stated them.
+                "usage": usage,
+                "usage_source": "provider" if usage else None,
+                "pool_usage": pool_usage,
                 "error_code": job.get("error_code"),
                 "error_detail": job.get("error_detail"),
                 # The job this one was queued to replace — an operator's per-job retry

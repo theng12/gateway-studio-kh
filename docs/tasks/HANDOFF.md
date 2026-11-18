@@ -13,6 +13,16 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 ## Versions
 
+- **0.2.274** — 2026-11-18. **Token usage on every job, whatever the outcome.** `_job_envelope`
+  publishes `usage` (the lane's own figures) and `usage_source: "provider"` for a failed, cancelled,
+  filtered or held job, from the evidence the adapters now always attach
+  (`openai_compat`/`anthropic`/`studio_hub` set `evidence["usage"]` on a filter stop or truncation;
+  a window no longer hides it). Unreported is `null`, never 0. A pool walk records one entry per
+  member in `attempts`/`pool.attempts` with that member's `usage` or `null`, published as
+  `pool_usage`. `verified_token_usage` keeps its meaning (passed through, not re-measured) and now
+  sits beside `usage_source`. The Jobs page gains a **Tokens** column: the job total, and a line per
+  attempted pool member, with "Not reported by the provider" where a lane stated nothing. Tests
+  `tests/test_token_usage.py` (6) and `tests/test_jobs_evidence_view.js`.
 - **0.2.273** — 2026-11-18. Three Production-confirmed fixes. **A pool job gets one attempt**
   (`concurrency.DEFAULT_POOL_MAX_ATTEMPTS = 1`, editable as `retry.pool_max_attempts`; the row
   prints `attempts_allowed: 1`): its chain already walked every member, so replaying it three times
