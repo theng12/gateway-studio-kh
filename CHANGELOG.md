@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.271 — 2026-11-18
+
+- **A job now ends when the thing running it stops making progress.** A job the Hub reports as stalled — no progress past its own threshold — used to ride on to the lane's deadline with its row still saying "running". It now ends at once, saying how many seconds nothing moved and what the Hub's threshold was, and keeps its batch id; the old batch is recorded so the cleanup stops it first, and the row says a retry is safe after that. A late answer is still kept beside the verdict.
+- **A job nothing is watching can no longer stay "running" for ever.** If the part of the Gateway that follows a job is gone — it died, or a restart could not pick the job back up — the row used to sit there indefinitely. Once it is past the longest a Hub job can legitimately take, the Gateway asks the Hub once and ends it: collected if the Hub had actually finished it, ended with "the Hub still has it" if it is still there, and ended as retryable if the Hub never heard of it at all.
+- **Following a job again no longer restarts its clock.** Each re-follow used to begin the wait over, so a flapping connection could keep one job alive for several windows. The whole wait is now the lane's own ceiling, however many times it is followed.
+
 ## 0.2.270 — 2026-11-18
 
 - **Removing a Mac or a location removes every trace of it, and connecting it back works.** Removing a location used to forget only its name and its key: its history, its settings and its jobs stayed behind and the page kept drawing a site nobody had. One action now removes the whole record — the row, the credential, the models, its reachability history, its Lite Mode settings, its render opt-in, its image-model pins, its network names, its limits, and every job, summary, render row and file it owned. One Mac can be removed on its own the same way, and its controller is asked to delete it and revoke its credential. A Mac the controller no longer knows is still a clean removal; a controller that cannot be reached asks first, and can then be removed here only. Connecting a Mac back is its own action — the controller issues a fresh key and the Mac comes back as new, without its old jobs or history.
