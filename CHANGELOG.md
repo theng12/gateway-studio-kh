@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.270 — 2026-11-18
+
+- **Removing a Mac or a location removes every trace of it, and connecting it back works.** Removing a location used to forget only its name and its key: its history, its settings and its jobs stayed behind and the page kept drawing a site nobody had. One action now removes the whole record — the row, the credential, the models, its reachability history, its Lite Mode settings, its render opt-in, its image-model pins, its network names, its limits, and every job, summary, render row and file it owned. One Mac can be removed on its own the same way, and its controller is asked to delete it and revoke its credential. A Mac the controller no longer knows is still a clean removal; a controller that cannot be reached asks first, and can then be removed here only. Connecting a Mac back is its own action — the controller issues a fresh key and the Mac comes back as new, without its old jobs or history.
+- **A job held on a Hub's answer now ends when the Hub keeps saying "running" past the ceiling.** The 0.2.269 fix covered holds no lane could be asked about; this is the other half: a hold whose Hub has answered "still running" for longer than the Hub's own four-hour ceiling plus the grace now ends as `HOLD_EXPIRED`, keeping its context, its batch id and a late result beside the verdict.
+- **The Fleet page shows when the free-space warning was measured.** The disk warning and its Jobs-page banner now carry the time the Hub measured it, so an old number cannot read as right now.
+
 ## 0.2.269 — 2026-11-18
 
 - **A job whose outcome can no longer be learned now ends, instead of saying it is still running.** A Chat call leaves no batch record any lane can be asked about, so when one was interrupted the Gateway kept answering `running` — for ever, with no failure and no Cancel. Such a hold now ends after its own ceiling (the Hub's four-hour Chat ceiling plus the usual grace) as a failure that says how long it waited and why nothing could settle it. Nothing is thrown away: its batch id, context and attempts stay on the row, and a late result is kept beside the verdict.
