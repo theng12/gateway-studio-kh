@@ -808,6 +808,75 @@ def _node_post(controller_id: str, machine_id: str, route: str, body: dict[str, 
     return answered
 
 
+NODE_UNREGISTER_TOO_OLD = (
+    "This controller's Studio Hub cannot unregister a node yet. "
+    "Update it first, or force removal from this gateway only."
+)
+
+NODE_CONNECT_TOO_OLD = (
+    "This controller's Studio Hub does not support Gateway-initiated node connect yet. "
+    "Update it first (Fleet > Release)."
+)
+
+
+def purge_pending(controller_id: str, machine_id: str | None = None) -> int:
+    """Drop queued Lite Mode settings for one machine or an entire controller."""
+    if not controller_id:
+        return 0
+    prefix = f"{controller_id}/"
+    exact = f"{controller_id}/{machine_id}" if machine_id else None
+    with _pending_lock:
+        waiting = pending_lite_mode()
+        gone = [
+            key for key in waiting
+            if (key == exact if exact is not None else key.startswith(prefix))
+        ]
+        if not gone:
+            return 0
+        for key in gone:
+            waiting.pop(key, None)
+        _write_pending(waiting)
+        return len(gone)
+
+
+def unregister_node(controller_id: str, machine_id: str, *, client: httpx.Client | None = None) -> dict[str, Any]:
+    """Ask the controller Hub to delete a node and revoke its credential."""
+    if not _MACHINE_ID.fullmatch(machine_id or ""):
+        raise StartupError(400, {"ok": False, "code": "BAD_MACHINE", "detail": "machine id is not valid"})
+    if machine_id == fleet.LOCAL_ID:
+        raise StartupError(400, {"ok": False, "code": "CANNOT_REMOVE_CONTROLLER_LOCAL",
+                                 "detail": "Cannot remove a controller's own Mac individually; remove the location instead."})
+    return _node_post(
+        controller_id, machine_id, "unregister",
+        {"requested_by": "gateway-admin", "purge": True},
+        event="node_unregister",
+        too_old=NODE_UNREGISTER_TOO_OLD,
+        refused="The controller refused this gateway's credential for removing a node.",
+        audit_fields={},
+        client=client,
+    )
+
+
+def connect_node(controller_id: str, *, name: str | None = None, address: str | None = None,
+                 client: httpx.Client | None = None) -> dict[str, Any]:
+    """Request a fresh join token (or direct reconnect) from a controller Hub for a Mac."""
+    body: dict[str, Any] = {"requested_by": "gateway-admin"}
+    clean_name = (name or "").strip()
+    clean_address = (address or "").strip()
+    if clean_name:
+        body["name"] = clean_name
+    if clean_address:
+        body["address"] = clean_address
+    return _hub_post(
+        controller_id, "/api/hub/fleet/nodes/connect", body,
+        event="node_connect",
+        too_old=NODE_CONNECT_TOO_OLD,
+        refused="The controller refused this gateway's credential for connecting a node.",
+        audit_fields={"name": clean_name or None, "has_address": bool(clean_address)},
+        client=client,
+    )
+
+
 MODEL_INSTALL_TOO_OLD = ("This controller's Studio Hub cannot install models from the Gateway yet. It needs "
                          "Studio Hub 0.6.143: update it first (Fleet > Release).")
 

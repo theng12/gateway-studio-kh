@@ -588,6 +588,53 @@ def _unobserved(now: float) -> dict:
     }
 
 
+def purge_location(location_id: str) -> int:
+    """Remove a controller and every machine behind it from reachability history."""
+    if not location_id:
+        return 0
+    prefix = f"m:{location_id}/"
+    site_key = f"l:{location_id}"
+    with _lock:
+        state = _load()
+        subjects = state["subjects"]
+        gone = [
+            key for key, row in subjects.items()
+            if key == site_key or key.startswith(prefix) or row.get("location") == location_id
+        ]
+        if not gone:
+            return 0
+        for key in gone:
+            subjects.pop(key, None)
+        try:
+            _write(subjects)
+        except OSError:
+            pass
+        return len(gone)
+
+
+def purge_machine(location_id: str, machine_id: str) -> int:
+    """Remove one machine's reachability history."""
+    if not location_id or not machine_id:
+        return 0
+    target = f"m:{location_id}/{machine_id}"
+    with _lock:
+        state = _load()
+        subjects = state["subjects"]
+        gone = [
+            key for key, row in subjects.items()
+            if key == target or (row.get("location") == location_id and row.get("machine") == machine_id)
+        ]
+        if not gone:
+            return 0
+        for key in gone:
+            subjects.pop(key, None)
+        try:
+            _write(subjects)
+        except OSError:
+            pass
+        return len(gone)
+
+
 def _day_label(epoch: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(epoch))
 

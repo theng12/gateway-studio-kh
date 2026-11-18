@@ -185,3 +185,35 @@ def set_entry(model_key: str, fields: dict[str, Any] | None) -> dict[str, dict[s
     Path(name).replace(path)
     return entries()
 
+
+def purge_provider(provider_id: str) -> int:
+    """Remove curated limit overrides keyed to one provider id (`provider_id::*`)."""
+    import tempfile
+
+    if not provider_id:
+        return 0
+    prefix = f"{provider_id}::"
+    path = LIMITS_PATH
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError):
+        return 0
+    if not isinstance(raw, dict) or not isinstance(raw.get("models"), dict):
+        return 0
+    models = dict(raw["models"])
+    gone = [k for k in models if isinstance(k, str) and k.startswith(prefix)]
+    if not gone:
+        return 0
+    for k in gone:
+        models.pop(k, None)
+    raw["models"] = dict(sorted(models.items()))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(raw, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    Path(name).replace(path)
+    return len(gone)
+
