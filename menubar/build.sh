@@ -186,6 +186,12 @@ echo "==> bundling Python runtime"
 preserve_path "$APP/Contents/Resources/python"
 cp -R "$RUNTIME_CACHE/python" "$APP/Contents/Resources/python"
 
+# pip writes some console scripts with an absolute interpreter shebang into this build directory,
+# which would ship the builder's home path inside the app. The runtime already ships the
+# script-relative `#!/bin/sh` polyglot for its own scripts; put every entry point on it.
+echo "==> console scripts use the bundled interpreter, not the build path"
+"$RUNTIME_PYTHON" "$HERE/tools/strip_python_headers.py" "$APP/Contents/Resources/python"
+
 # **The bundled interpreter never writes bytecode into its own bundle.** The app is code-signed,
 # so a `.pyc` written under `Contents/Resources/python` invalidates the seal and macOS SIGKILLs
 # the app at its next launch. `-B` covers the one process the app spawns; this covers every other

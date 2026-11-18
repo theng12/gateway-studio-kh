@@ -13,6 +13,7 @@ every feature title, and they are left as they were written.
 ## 0.2.282 — 2026-11-18
 
 - **No machine name ships in the app's own history.** 0.2.281 removed the machine names and the tailnet address from the code comments bundled in the app; a read-only scan of the built DMG then found one more in the bundled release history ("kept on macmini-angkor…"), which is public text inside the download. It now reads "kept on one Mac". The history stays bundled — What's New reads it — and the release is scanned before it is published: no machine names and no tailnet address outside the generic ranges in the DMG.
+- **The app carries no builder's home path either.** Seven of the bundled Python helper commands (dotenv, fastapi, httpx, idna, uvicorn, watchfiles, websockets) were written with the builder's absolute interpreter path at the top of the file, so the installed app still mentioned `/Users/…` after the name and address scrub. The build now points every bundled command at the interpreter that sits beside it — the same way the runtime's own commands already work — and each one was run to confirm it still starts.
 
 ---
 
