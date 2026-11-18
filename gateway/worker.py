@@ -378,7 +378,11 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
         supposed to be doing does not exist, which is the same fact the restart sweep acts on when
         `dispatch_started_at` is null: provably nothing to duplicate, so the job goes back in the
         queue if it still has attempts left, and is failed cleanly if it does not.
-      * **still running, or the Hub did not answer** — left exactly where it is. "I could not ask"
+      * **still running** — left where it is, **until the ceiling**. A Hub that keeps answering
+        `running` past `UNASKABLE_HOLD_CEILING_S` is no longer protecting anything: past the longest
+        call any lane can legitimately run, no answer is still in flight, so the hold is expired
+        exactly as an unaskable one is (`store.expire_hold`, evidence kept).
+      * **the Hub did not answer** — left exactly where it is, with no ceiling. "I could not ask"
         is not "it is finished", and this function never treats the two the same.
 
     Runs on a separate recovery thread, on a timer, and never raises: a hold that cannot be
@@ -394,6 +398,7 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
     close = getattr(store, "close_hold", None)
     if holds_of is None or close is None:
         return out
+    moment = time.time() if now is None else float(now)
     try:
         hub_ids = [d.id for d in registry.definitions() if d.kind == "studio_hub"]
         rows = holds_of(limit=50, sweepable=True, provider_ids=hub_ids)
@@ -477,6 +482,28 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
                           + ". Closed automatically (Q8): the upstream's own record settled it.")
                 close(job["id"], resolution="failed", detail=detail)
                 out["closed_finished"] += 1
+                continue
+            # Known, and not terminal. A Hub that keeps reporting this state past the same ceiling
+            # an unaskable hold gets is no longer protecting anything: past the longest call any
+            # lane can legitimately run, no answer is still in flight. A Hub that did not answer
+            # (`snapshot is None`, above) is never expired — "I could not ask" is not "it is
+            # finished".
+            held = _held_since(job)
+            if held is not None and max(0.0, moment - held) > UNASKABLE_HOLD_CEILING_S:
+                held_s = max(0.0, moment - held)
+                detail = (
+                    f"Held as an unknown outcome for {_held_span(held_s)} (since {_stamp(held)}); "
+                    f"the Hub still reported '{state or 'unknown'}' after "
+                    f"{_held_span(UNASKABLE_HOLD_CEILING_S)}, "
+                    f"past the longest call any lane can legitimately run. Ended at {_stamp(moment)} "
+                    f"rather than left published as running. The attempt's own record is kept: its "
+                    f"context, upstream id and hold sentence stay on this job, and a late result is "
+                    f"kept beside this failure."
+                )
+                if store.expire_hold(str(job["id"]), code=HOLD_EXPIRED, detail=detail):
+                    out["expired"] += 1
+                    log.warning("hold %s expired after %s: the Hub still reported '%s'",
+                                job.get("id"), _held_span(held_s), state)
                 continue
             out["still_open"] += 1
         except Exception as exc:  # noqa: BLE001 - one unreadable hold must not starve the rest
