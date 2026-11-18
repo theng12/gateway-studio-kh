@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.283 — 2026-11-19
+
+- **A shipped name is a name in any capitalisation.** The scan that clears a release looked for the machine names in lower case only, so 0.2.282 shipped a line in its own history that named a Mac with a capital first letter — and the same gap sat in the release check. The names are now matched regardless of case, a sweep of every file the app bundles was run with that rule, and the release check reads the bundled files directly. The two lines that still named a Mac now say "one Mac" and "a busy fleet Mac".
+- **The scan itself was tightened, not loosened.** Making the whole scan case-blind also made it treat part of pip's own recorded checksum as an API key. Names are matched case-blind; key and address shapes are matched exactly as before.
+
+---
+
 ## 0.2.282 — 2026-11-18
 
 - **No machine name ships in the app's own history.** 0.2.281 removed the machine names and the tailnet address from the code comments bundled in the app; a read-only scan of the built DMG then found one more in the bundled release history — a machine name in a note about where a channel is kept — which is public text inside the download. It now reads "kept on one Mac". The history stays bundled — What's New reads it — and the release is scanned before it is published: no machine names and no tailnet address outside the generic ranges in the DMG.
@@ -500,7 +507,7 @@ cannot be routed is still refused on the spot with the reason.
 ### A queued job now says what it is waiting for
 A job waiting for a free Mac used to read as `accepted` with nothing on it at all — which is how a
 research call sat for twenty minutes before being cancelled. The row now publishes the Gateway's
-own reason ("every Mac with this Chat model is busy", "waiting for Terranash-1600 to answer —
+own reason ("every Mac with this Chat model is busy", "waiting for one Mac to answer —
 …") and when it will try again. Waiting on a busy Mac is unchanged: the job still waits, it just
 stops being silent, and it still ends at the queue ceiling if nothing frees up.
 

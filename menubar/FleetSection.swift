@@ -424,7 +424,7 @@ final class FleetSection: NSObject, AppSection, NSTableViewDataSource, NSTableVi
             let encoded = providerID.addingPercentEncoding(
                 withAllowedCharacters: .alphanumerics) ?? providerID
             // Each location on its own clock: a controller that takes 20 s to list its models
-            // (measured on the Terranash Macs) is slow, not failed, and the others' counts show as
+            // (measured on a busy fleet Mac) is slow, not failed, and the others' counts show as
             // soon as each lands rather than after the slowest one.
             GatewayAPI.post("/admin/api/providers/\(encoded)/refresh", timeout: Self.refreshTimeout) { [weak self] result in
                 guard let self else { return }

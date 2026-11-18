@@ -928,7 +928,7 @@ final class FleetLocationsTab: FleetTabView {
     }
 
     /// While an add is in flight: the button says so and cannot be pressed again, the fields are
-    /// locked, and the spinner turns beside "Connecting to 100.120.246.9…".
+    /// locked, and the spinner turns beside "Connecting to <address>…".
     func setAdding(_ adding: Bool, message: String) {
         addButton.isEnabled = !adding
         addButton.title = adding ? "Adding…" : "Add Location"
