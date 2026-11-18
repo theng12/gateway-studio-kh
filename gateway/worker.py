@@ -92,7 +92,17 @@ _FLEET_DEFER_CAP_S = 15.0
 #: Breeze night-atlas deadline failures were slow Macs (M1 16 GB), not the job, so it moves to
 #: another location one time and that move does not count against the retry ceiling
 #: (`_deadline_reroute_left`). Paid lanes never move on it.
-_NO_REROUTE_CODES = {"DEADLINE_EXCEEDED"}
+#: **The Hub said the batch stopped making progress**, past its own `stalled_after_s`. Not retried
+#: on another Mac automatically: the batch is still there, so a second submission would duplicate
+#: work. The job ends as `UPSTREAM_STALLED`, the batch is recorded for the cleanup to stop first,
+#: and the sentence says that so an operator can run it again knowingly.
+UPSTREAM_STALLED = "UPSTREAM_STALLED"
+
+#: **A `running` row with an upstream batch that nothing is polling**, past the longest batch lane.
+#: Its own sentence says which of the three cases it was (still running there / never heard of /
+#: could not ask), because an operator acts differently on each.
+UPSTREAM_UNPOLLED = "UPSTREAM_UNPOLLED"
+_NO_REROUTE_CODES = {"DEADLINE_EXCEEDED", UPSTREAM_STALLED}
 
 #: A shop's workstation Mac stopped the job (macOS critical memory pressure for 20 s, rare) and its
 #: controller had nowhere else for it (Hub workstation mode, owner request 2026-10-03). Free work that
@@ -277,6 +287,14 @@ def lane_deadline_s(modality: str) -> float:
 #: untrue. One number for every unaskable lane: a media call's own timeout is far shorter, and
 #: ending a hold later than it strictly must is the harmless direction.
 UNASKABLE_HOLD_CEILING_S = CHAT_DEADLINE_CEILING_S + _LANE_DEADLINE_GRACE_S
+
+#: **The longest a Hub batch can legitimately run, with nothing polling it.** A running row with
+#: an upstream id is bounded on the poll path by the Hub's own lane number; this is the bound for
+#: the row *nobody is polling* (the poller died, or a restart could not resume it). It takes the
+#: largest batch lane the Hub publishes (`TTS_DEADLINE_CEILING_S`, 7,200 s -- voice and video)
+#: plus the usual grace, so a live job is never cut. shortcut: one number for every batch lane;
+#: upgrade to a per-row lane read if a Hub ever publishes a batch lane above 7,200 s.
+BATCH_NO_POLL_CEILING_S = 7200.0 + _LANE_DEADLINE_GRACE_S
 
 
 def _held_since(job: dict[str, Any]) -> float | None:
@@ -564,6 +582,120 @@ SUPERSEDED_SWEEP_BUDGET_S = 90.0
 #: return, which is what "first result wins" has always meant.
 _SETTLE_LOCKS: dict[str, threading.Lock] = {}
 _SETTLE_LOCKS_GUARD = threading.Lock()
+
+
+def reconcile_wedged_runs(store: JobStore, active_ids: set[str], *, now: float | None = None,
+                          limit: int = 50) -> dict[str, int]:
+    """End a `running` row with an upstream batch that **nothing in this process is polling**.
+
+    The owner, 2026-11-18: *"a job must reach a terminal state when its upstream stops
+    progressing."* Measured live: eleven jobs sat at 137 minutes as `running`, `retryable:
+    false`, `recovery_required: false` while everything around them reported fine. Their pollers
+    were gone — a follow that never restarted, or a restart that could not resume them — and the
+    liveness sweep never looked at a row with an upstream id, so nothing could ever end them.
+
+    A row is not touched unless **both** hold: it is past `BATCH_NO_POLL_CEILING_S` (the longest
+    Hub batch lane plus grace) **and** no poller in this process owns it (`active_ids`). The Hub
+    is asked once, so the verdict is its answer, not a guess:
+
+      * **done there** — the work is collected through the ordinary adoption path. Nothing is lost.
+      * **still running there** — ended, the batch recorded for the cleanup to stop first, and the
+        sentence says running it again is safe *after* that.
+      * **never heard of it** (404) — provably nothing upstream, so ended **retryable**: a retry
+        starts fresh work and duplicates nothing.
+      * **did not answer** — ended non-retryable: "I could not ask" is not "it is finished", and a
+        blind retry could duplicate a live batch.
+
+    Runs inside the existing hold-sweep thread (its own timer, 60 s); adds no timer, thread or
+    tracker. Never raises: a row that cannot be read is looked at again next sweep.
+    """
+    out = {"checked": 0, "adopted": 0, "ended": 0, "left": 0}
+    finder = getattr(store, "wedged_runs", None)
+    if finder is None:
+        return out
+    moment = time.time() if now is None else float(now)
+    try:
+        rows = finder(cutoff=moment - BATCH_NO_POLL_CEILING_S, limit=limit)
+    except Exception:  # noqa: BLE001 - an unreadable table is not a reason to stop dispatching
+        log.exception("could not read running rows with an upstream batch")
+        return out
+    for job in rows:
+        job_id = str(job.get("id") or "")
+        if not job_id:
+            continue
+        try:
+            # **Re-read, and check ownership again.** The select and this loop are not one
+            # instant: a restart may have picked the batch up in between, and a row with a live
+            # poller is not wedged.
+            fresh = store.get(job_id) if hasattr(store, "get") else job
+            fresh = fresh or {}
+            if (job_id in active_ids or str(fresh.get("state") or "") != "running"
+                    or not fresh.get("upstream_job_id")):
+                out["left"] += 1
+                continue
+            out["checked"] += 1
+            provider_id = str(fresh.get("provider_id") or "")
+            modality = str(fresh.get("modality") or "")
+            batch_id = str(fresh.get("upstream_job_id") or "")
+            context = fresh.get("recovery_context") if isinstance(
+                fresh.get("recovery_context"), dict) else {}
+            try:
+                item_index = int(context.get("item_index") or 0)
+            except (TypeError, ValueError):
+                item_index = 0
+            location = str(context.get("location") or "") or None
+            started = fresh.get("dispatch_started_at") or fresh.get("created_at")
+            age = max(0.0, moment - float(started)) if isinstance(
+                started, (int, float)) and not isinstance(started, bool) else BATCH_NO_POLL_CEILING_S
+            snapshot = _hub_batch_answer(provider_id, modality, batch_id, location)
+            state = str((snapshot or {}).get("state") or "").lower()
+            known = snapshot is not None and snapshot.get("known") is not False
+            if known and state in _DONE_UPSTREAM_STATES:
+                attempted, settled, rejected = _adopt_hub_batch(
+                    fresh, provider_id, modality, batch_id, item_index, location, store)
+                if settled:
+                    log.warning("job %s: nothing was polling it, and %s had finished batch %s; "
+                                "collected it", job_id, provider_id, batch_id)
+                    out["adopted"] += 1
+                    continue
+                log.warning("job %s: batch %s finished but could not be collected (%s)",
+                            job_id, batch_id, rejected or ("adoption failed" if attempted else "not attempted"))
+            if snapshot is not None and snapshot.get("known") is False:
+                detail = (f"No poll was recorded for this job for {int(age // 60)} min: the Gateway "
+                          f"stopped following batch {batch_id} and the row was still marked running. "
+                          f"{provider_id} has no record of that batch at all, so nothing is running "
+                          f"there. Nothing was lost - run the job again.")
+                _fail(store, job_id, code=UPSTREAM_UNPOLLED, detail=detail, retryable=True,
+                      evidence={"hub_batch_id": batch_id})
+                out["ended"] += 1
+                continue
+            # A batch that may still be alive upstream: hand it to the cleanup before the verdict,
+            # so "run it again" is only offered once the old one is stopped.
+            entry = _superseded_entry({"batch_id": batch_id, "item_index": item_index,
+                                       "location": location or "", "jobs_path": ""},
+                                      provider_id=provider_id, modality=modality)
+            record = getattr(store, "record_superseded_batch", None)
+            if entry is not None and record is not None:
+                try:
+                    record(job_id, entry)
+                except Exception:  # noqa: BLE001 - a cleanup hint must not block the verdict
+                    log.warning("job %s: could not record batch %s for cleanup", job_id, batch_id)
+            if snapshot is None:
+                why = (f"The Hub could not be asked when this sweep last ran, so whether batch "
+                       f"{batch_id} is still running there is unknown.")
+            else:
+                why = (f"{provider_id} still reports batch {batch_id} as {state or 'running'}, "
+                       f"with nothing here following it.")
+            detail = (f"No poll was recorded for this job for {int(age // 60)} min: the Gateway "
+                      f"stopped following it and the row was still marked running. {why} The "
+                      f"batch is recorded so the cleanup stops it first; running the job again "
+                      f"after that is safe, and a late answer is kept beside this failure.")
+            _fail(store, job_id, code=UPSTREAM_UNPOLLED, detail=detail, retryable=False,
+                  evidence={"hub_batch_id": batch_id, "hub_machine": context.get("hub_machine")})
+            out["ended"] += 1
+        except Exception:  # noqa: BLE001 - one row must not starve the rest
+            log.warning("wedged run %s: could not end it this sweep", job_id, exc_info=True)
+    return out
 
 
 def _settle_lock(job_id: str) -> threading.Lock:
@@ -2004,16 +2136,28 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                     # **Bounded**: a Hub flapping on a minute's cycle would otherwise keep this
                     # job `running` for ever, restarting the poll's own budget each time and
                     # never reaching the liveness sweep (it skips rows with an upstream id).
+                    #
+                    # **And the whole window is the lane's ceiling, not the ceiling times the
+                    # follows.** The Hub states how long this item has run, and the poll records
+                    # the limit it was given; once the two meet, another follow only restarts a
+                    # wait on a batch that has already had its whole window.
+                    evidence = getattr(exc, "evidence", None) or {}
+                    spent = evidence.get("run_seconds")
+                    lane_ceiling = evidence.get("lane_ceiling_s")
+                    exhausted = (isinstance(spent, (int, float)) and not isinstance(spent, bool)
+                                 and isinstance(lane_ceiling, (int, float))
+                                 and not isinstance(lane_ceiling, bool) and spent >= lane_ceiling)
                     follows += 1
-                    if follows <= FOLLOW_LIMIT:
+                    if not exhausted and follows <= FOLLOW_LIMIT:
                         log.warning("job %s: %s still has batch %s; following it again "
                                     "(%s of %s) instead of dispatching a second batch",
                                     job_id, provider_id, batch_id, follows, FOLLOW_LIMIT)
                         resume_id = batch_id
                         continue
-                    log.warning("job %s: %s still has batch %s after %s follows; moving the job "
-                                "on and recording the batch", job_id, provider_id, batch_id,
-                                FOLLOW_LIMIT)
+                    log.warning("job %s: %s still has batch %s%s; moving the job on and "
+                                "recording the batch", job_id, provider_id, batch_id,
+                                (f" after {int(spent)}s of its {int(lane_ceiling)}s ceiling"
+                                 if exhausted else f" after {FOLLOW_LIMIT} follows"))
                 # **Re-read immediately before the move.** The read above can take fifteen
                 # seconds; a cancel, or the other copy settling the job, may have happened since.
                 current = store.get(job_id) if hasattr(store, "get") else current
@@ -2166,6 +2310,14 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                         "This voice exists only on that location, so it was not moved to another Mac."
                         if pinned is not None else "No other location offering this model could take it."
                     ) + " Nothing was charged; run it again."
+            # **A stalled batch is handed to the cleanup before the verdict is written.** The Hub
+            # still holds it, so the operator's "run it again" is only safe once it is stopped;
+            # recording it here means a crash after this point cannot lose the name.
+            if exc.code == UPSTREAM_STALLED and exc.recovery:
+                entry = _superseded_entry(exc.recovery, provider_id=provider_id, modality=modality)
+                record = getattr(store, "record_superseded_batch", None)
+                if entry is not None and record is not None:
+                    record(job_id, entry)
             # Only here, where no re-route is left, does a refused narration section's review
             # candidate bind to the job: an attempt that moved on to another location binds none.
             candidate = getattr(exc, "review_candidate", None)
@@ -2341,6 +2493,9 @@ class Worker:
         #: background job (`_background_room`); `None` until read. Cleared each pass.
         self._normal_waiting: set[tuple[str, str]] | None = None
         self.hold_sweep: dict[str, int] = {}
+        #: What the wedged-run sweep last found (0.2.271): checked, adopted, ended, left. Same
+        #: thread and timer as the hold sweep.
+        self.wedged_sweep: dict[str, int] = {}
         #: What the superseded-batch cleanup last found (0.2.211): adopted, stopped, duplicates,
         #: left open. It rides the hold sweep's timer and its thread, so it is never a second
         #: schedule to reason about.
@@ -3529,6 +3684,14 @@ class Worker:
             self.hold_sweep = reconcile_holds(self.store)
         except Exception:  # noqa: BLE001 - reconciliation is never allowed to stop work
             log.exception("recovery-hold reconciliation failed")
+        # **A row nothing is polling is ended on the same thread and timer.** This is the other
+        # half of "a job must reach a terminal state": the hold sweep asks the Hub about holds,
+        # this asks it about `running` rows whose poller is gone. Wrapped separately so a broken
+        # row never costs the hold reconciliation.
+        try:
+            self.wedged_sweep = reconcile_wedged_runs(self.store, set(self._running))
+        except Exception:  # noqa: BLE001 - a sweep must never stop work
+            log.exception("wedged-run reconciliation failed")
         finally:
             self._sweeping.clear()
 
@@ -3557,6 +3720,7 @@ class Worker:
             "in_flight": self.active(),
             "dispatch_paused": self.dispatch_paused(),
             "hold_sweep": dict(self.hold_sweep),
+            "wedged_sweep": dict(self.wedged_sweep),
             "superseded_sweep": dict(self.superseded_sweep),
             # What the running-job watchdog last saw: how many silent jobs it asked, how many it
             # told, and how many it had to end. Zeroes mean "nothing running", not "not checked".

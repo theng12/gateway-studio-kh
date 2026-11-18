@@ -868,7 +868,7 @@ class HubProgress:
     """
 
     __slots__ = ("stalled", "worst_no_progress_s", "stalled_after_s", "samples", "machine",
-                 "run_s")
+                 "run_s", "lane_ceiling_s")
 
     def __init__(self) -> None:
         self.stalled = False
@@ -877,6 +877,7 @@ class HubProgress:
         self.samples = 0
         self.machine: str | None = None  # the Mac the Hub said runs the item
         self.run_s = 0.0  # seconds the item has run (what the lane budget counts)
+        self.lane_ceiling_s: float | None = None  # the limit this poll was given, for the record
 
     def note(self, summary: dict[str, Any]) -> None:
         """Record one poll's figure, if it stated one."""
@@ -915,7 +916,8 @@ class HubProgress:
     def evidence(self, batch_id: str) -> dict[str, Any]:
         """What a failed item leaves on the job record: which Mac, which batch, how long it ran."""
         return {"hub_batch_id": batch_id, "hub_machine": self.machine,
-                "run_seconds": round(self.run_s, 1), "hub_progress": self.as_payload()}
+                "run_seconds": round(self.run_s, 1), "lane_ceiling_s": self.lane_ceiling_s,
+                "hub_progress": self.as_payload()}
 
     def why(self) -> str:
         """One clause for an error message, or `""` when it adds nothing."""
@@ -977,6 +979,8 @@ def _poll_batch(
     on that path.
     """
     limit = float(deadline_seconds) if deadline_seconds else JOB_DEADLINE_S
+    if progress is not None:
+        progress.lane_ceiling_s = limit
     # Read once, like `limit`: the ceiling is the owner's setting (`queue_wait_ceiling_s`) and a
     # poll loop is not the place to re-stat a settings file once a second.
     ceiling = queue_wait_ceiling_s()
@@ -1084,6 +1088,27 @@ def _poll_batch(
         last = summary
         if progress is not None:
             progress.note(summary)
+        # **The Hub's own stall signal ends the wait.** It is the party that measures progress
+        # (`stalled = no_progress_s >= max(15 min, 5 x average)`), it states that on every poll,
+        # and until now nothing on this side acted on it: a batch that stopped producing rode to
+        # the lane's deadline with its row still saying `running`. A stalled item is not busy, so
+        # the poll ends here — terminal, naming the seconds and the Hub's own threshold.
+        if progress is not None and progress.stalled:
+            no_progress = progress.worst_no_progress_s or 0.0
+            against = (f" against the Hub's {progress.stalled_after_s} s threshold"
+                       if progress.stalled_after_s is not None else "")
+            raise BackendError(
+                f"the Hub reported this job stalled: no progress for {no_progress:.0f} s"
+                f"{against}. The wait was ended instead of running on to the lane's deadline. "
+                f"The batch is recorded so the cleanup stops it first; running the job again "
+                f"after that is safe, and a late answer is kept beside this failure.",
+                code="UPSTREAM_STALLED",
+                retryable=False,
+                upstream_accepted=True,
+                upstream_settled=True,
+                recovery={"batch_id": batch_id, "item_index": item_index,
+                          "jobs_path": jobs_path, "location": base},
+            )
 
         items = summary.get("items") or []
         item = items[item_index] if item_index < len(items) else None
@@ -1099,6 +1124,8 @@ def _poll_batch(
                 progress.machine = machine
             if deadline_for_machine is not None:
                 limit = float(deadline_for_machine(machine) or limit)
+                if progress is not None:
+                    progress.lane_ceiling_s = limit
         # Hub 0.6.159+: the Mac running an Image item states that job's own limit (its steps x that
         # Mac's speed), the number its worker stops at. It only ever raises the lane's number.
         stated = (item or {}).get("deadline_s")

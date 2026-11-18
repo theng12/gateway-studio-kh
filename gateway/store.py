@@ -3726,6 +3726,23 @@ class JobStore:
             ).fetchall()
         return [self._row_dict(row) for row in rows]
 
+    def wedged_runs(self, *, cutoff: float, limit: int = 50) -> list[dict[str, Any]]:
+        """`running` rows that name an upstream batch and have not moved since `cutoff`.
+
+        The caller owns the other half of the question — whether anything is still polling the
+        batch (`Worker._running`) — because only the running process knows that. Oldest first, so
+        the longest wedge is ended first and a burst cannot starve it.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM jobs WHERE state = 'running' "
+                "AND COALESCE(upstream_job_id, '') != '' "
+                "AND COALESCE(updated_at, created_at, 0) <= ? "
+                "ORDER BY COALESCE(updated_at, created_at, 0) LIMIT ?",
+                (float(cutoff), max(1, int(limit))),
+            ).fetchall()
+        return [self._row_dict(row) for row in rows]
+
     def expire_hold(self, job_id: str, *, code: str, detail: str) -> bool:
         """End a hold **its own ceiling** decided nothing will ever settle, keeping the evidence.
 
