@@ -2390,6 +2390,7 @@ def machine_disk(machine: dict) -> dict | None:
         "swap_used_gb": None if swap is None else round(swap, 2),
         "top": _disk_top(raw.get("top", raw.get("top_consumers"))),
         "last_sweep": raw.get("last_sweep", raw.get("last_sweep_at")),
+        "measured_at": _num(raw.get("measured_at")),
         "warnings": clean,
     }
 
@@ -3263,6 +3264,13 @@ def machines_flat(rows: list[dict]) -> list[dict]:
             node = nodes.get(mid) or {}
             startup = _startup_fact(machine, nodes.get(mid) or {})
             priority_order = _machine_priority_order(machine, node)
+            disk_obj = machine_disk(machine)
+            if disk_obj is not None and disk_obj.get("measured_at") is None:
+                seen_at = _num(node.get("last_seen_at"))
+                if seen_at and seen_at > 0:
+                    disk_obj["measured_at"] = seen_at
+                elif mid == "local" and machine.get("reachable") is True:
+                    disk_obj["measured_at"] = now
             out.append({
                 "location_id": row["id"],
                 "location": row["label"],
@@ -3286,7 +3294,7 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "memory_pressure": machine.get("memory_pressure"),
                 "disk_free_gb": machine.get("disk_free_gb"),
                 "disk_total_gb": machine.get("disk_total_gb"),
-                "disk": machine_disk(machine),
+                "disk": disk_obj,
                 # The items the Hub moved into macOS Trash (see `_macos_trash_fact`): its own count
                 # and bytes, or None when it does not report them.
                 "macos_trash": _macos_trash_fact(machine),
@@ -3647,7 +3655,9 @@ def _issues_for(row: dict) -> list[dict]:
         # stale or a zero), so only a reachable Mac in red/stop counts.
         disk = machine.get("disk") or {}
         if machine.get("reachable") and disk.get("state") in disk_low and disk.get("free_gb") is not None:
-            disk_low[disk["state"]].append(f"{machine.get('label') or machine_id} {disk['free_gb']:g} GB free")
+            at = _num(disk.get("measured_at")) or _num(machine.get("checked_in_at"))
+            when = f" at {time.strftime('%H:%M', time.localtime(at))}" if at is not None and at > 0 else ""
+            disk_low[disk["state"]].append(f"{machine.get('label') or machine_id} {disk['free_gb']:g} GB free{when}")
         fact = machine.get("startup")
         if fact and fact.get("start_services_on_launch") is False:
             startup_off.append(str(machine.get("label") or machine_id))

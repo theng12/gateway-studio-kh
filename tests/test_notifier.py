@@ -411,9 +411,12 @@ class OtherEvents(Base):
         self.configure(events={"disk_memory": True, "jobs_trouble": True, "holds": True})
 
     def test_red_disk_then_recovery(self) -> None:
-        self.snapshot = snap([machine("Mini A", disk={"state": "red", "free_gb": 9.5})])
+        import time as _time
+        measured_at = 1794970000.0
+        expected_hhmm = _time.strftime("%H:%M", _time.localtime(measured_at))
+        self.snapshot = snap([machine("Mini A", disk={"state": "red", "free_gb": 9.5, "measured_at": measured_at})])
         self.run_ticks(0, 61)
-        self.assertIn("Mini A (Studio 1): disk almost full, 9.5 GB free", self.transport.sent[0])
+        self.assertIn(f"Mini A (Studio 1): disk almost full, 9.5 GB free at {expected_hhmm}", self.transport.sent[0])
         self.snapshot = snap([machine("Mini A", disk={"state": "green", "free_gb": 200})])
         self.run_ticks(100, 161)
         self.assertIn("disk space is back to normal", self.transport.sent[1])

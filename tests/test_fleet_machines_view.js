@@ -395,3 +395,32 @@ test('a cleared attention row draws no marker at all', async () => {
   assert.doesNotMatch(html, /Not checked in since/);
   assert.doesNotMatch(html, /measured \d{1,2}:\d{2}/);
 });
+
+test('a silent node under a reachable controller shows not-checked-in and a live disk cell shows its as-of time', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const ctx = context(payload([
+    machine({
+      machine: 'silent-node',
+      label: 'Silent Node',
+      reachable: false,
+      state: 'offline',
+      attention: null,
+      attention_source: 'last_known',
+      attention_measured_at: now - 3600,
+    }),
+    machine({
+      machine: 'live-node',
+      label: 'Live Node',
+      reachable: true,
+      state: 'ready',
+      disk_free_gb: 120.5,
+      disk_total_gb: 245.1,
+      disk: { state: 'green', free_gb: 120.5, total_gb: 245.1, measured_at: now - 120 },
+    }),
+  ]));
+  await ctx.loadFleet();
+  const html = ctx.nodes.get('fleet-machines-wrap').innerHTML;
+  assert.match(html, /Not checked in since \d{1,2}:\d{2}/);
+  assert.match(html, /as of \d{1,2}:\d{2}/);
+});
+
