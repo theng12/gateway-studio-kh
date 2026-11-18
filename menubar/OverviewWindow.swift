@@ -482,7 +482,7 @@ final class OverviewSection: NSObject, AppSection {
                 self.setHub(.warn, "Not answering",
                             hub["probe"] as? String ?? "It published a ready-file but did not answer.")
             } else {
-                self.setHub(.off, "Not running", "Start Studio Hub to use local models.")
+                self.setHub(.off, "Not running", "Start Hub Studio KH to use local models.")
             }
 
             self.loadActivity()

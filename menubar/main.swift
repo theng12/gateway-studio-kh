@@ -1830,7 +1830,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         studioHubItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         studioHubItem.isEnabled = false
         menu.addItem(studioHubItem)
-        studioHubStartItem = item("Start Studio Hub", #selector(startStudioHub))
+        studioHubStartItem = item("Start Hub Studio KH", #selector(startStudioHub))
         menu.addItem(studioHubStartItem)
         updateStudioHubItems()
 
@@ -2071,24 +2071,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // which takes the operator token — the gateway's own status route already
         // answers that question with real numbers.
         studioHubItem?.title = studioHubRunning
-            ? "Studio Hub running"
-            : "Studio Hub not running"
+            ? "Hub Studio KH running"
+            : "Hub Studio KH not running"
+        // A visible item that does nothing is a false affordance (owner, 2026-11-15). The Hub was
+        // renamed, so the item is enabled only when one of its apps is actually on this Mac, and
+        // otherwise says so in its own words.
+        let installed = HubAppStart.resolve(
+            home: FileManager.default.homeDirectoryForCurrentUser.path,
+            exists: { FileManager.default.fileExists(atPath: $0) }
+        )
         studioHubStartItem?.isHidden = studioHubRunning
+        studioHubStartItem?.isEnabled = installed != nil
+        studioHubStartItem?.title = installed == nil
+            ? "Hub Studio KH is not installed on this Mac"
+            : "Start Hub Studio KH"
     }
 
     @objc private func startStudioHub() {
-        let candidates = [
-            "\(FileManager.default.homeDirectoryForCurrentUser.path)/Applications/Studio Hub.app",
-            "/Applications/Studio Hub.app",
-        ]
-        for path in candidates where FileManager.default.fileExists(atPath: path) {
-            NSWorkspace.shared.openApplication(
-                at: URL(fileURLWithPath: path), configuration: NSWorkspace.OpenConfiguration()
-            ) { _, _ in }
-            return
-        }
+        guard let path = HubAppStart.resolve(
+            home: FileManager.default.homeDirectoryForCurrentUser.path,
+            exists: { FileManager.default.fileExists(atPath: $0) }
+        ) else { return }
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: path), configuration: NSWorkspace.OpenConfiguration()
+        ) { _, _ in }
     }
 }
+
+// BEGIN hub-app-start-path
+/// Where the Hub app can be, best first: the current name in both Applications folders, then the
+/// pre-rename name, so a Mac whose Hub has not been renamed yet still starts. A missing app is
+/// `nil` — the caller must say so rather than leave a menu item that does nothing.
+enum HubAppStart {
+    static let bundleName = "Hub Studio KH.app"
+    static let legacyBundleName = "Studio Hub.app"
+
+    static func candidates(home: String) -> [String] {
+        [
+            "\(home)/Applications/\(bundleName)",
+            "/Applications/\(bundleName)",
+            "\(home)/Applications/\(legacyBundleName)",
+            "/Applications/\(legacyBundleName)",
+        ]
+    }
+
+    static func resolve(home: String, exists: (String) -> Bool) -> String? {
+        candidates(home: home).first(where: exists)
+    }
+}
+// END hub-app-start-path
 
 // MARK: - Entry point
 

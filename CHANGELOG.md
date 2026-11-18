@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.276 — 2026-11-18
+
+- **"Start Hub Studio KH" opens the Hub — and says so when the Hub is not installed.** The Hub app was renamed from Studio Hub to Hub Studio KH, but the menu's start item still looked only for the old name, so on every Mac with the renamed app the item was there and did nothing. It now looks for `Hub Studio KH.app` first, then the old `Studio Hub.app` so a Mac that has not been renamed yet still starts, and when neither is installed the item is disabled and reads "Hub Studio KH is not installed on this Mac" instead of being a dead control. The menu's status line and the Overview hint use the new name too.
+- **A test holds the lookup.** It pins the renamed app winning, the old name still starting a Mac that has not been renamed, and neither app resolving to nothing, so this cannot quietly rot again.
+
 ## 0.2.275 — 2026-11-18
 
 - **The setup kit now sends you to the app that exists: Hub Studio KH.** The Hub was renamed from Studio Hub to Hub Studio KH, and this kit still told you to open a `Studio Hub KH/` folder and clear quarantine on `/Applications/Studio Hub.app` — a name that is no longer on any Mac. Every operator step now says `Hub Studio KH/` and `Hub Studio KH.app`. This release is documentation only: no code, no setting and no behaviour changed, and version numbers, bundle ids, ports and data paths are exactly as they were.
