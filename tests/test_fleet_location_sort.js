@@ -82,8 +82,9 @@ test('every Locations header is a sort button that announces aria-sort, like the
   const { ctx } = harness(PAYLOAD);
   ctx.__setPayload(PAYLOAD);
   const columns = vm.runInContext('FLEET_LOCATION_COLUMNS.map(c => c[0])', ctx);
+  // The prose column became one state word (owner, 2026-11-18); the sentence lives in the tooltip.
   assert.deepEqual([...columns],
-    ['location', 'health', 'cause', 'network', 'hub', 'members', 'models', 'status']);
+    ['location', 'health', 'state', 'network', 'hub', 'members', 'models', 'status']);
   for (const key of columns) {
     const header = vm.runInContext(`fleetLocationSortHeader('${key}', '${key}')`, ctx);
     assert.match(header, /<button type="button" class="sort"/);
@@ -118,14 +119,14 @@ test('Members and Models sort by their numbers, and a value nobody reported sort
   assert.deepEqual(ids(ctx), ['a', 'b', 'c'], 'models ascending, 9 before 20, unknown last');
 });
 
-test('Health and Likely cause put the worst first, unmeasured last — the cards’ own order', () => {
+test('Health puts the worst first and an unmeasured site last, and State sorts by the word it shows', () => {
   const { ctx } = harness(PAYLOAD);
   ctx.__setPayload(PAYLOAD);
   vm.runInContext("fleetSortLocationsBy('health')", ctx);
   assert.equal(ids(ctx)[0], 'c', 'a problematic site comes before healthy ones');
   assert.equal(ids(ctx)[2], 'b', 'a site with no history is last');
-  vm.runInContext("fleetSortLocationsBy('cause')", ctx);
-  assert.equal(ids(ctx)[0], 'c', 'the down site’s cause ranks worst');
+  vm.runInContext("fleetSortLocationsBy('state')", ctx);
+  assert.equal(ids(ctx)[0], 'c', 'Offline sorts before Working');
 });
 
 test('Sorting Locations never changes the Machines table’s sort', () => {

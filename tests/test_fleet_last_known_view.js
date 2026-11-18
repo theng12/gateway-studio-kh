@@ -169,7 +169,7 @@ test('no live measurement or action is drawn on a carried row', () => {
   const ctx = context(sample());
   const row = ctx.fleetMachineRow(carried());
   assert.doesNotMatch(row, /onclick=/, 'no action is offered on a Mac the Gateway cannot reach');
-  assert.match(row, /data-label="Actions">—<\/td>/);
+  assert.doesNotMatch(row, /fleet-detail-row/, 'a carried row has no Details panel to open');
   assert.doesNotMatch(row, /GB free/, 'Disk and Memory are not drawn from a stale reading');
   assert.match(row, /Not measured this read/);
 });

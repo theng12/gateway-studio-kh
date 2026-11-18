@@ -305,19 +305,20 @@ test('the summary counts problematic from the rows below it', async () => {
   assert.match(ctx.nodes.get('fleet-summary').innerHTML, /1 flapping/);
 });
 
-test('the Machines tab is the native table, sorted from its own headers', async () => {
-  // The native page has no Sort dropdown: a header click is the sort. The browser page keeps
-  // that, so the columns and their order are the native ones.
+test('the Machines tab is six sortable columns, with the rest behind Details', async () => {
+  // Owner, 2026-11-18: Machine · State · Version · Disk free · RAM free · Network. Health, drops
+  // and the cause sentence are in the row's Details panel, not the scan path.
   const ctx = context(payload([machine(), machine({ machine: '1207', label: '1207' })]));
   await ctx.loadFleet();
   const html = ctx.nodes.get('fleet-machines-wrap').innerHTML;
-  for (const heading of ['Machine', 'State', 'Health', 'Seen', 'Drops · 7 days',
-    'Likely cause', 'Version', 'Disk', 'Memory', 'Network']) {
+  for (const heading of ['Machine', 'State', 'Version', 'Disk free', 'RAM free', 'Network']) {
     assert.match(html, new RegExp(heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
-  for (const key of ['machine', 'health', 'week', 'cause', 'disk', 'memory', 'network']) {
+  for (const key of ['machine', 'state', 'version', 'disk', 'memory', 'network']) {
     assert.match(html, new RegExp(`fleetSortBy\\('${key}'\\)`));
   }
+  assert.match(html, /fleet-detail-row/);
+  assert.match(html, /Drops · 7 days|drops in 24 h/);
 });
 
 test('the summary figure is a button that shows only the problematic ones', async () => {

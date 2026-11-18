@@ -5422,12 +5422,39 @@ def fleet_remove_machine(controller_id: str, machine_id: str, force: bool = Fals
                 body["can_force"] = True
             return JSONResponse(status_code=error.status, content=body)
     purged = fleet.remove_node(controller_id, machine_id, store=store)
+    # **The tombstone is what makes "removed" true on the next read.** Force removal purges this
+    # Gateway's records, but a controller that could not unregister the node still reports it, so
+    # the row was rebuilt seconds later and the success response was true only here. Marked for
+    # every controller-side removal; a machine that reports again after this clears it (a sold Mac
+    # never does), and Undo clears it here.
+    if controller_id != fleet.LOCAL_ID:
+        fleet.retired_nodes.mark(controller_id, machine_id)
+        fleet.invalidate()
+    sentence = fleet.removal_sentence(machine_id, hub_result)
     return {
         "ok": True,
         "controller_id": controller_id,
         "machine_id": machine_id,
         "hub": hub_result,
         "purged": purged,
+        "removed_here_only": bool(hub_result and hub_result.get("forced_local")),
+        "sentence": sentence,
+    }
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}/undo-remove",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_undo_remove_machine(controller_id: str, machine_id: str) -> Any:
+    """Put a machine removed here back on the next read. The site side is untouched."""
+    cleared = fleet.retired_nodes.clear(controller_id, machine_id)
+    fleet.invalidate()
+    return {
+        "ok": True,
+        "cleared": cleared,
+        "sentence": (f"{machine_id} will appear again on the next Fleet read."
+                     if cleared else f"{machine_id} was not marked as removed here."),
     }
 
 

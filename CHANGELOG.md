@@ -10,6 +10,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.278 — 2026-11-18
+
+- **The Fleet page now answers the owner's question first.** A large "running now" count and its split (generating · ready · idle · need attention · just finished · offline) sit above the panes, then a worst-first list of what is failing per location ("Main — 1 offline", "1300 — whole site unreachable 46 h"). Each number and location filters the table to those rows; the page says how many it is showing.
+- **The machine table is six columns.** Machine · State · Version · Disk free · RAM free · Network. The cause sentence, health history, drops, gate facts and every action moved into a Details row under the machine — one click, not the scan path. A carried row keeps no actions and says it was not measured this read.
+- **Locations show one state word, not a paragraph.** Offline / Not answering / Slow / Working / Paused, with the old sentence in the cell's tooltip and the location's Details.
+- **"More…" on a Locations row now opens.** It was rendered inside a scrolling table wrapper and clipped out of view; menus now open fixed under their button.
+- **A removed machine stays removed.** Force removal purged this Gateway's records, but the next read rebuilt the row from the controller's report, so the success was true only here. A tombstone per (controller, machine) now suppresses it from every view and count; a fresh report from that machine clears it (a sold Mac never reports), Undo clears it on demand, and the page says once "1 removed here, still registered on its site" with Undo beside it. The removal response and the in-app message say which of those happened.
+- **Shop Macs are hidden by default, behind a switch.** The Shops location starts hidden; "showing its Macs" and the "N machines from Shops hidden — show" line in the lead both flip it, the choice is remembered, and the Location filter still reaches them. They leave the headline counts too, so the number always matches the table.
+
 ## 0.2.277 — 2026-11-18
 
 - **Every column on the Locations table now sorts.** Location, Health, Likely cause, Network, Hub, Members, Models and Status looked sortable and did nothing — they were the only headers on the Fleet page without a handler. Each one now sorts with an arrow and `aria-sort`, worst-cause and health first as the cards do, numbers as numbers, and a value nobody reported last whichever way the arrow points.

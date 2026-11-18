@@ -605,6 +605,23 @@
   #fleet-threshold select { width: auto; min-width: 64px; }
   #fleet-threshold-note { font-size: 12px; color: var(--dim); }
   #fleet-summary { gap: var(--s12); margin: 0 0 var(--s12); }
+  /* The Fleet lead: the owner's first answer, above every pane. */
+  #fleet-capacity { display: block; margin: 0 0 var(--s16); padding: var(--s16);
+    border: 1px solid var(--line); border-radius: 14px; background: var(--panel, transparent); }
+  .fleet-lead { display: grid; gap: var(--s12); }
+  .fleet-lead-now { display: flex; align-items: baseline; gap: var(--s12); }
+  .fleet-lead-number { font-size: 44px; line-height: 1; font-weight: 650;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .fleet-lead-word { font-size: 15px; color: var(--dim); }
+  .fleet-lead-split, .fleet-lead-failures, .fleet-lead-foot { display: flex; flex-wrap: wrap;
+    gap: var(--s8); align-items: center; }
+  .fleet-lead-failure { text-align: left; }
+  .ft-details { margin-left: 6px; padding: 1px 6px; font-size: 11px; }
+  .fleet-detail-row > td { padding: 0; border-top: 0; }
+  .fleet-detail-body { display: grid; gap: 6px; padding: var(--s8) var(--s16) var(--s12);
+    background: color-mix(in srgb, var(--line) 8%, transparent); font-size: 12px; }
+  .fleet-detail-body .row { flex-wrap: wrap; gap: 6px; }
+  @media (max-width: 640px) { .fleet-lead-number { font-size: 34px; } }
   .fleet-issue { padding: var(--s6) var(--s16); border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
   .fleet-issue:first-child { border-top: 0; }
   summary.fleet-issue { cursor: pointer; padding: var(--s8) var(--s16); }
@@ -4503,8 +4520,25 @@ function toggleCardMenu(button, id) {
   if (!menu || !button) return;
   const open = menu.hidden;
   closeMenus();
+  if (open) placeMenuUnderButton(menu, button);
   menu.hidden = !open;
   button.setAttribute?.('aria-expanded', String(open));
+}
+
+// **A menu inside a table opened off the table and could not be seen.** The roster lives in a
+// `.tablewrap` that scrolls, and an absolutely positioned menu is clipped by it — the owner's
+// "i clicked and nth happened". A fixed menu under its own button is always in view; it is
+// re-placed on every open, and the document's outside-click closes it.
+function placeMenuUnderButton(menu, button) {
+  if (!button.getBoundingClientRect || !menu.style) return;
+  const rect = button.getBoundingClientRect();
+  const width = menu.offsetWidth || 240;
+  const viewport = (typeof window !== 'undefined' && window.innerWidth) || 1024;
+  const left = Math.max(8, Math.min(rect.right - width, viewport - width - 8));
+  menu.style.position = 'fixed';
+  menu.style.left = `${left}px`;
+  menu.style.right = 'auto';
+  menu.style.top = `${rect.bottom + 4}px`;
 }
 document.addEventListener?.('click', event => {
   // Every control whose own click opens a .more-menu must be exempt here, or the document
@@ -8058,10 +8092,12 @@ function fleetGateStorageTooltip(inv) {
   return lines.join('\n');
 }
 
+// **Six columns, the ones the owner scans for.** Everything else — cause sentences, drops,
+// history, warnings — lives in the row's Details panel (owner, 2026-11-18: *"i can't understand
+// anything. can you simplify everything?"* and *"others can be stored."*).
 const FLEET_MACHINE_COLUMNS = [
-  ['machine', 'Machine'], ['location', 'Location'], ['state', 'State'], ['health', 'Health'], ['seen', 'Seen'],
-  ['week', 'Drops · 7 days'], ['cause', 'Likely cause'], ['version', 'Version'],
-  ['disk', 'Disk'], ['memory', 'Memory'], ['network', 'Network'],
+  ['machine', 'Machine'], ['state', 'State'], ['version', 'Version'],
+  ['disk', 'Disk free'], ['memory', 'RAM free'], ['network', 'Network'],
 ];
 
 function fleetMachineName(m) { return m.label || m.machine || '—'; }
@@ -8106,6 +8142,7 @@ function fleetCompareValues(a, b, ascending = true) {
 function fleetMachineRowsFor(d) {
   const rows = (d.machines || []).filter(m =>
     fleetInLocation(m)
+    && fleetShowsMachine(m)
     && fleetRowMatchesFilter('machine', m)
     && fleetFacetMatches(m)
     && fleetMatchesSearch([m.label, m.machine, m.location, fleetStateLabel(m), m.state_text, m.chip,
@@ -8122,6 +8159,73 @@ function fleetMachineRowsFor(d) {
   return rows.slice().sort((a, b) => fleetCompareValues(
     fleetMachineSortValue(machineSort.key, a), fleetMachineSortValue(machineSort.key, b),
     machineSort.ascending));
+}
+
+// ---- Hidden locations (Shops) ----------------------------------------------
+//
+// The owner, 2026-11-18: *"stop showing the mac that is dedicated shop machine. they go offline
+// often."* **A switch, never a rule**: the Shops location starts hidden, the owner can flip it,
+// and the choice is remembered. Hidden rows leave the table and the numbers, and the page says
+// how many there are so they are not silently lost. Choosing a hidden location in the Location
+// filter still shows that location's Macs — the filter is the way back in.
+const FLEET_HIDDEN_KEY = 'gatewayFleetHiddenLocations';
+let fleetHiddenLocations = null;   // null until the read names the locations
+
+function fleetHiddenSet(d) {
+  if (fleetHiddenLocations === null) {
+    fleetHiddenLocations = new Set();
+    let saved = null;
+    try {
+      if (typeof localStorage !== 'undefined') saved = JSON.parse(localStorage.getItem(FLEET_HIDDEN_KEY) || 'null');
+    } catch (e) { saved = null; }
+    if (Array.isArray(saved)) {
+      for (const id of saved) fleetHiddenLocations.add(String(id));
+    } else {
+      // First run: only a location that is actually called Shops is hidden, and only by default.
+      for (const L of d.locations || []) {
+        if (/^shops?\b/i.test(String(L.label || '').trim())) fleetHiddenLocations.add(String(L.id));
+      }
+    }
+  }
+  return fleetHiddenLocations;
+}
+
+function fleetSaveHiddenLocations() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(FLEET_HIDDEN_KEY, JSON.stringify([...fleetHiddenLocations]));
+    }
+  } catch (e) { /* best effort */ }
+}
+
+function fleetLocationHidden(locationId) {
+  return fleetHiddenLocations !== null && fleetHiddenLocations.has(String(locationId));
+}
+
+function fleetShowsMachine(m) {
+  // A location the owner filtered to by name is never hidden behind the switch.
+  if (fleetLocation !== 'all' && String(m.location_id || '') === fleetLocation) return true;
+  return !fleetLocationHidden(m.location_id);
+}
+
+function fleetToggleLocationHidden(locationId) {
+  if (fleetHiddenLocations === null) fleetHiddenSet(lastFleetPayload || {});
+  const id = String(locationId);
+  if (fleetHiddenLocations.has(id)) fleetHiddenLocations.delete(id); else fleetHiddenLocations.add(id);
+  fleetSaveHiddenLocations();
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
+}
+
+function fleetShowAllLocations() {
+  fleetHiddenLocations = new Set();
+  fleetSaveHiddenLocations();
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
+}
+
+function fleetHiddenMachines(d) {
+  const hidden = fleetHiddenLocations === null ? fleetHiddenSet(d) : fleetHiddenLocations;
+  if (!hidden.size) return 0;
+  return (d.machines || []).filter(m => hidden.has(String(m.location_id || ''))).length;
 }
 
 function fleetSortBy(key) {
@@ -8170,53 +8274,71 @@ function fleetMachineRow(m) {
   const memoryFree = m.available_gb;
   const conn = m.connection || null;
   const seen = fleetSeenText(carried ? m.as_of : fleetLastSeenEpoch(m));
-  // Each cell's content is ONE child, so the phone's two-column row (label, value) keeps the
-  // value together instead of splitting a badge from its caption.
+  // **Six columns, then a Details row.** The owner scans machine, state, version, disk, RAM and
+  // network; the cause sentence, history, drops, gate facts and every action live one click below.
+  const attention = m.attention && m.attention_source !== 'last_known' ? m.attention : cause;
   return `<tr${carried ? ' class="fleet-last-known"' : ''}>
     <td class="ft-lead" data-label="Machine">
       <div class="ft-name">${esc(name)}</div>
+      ${carried ? '' : `<div><button type="button" class="sm ft-details" aria-expanded="false"
+        onclick="fleetToggleMachineDetails(this)">Details…</button></div>`}
       ${facts ? `<div class="ft-sub" title="${esc(facts)}">${esc(facts)}</div>` : ''}
-      ${gateTools ? `<div class="ft-sub" title="${esc(gateToolsTip)}">Gate tools: ${esc(gateTools)}</div>` : ''}
-      ${carried ? `<div class="ft-sub">${esc(m.state_text || 'Last report')} — shown from its last answer</div>` : ''}
+      ${carried ? `<div class="ft-sub">${esc(m.state_text || 'Last report')} — shown from its last answer · Not measured this read${
+        m.attention_source === 'last_known' && m.attention_measured_at
+          ? ` · Not checked in since ${new Date(m.attention_measured_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}</div>` : ''}
     </td>
-    <td data-label="Location" title="${esc(m.location || '')}"><div>${esc(m.location || '—')}</div></td>
     <td class="nowrap" data-label="State"><div>${fleetBadge(stateWord, fleetBadgeHealth(m))}${
-      stateCaption ? `<div class="ft-sub">${esc(stateCaption)}</div>` : ''}</div></td>
-    <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">
-      <div>${fleetBadge(verdict.text, verdict.health)}</div></td>
-    <td class="nowrap" data-label="Seen" title="Last seen up: ${esc(seen)}"><div>${esc(seen)}</div></td>
-    <td data-label="Drops · 7 days" title="${esc(carried
-      ? 'Not observed in this read — no drop figure is drawn from a row that was not measured.'
-      : fleetStripTooltip(m.history))}">
-      <div><div class="cell-line">${carried ? '—' : fleetStrip(m.history)}</div>
-      <div class="ft-sub">${esc(carried ? 'Not measured this read' : fleetShortSummary(m.history))}</div></div></td>
-    <td data-label="Likely cause" title="${esc(causeTip)}">
-      <div class="ft-cause" title="${esc(m.attention && m.attention_source !== 'last_known' ? m.attention : cause)}"
-        style="${carried ? '' : fleetCauseStyle(fleetCauseHealth(m.causes, m))}">${esc(m.attention && m.attention_source !== 'last_known' ? m.attention : cause)}</div>${
-      !carried && m.attention && m.attention_source !== 'last_known'
-        ? `<div class="ft-sub hint">measured ${new Date((m.attention_measured_at || 0) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
-        : m.attention_source === 'last_known'
+      stateCaption ? `<div class="ft-sub">${esc(stateCaption)}</div>` : ''}${
+      !carried && m.attention && m.attention_source === 'last_known'
         ? `<div class="ft-sub hint">Not checked in since ${new Date((m.attention_measured_at || 0) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
-        : ''}</td>
+        : ''}</div></td>
     <td class="nowrap" data-label="Version"><div>${carried
       ? esc(m.hub_version || '—')
       : (version ? fleetBadge(version.text, version.health) : esc(m.hub_version || '—'))}${
       versionCaption ? `<div class="ft-sub">${versionCaption}</div>` : ''}</div></td>
-    <td class="nowrap" data-label="Disk"><div>${carried || m.reachable === false ? '—'
+    <td class="nowrap" data-label="Disk free"><div>${carried || m.reachable === false ? '—'
       : `${esc(fleetGb(diskFree) + ' free')}${fleetMeter(fleetFraction(diskFree, fleetDiskTotal(m)), fleetDiskHealth(m))}`}${
-      !carried && m.reachable !== false && diskFree != null && ((m.disk && m.disk.measured_at) || m.checked_in_at)
-        ? `<div class="ft-sub hint">as of ${new Date((((m.disk && m.disk.measured_at) || m.checked_in_at)) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
-        : ''}${
-      gateSpace ? `<div class="ft-sub" title="${esc(gateStorageTip)}">${esc(gateSpace)}</div>` : ''}${
-      gateCleanup ? `<div class="ft-sub" title="${esc(gateStorageTip)}">${esc(gateCleanup)}</div>` : ''}</div></td>
-    <td class="nowrap" data-label="Memory"><div>${carried || m.reachable === false ? '—'
+      !carried && m.reachable !== false && diskFree != null && ((m.disk && m.disk.measured_at) || m.check_in_at || m.checked_in_at)
+        ? `<div class="ft-sub hint">as of ${new Date((((m.disk && m.disk.measured_at) || m.check_in_at || m.checked_in_at)) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
+        : ''}</div></td>
+    <td class="nowrap" data-label="RAM free"><div>${carried || m.reachable === false ? '—'
       : `${esc(fleetGb(memoryFree) + ' free')}${fleetMeter(fleetFraction(memoryFree, m.memory_gb), fleetMemoryHealth(m))}`}</div></td>
     <td class="nowrap" data-label="Network" title="${esc(carried
       ? 'Not observed in this read.' : fleetConnectionTooltip(conn))}">
       <div>${carried ? '<span class="ft-sub">—</span>'
         : fleetBadge(fleetConnectionDisplay(conn), fleetConnectionHealth(conn))}</div></td>
-    ${carried ? '<td data-label="Actions">—</td>' : fleetMachineActionCell(m)}
-  </tr>`;
+  </tr>${carried ? '' : `
+  <tr class="fleet-detail-row" hidden><td colspan="${FLEET_MACHINE_COLUMNS.length}">
+    <div class="fleet-detail-body">
+      <div class="ft-sub">Location: ${esc(m.location || '—')}${seen ? ` · Seen ${esc(seen)}` : ''}${
+        verdict.text !== '—' ? ` · Health ${fleetBadge(verdict.text, verdict.health)}` : ''}</div>
+      ${verdict.tip ? `<div class="ft-sub hint" title="${esc(verdict.tip)}">${esc(verdict.tip)}</div>` : ''}
+      <div class="ft-cause" title="${esc(m.attention && m.attention_source !== 'last_known' ? m.attention : cause)}"
+        style="${carried ? '' : fleetCauseStyle(fleetCauseHealth(m.causes, m))}">${esc(attention || '—')}</div>${
+      !carried && m.attention && m.attention_source !== 'last_known'
+        ? `<div class="ft-sub hint">measured ${new Date((m.attention_measured_at || 0) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
+        : m.attention_source === 'last_known'
+        ? `<div class="ft-sub hint">Not checked in since ${new Date((m.attention_measured_at || 0) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
+        : ''}
+      <div class="cell-line" title="${esc(carried
+        ? 'Not observed in this read — no drop figure is drawn from a row that was not measured.'
+        : fleetStripTooltip(m.history))}">${carried ? 'Not measured this read' : `${fleetStrip(m.history)} ${esc(fleetShortSummary(m.history))}`}</div>
+      ${gateTools ? `<div class="ft-sub" title="${esc(gateToolsTip)}">Gate tools: ${esc(gateTools)}</div>` : ''}
+      ${gateSpace ? `<div class="ft-sub" title="${esc(gateStorageTip)}">${esc(gateSpace)}</div>` : ''}
+      ${gateCleanup ? `<div class="ft-sub" title="${esc(gateStorageTip)}">${esc(gateCleanup)}</div>` : ''}
+      <div class="row">${fleetMachineActionsHtml(m)}</div>
+    </div>
+  </td></tr>`}`;
+}
+
+function fleetToggleMachineDetails(button) {
+  const row = button.closest ? button.closest('tr') : null;
+  const detail = row && row.nextElementSibling;
+  if (!detail || !detail.classList || !detail.classList.contains('fleet-detail-row')) return;
+  const open = detail.hidden;
+  detail.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+  button.textContent = open ? 'Hide' : 'Details…';
 }
 
 function fleetStripTooltip(history) {
@@ -8255,8 +8377,7 @@ function renderFleetMachines(d) {
   wrap.classList.remove('fleet-cards');
   wrap.innerHTML = rows.length
     ? `<table class="ftable">
-       <thead><tr>${FLEET_MACHINE_COLUMNS.map(([key, title]) => fleetSortHeader(key, title)).join('')}
-       <th scope="col">Actions</th></tr></thead>
+       <thead><tr>${FLEET_MACHINE_COLUMNS.map(([key, title]) => fleetSortHeader(key, title)).join('')}</tr></thead>
        <tbody>${rows.map(fleetMachineRow).join('')}</tbody></table>`
     : empty;
 }
@@ -8424,6 +8545,17 @@ function fleetLocationStatus(L) {
   return { main: 'Not reachable', sub: L.error || '', bad: true };
 }
 
+// **One word where a sentence used to be** (owner, 2026-11-18). The cause sentence is still
+// there, in the cell's tooltip and in the location's Details; it is not in the scan path.
+function fleetLocationStateWord(L) {
+  if (L.paused_at != null) return 'Paused';
+  if (L.reachable === false) return 'Offline';
+  if (L.slow === true) return 'Slow';
+  if (L.pending === true) return 'Starting';
+  if (String(L.state || '').toLowerCase() === 'needs_attention') return 'Needs attention';
+  return 'Working';
+}
+
 function fleetLocationRow(L) {
   const count = (L.machine_summary && L.machine_summary.total) ?? (L.machines || []).length;
   const role = L.role ? String(L.role).replace(/_/g, ' ') : '';
@@ -8438,8 +8570,9 @@ function fleetLocationRow(L) {
       <div class="ft-name">${esc(L.label || L.id || '—')}</div>
       ${caption ? `<div class="ft-sub">${esc(caption)}</div>` : ''}</td>
     <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">${fleetBadge(verdict.text, verdict.health)}</td>
-    <td data-label="Likely cause" title="${esc(fleetCauseTooltip(L.causes))}"
-      style="${fleetCauseStyle(fleetCauseHealth(L.causes, L))}">${esc(fleetCauseLine(L.causes) || '—')}</td>
+    <td class="nowrap" data-label="State" title="${esc(fleetCauseLine(L.causes) || fleetCauseTooltip(L.causes))}">
+      ${fleetBadge(fleetLocationStateWord(L), L.reachable === false || L.paused_at != null ? 'bad'
+        : L.slow === true || String(L.state || '') === 'needs_attention' ? 'warn' : 'ok')}</td>
     <td class="nowrap" data-label="Network">${esc(L.network || '—')}</td>
     <td class="nowrap" data-label="Hub">${esc(fleetLocationHub(L))}</td>
     <td data-label="Members" title="${esc(fleetMembersTooltip(L))}"
@@ -8465,6 +8598,7 @@ function fleetLocationRow(L) {
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationNetwork(this)">Network…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'connect')">Connect…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationRefresh(this)">Refresh models</button>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetToggleLocationHidden(this.dataset.id)">${fleetLocationHidden(L.id) ? 'Show its Macs' : 'Hide its Macs'}</button>
       ${L.id === 'local' ? '' : `<button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'remove')">Remove</button>`}
       </div></span>
     </div></td>
@@ -8780,10 +8914,11 @@ async function fleetMachineRemove(button, locationId, machineId) {
   const machine = fleetMachineById(locationId, machineId);
   if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
   const name = fleetMachineName(machine);
-  const sure = await uiConfirm(`Remove ${name}?\n\nThe controller deletes this Mac and revokes its credential, and every `
-    + `record of it is deleted from this Gateway — the fleet row, its site membership, metrics, attention, job links `
-    + `and asset links. It cannot check in here again.\n\nTo bring it back, connect it again: it returns as a new Mac, `
-    + `and its old jobs and history do not come back.`);
+  const sure = await uiConfirm(`Remove ${name} from the fleet?\n\nThis removes the row here and asks its site to delete `
+    + `the Mac and revoke its credential: its membership, metrics, attention, job links and asset links go too. `
+    + `The Gateway cannot undo the site side.\n\nIf its site cannot be reached, it is removed from this Gateway only and `
+    + `is still registered on its own Studio Hub — the message after says which happened. `
+    + `To bring it back here, connect it again: it returns as a new Mac and its old jobs do not come back.`);
   if (!sure) return;
   button.disabled = true;
   fleetNote('fleet-machine-action-note', `Removing ${name}…`);
@@ -8791,9 +8926,11 @@ async function fleetMachineRemove(button, locationId, machineId) {
     + (force ? '?force=true' : ''), { method: 'DELETE' });
   try {
     const result = await remove(false);
-    fleetNote('fleet-machine-action-note', result.hub?.already_gone
+    // **The server's own sentence**, because only it knows whether the site could unregister the
+    // Mac. A forced removal used to read as a full success and the row came back.
+    fleetNote('fleet-machine-action-note', result.sentence || (result.hub?.already_gone
       ? `Removed ${name} here. Its controller had no record of it any more.`
-      : `Removed ${name}. The controller deleted it and revoked its credential; it is gone from this Gateway.`);
+      : `Removed ${name}.`));
     await loadFleet();
   } catch (e) {
     if (e.body?.can_force) {
@@ -8802,8 +8939,9 @@ async function fleetMachineRemove(button, locationId, machineId) {
         + `so this Mac would need connecting again before it can check in here.`);
       if (forced) {
         try {
-          await remove(true);
-          fleetNote('fleet-machine-action-note', `Removed ${name} from this Gateway only. Its controller still has its record.`);
+          const forced = await remove(true);
+          fleetNote('fleet-machine-action-note', forced.sentence
+            || `Removed ${name} from this Gateway only. Its site still has its record.`);
           await loadFleet();
           return;
         } catch (again) { e = again; }
@@ -9010,7 +9148,12 @@ async function fleetRefresh(button) {
 // The native page's "…" menu, as a row of buttons: the startup actions that apply right now, then
 // everything else behind "More…". A Mac with no location or machine id has no actions at all.
 function fleetMachineActionCell(m) {
-  if (m.location_id == null || m.machine == null) return '<td data-label="Actions">—</td>';
+  return `<td data-label="Actions">${fleetMachineActionsHtml(m)}</td>`;
+}
+
+// The same actions without a table cell, for a row's Details panel.
+function fleetMachineActionsHtml(m) {
+  if (m.location_id == null || m.machine == null) return '—';
   // **A Hub-supplied id never goes inside an inline handler.** `esc()` is *HTML* escaping: the
   // browser turns `&#39;` back into a quote before the JavaScript is parsed, so an id containing
   // one broke out of a quoted argument. The ids ride in `data-*` attributes and the handler reads
@@ -9049,12 +9192,12 @@ function fleetMachineActionCell(m) {
     more.push(`<button type="button"${ids} onclick="fleetMacTrashOn(this, this.dataset.lid, this.dataset.mid)">Turn on macOS Trash</button>`);
   }
   more.unshift(`<button type="button"${ids} data-fleet-key="m:${esc(m.machine || '')}" onclick="fleetShowDetails(this)">Details</button>`);
-  return `<td data-label="Actions"><div class="row">${buttons.join('')}
+  return `<div class="row">${buttons.join('')}
     <span class="overflow">
       <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
         data-menu="mac-more-${esc(m.location_id)}-${esc(m.machine)}" onclick="toggleCardMenuFor(this)">More…</button>
       <div class="more-menu" id="pmenu-mac-more-${esc(m.location_id)}-${esc(m.machine)}" hidden>${more.join('')}</div>
-    </span></div></td>`;
+    </span></div>`;
 }
 
 // ---- Lite Mode (`workstation`) ---------------------------------------------
@@ -10130,7 +10273,7 @@ async function fleetStopInstall(button) {
 // The Locations table's own sort state. **Never shared with `machineSort`** — a header click on
 // one table must not reorder the other, and each table's arrow belongs to its own state.
 const FLEET_LOCATION_COLUMNS = [
-  ['location', 'Location'], ['health', 'Health'], ['cause', 'Likely cause'],
+  ['location', 'Location'], ['health', 'Health'], ['state', 'State'],
   ['network', 'Network'], ['hub', 'Hub'], ['members', 'Members'], ['models', 'Models'],
   ['status', 'Status'],
 ];
@@ -10140,7 +10283,7 @@ function fleetLocationSortValue(key, L) {
   switch (key) {
     case 'location': return L.label || L.id || '';
     case 'health': return fleetHealthRank(L.history);
-    case 'cause': return fleetCauseRank(L, 'site');
+    case 'state': return fleetLocationStateWord(L);
     case 'network': return L.network ? String(L.network) : null;
     case 'hub': return ({ behind: 0, unknown: 1, updating: 2, latest: 3 })[String(L.version_status || '').toLowerCase()] ?? 4;
     case 'members': return (L.node_summary && L.node_summary.total != null) ? L.node_summary.total : null;
@@ -10201,7 +10344,19 @@ function fleetCapacityCount(d, key) {
     if (summary.locations == null || summary.locations_up == null) return null;
     return Math.max(0, summary.locations - summary.locations_up);
   }
-  return Number((summary.pulse || {})[key] || 0);
+  const total = Number((summary.pulse || {})[key] || 0);
+  // **Hidden locations leave the numbers too**, so the headline always equals the table. The
+  // count of what was taken out is shown beside it, never dropped.
+  const hidden = fleetHiddenLocations;
+  if (!hidden || !hidden.size) return total;
+  const removed = (d.machines || []).filter(m => hidden.has(String(m.location_id || ''))
+    && fleetPulseKeyFor(m) === key).length;
+  return Math.max(0, total - removed);
+}
+
+function fleetPulseKeyFor(machine) {
+  if (machine.last_known === true) return null;
+  return String(machine.state || '').toLowerCase() || (machine.reachable === true ? 'ready' : 'unknown');
 }
 
 function fleetCapacityWord(key) {
@@ -10209,26 +10364,104 @@ function fleetCapacityWord(key) {
   return pair ? pair[1] : (FLEET_CAPACITY_WORDS[key] || key);
 }
 
+// ---- The lead: what the owner asked to see first ----------------------------
+//
+// His words, 2026-11-18: *"how many Macs are running right now … how many of those, per location,
+// are failing"*, and *"i can't understand anything. can you simplify everything?"* The big
+// number is generating Macs; the split is the same count in parts; the failure list is per
+// location, worst first. Every figure is the same read the tables draw, and a click filters.
+function fleetLocationFailures(d) {
+  const hidden = fleetHiddenLocations || new Set();
+  const by = new Map();
+  for (const m of d.machines || []) {
+    if (hidden.has(String(m.location_id || ''))) continue;
+    const id = String(m.location_id || '');
+    if (!by.has(id)) by.set(id, { label: m.location || id, offline: 0, attention: 0, working: 0 });
+    const entry = by.get(id);
+    if (fleetOfflineMachine(m)) entry.offline += 1;
+    else if (String(m.state || '').toLowerCase() === 'needs_attention') entry.attention += 1;
+    if (String(m.state || '').toLowerCase() === 'working') entry.working += 1;
+  }
+  const sites = new Map((d.locations || []).map(L => [String(L.id || ''), L]));
+  const lines = [];
+  for (const [id, entry] of by) {
+    const site = sites.get(id) || {};
+    const down = site.reachable === false;
+    if (!down && !entry.offline && !entry.attention) continue;
+    const parts = [];
+    if (down) {
+      const since = (site.history && site.history.offline_since) ?? site.unreachable_since ?? null;
+      const span = since ? ' ' + fleetDuration(Math.max(0, Date.now() / 1000 - Number(since))) : '';
+      parts.push(`whole site unreachable${span}`);
+    } else {
+      if (entry.offline) parts.push(`${entry.offline} offline`);
+      if (entry.attention) parts.push(`${entry.attention} ${entry.attention === 1 ? 'needs' : 'need'} attention`);
+      if (!entry.working) parts.push('0 generating');
+    }
+    lines.push({ id, text: `${entry.label} — ${parts.join(', ')}`,
+      weight: (down ? 100 : 0) + entry.offline * 10 + entry.attention });
+  }
+  return lines.sort((a, b) => b.weight - a.weight).slice(0, 6);
+}
+
 function renderFleetCapacity(d) {
   const host = document.getElementById('fleet-capacity');
   if (!host) return;
-  const bits = [];
+  fleetHiddenSet(d);
   const button = (key, text) =>
     `<button type="button" class="sm" data-capacity="${esc(key)}" aria-pressed="${fleetCapacityPick?.key === key}"
        onclick="fleetCapacityFilter('${esc(key)}')">${esc(text)}</button>`;
-  for (const [key] of FLEET_CAPACITY) {
-    bits.push(button(key, `${fleetCapacityCount(d, key)} ${fleetCapacityWord(key)}`));
-  }
+  const split = FLEET_CAPACITY.map(([key]) =>
+    button(key, `${fleetCapacityCount(d, key)} ${fleetCapacityWord(key)}`)).join('<span class="dim"> · </span>');
   const unknown = fleetCapacityCount(d, 'unknown');
-  if (unknown) bits.push(button('unknown', `${unknown} unknown`));
   const sites = fleetCapacityCount(d, 'sites');
-  if (sites != null) bits.push(button('sites', `${sites} site${sites === 1 ? '' : 's'} not reporting`));
-  if (fleetCapacityPick) {
-    const shown = fleetCapacityCount(d, fleetCapacityPick.key);
-    if (shown != null) bits.push(`<span class="dim">Showing ${shown} ${esc(fleetCapacityWord(fleetCapacityPick.key))}</span>`);
-    bits.push('<button type="button" class="sm" onclick="fleetCapacityClear()">Show all</button>');
+  const generating = fleetCapacityCount(d, 'working');
+  const failures = fleetLocationFailures(d);
+  const hiddenCount = fleetHiddenMachines(d);
+  const hiddenNames = [...(fleetHiddenLocations || [])].map(id =>
+    ((d.locations || []).find(L => String(L.id) === id) || {}).label || id).join(', ');
+  // A hidden Mac that is working is still working: the line beside the numbers says so, so a
+  // total that excludes it can never be read as the whole fleet.
+  const hiddenWorking = (d.machines || []).filter(m => fleetLocationHidden(m.location_id)
+    && fleetPulseKeyFor(m) === 'working').length;
+  const removed = d.removed || [];
+  host.innerHTML = `<div class="fleet-lead">
+    <div class="fleet-lead-now">
+      <span class="fleet-lead-number">${esc(generating)}</span>
+      <span class="fleet-lead-word">running now</span>
+    </div>
+    <div class="fleet-lead-split">${split}${unknown
+      ? `<span class="dim"> · </span>${button('unknown', `${unknown} unknown`)}` : ''}${sites != null
+      ? `<span class="dim"> · </span>${button('sites', `${sites} site${sites === 1 ? '' : 's'} not reporting`)}` : ''}${hiddenCount
+      ? `<span class="dim"> · </span><span class="dim">${hiddenCount} machin${hiddenCount === 1 ? 'e' : 'es'} from ${esc(hiddenNames)} hidden${hiddenWorking ? ` (${hiddenWorking} working)` : ''} — </span><button type="button" class="sm" onclick="fleetShowAllLocations()">show</button>` : ''}</div>
+    ${failures.length ? `<div class="fleet-lead-failures" aria-label="Failures by location">${
+      failures.map(line => `<button type="button" class="sm fleet-lead-failure"
+        onclick="fleetPickLocation('${esc(line.id)}')">${esc(line.text)}</button>`).join('')}</div>` : ''}
+    ${fleetCapacityPick ? `<div class="fleet-lead-foot">${
+      (() => { const shown = fleetCapacityCount(d, fleetCapacityPick.key);
+        return shown != null ? `<span class="dim">Showing ${shown} ${esc(fleetCapacityWord(fleetCapacityPick.key))}</span>` : ''; })()
+      } <button type="button" class="sm" onclick="fleetCapacityClear()">Show all</button></div>` : ''}
+    ${removed.length ? `<div class="fleet-lead-foot"><span class="dim">${removed.length} removed here, still registered on ${removed.length === 1 ? 'its' : 'their'} site:</span> ${
+      removed.map(entry => `<b>${esc(entry.label || entry.machine_id)}</b> <button type="button" class="sm"
+        onclick="fleetUndoRemove('${esc(entry.controller_id)}','${esc(entry.machine_id)}')">Undo</button>`).join(' · ')}</div>` : ''}
+  </div>`;
+  host.hidden = false;
+}
+
+function fleetPickLocation(locationId) {
+  fleetSetLocation(locationId);
+  selectFleetTab('machines');
+}
+
+async function fleetUndoRemove(controllerId, machineId) {
+  try {
+    const answer = await api(`/fleet/controllers/${fleetSeg(controllerId)}/machines/${fleetSeg(machineId)}/undo-remove`,
+      { method: 'POST' });
+    fleetNote('fleet-machine-action-note', answer.sentence || 'It will appear again on the next read.');
+    await loadFleet();
+  } catch (e) {
+    fleetNote('fleet-machine-action-note', `Could not put ${machineId} back — ${e.message}`);
   }
-  host.innerHTML = bits.join(' <span class="dim">·</span> ');
 }
 
 function fleetCapacityFilter(key) {

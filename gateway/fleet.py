@@ -45,6 +45,7 @@ import httpx
 
 from . import fleet_history
 from . import render_optin
+from . import retired_nodes
 from .config import DATA_DIR
 from .hub import hub_base_url, hub_token
 from .render_contract import LATE_LABEL_CONTRACT, LATE_LABEL_MOTIONS, SUBTITLE_CONTRACT
@@ -3350,6 +3351,12 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "node_reason": node.get("reason"),
                 "node_role": node.get("role"),
                 "node_last_seen_at": node.get("last_seen_at"),
+                # **When this Mac registered with its controller**, not when it last reported. The
+                # Hub mints it on a join; a sold Mac keeps its old value however often its
+                # controller lists it. `None` from a Hub that does not state one — then only Undo
+                # clears a removal.
+                "node_registered_at": (node.get("registered_at") or node.get("joined_at")
+                                       or node.get("registration_epoch")),
                 "node_address": node.get("address"),
                 # The Hub's own flag for a Mac that has not answered **once** since it joined
                 # (`fleet_nodes.probe`; its own app draws it as "never connected since it joined").
@@ -4273,6 +4280,7 @@ def _empty_snapshot() -> dict:
         "last_known_machines": [],
         "running": running_flat(rows),
         "summary": _summarise(rows),
+        "removed": [],
         "issues": [],
         "generated_at": 0.0,
     }
@@ -4299,16 +4307,25 @@ def _refresh() -> dict:
 
     lite_issues = startup_control.stamp_lite_mode_pending(machines)
     remember_lite_mode(machines)
+    # **A machine removed here is gone from every view, even while its site still lists it.**
+    # Force removal purges this Gateway's records, but the next fan-out rebuilds the row from the
+    # controller's last report; the tombstone is what makes "removed" true on the next re-read.
+    last_known = _carry_last_known_machines(rows, previous)
+    removed = _apply_removed(rows, machines, last_known)
     summary = _summarise(rows)
     summary["issues"] += len(lite_issues)
     value = {
         "locations": rows,
         "machines": machines,
+        # Machines removed from this Gateway whose site could not unregister them. The page says
+        # so once ("1 removed here, still registered on its site") and offers Undo; they are not
+        # counted as machines and not counted as offline either.
+        "removed": removed,
         # **A slow site's Macs, kept apart from `machines` on purpose.** Routing, admission,
         # capacity and the reachability history read `machines`, and a row that was not measured
         # in this fan-out must never look like capacity. Only `admin.fleet_snapshot` adds these
         # to a Fleet-page copy (see `_carry_last_known_machines`).
-        "last_known_machines": _carry_last_known_machines(rows, previous),
+        "last_known_machines": last_known,
         "running": running_flat(rows),
         "summary": summary,
         "issues": sorted(_issues(rows) + lite_issues, key=_issue_order),
@@ -4345,6 +4362,74 @@ def _refresh() -> dict:
             _cache["value"] = value
             _cache["last"] = None
     return value
+
+
+def hub_machine_registered_at(machine: dict) -> float | None:
+    """When that machine **registered** with its site — never when it last reported.
+
+    A sold Mac keeps being listed by its controller, and a controller report refreshes its
+    last-seen stamp; using that would resurrect the row on the very next report. A registration
+    time is minted on a join, so it only moves when the Mac genuinely joins again.
+    """
+    stamp = machine.get("node_registered_at")
+    try:
+        return float(stamp) if stamp is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_removed(rows: list[dict], machines: list[dict], last_known: list[dict]) -> list[dict]:
+    """Drop tombstoned machines from the payload, and clear one only on a **new registration**.
+
+    A controller merely listing the node again — with a newer last-seen stamp — is not evidence the
+    Mac is back; that is exactly the report that resurrected a removed Mac on 2026-11-18. The
+    tombstone clears only when the machine states a registration time newer than the removal, or
+    when the operator presses Undo (`retired_nodes.clear`).
+    """
+    marks = retired_nodes.registry()
+    if not marks:
+        return []
+    registered: dict[tuple[str, str], float | None] = {}
+    for machine in list(machines) + list(last_known or []):
+        key = (str(machine.get("location_id") or ""), str(machine.get("machine") or ""))
+        registered[key] = hub_machine_registered_at(machine)
+    for key, mark in list(marks.items()):
+        identity = (str(mark.get("controller_id") or ""), str(mark.get("machine_id") or ""))
+        stamp = registered.get(identity)
+        if stamp is not None and stamp > float(mark.get("at") or 0):
+            retired_nodes.clear(*identity)
+            marks.pop(key, None)
+    if not marks:
+        return []
+    removed_keys = {(str(m.get("controller_id") or ""), str(m.get("machine_id") or ""))
+                    for m in marks.values()}
+
+    def gone(machine: dict, controller_id: str | None = None) -> bool:
+        return (str(controller_id if controller_id is not None else machine.get("location_id") or ""),
+                str(machine.get("machine") or "")) in removed_keys
+
+    for row in rows:
+        controller_id = str(row.get("id") or "")
+        row["machines"] = [m for m in row.get("machines") or [] if not gone(m, controller_id)]
+        activity = row.get("activity") or {}
+        activity["machines"] = [e for e in activity.get("machines") or [] if not gone(e, controller_id)]
+        row["activity"] = activity
+    machines[:] = [m for m in machines if not gone(m)]
+    last_known[:] = [m for m in last_known if not gone(m)]
+    return retired_nodes.entries()
+
+
+def removal_sentence(label: str, hub_result: dict | None) -> str:
+    """What a removal actually did, in words the page can print. Never a bare 'ok'."""
+    name = label or "That Mac"
+    if hub_result and hub_result.get("already_gone"):
+        return f"Removed {name} from this Gateway; its site no longer had it."
+    if hub_result and hub_result.get("forced_local"):
+        return (f"Removed {name} from this Gateway only. It is still registered on its own Studio Hub; "
+                f"it disappears there when that Mac is updated or switched on.")
+    if hub_result and hub_result.get("ok"):
+        return f"Removed {name} from this Gateway and from its site's Studio Hub."
+    return f"Removed {name} from this Gateway."
 
 
 #: What a slow location keeps from its last answer: who it is and what it runs, never its live state.

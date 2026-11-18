@@ -154,10 +154,10 @@ test('the Machines tab draws the native columns in the native order', async () =
   const ctx = context(payload([machine()]));
   await ctx.loadFleet();
   const html = ctx.nodes.get('fleet-machines-wrap').innerHTML;
-  const order = ['Machine', 'State', 'Health', 'Seen', 'Drops · 7 days', 'Likely cause',
-    'Version', 'Disk', 'Memory', 'Network'].map(word => html.indexOf(word));
-  assert.ok(order.every(at => at >= 0), 'every native column is drawn');
-  assert.deepEqual([...order].sort((a, b) => a - b), order, 'in the native order');
+  const order = ['Machine', 'State', 'Version', 'Disk free', 'RAM free', 'Network']
+    .map(word => html.indexOf(word));
+  assert.ok(order.every(at => at >= 0), 'every column is drawn');
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'in the owner\'s order');
   assert.match(html, />Ready</);
   assert.match(html, />Stable</);
   assert.match(html, />Latest</);
@@ -189,7 +189,7 @@ test('Health is the history\'s verdict, and a Mac down now says how long for', a
   const html = ctx.nodes.get('fleet-machines-wrap').innerHTML;
   // Two hours offline: the badge says so, rather than drawing the healthy green of State.
   assert.match(html, /Offline 2h/);
-  assert.match(html, /title="[^"]*Offline for 2 h/);
+  assert.match(html, /Offline for 2 h/, 'the Details panel says how long it has been down');
 });
 
 test('a refused credential is not an offline Mac', async () => {

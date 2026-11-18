@@ -281,8 +281,11 @@ test('a site cause is coloured by its own severity, and a down controller is red
   await ctx.loadFleet();
   assert.match(ctx.nodes.get(GROUPS).innerHTML,
     /class="msg bad">Likely cause: The site&#39;s address answered nothing in time/);
+  // The table shows one state word; the sentence moved into the cell's tooltip (owner, 2026-11-18).
   assert.match(ctx.nodes.get(LOCATIONS).innerHTML,
-    /style="color:var\(--bad-text\)">The site&#39;s address answered nothing in time/);
+    /class="badge bad">Offline</);
+  assert.match(ctx.nodes.get(LOCATIONS).innerHTML,
+    /title="The site&#39;s address answered nothing in time"/);
 });
 
 // ---- Issues: the count, the order, and the filter (owner, 2026-10-30) -------------------------

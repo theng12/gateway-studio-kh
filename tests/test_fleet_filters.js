@@ -133,14 +133,18 @@ test('the network filter matches the measured link kind, and Reset clears it', (
   assert.equal(labels().length, 3, 'Reset restores every row');
 });
 
-test('the Machines table has a Location column and announces its sort', () => {
+test('the Machines table is the six columns the owner scans, and announces its sort', () => {
   const { ctx } = harness(payload(MACHINES));
   ctx.__setPayload(payload(MACHINES));
   const columns = vm.runInContext('FLEET_MACHINE_COLUMNS.map(c => c[0])', ctx);
-  assert.deepEqual([...columns].slice(0, 3), ['machine', 'location', 'state']);
+  // Owner, 2026-11-18: Machine · State · Version · Disk free · RAM free · Network. Location and
+  // the cause sentence moved into the row's Details panel.
+  assert.deepEqual([...columns], ['machine', 'state', 'version', 'disk', 'memory', 'network']);
   const row = vm.runInContext('fleetMachineRow(lastFleetPayload.machines[0])', ctx);
-  assert.match(row, /data-label="Location"/);
+  assert.match(row, /data-label="Machine"/);
   assert.match(row, /Blue Room/);
+  assert.match(row, /fleet-detail-row/);
+  assert.doesNotMatch(row.split('fleet-detail-row')[0], /data-label="Location"/);
   const header = vm.runInContext("fleetSortHeader('machine','Machine')", ctx);
   assert.match(header, /aria-sort="none"/);
   vm.runInContext("fleetSortBy('machine')", ctx);
