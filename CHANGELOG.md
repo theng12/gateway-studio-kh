@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.277 — 2026-11-18
+
+- **Every column on the Locations table now sorts.** Location, Health, Likely cause, Network, Hub, Members, Models and Status looked sortable and did nothing — they were the only headers on the Fleet page without a handler. Each one now sorts with an arrow and `aria-sort`, worst-cause and health first as the cards do, numbers as numbers, and a value nobody reported last whichever way the arrow points.
+- **One line above the Fleet page says what the fleet is doing now.** "20 generating · 2 ready · 2 idle · 4 need attention · 1 just finished · 13 offline · 9 sites not reporting", in that order, every figure from the same read the tables draw. Clicking a number opens the table filtered to those rows and says "Showing 20 generating"; "Show all" clears it, and the existing Reset filters clears it too.
+
 ## 0.2.276 — 2026-11-18
 
 - **"Start Hub Studio KH" opens the Hub — and says so when the Hub is not installed.** The Hub app was renamed from Studio Hub to Hub Studio KH, but the menu's start item still looked only for the old name, so on every Mac with the renamed app the item was there and did nothing. It now looks for `Hub Studio KH.app` first, then the old `Studio Hub.app` so a Mac that has not been renamed yet still starts, and when neither is installed the item is disabled and reads "Hub Studio KH is not installed on this Mac" instead of being a dead control. The menu's status line and the Overview hint use the new name too.

@@ -914,6 +914,9 @@
       </div>
     </div>
 
+    <!-- One line above every pane: what the fleet is doing now, and each number filters. -->
+    <div class="row stat" id="fleet-capacity" aria-live="polite"></div>
+
     <!-- Groups: the one list the browser page has always drawn, Macs and sites together. -->
     <div class="fleet-pane" id="fleet-pane-groups">
       <div class="row stat" id="fleet-summary"></div>
@@ -8066,8 +8069,8 @@ function fleetMachineName(m) { return m.label || m.machine || '—'; }
 // The **Likely-cause** column sorts by the same severity order the cards use (worst first) — not
 // alphabetically by the sentence, which put "Slow link" above "Its whole site is down" and made
 // the sort look random. A row nobody measured sorts last.
-function fleetCauseRank(m) {
-  const severity = fleetItemSeverity({ kind: 'machine', row: m });
+function fleetCauseRank(m, kind = 'machine') {
+  const severity = fleetItemSeverity({ kind, row: m });
   return severity == null ? null : fleetSeverityRank(severity);
 }
 
@@ -10124,16 +10127,134 @@ async function fleetStopInstall(button) {
   } finally { button.disabled = false; }
 }
 
+// The Locations table's own sort state. **Never shared with `machineSort`** — a header click on
+// one table must not reorder the other, and each table's arrow belongs to its own state.
+const FLEET_LOCATION_COLUMNS = [
+  ['location', 'Location'], ['health', 'Health'], ['cause', 'Likely cause'],
+  ['network', 'Network'], ['hub', 'Hub'], ['members', 'Members'], ['models', 'Models'],
+  ['status', 'Status'],
+];
+let locationSort = { key: null, ascending: true };
+
+function fleetLocationSortValue(key, L) {
+  switch (key) {
+    case 'location': return L.label || L.id || '';
+    case 'health': return fleetHealthRank(L.history);
+    case 'cause': return fleetCauseRank(L, 'site');
+    case 'network': return L.network ? String(L.network) : null;
+    case 'hub': return ({ behind: 0, unknown: 1, updating: 2, latest: 3 })[String(L.version_status || '').toLowerCase()] ?? 4;
+    case 'members': return (L.node_summary && L.node_summary.total != null) ? L.node_summary.total : null;
+    case 'models': return L.models_publishable ?? L.models_enabled ?? null;
+    case 'status': return fleetLocationStatus(L).main || null;
+    default: return null;
+  }
+}
+
+function fleetSortLocationsBy(key) {
+  if (locationSort.key === key) locationSort.ascending = !locationSort.ascending;
+  else locationSort = { key, ascending: true };
+  if (lastFleetPayload) renderFleet(lastFleetPayload);
+}
+
+function fleetLocationSortHeader(key, title) {
+  const active = locationSort.key === key;
+  const arrow = active ? `<span class="arrow">${locationSort.ascending ? '▲' : '▼'}</span>` : '';
+  return `<th scope="col" aria-sort="${active ? (locationSort.ascending ? 'ascending' : 'descending') : 'none'}">`
+    + `<button type="button" class="sort" onclick="fleetSortLocationsBy('${esc(key)}')"
+    title="Sort by ${esc(title)}">${esc(title)}${arrow}</button></th>`;
+}
+
+// The same filters as before, then the page's Sort — a down site comes first here exactly as it
+// does in the card list. A location column header takes over the table once one is chosen.
+function fleetLocationRowsFor(d) {
+  const rows = (d.locations || []).filter(L => fleetLocation === 'all' || String(L.id) === fleetLocation)
+    .filter(L => !fleetSitesDownOnly || L.reachable === false)
+    .filter(L => fleetRowMatchesFilter('site', L))
+    .filter(L => fleetMatchesSearch([L.label, L.id, L.url, L.error, fleetCauseLine(L.causes)], fleetQuery));
+  if (!locationSort.key) {
+    return fleetOrder(rows.map(L => ({ kind: 'site', row: L, label: L.label || L.id, site: L.label || L.id })))
+      .map(item => item.row);
+  }
+  return rows.slice().sort((a, b) => fleetCompareValues(
+    fleetLocationSortValue(locationSort.key, a), fleetLocationSortValue(locationSort.key, b),
+    locationSort.ascending));
+}
+
+// ---- Capacity: one line above every pane -----------------------------------
+//
+// The owner, 2026-11-18: *"how many machines are generating? which ones are they and which ones
+// aren't … i need a simple summary of it in the Gateway UI on the web."* Every number comes from
+// the same read the tables draw (`summary.pulse` for machine states, `locations` minus
+// `locations_up` for sites that did not answer); a click filters the table to those rows and says
+// how many it is showing. Nothing is computed that the Gateway does not already publish.
+const FLEET_CAPACITY = [
+  ['working', 'generating'], ['ready', 'ready'], ['long_idle', 'idle'],
+  ['needs_attention', 'need attention'], ['just_finished', 'just finished'], ['offline', 'offline'],
+];
+const FLEET_CAPACITY_WORDS = { unknown: 'unknown', sites: 'sites not reporting' };
+let fleetCapacityPick = null;    // { key } while one capacity number filters the tables
+let fleetSitesDownOnly = false;  // the "sites not reporting" number is a filter too
+
+function fleetCapacityCount(d, key) {
+  const summary = d.summary || {};
+  if (key === 'sites') {
+    if (summary.locations == null || summary.locations_up == null) return null;
+    return Math.max(0, summary.locations - summary.locations_up);
+  }
+  return Number((summary.pulse || {})[key] || 0);
+}
+
+function fleetCapacityWord(key) {
+  const pair = FLEET_CAPACITY.find(([k]) => k === key);
+  return pair ? pair[1] : (FLEET_CAPACITY_WORDS[key] || key);
+}
+
+function renderFleetCapacity(d) {
+  const host = document.getElementById('fleet-capacity');
+  if (!host) return;
+  const bits = [];
+  const button = (key, text) =>
+    `<button type="button" class="sm" data-capacity="${esc(key)}" aria-pressed="${fleetCapacityPick?.key === key}"
+       onclick="fleetCapacityFilter('${esc(key)}')">${esc(text)}</button>`;
+  for (const [key] of FLEET_CAPACITY) {
+    bits.push(button(key, `${fleetCapacityCount(d, key)} ${fleetCapacityWord(key)}`));
+  }
+  const unknown = fleetCapacityCount(d, 'unknown');
+  if (unknown) bits.push(button('unknown', `${unknown} unknown`));
+  const sites = fleetCapacityCount(d, 'sites');
+  if (sites != null) bits.push(button('sites', `${sites} site${sites === 1 ? '' : 's'} not reporting`));
+  if (fleetCapacityPick) {
+    const shown = fleetCapacityCount(d, fleetCapacityPick.key);
+    if (shown != null) bits.push(`<span class="dim">Showing ${shown} ${esc(fleetCapacityWord(fleetCapacityPick.key))}</span>`);
+    bits.push('<button type="button" class="sm" onclick="fleetCapacityClear()">Show all</button>');
+  }
+  host.innerHTML = bits.join(' <span class="dim">·</span> ');
+}
+
+function fleetCapacityFilter(key) {
+  fleetCapacityPick = { key };
+  fleetSitesDownOnly = key === 'sites';
+  fleetFacetState.clear();
+  if (key === 'sites') {
+    selectFleetTab('locations');
+  } else {
+    fleetFacetState.add(FLEET_STATE_WORDS[key] || key.charAt(0).toUpperCase() + key.slice(1));
+    selectFleetTab('machines');
+  }
+  fleetAfterFacetChange();
+}
+
+function fleetCapacityClear() {
+  fleetCapacityPick = null;
+  fleetSitesDownOnly = false;
+  fleetFacetState.clear();
+  fleetAfterFacetChange();
+}
+
 function renderFleetLocations(d) {
   const wrap = document.getElementById('fleet-locations-wrap');
   const status = document.getElementById('fleet-locations-status');
-  // The same filters as before, then the page's Sort — a down site comes first here exactly as
-  // it does in the card list. The wrap is `fleetItems`' own site shape, so both share one order.
-  const rows = fleetOrder((d.locations || []).filter(L => fleetLocation === 'all' || String(L.id) === fleetLocation)
-    .filter(L => fleetRowMatchesFilter('site', L))
-    .filter(L => fleetMatchesSearch([L.label, L.id, L.url, L.error, fleetCauseLine(L.causes)], fleetQuery))
-    .map(L => ({ kind: 'site', row: L, label: L.label || L.id, site: L.label || L.id })))
-    .map(item => item.row);
+  const rows = fleetLocationRowsFor(d);
   if (status) {
     const all = (d.locations || []).length;
     status.textContent = rows.length === all
@@ -10151,8 +10272,8 @@ function renderFleetLocations(d) {
     wrap.classList.remove('fleet-cards');
     wrap.innerHTML = rows.length
       ? `<table class="ftable">
-         <thead><tr><th>Location</th><th>Health</th><th>Likely cause</th>
-         <th>Network</th><th>Hub</th><th>Members</th><th>Models</th><th>Status</th><th>Actions</th></tr></thead>
+         <thead><tr>${FLEET_LOCATION_COLUMNS.map(([key, title]) => fleetLocationSortHeader(key, title)).join('')}
+         <th scope="col">Actions</th></tr></thead>
          <tbody>${rows.map(fleetLocationRow).join('')}</tbody></table>`
       : '<div class="fleet-empty">No location matches this filter.</div>';
   }
@@ -10642,6 +10763,8 @@ function fleetClearFacets() {
   fleetLocation = 'all';
   fleetQuery = '';
   fleetFilter = 'all';
+  fleetCapacityPick = null;
+  fleetSitesDownOnly = false;
   const search = document.getElementById('fleet-search');
   if (search) search.value = '';
   const location = document.getElementById('fleet-location');
@@ -11151,6 +11274,7 @@ function fleetSummaryHtml(s, issues, q, d, problematic) {
 
 function renderFleet(d) {
   if (!d) return;
+  renderFleetCapacity(d);
   renderFleetTrash(d);
   renderFleetGroups(d);
   renderFleetMachines(d);
