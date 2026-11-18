@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.269 — 2026-11-18
+
+- **A job whose outcome can no longer be learned now ends, instead of saying it is still running.** A Chat call leaves no batch record any lane can be asked about, so when one was interrupted the Gateway kept answering `running` — for ever, with no failure and no Cancel. Such a hold now ends after its own ceiling (the Hub's four-hour Chat ceiling plus the usual grace) as a failure that says how long it waited and why nothing could settle it. Nothing is thrown away: its batch id, context and attempts stay on the row, and a late result is kept beside the verdict.
+
 ## 0.2.268 — 2026-11-17
 
 - **The Fleet page says who paused a location.** A pause now records who made it: the app's own signed-in session reads "Paused by you", and a pause made through the API names its caller — "Paused by an API key", "Paused by a local API client (no credential)", or a name the caller gives. Before this, every pause, whoever made it, said "Paused by you"; three locations read that way on 2026-11-17 when no person had touched the page. Resume clears the name along with the pause.
