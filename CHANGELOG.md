@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.282 — 2026-11-18
+
+- **No machine name ships in the app's own history.** 0.2.281 removed the machine names and the tailnet address from the code comments bundled in the app; a read-only scan of the built DMG then found one more in the bundled release history ("kept on macmini-angkor…"), which is public text inside the download. It now reads "kept on one Mac". The history stays bundled — What's New reads it — and the release is scanned before it is published: no machine names and no tailnet address outside the generic ranges in the DMG.
+
+---
+
 ## 0.2.281 — 2026-11-18
 
 - **What the fleet knows about a site survives a restart.** The roster each site last reported lived only in memory, so 0.2.280's own install restarted the Gateway and every unreachable site came back with no known Macs and "never heard from" — the count read as zero, which is the same "no data looks like none" problem one restart later. Each site's last roster and the time it answered are now saved and read back at boot; after a restart, a site that is unreachable still says when it was last heard from, and its Macs are counted as **not checked**.
@@ -697,7 +703,7 @@ seeing it, and every Mac that already has it keeps working. Retire now opens one
 does nothing, and leaving the box alone changes nothing on anyone's Mac. Tick it and each Story app
 drops its copy the next time it checks in — a Mac using that pack in a channel may keep it instead,
 and says so. The shelf then reports what really happened, Mac by Mac: "removed on 3 of 4 Story Macs ·
-kept on macmini-angkor: used by channel Night Falls · not reported yet: mac-b". A Mac that has not
+kept on one Mac: used by channel Night Falls · not reported yet: mac-b". A Mac that has not
 answered is **not reported yet**, never silently counted as removed.
 You can also make or withdraw the request later on a pack that is already retired, and un-retiring a
 pack withdraws it — a copy already removed does not come back, and the page says so.
