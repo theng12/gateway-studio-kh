@@ -80,7 +80,10 @@ class TheHubStallEndsThePoll(unittest.TestCase):
                         deadline_seconds=7200.0, progress=progress)
         error = caught.exception
         self.assertEqual(error.code, "UPSTREAM_STALLED")
-        self.assertFalse(error.retryable, "a stalled batch is not retried on another Mac")
+        # The sentence offers a retry after the cleanup stops the batch, so the flag must say
+        # the same thing; only the automatic move to another Mac is withheld.
+        self.assertTrue(error.retryable)
+        self.assertIn("UPSTREAM_STALLED", worker._NO_REROUTE_CODES)
         self.assertTrue(error.upstream_settled)
         self.assertIn("no progress for 1200 s", str(error))
         self.assertIn("900 s threshold", str(error))
@@ -188,12 +191,14 @@ class TheOrphanRowEnds(unittest.TestCase):
         self.job_id = "wedged-1"
         self._insert(self.job_id, updated_at=T0 - 8000)
 
-    def _insert(self, job_id: str, *, updated_at: float, state: str = "running") -> None:
+    def _insert(self, job_id: str, *, updated_at: float, state: str = "running",
+                started: float | None = None) -> None:
         self.store._conn.execute(
             "INSERT INTO jobs (id, modality, model_id, provider_id, state, params, created_at,"
             " updated_at, upstream_job_id, dispatch_started_at) VALUES (?, 'image', 'm', ?, ?, '{}',"
             " ?, ?, 'batch-9', ?)",
-            (job_id, PROVIDER, state, T0 - 9000, updated_at, T0 - 9000),
+            (job_id, PROVIDER, state, started or (T0 - 9000), updated_at,
+             started or (T0 - 9000)),
         )
         self.store._conn.commit()
 
@@ -209,7 +214,7 @@ class TheOrphanRowEnds(unittest.TestCase):
         row = self._row()
         self.assertEqual(row["state"], "failed")
         self.assertEqual(row["error_code"], worker.UPSTREAM_UNPOLLED)
-        self.assertEqual(row["retryable"], 0)
+        self.assertEqual(row["retryable"], 1, "the sentence offers a retry, so the flag agrees")
         self.assertIn("No poll was recorded for this job for 150 min, longer than the 122 min it is held to", row["error_detail"])
         self.assertIn("still reports batch batch-9 as running", row["error_detail"])
         self.assertIn("running the job again after that is safe", row["error_detail"])
@@ -247,6 +252,27 @@ class TheOrphanRowEnds(unittest.TestCase):
         row = self._row()
         self.assertEqual(row["retryable"], 0, "could not ask is not it is finished")
         self.assertIn("could not be asked", row["error_detail"])
+        self.assertIn("A retry is not offered yet", row["error_detail"])
+        self.assertNotIn("running the job again after that is safe", row["error_detail"])
+
+    def test_the_printed_figure_is_the_figure_enforced(self):
+        with patch.object(worker.fleet, "measured_duration_bound",
+                          return_value=(7200.0, "the fleet's usual 2400 s for this model")):
+            inside = "inside-bound"
+            self.store._conn.execute("DELETE FROM jobs")
+            self._insert(inside, updated_at=T0 - 7000, started=T0 - 7000)   # 116 min: inside 120
+            self.store._conn.commit()
+            with patch.object(worker, "_hub_batch_answer",
+                              return_value={"known": True, "state": "running"}):
+                self.assertEqual(worker.reconcile_wedged_runs(self.store, set(), now=T0)["ended"], 0)
+                self.assertEqual(self._row(inside)["state"], "running")
+                self.store._conn.execute("DELETE FROM jobs")
+                self._insert("over-bound", updated_at=T0 - 7300, started=T0 - 7300)  # 121 min: outside 120
+                self.store._conn.commit()
+                self.assertEqual(worker.reconcile_wedged_runs(self.store, set(), now=T0)["ended"], 1)
+        row = self._row("over-bound")
+        self.assertIn("the 120 min it is held to", row["error_detail"])
+        self.assertIn("the fleet's usual 2400 s for this model", row["error_detail"])
 
     def test_a_row_inside_the_ceiling_is_not_looked_at(self):
         self.store._conn.execute("DELETE FROM jobs")

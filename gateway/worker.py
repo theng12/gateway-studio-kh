@@ -698,15 +698,21 @@ def reconcile_wedged_runs(store: JobStore, active_ids: set[str], *, now: float |
                     log.warning("job %s: could not record batch %s for cleanup", job_id, batch_id)
             if snapshot is None:
                 why = (f"The Hub could not be asked when this sweep last ran, so whether batch "
-                       f"{batch_id} is still running there is unknown.")
+                       f"{batch_id} is still running there is unknown. A retry is not offered "
+                       f"yet, because a blind one could duplicate a live batch; this row says so "
+                       f"until the Hub answers - the batch is recorded, so the cleanup and the "
+                       f"next sweep settle it.")
+                retryable = False
             else:
                 why = (f"{provider_id} still reports batch {batch_id} as {state or 'running'}, "
                        f"with nothing here following it.")
+                retryable = True
             detail = (f"No poll was recorded for this job for {int(age // 60)} min, {held_to}: the "
-                      f"Gateway stopped following it and the row was still marked running. {why} The "
-                      f"batch is recorded so the cleanup stops it first; running the job again "
-                      f"after that is safe, and a late answer is kept beside this failure.")
-            _fail(store, job_id, code=UPSTREAM_UNPOLLED, detail=detail, retryable=False,
+                      f"Gateway stopped following it and the row was still marked running. {why} "
+                      + ("The batch is recorded so the cleanup stops it first; running the job "
+                         "again after that is safe, and a late answer is kept beside this failure."
+                         if retryable else ""))
+            _fail(store, job_id, code=UPSTREAM_UNPOLLED, detail=detail, retryable=retryable,
                   evidence={"hub_batch_id": batch_id, "hub_machine": context.get("hub_machine")})
             out["ended"] += 1
         except Exception:  # noqa: BLE001 - one row must not starve the rest
