@@ -1860,6 +1860,71 @@ def with_roster(value: dict) -> dict:
     }
 
 
+def measured_duration_bound(model_id: str, machine: str | None = None, *,
+                            factor: float = 3.0, floor_s: float = 900.0,
+                            cap_s: float | None = None) -> tuple[float | None, str]:
+    """How long a job of `model` is normally held to, **from measured durations**.
+
+    The owner, 2026-11-18: *"our machines are different chips so the speed of work is
+    different, we can't use one for all. it must be grounded in performance or based on the
+    most common duration that works for them all for the model used."*
+
+    One number for the fleet is wrong in both directions, so this reads the Hub's own
+    measurements from the cached snapshot (`median_runtime_s`, else `average_seconds`) for
+    the machine that runs the job, falls back to the fleet's usual figure for that model
+    (the median across the Macs that report it), and returns `(None, "")` when neither was
+    ever measured — the caller then keeps the lane's own ceiling rather than inventing one.
+
+    The bound is `max(measured x factor, floor_s)`, capped at `cap_s` when given. The second
+    value is the sentence a row can show, so a wrong bound is visible with its source.
+    """
+    try:
+        snap = snapshot(allow_stale=True)
+    except Exception:  # noqa: BLE001 - a snapshot that cannot be read is "not measured"
+        return None, ""
+    rows = snap.get("machines") or []
+
+    def _value(row: dict) -> float | None:
+        for key in ("median_runtime_s", "average_seconds"):
+            value = row.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                return float(value)
+        return None
+
+    chosen: float | None = None
+    source = ""
+    if machine:
+        for row in rows:
+            if str(row.get("machine") or "") == machine and _value(row):
+                chosen = _value(row)
+                source = f"measured {int(chosen)} s on this Mac"
+                break
+    if chosen is None:
+        model = str(model_id or "")
+        makers: set[str] = set()
+        for location in snap.get("locations") or []:
+            for entry in location.get("local_models") or []:
+                keys = {str(entry.get(key) or "") for key in ("model", "model_id", "package_id")}
+                if model and model in keys:
+                    makers.add(str(entry.get("machine") or ""))
+        # **A model nobody lists has no fleet figure.** Only an older snapshot with no
+        # `local_models` information at all falls back to every machine's median.
+        listed = any((location.get("local_models") or [])
+                     for location in snap.get("locations") or [])
+        values = [_value(row) for row in rows
+                  if not listed or str(row.get("machine") or "") in makers]
+        values = sorted(v for v in values if v)
+        if values:
+            chosen = values[len(values) // 2]
+            source = f"the fleet's usual {int(chosen)} s for this model"
+    if chosen is None:
+        return None, ""
+    bound = max(chosen * factor, float(floor_s))
+    if cap_s is not None:
+        bound = min(bound, float(cap_s))
+    return bound, source
+
+
 def locations() -> list[dict]:
     """The local Mac first, then every configured controller."""
     rows: list[dict] = []

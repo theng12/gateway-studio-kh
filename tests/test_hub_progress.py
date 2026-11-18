@@ -172,16 +172,19 @@ class ThePollRecordsItTest(unittest.TestCase):
         return outcome, progress
 
     def test_the_loop_notes_every_poll_before_it_finishes(self) -> None:
+        # **A poll that says `stalled` now ends the wait** (0.2.271), so this fixture stays
+        # below that line: the point here is that every poll is recorded before the loop ends.
+        # The stall path itself is pinned in `tests/test_wedged_runs.py`.
         outcome, progress = self._poll([
             _running(no_progress_s=10.0, stalled_after_s=900, stalled=False),
-            _running(no_progress_s=1_000.0, stalled_after_s=900, stalled=True),
+            _running(no_progress_s=880.0, stalled_after_s=900, stalled=False),
             {"items": [{"state": "done"}]},
         ])
         self.assertEqual(outcome["item"]["state"], "done")
         payload = progress.as_payload()
         self.assertEqual(payload["samples"], 2, "the terminal poll states no progress")
-        self.assertTrue(payload["stalled"])
-        self.assertEqual(payload["worst_no_progress_s"], 1_000.0)
+        self.assertFalse(payload["stalled"])
+        self.assertEqual(payload["worst_no_progress_s"], 880.0)
 
     def test_a_poll_that_forgets_its_tracker_still_works(self) -> None:
         # `progress` is optional so no existing caller breaks, and the lane must not

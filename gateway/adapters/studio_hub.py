@@ -843,6 +843,28 @@ def lane_deadline_seconds(request: BackendRequest | None, machine: str | None = 
     return max(JOB_DEADLINE_S, chat_floor)
 
 
+
+def _measured_wait_bound(request: "BackendRequest | None") -> tuple[float, str] | None:
+    """How long this job may sit queued at the Hub, from measured durations.
+
+    The owner, 2026-11-18: the ceiling must be per machine and per model, grounded in
+    performance. While an item is queued no machine is named yet, so this uses the fleet's
+    usual figure for the model (`fleet.measured_duration_bound`); the caller's own setting
+    stays the outer limit. `None` when nothing was ever measured — the lane's ceiling then
+    stands, and the row says so rather than showing an invented number.
+    """
+    try:
+        from .. import fleet
+
+        model = str(getattr(request, "model", "") or "")
+        if not model:
+            return None
+        bound, source = fleet.measured_duration_bound(model, None, cap_s=queue_wait_ceiling_s())
+        return (float(bound), source) if bound else None
+    except Exception:  # noqa: BLE001 - an unreadable snapshot is "not measured", never a failure
+        return None
+
+
 class HubProgress:
     """The worst progress the Hub reported while this gateway polled one batch.
 
@@ -944,6 +966,7 @@ def _poll_batch(
     deadline_for_machine: Callable[[str], float] | None = None,
     resumed_after_restart: bool = False,
     on_deadline: Callable[[str], None] | None = None,
+    wait_bound: tuple[float, str] | None = None,
 ) -> dict[str, Any]:
     """Poll a Hub batch to a terminal state.
 
@@ -984,6 +1007,14 @@ def _poll_batch(
     # Read once, like `limit`: the ceiling is the owner's setting (`queue_wait_ceiling_s`) and a
     # poll loop is not the place to re-stat a settings file once a second.
     ceiling = queue_wait_ceiling_s()
+    # **The queue wait is bounded by measured duration too** (owner, 2026-11-18: the bound must
+    # be per machine and per model). `wait_bound` is this Gateway's own ceiling for how long the
+    # Hub may hold the job queued, grounded in that model's usual run time; the owner's setting
+    # stays the outer limit, so a slow lane is never re-bounded by a guess.
+    wait_note = ""
+    if wait_bound is not None and wait_bound[0]:
+        ceiling = min(ceiling, float(wait_bound[0]))
+        wait_note = str(wait_bound[1] or "")
     started = tick = time.monotonic()
     ran = 0.0  # seconds this item has spent running -- the only time the lane budget counts
     queued_for = 0.0  # seconds it has spent queued -- the only time the queue ceiling counts
@@ -1144,6 +1175,9 @@ def _poll_batch(
             if state == "queued":
                 reason = str((item or {}).get("error") or summary.get("governor_note") or
                              "waiting for a free Mac")
+                if wait_note:
+                    reason += (f" (held to {int(ceiling // 60)} min - {wait_note}; "
+                               f"the Mac has not started it)")
                 retry_at = (item or {}).get("retry_at") or summary.get("next_retry_at")
                 key = (reason, retry_at)
                 if key != waiting_key:
@@ -1267,8 +1301,9 @@ def _poll_batch(
         # let the worker try another location. A running item is never cancelled on a guess.
         if _withdrawn(base, headers, batch_id, jobs_path):
             raise BackendError(
-                f"the Hub kept this queued for {int(ceiling)}s with no machine free; "
-                "it was withdrawn from the queue before anything ran",
+                f"the Hub kept this queued for {int(ceiling)}s with no machine free"
+                + (f" (held to {int(ceiling // 60)} min - {wait_note})" if wait_note else "")
+                + "; it was withdrawn from the queue before anything ran",
                 code="LOCATION_NOT_READY",
                 retryable=True,
                 upstream_accepted=False,
@@ -1284,7 +1319,9 @@ def _poll_batch(
     if ran < limit:
         # Still queued past the ceiling and the Hub did not confirm withdrawing it: unknown.
         raise BackendError(
-            f"the Hub kept this queued for {int(ceiling)}s and did not confirm withdrawing it",
+            f"the Hub kept this queued for {int(ceiling)}s"
+            + (f" (held to {int(ceiling // 60)} min - {wait_note})" if wait_note else "")
+            + " and did not confirm withdrawing it",
             code="PROVIDER_SUBMISSION_UNCERTAIN",
             # Never retryable, and always naming its batch: an unknown outcome is a hold the
             # sweeper can ask about (`worker.reconcile_holds`), never a re-send. All three
@@ -2248,6 +2285,7 @@ def _generate_image_or_voice(request: BackendRequest) -> BackendResult:
                 on_wait=request.on_wait,
                 stranded=_stranded(request),
                 deadline_for_machine=lambda machine: lane_deadline_seconds(request, machine),
+                wait_bound=_measured_wait_bound(request),
             )
         except BackendError as exc:
             exc.evidence = progress.evidence(batch_id)
@@ -2483,6 +2521,7 @@ def _generate_transcription(request: BackendRequest) -> BackendResult:
             progress=progress,
             on_wait=request.on_wait,
             stranded=_stranded(request),
+            wait_bound=_measured_wait_bound(request),
         )
         return _collect_transcription(client, base, headers, request, batch_id, outcome, progress)
 
@@ -3067,6 +3106,7 @@ class StudioHubBackend:
                     progress=progress, on_wait=request.on_wait,
                     dispatched_at=request.dispatch_started_at, stranded=_stranded(request),
                     deadline_for_machine=lambda machine: lane_deadline_seconds(request, machine),
+                    wait_bound=_measured_wait_bound(request),
                     resumed_after_restart=request.resumed_after_restart, on_deadline=request.on_deadline,
                 )
             except BackendError as exc:

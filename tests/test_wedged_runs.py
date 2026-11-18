@@ -114,6 +114,72 @@ class TheHubStallEndsThePoll(unittest.TestCase):
         self.assertEqual(progress.evidence("batch-3")["lane_ceiling_s"], 1800.0)
 
 
+class TheBoundIsGroundedInMeasuredDuration(unittest.TestCase):
+    """Per machine and per model, from the Hub's own medians -- never one fleet-wide number."""
+
+    SNAP = {
+        "machines": [
+            {"machine": "slow-m1", "median_runtime_s": 240.0},
+            {"machine": "fast-m4", "average_seconds": 60.0},
+        ],
+        "locations": [{
+            "local_models": [{"model": "m", "machine": "slow-m1"},
+                             {"model": "m", "machine": "fast-m4"}],
+        }],
+    }
+
+    def test_a_machine_uses_its_own_measurement(self):
+        from gateway import fleet
+        with patch.object(fleet, "snapshot", return_value=self.SNAP):
+            bound, source = fleet.measured_duration_bound("m", "slow-m1")
+            fast, fast_source = fleet.measured_duration_bound("m", "fast-m4")
+        self.assertEqual(bound, 900.0, "240 s x 3 is below the floor, so the floor holds")
+        self.assertEqual(source, "measured 240 s on this Mac")
+        self.assertEqual(fast, 900.0)
+        self.assertEqual(fast_source, "measured 60 s on this Mac")
+
+    def test_no_machine_named_uses_the_fleets_usual_figure(self):
+        from gateway import fleet
+        with patch.object(fleet, "snapshot", return_value=self.SNAP):
+            bound, source = fleet.measured_duration_bound("m", None)
+        self.assertEqual(source, "the fleet's usual 240 s for this model")
+        self.assertEqual(bound, 900.0)
+
+    def test_nothing_measured_means_no_number_is_invented(self):
+        from gateway import fleet
+        with patch.object(fleet, "snapshot", return_value=self.SNAP):
+            bound, source = fleet.measured_duration_bound("never-run", None)
+        self.assertEqual((bound, source), (None, ""))
+
+    def test_the_cap_is_the_lanes_ceiling(self):
+        from gateway import fleet
+        with patch.object(fleet, "snapshot", return_value={
+                "machines": [{"machine": "m1", "median_runtime_s": 3600.0}],
+                "locations": [{"local_models": [{"model": "m", "machine": "m1"}]}]}):
+            bound, _ = fleet.measured_duration_bound("m", "m1", cap_s=7200.0)
+        self.assertEqual(bound, 7200.0)
+
+
+class TheQueueWaitNamesItsBound(unittest.TestCase):
+    """A job queued at the Hub says how long it is held to and where that number came from."""
+
+    def test_a_queue_timeout_names_the_figure_and_its_source(self):
+        from gateway.adapters import studio_hub
+
+        class _Queued:
+            def get(self, _url, headers=None):  # noqa: ANN001, ARG002
+                return _Response({"items": [{"state": "queued"}]})
+
+        with patch.object(studio_hub, "queue_wait_ceiling_s", return_value=300.0):
+            with self.assertRaises(BackendError) as caught:
+                _poll_batch(_Queued(), "http://site.test", {}, "batch-q", 0,
+                            deadline_seconds=7200.0, progress=HubProgress(),
+                            wait_bound=(1.0, "the fleet's usual 200 s for this model"))
+        message = str(caught.exception)
+        self.assertIn("held to", message)
+        self.assertIn("the fleet's usual 200 s for this model", message)
+
+
 class TheOrphanRowEnds(unittest.TestCase):
     def setUp(self) -> None:
         self.store = store
@@ -144,7 +210,7 @@ class TheOrphanRowEnds(unittest.TestCase):
         self.assertEqual(row["state"], "failed")
         self.assertEqual(row["error_code"], worker.UPSTREAM_UNPOLLED)
         self.assertEqual(row["retryable"], 0)
-        self.assertIn("No poll was recorded for this job for 150 min", row["error_detail"])
+        self.assertIn("No poll was recorded for this job for 150 min, longer than the 122 min it is held to", row["error_detail"])
         self.assertIn("still reports batch batch-9 as running", row["error_detail"])
         self.assertIn("running the job again after that is safe", row["error_detail"])
         self.assertEqual(row["upstream_job_id"], "batch-9", "the evidence is kept")
@@ -165,6 +231,7 @@ class TheOrphanRowEnds(unittest.TestCase):
         self.assertEqual(row["error_code"], worker.UPSTREAM_UNPOLLED)
         self.assertEqual(row["retryable"], 1, "nothing upstream: a retry duplicates nothing")
         self.assertIn("has no record of that batch at all", row["error_detail"])
+        self.assertIn("held to", row["error_detail"])
 
     def test_a_batch_that_finished_is_collected_not_failed(self):
         with patch.object(worker, "_hub_batch_answer", return_value={"known": True, "state": "done"}), \
