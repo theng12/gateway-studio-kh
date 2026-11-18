@@ -10,6 +10,11 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.275 — 2026-11-18
+
+- **The setup kit now sends you to the app that exists: Hub Studio KH.** The Hub was renamed from Studio Hub to Hub Studio KH, and this kit still told you to open a `Studio Hub KH/` folder and clear quarantine on `/Applications/Studio Hub.app` — a name that is no longer on any Mac. Every operator step now says `Hub Studio KH/` and `Hub Studio KH.app`. This release is documentation only: no code, no setting and no behaviour changed, and version numbers, bundle ids, ports and data paths are exactly as they were.
+- **The fleet notes use the same name.** "On each controller, in Hub Studio KH" and "Start at login for Hub Studio KH" now match what is on the Mac.
+
 ## 0.2.274 — 2026-11-18
 
 - **Token usage is now recorded for every job, including the ones that fail.** A job that ran out of room, was stopped, timed out or was cut short by a content filter has burned tokens too — until now only a successful job carried a usage block, so the cost of the ones that went wrong was invisible. Every job that reached a model now shows what it used, with the partial answer's figure kept on a filter stop.

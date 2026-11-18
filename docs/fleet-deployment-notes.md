@@ -26,7 +26,7 @@ Its own code says the same: *"Every build before fleet support was loopback-only
 default."* A controller left that way is running perfectly and is **unreachable from here**, and no
 token, address or firewall change fixes it.
 
-**On each controller, in Studio Hub:** stop the services → tick the network it should answer on
+**On each controller, in Hub Studio KH:** stop the services → tick the network it should answer on
 (the **Tailscale** address, not "Any address on any network") under **"Listening on"** → start them
 again. The toggles are read-only while it runs, and the change needs the restart — the UI says so
 itself.
@@ -67,7 +67,7 @@ one-time setting, easy to forget on machine 47:
   against remote recovery.
 - **`pmset autorestart 1`** — come back after power failure.
 - **`pmset sleep 0` / `disksleep 0`** — an idle node that sleeps shows offline and looks broken.
-- **Start at login** for Studio Hub. This Mac already has `"startAtLogin": true`.
+- **Start at login** for Hub Studio KH. This Mac already has `"startAtLogin": true`.
 - **A smart plug per site** is the cheapest insurance in this whole plan: it makes a hard power cycle
   a remote action instead of a drive.
 
