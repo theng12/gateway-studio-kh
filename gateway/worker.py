@@ -39,12 +39,12 @@ from . import concurrency, pools
 from . import catalog
 from .adapters import BackendError, BackendRequest, adapter_for
 from .adapters import studio_hub
-from .adapters.base import requests_started
+from .adapters.base import CHAT_DEADLINE_CEILING_S, requests_started
 from .config import ARTIFACT_DIR
 from .providers import registry
 from .providers.definitions import KIND_STUDIO_HUB
-from .store import (BACKGROUND, HUB_RESENDABLE_MODALITIES, NEVER_SENT_SUFFIX, RECOVERY_UNKNOWN,
-                    TERMINAL_STATES, JobStore)
+from .store import (BACKGROUND, HOLD_EXPIRED, HUB_RESENDABLE_MODALITIES, NEVER_SENT_SUFFIX,
+                    RECOVERY_UNKNOWN, TERMINAL_STATES, JobStore)
 from . import fleet
 
 #: Modality → the Hub's own operation name, for reading a site's per-operation
@@ -263,6 +263,107 @@ def lane_deadline_s(modality: str) -> float:
     return ceiling + _LANE_DEADLINE_GRACE_S
 
 
+#: **How long a hold nothing can ever be asked about stays published as `running`.**
+#:
+#: A chat call is one request with no durable batch (a `404` on the batch route proves nothing
+#: about it, and repeating a lost completion is unsafe), and a lane that keeps no batch record has
+#: nobody to ask — so `reconcile_holds` can never close either, and until this ceiling nothing else
+#: did: measured 2026-11-18, a chat hold recorded `failed` at 2026-11-16T20:44Z still answered
+#: `state: "running"` more than thirty hours later, forever, with `cancellable: false`.
+#:
+#: The bound is **the longest any lane's call can legitimately run** — the Hub's own four-hour Chat
+#: ceiling (`lane_deadline_s`, plus its grace) — because past it no answer can still be in flight,
+#: so the hold protects nothing and telling its caller `running` is the only thing left that is
+#: untrue. One number for every unaskable lane: a media call's own timeout is far shorter, and
+#: ending a hold later than it strictly must is the harmless direction.
+UNASKABLE_HOLD_CEILING_S = CHAT_DEADLINE_CEILING_S + _LANE_DEADLINE_GRACE_S
+
+
+def _held_since(job: dict[str, Any]) -> float | None:
+    """When this hold began: the moment it was recorded `failed`, else its last write."""
+    for key in ("finished_at", "updated_at"):
+        value = job.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def _stamp(moment: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(moment)))
+
+
+def _held_span(seconds: float) -> str:
+    minutes = int(max(0.0, seconds) // 60)
+    return f"{minutes // 60} h {minutes % 60} min" if minutes >= 60 else f"{minutes} min"
+
+
+def _why_no_lane_can_ask(job: dict[str, Any]) -> str | None:
+    """Why no sweep can ever settle this hold, or `None` when the Hub sweep can ask about it.
+
+    The exact complement of `reconcile_holds`' window (`store.holds(sweepable=True)`), said once:
+    that sweep reads only rows **with an upstream id** on a Studio Hub lane, and then only for a
+    call that runs as a batch.
+    """
+    upstream = str(job.get("upstream_job_id") or "")
+    if str(job.get("modality") or "") == "chat" or upstream.startswith("chat:"):
+        return "a Chat call leaves no batch record any lane can be asked about"
+    if not upstream:
+        return "it names no upstream id, so there was nothing to ask about"
+    definition = registry.definition(str(job.get("provider_id") or ""))
+    if definition is None or str(getattr(definition, "kind", "")) != "studio_hub":
+        return "its lane keeps no batch record to ask about"
+    return None  # the Hub sweep asks about this one every minute; its record owns the answer
+
+
+def expire_holds_no_lane_can_ask(store: JobStore, *, now: float | None = None) -> int:
+    """End the holds nothing can ever settle, once their own ceiling has passed.
+
+    An unknown outcome means "an answer may still arrive", and that is why the hold is published
+    `running` to its caller. For a hold **no lane can be asked about** no answer can arrive by any
+    route: there is no batch to poll and no request to repeat. Past `UNASKABLE_HOLD_CEILING_S` the
+    hold is converted to a plain terminal failure that keeps every trace of it — a distinct
+    `HOLD_EXPIRED` code, a sentence naming how long it waited and why nobody could settle it, and
+    its `recovery_context`, upstream id and sentence untouched (`store.expire_hold`) — rather than
+    closed the way a human discard does, which drops the context and loses the one record of what
+    may have run.
+
+    A Hub hold the sweep can still ask about is left alone: its own record owns the answer.
+    Never raises; a hold that cannot be ended this minute is tried the next.
+    """
+    read = getattr(store, "holds_no_lane_can_ask", None)
+    expire = getattr(store, "expire_hold", None)
+    if read is None or expire is None:
+        return 0
+    moment = time.time() if now is None else float(now)
+    try:
+        hub_ids = [d.id for d in registry.definitions() if d.kind == "studio_hub"]
+        rows = read(cutoff=moment - UNASKABLE_HOLD_CEILING_S, hub_provider_ids=hub_ids, limit=50)
+    except Exception:  # noqa: BLE001 - an unreadable table must not stop dispatch or the sweep
+        log.exception("could not read the holds past their ceiling")
+        return 0
+    expired = 0
+    for job in rows:
+        try:
+            why = _why_no_lane_can_ask(job)
+            held = _held_since(job)
+            if why is None or held is None:
+                continue  # its own sweep owns it, or it cannot be dated and is never guessed at
+            held_s = max(0.0, moment - held)
+            detail = (
+                f"Held as an unknown outcome for {_held_span(held_s)} (since {_stamp(held)}); "
+                f"nothing could ever settle it: {why}. Ended at {_stamp(moment)} rather than left "
+                f"published as running. The attempt's own record is kept: its context, upstream id "
+                f"and hold sentence stay on this job, and a late result is kept beside this failure."
+            )
+            if expire(str(job["id"]), code=HOLD_EXPIRED, detail=detail):
+                expired += 1
+                log.warning("hold %s expired after %s: %s", job.get("id"),
+                            _held_span(held_s), why)
+        except Exception as exc:  # noqa: BLE001 - one unreadable hold must not starve the rest
+            log.warning("hold %s: could not expire: %s", job.get("id"), exc)
+    return expired
+
+
 def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, int]:
     """Close the holds the **Hub's own record** has already settled (Q8).
 
@@ -282,8 +383,13 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
 
     Runs on a separate recovery thread, on a timer, and never raises: a hold that cannot be
     reconciled this minute is reconciled the next.
+
+    A hold **no lane can be asked about** — chat, or a lane with no batch record — is never in that
+    sweep's window, so this pass also ends the ones past their own ceiling
+    (`expire_holds_no_lane_can_ask`): "an action must end — terminal means terminal".
     """
-    out = {"checked": 0, "closed_finished": 0, "requeued": 0, "adopted": 0, "still_open": 0}
+    out = {"checked": 0, "closed_finished": 0, "requeued": 0, "adopted": 0, "still_open": 0,
+           "expired": expire_holds_no_lane_can_ask(store, now=now)}
     holds_of = getattr(store, "holds", None)
     close = getattr(store, "close_hold", None)
     if holds_of is None or close is None:

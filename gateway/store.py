@@ -52,6 +52,11 @@ RECOVERY_UNKNOWN = "unknown_outcome"
 #: this is the one close that says nothing about the attempt, so a real answer that turns up
 #: afterwards is still this job's answer.
 HOLD_CLOSED = "HOLD_CLOSED"
+#: The code a hold carries once **its own ceiling** ended it (`worker.expire_holds_no_lane_can_ask`).
+#: Distinct from `HOLD_CLOSED` (a person's decision, which drops `recovery_context`) and from
+#: `UNKNOWN_OUTCOME` (still waiting): nothing was discarded here, so every piece of evidence the
+#: hold recorded — its context, its batch id, its sentence — stays on the row.
+HOLD_EXPIRED = "HOLD_EXPIRED"
 #: The Studio Hub lanes submitted through `/api/hub/jobs`, which answers a repeated `clientRequestId`
 #: with the batch it already made, from a SQLite ledger that survives a Hub restart (Hub `broker.py`
 #: `_submit_batch_locked`). Transcription (dedupe only while a batch is active) and chat are not.
@@ -3688,6 +3693,63 @@ class JobStore:
                     (*params, max(1, int(limit))),
                 ).fetchall()
         return [self._row_dict(row) for row in rows]
+
+    def holds_no_lane_can_ask(self, *, cutoff: float, hub_provider_ids: list[str],
+                              limit: int = 50) -> list[dict[str, Any]]:
+        """Unknown-outcome holds **no sweep can ever ask about**, recorded at or before `cutoff`.
+
+        `hub_provider_ids` is the Hub lanes the hold sweep does ask (from the registry), so this
+        predicate is the exact complement of that sweep: a chat call has no durable batch, a hold
+        with no upstream id names nothing to ask, and a lane that keeps no batch record has nobody
+        to ask. Those rows have no closer at all, which is what makes a lifetime their only honest
+        ending (`worker.expire_holds_no_lane_can_ask`).
+
+        **Oldest first**, unlike `holds()`: the rows past the ceiling are the ones that have waited
+        longest, and the sweepable ones are excluded here so they cannot fill the window for ever.
+        `finished_at` is when the row was recorded `failed`, which is when the hold began;
+        `updated_at` covers the restart holds written before that column was stamped.
+        """
+        where = ("state = 'failed' AND recovery_state = ? "
+                 "AND COALESCE(finished_at, updated_at) <= ? "
+                 "AND (modality = 'chat' OR COALESCE(upstream_job_id, '') = ''"
+                 " OR upstream_job_id LIKE 'chat:%'")
+        params: list[Any] = [RECOVERY_UNKNOWN, float(cutoff)]
+        hub_ids = [str(value) for value in hub_provider_ids if value]
+        if hub_ids:
+            where += " OR provider_id NOT IN (" + ",".join("?" for _ in hub_ids) + ")"
+            params.extend(hub_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM jobs WHERE {where}) "  # noqa: S608 - fixed keys
+                "ORDER BY COALESCE(finished_at, updated_at) LIMIT ?",
+                (*params, max(1, int(limit))),
+            ).fetchall()
+        return [self._row_dict(row) for row in rows]
+
+    def expire_hold(self, job_id: str, *, code: str, detail: str) -> bool:
+        """End a hold **its own ceiling** decided nothing will ever settle, keeping the evidence.
+
+        Unlike `close_recovery_hold` this does not discard anything: `recovery_context`, the
+        upstream id, the attempt log and `recovery_detail` all stay, because somebody may still
+        want to reconcile the attempt by hand. Only `recovery_state` changes, and that is what
+        takes the row off the recovery list and stops `api._is_live_hold` publishing it as
+        `running` to its caller.
+
+        `finished_at` (when it was held) is not touched, so the record can still say how long it
+        waited; `error_detail` is where that sentence goes.
+        """
+        with self._lock:
+            result = self._conn.execute(
+                """
+                UPDATE jobs
+                   SET error_code = ?, error_detail = ?, retryable = 0, recovery_state = NULL,
+                       next_action_at = NULL, updated_at = ?
+                 WHERE id = ? AND state = 'failed' AND recovery_state = ?
+                """,
+                (code, detail[:500], time.time(), job_id, RECOVERY_UNKNOWN),
+            )
+            self._conn.commit()
+            return result.rowcount == 1
 
     def close_hold(self, job_id: str, *, resolution: str, detail: str) -> bool:
         """Close a hold because the **upstream's own record** settled it.

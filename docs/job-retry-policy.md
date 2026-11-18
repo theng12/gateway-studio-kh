@@ -115,6 +115,14 @@ retried" and "we did not look" stay distinguishable. The Gateway's Jobs view ren
 - **An unknown outcome can still leave work unresolved.** It is a hold, not a failure, and it
   needs the operator (or the reconciliation sweep) to settle it. That is the price of never
   rendering twice, and it is the right way round.
+- **A hold nothing can ever be asked about still ends on its own.** The sweep can only ask a
+  Studio Hub batch by its id; a Chat call has no batch, and a lane with no batch route has nobody
+  to ask. Such a hold keeps its caller waiting `running`, so past the longest call any lane can
+  legitimately take (the Hub's four-hour Chat ceiling plus its grace,
+  `worker.UNASKABLE_HOLD_CEILING_S`) it is converted to a terminal failure `HOLD_EXPIRED` that
+  names how long it waited and why nothing could settle it. Nothing is discarded: its context,
+  upstream id, attempts and hold sentence stay on the row, and a late result is kept beside the
+  verdict.
 - **A job that fails for a reason that is about the *request*, not the machine, still spends its
   attempts.** A geometry refusal will fail identically on all three machines. This is bounded and
   harmless — it never duplicates work — but it is three round trips where one would do; the

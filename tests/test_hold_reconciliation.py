@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -218,6 +219,141 @@ class TheSweepWindowTest(unittest.TestCase):
             store._conn.commit()
             self.assertEqual([r["id"] for r in store.holds(limit=1, sweepable=True)], ["real"])
             self.assertEqual(len(store.holds()), 3)
+
+
+class _HubLane:
+    id = "studio-hub-abc"
+    kind = "studio_hub"
+    base_url = "http://127.0.0.1:47873"
+    display_name = "Hub Studio KH"
+
+
+class _CloudLane:
+    def __init__(self, provider_id: str) -> None:
+        self.id = provider_id
+        self.kind = "openai_compatible"
+        self.base_url = "https://invalid.test"
+        self.display_name = provider_id
+
+
+class AHoldNothingCanBeAskedAboutGetsACeiling(unittest.TestCase):
+    """**An action must end — terminal means terminal** (owner, 2026-11-15).
+
+    A chat call is one request with no durable batch, and a lane with no batch route has nobody to
+    ask, so `reconcile_holds` can never settle either: measured live, 2026-11-18, a chat hold
+    recorded `failed` at 2026-11-16T20:44Z still answered `state: "running"` more than thirty hours
+    later, with `cancellable: false` and no failure code — for ever. A hold no lane can be asked
+    about therefore gets its own ceiling, and keeps every trace of itself when that ceiling ends it.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.store = JobStore(Path(self._tmp.name) / "jobs.sqlite3")
+        self.addCleanup(self.store.close)
+
+    def _hold(self, *, now: float, held_s: float, modality: str = "chat",
+              provider_id: str = _HubLane.id, batch: str = "",
+              context: dict[str, Any] | None = None) -> str:
+        job, _ = self.store.submit(modality=modality, model_id="m", provider_id=provider_id,
+                                   params={}, idempotency_key=None)
+        self.store.mark_running(job["id"])
+        detail = ("The gateway restarted while this job was in flight, so its upstream outcome is "
+                  "unknown.")
+        self.store.fail(job["id"], code="UNKNOWN_OUTCOME", detail=detail,
+                        recovery_state="unknown_outcome", recovery_detail=detail,
+                        recovery_context=context if context is not None
+                        else {"request_id": "r-1"})
+        held_at = now - held_s
+        self.store._conn.execute(
+            "UPDATE jobs SET upstream_job_id = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+            (batch, held_at, held_at, job["id"]))
+        self.store._conn.commit()
+        return str(job["id"])
+
+    def _run(self, now: float, *, snapshot: Any = None) -> dict[str, int]:
+        def definition(provider_id: str):
+            return _HubLane() if provider_id == _HubLane.id else _CloudLane(provider_id)
+
+        with patch.object(worker_module.registry, "definitions", lambda: [_HubLane()]), \
+                patch.object(worker_module.registry, "definition", definition), \
+                patch.object(worker_module.registry.credentials, "resolved", lambda pid: {}), \
+                patch.object(worker_module.studio_hub, "batch_snapshot",
+                             lambda *a, **k: snapshot):
+            return worker_module.reconcile_holds(self.store, now=now)
+
+    def test_a_chat_hold_past_its_ceiling_is_published_terminal_with_a_reason(self) -> None:
+        now = time.time()
+        ceiling = worker_module.UNASKABLE_HOLD_CEILING_S
+        job_id = self._hold(now=now, held_s=ceiling + 24 * 3600)
+
+        out = self._run(now)
+
+        self.assertEqual(out["expired"], 1)
+        row = self.store.get(job_id)
+        self.assertEqual((row["state"], row["error_code"]), ("failed", "HOLD_EXPIRED"))
+        self.assertIsNone(row["recovery_state"], "it stops being a hold, so it stops being live")
+        self.assertEqual(row["recovery_context"], {"request_id": "r-1"},
+                         "the evidence is kept, unlike a discard")
+        self.assertIn("Held as an unknown outcome for", row["error_detail"])
+        self.assertIn("no batch record", row["error_detail"])
+        self.assertAlmostEqual(row["finished_at"], now - ceiling - 24 * 3600,
+                               msg="when it was held is not rewritten to the expiry moment")
+
+        from gateway import api
+        story = api._job_envelope(row)
+        self.assertEqual(story["state"], "failed", "the caller is told the truth, not 'running'")
+        self.assertEqual(story["failure_code"], "HOLD_EXPIRED")
+        self.assertIn("nothing could ever settle it", story["failure_reason"])
+
+    def test_a_hold_inside_its_ceiling_still_reads_running(self) -> None:
+        now = time.time()
+        job_id = self._hold(now=now, held_s=60.0)
+
+        out = self._run(now)
+
+        self.assertEqual(out["expired"], 0)
+        row = self.store.get(job_id)
+        self.assertEqual(row["recovery_state"], "unknown_outcome")
+        from gateway import api
+        self.assertEqual(api._job_envelope(row)["state"], "running")
+
+    def test_a_cloud_lane_hold_is_expired_too(self) -> None:
+        # A lane with no batch record has nobody to ask, so an upstream id does not save the hold.
+        now = time.time()
+        job_id = self._hold(now=now, held_s=worker_module.UNASKABLE_HOLD_CEILING_S + 60,
+                            modality="image", provider_id="paid", batch="cloud-batch-1")
+
+        out = self._run(now)
+
+        self.assertEqual(out["expired"], 1)
+        row = self.store.get(job_id)
+        self.assertEqual(row["error_code"], "HOLD_EXPIRED")
+        self.assertIn("keeps no batch record", row["error_detail"])
+
+    def test_a_hub_hold_with_no_upstream_id_is_expired(self) -> None:
+        # The sweep reads only rows carrying an upstream id, so a hold that names its batch only
+        # in the context has no closer either -- nothing may sit there for ever.
+        now = time.time()
+        job_id = self._hold(now=now, held_s=worker_module.UNASKABLE_HOLD_CEILING_S + 60,
+                            modality="image", batch="", context={"batch_id": "batch-ctx"})
+
+        out = self._run(now)
+
+        self.assertEqual(out["expired"], 1)
+        self.assertIn("no upstream id", self.store.get(job_id)["error_detail"])
+
+    def test_a_hub_hold_its_own_sweep_owns_is_untouched(self) -> None:
+        now = time.time()
+        job_id = self._hold(now=now, held_s=30 * 3600, modality="image", batch="batch-1")
+
+        out = self._run(now, snapshot={"known": True, "state": "running"})
+
+        self.assertEqual(out["expired"], 0, "the Hub sweep owns it; the ceiling must not race it")
+        self.assertEqual(out["still_open"], 1)
+        row = self.store.get(job_id)
+        self.assertEqual(row["recovery_state"], "unknown_outcome")
+        self.assertEqual(row["error_code"], "UNKNOWN_OUTCOME")
 
 
 if __name__ == "__main__":

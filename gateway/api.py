@@ -1713,10 +1713,13 @@ def _is_live_hold(job: dict[str, Any]) -> bool:
     """A hold nothing has settled yet: the Gateway is still reconciling its unknown outcome.
 
     Its row reads `failed` with `recovery_state = unknown_outcome` (worker._fail), which is the
-    operator's evidence. A hold that has been closed is a real verdict and is published as one.
+    operator's evidence. A hold that has been closed is a real verdict and is published as one —
+    and so is one **its own ceiling** ended (`worker.expire_holds_no_lane_can_ask`): a hold nothing
+    can ever be asked about cannot stay `running` for ever ("an action must end").
     """
-    # A closed hold has its `recovery_state` cleared (store.close_recovery_hold), so a set one on a
-    # `failed` row is exactly "still waiting on the Gateway's own reconciliation".
+    # A closed or expired hold has its `recovery_state` cleared (`store.close_recovery_hold`,
+    # `store.expire_hold`), so a set one on a `failed` row is exactly "still waiting on the
+    # Gateway's own reconciliation".
     return (str(job.get("recovery_state") or "") == "unknown_outcome"
             and str(job.get("state") or "") == "failed")
 

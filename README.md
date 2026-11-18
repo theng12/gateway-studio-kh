@@ -441,7 +441,10 @@ Without that opt-in it skips before contacting the Hub.
 Interrupted running work is marked with an explicit unknown-outcome recovery
 state, with the upstream job ID when an asynchronous provider returned one.
 It is never automatically resubmitted. Check the provider before creating new
-work; provider-specific reconciliation is not implemented. Queued cancellation
+work; provider-specific reconciliation is not implemented. A Chat call and a lane
+with no batch route cannot be asked about at all, so such a hold ends on its own
+ceiling (`worker.UNASKABLE_HOLD_CEILING_S`) as `HOLD_EXPIRED`, keeping its whole
+record — it is never left answering `running`. Queued cancellation
 is confirmed locally; already-dispatched work can only receive a cancellation
 request, and a late output remains visible in Jobs.
 

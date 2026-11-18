@@ -4,6 +4,7 @@ from __future__ import annotations
 import atexit
 import shutil
 import sys
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -123,7 +124,11 @@ class AuditRepairs(unittest.TestCase):
             self.assertEqual(fleet.usable_slots(row, 'm', 2), 1)  # no roster: conservative old behavior
 
     def hold(self, jid, provider):
-        self.store._conn.execute("INSERT INTO jobs (id, modality, model_id, provider_id, state, params, created_at, updated_at, recovery_state, upstream_job_id) VALUES (?, 'image', 'm', ?, 'failed', '{}', 0, 1, 'unknown_outcome', ?)", (jid, provider, jid))
+        # Stamped **now**: these rows test the sweep's rotation window, and a hold this old would
+        # now be ended by its own ceiling (`worker.expire_holds_no_lane_can_ask`) before the second
+        # pass -- which is a different rule, tested in tests/test_hold_reconciliation.py.
+        now = time.time()
+        self.store._conn.execute("INSERT INTO jobs (id, modality, model_id, provider_id, state, params, created_at, updated_at, recovery_state, upstream_job_id) VALUES (?, 'image', 'm', ?, 'failed', '{}', ?, ?, 'unknown_outcome', ?)", (jid, provider, now, now, jid))
         self.store._conn.commit()
 
     def test_sweep_rotates_past_fifty_and_cloud_holds(self):
