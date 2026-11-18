@@ -134,3 +134,60 @@ test('the lead keeps the SSH-hidden line working beside the new count', () => {
   assert.match(lead, /sites not answering/);
   assert.match(lead, /Macs not checked/);
 });
+
+// ---- 0.2.281: the roster survives a restart ---------------------------------------------------
+//
+// The page cannot know a site's Macs it has never been told about. When a site answers, its roster
+// is persisted; after a restart and that site going unreachable, the count is known again. A site
+// genuinely never reached reports its Mac count as unknown — never as zero, never as a smaller
+// total.
+
+test('a restart keeps the count: 4 not checked is exact, not "at least"', () => {
+  const payload = { ...PAYLOAD,
+    summary: { ...PAYLOAD.summary, machines_not_checked: 4, locations_not_answering: 1,
+      sites_roster_unknown: 0 } };
+  const { ctx, nodes } = harness(payload);
+  vm.runInContext('renderFleetCapacity(__p);', Object.assign(ctx, { __p: payload }));
+  const lead = nodes.get('fleet-capacity').innerHTML;
+  assert.match(lead, />4 Macs not checked</);
+  assert.doesNotMatch(lead, /at least/);
+  assert.doesNotMatch(lead, /no known Macs/);
+});
+
+test('a site with no known roster makes the count "at least" and names the unknown', () => {
+  const payload = { ...PAYLOAD,
+    locations: [...PAYLOAD.locations,
+      { id: 'l9999', label: '9999', reachable: false, error_kind: 'timeout' }],
+    summary: { ...PAYLOAD.summary, machines_not_checked: 4, locations_not_answering: 5,
+      sites_roster_unknown: 1 } };
+  const { ctx, nodes } = harness(payload);
+  vm.runInContext('renderFleetCapacity(__p);', Object.assign(ctx, { __p: payload }));
+  const lead = nodes.get('fleet-capacity').innerHTML;
+  assert.match(lead, /at least 4 Macs not checked/);
+  assert.match(lead, /1 site with no known Macs/);
+  assert.match(lead, /9999: no answer in time, never heard from — its Mac count is unknown/);
+});
+
+test('when nothing is known at all the lead says unknown, not zero', () => {
+  const payload = { ...PAYLOAD,
+    locations: [{ id: 'l9999', label: '9999', reachable: false, error_kind: 'refused' }],
+    summary: { ...PAYLOAD.summary, machines_not_checked: 0, locations_not_answering: 1,
+      sites_roster_unknown: 1, pulse: { working: 0, ready: 0, long_idle: 0, needs_attention: 0,
+        just_finished: 0, offline: 0 } } };
+  const { ctx, nodes } = harness(payload);
+  vm.runInContext('renderFleetCapacity(__p);', Object.assign(ctx, { __p: payload }));
+  const lead = nodes.get('fleet-capacity').innerHTML;
+  assert.match(lead, /Macs not checked: unknown/);
+  assert.match(lead, /1 site with no known Macs/);
+  assert.doesNotMatch(lead, />0 Macs not checked</);
+});
+
+test('the table status line says a site with no known Macs leaves the total incomplete', () => {
+  const payload = { ...PAYLOAD,
+    summary: { ...PAYLOAD.summary, sites_roster_unknown: 1 } };
+  const { ctx } = harness(payload);
+  vm.runInContext('lastFleetPayload = __p;', Object.assign(ctx, { __p: payload }));
+  const line = vm.runInContext('fleetStatusLine(__p.machines, __p.machines)',
+    Object.assign(ctx, { __p: payload }));
+  assert.match(line, /1 site with no known Macs/);
+});

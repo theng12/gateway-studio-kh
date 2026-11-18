@@ -1370,7 +1370,7 @@ _NO_ELIGIBLE_RETRY_S = 30.0
 #: How long a job may wait on a site that **cannot take it at all** — not answering, or stating it
 #: has no Mac for the model — before it is moved or ended. A site with busy Macs is a line worth
 #: standing in; a site that answers nothing is not, and the full placement ceiling spent on one is
-#: what turned two image jobs into 45 minutes of nothing at terranash-1500 (2026-11-17).
+#: what turned two image jobs into 45 minutes of nothing at a fleet Mac (2026-11-17).
 #:
 #: Longer than one snapshot refresh (15 s) by design: a controller that misses a probe while busy
 #: is not gone, and the routing row it publishes reads the live answer. Five minutes is several
@@ -2011,7 +2011,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 fleet.note_drain_refusal(provider_id, str(exc))
                 if "OUTPUT_STORAGE_BLOCKED" in str(exc):
                     # The site's own door refused for output space (measured 2026-11-16: nine voice
-                    # jobs waited on terranash-1300, disk "stop", while 23 Macs were eligible). Rest
+                    # jobs waited on a fleet Mac, disk "stop", while 23 Macs were eligible). Rest
                     # it like a storage-full item, so the next asset and this job's next try go on.
                     fleet.note_storage_refusal(provider_id, model_id)
             current = store.get(job_id) if hasattr(store, "get") else job

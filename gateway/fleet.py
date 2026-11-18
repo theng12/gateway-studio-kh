@@ -660,7 +660,7 @@ def _require_private_host(host: str, port: int | None) -> None:
 
     **A hostname is allowed if, and only if, every address it resolves to is private.** Tailscale's
     MagicDNS names (`mac.tailnet.ts.net`) are the reason: the owner's live roster uses Tailscale
-    *literals* (`100.76.125.18`), but a name is a reasonable thing to type and refusing all names
+    *literals* (`a tailnet address`), but a name is a reasonable thing to type and refusing all names
     would break a working setup. Resolution happens once, at add/re-point time — never on the probe
     path — and a name that resolves to nothing is refused rather than accepted on faith.
     """
@@ -1201,21 +1201,80 @@ def _hub_version_relation(version: object) -> str | None:
 #: controller's Hub down and the Gateway correctly routes elsewhere and keeps the model — but its
 #: Fleet page showed *nothing* about that site's Macs, because the roster only ever came from the
 #: live probe. "This house is offline" and "this house has no Macs" then read the same, which is
-#: exactly the distinction the owner needs when a site loses power. In-process on purpose: it is a
-#: display of what we last knew, not a durable record, and it disappears with the process rather
-#: than becoming a second source of truth about a machine.
+#: exactly the distinction the owner needs when a site loses power.
+#:
+#: **It outlives the process.** Held in memory only, it emptied on every restart: 0.2.280's own
+#: install on 1301 restarted the Gateway and every unreachable site then reported zero known Macs
+#: and "never heard from" — "no data" rendered as none, one restart later. The roster and the time
+#: that site last answered are written to `fleet_members.json` and read back at boot.
 _last_members: dict[str, tuple[float, list[dict], dict]] = {}
 _MEMBERS_STALE_AFTER_S = 120.0
+MEMBERS_PATH = Path(os.environ.get("GATEWAY_FLEET_MEMBERS") or (DATA_DIR / "fleet_members.json"))
+_members_lock = threading.Lock()
+_members_loaded = False
+
+
+def _load_members() -> None:
+    """Read the persisted rosters once per process. A missing or broken file is 'none known'."""
+    global _members_loaded
+    if _members_loaded:
+        return
+    _members_loaded = True
+    try:
+        raw = json.loads(MEMBERS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    controllers = raw.get("controllers") if isinstance(raw, dict) else None
+    if not isinstance(controllers, dict):
+        return
+    for controller_id, entry in controllers.items():
+        if not isinstance(entry, dict):
+            continue
+        nodes = entry.get("nodes")
+        at = entry.get("at")
+        if not isinstance(nodes, list) or not nodes:
+            continue
+        if isinstance(at, bool) or not isinstance(at, (int, float)):
+            continue
+        summary = entry.get("summary")
+        _last_members[str(controller_id)] = (
+            float(at), [dict(row) for row in nodes if isinstance(row, dict)],
+            dict(summary) if isinstance(summary, dict) else {},
+        )
+
+
+def _write_members() -> None:
+    payload = {
+        "version": 1,
+        "controllers": {
+            controller_id: {"at": at, "nodes": nodes, "summary": summary}
+            for controller_id, (at, nodes, summary) in _last_members.items()
+        },
+    }
+    try:
+        MEMBERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        scratch = MEMBERS_PATH.with_name(MEMBERS_PATH.name + ".tmp")
+        scratch.write_text(json.dumps(payload, indent=0), encoding="utf-8")
+        os.replace(scratch, MEMBERS_PATH)
+    except OSError:
+        log.warning("could not persist the last-known fleet rosters", exc_info=True)
 
 
 def _remember_members(controller_id: str, nodes: Any, summary: Any) -> None:
-    """Keep the last non-empty roster a controller published."""
+    """Keep the last non-empty roster a controller published, and persist it."""
     if not isinstance(nodes, list) or not nodes:
         return
-    _last_members[str(controller_id)] = (
-        time.time(), [dict(row) for row in nodes if isinstance(row, dict)],
-        dict(summary) if isinstance(summary, dict) else {},
-    )
+    rows = [dict(row) for row in nodes if isinstance(row, dict)]
+    with _members_lock:
+        _load_members()
+        before = _last_members.get(str(controller_id))
+        _last_members[str(controller_id)] = (
+            time.time(), rows,
+            dict(summary) if isinstance(summary, dict) else {},
+        )
+        # A fan-out runs every 15 s; write only when the roster itself changed, not the clock.
+        if before is None or [row.get("id") for row in before[1]] != [row.get("id") for row in rows]:
+            _write_members()
 
 
 def _last_known_members(controller_id: str) -> dict:
@@ -1225,7 +1284,9 @@ def _last_known_members(controller_id: str) -> dict:
     the timestamp of the last successful read and `members_stale_seconds` its age, so a stale count
     is never mistaken for a live one. A live read replaces it and the keys disappear.
     """
-    remembered = _last_members.get(str(controller_id))
+    with _members_lock:
+        _load_members()
+        remembered = _last_members.get(str(controller_id))
     if not remembered:
         return {}
     at, nodes, summary = remembered
@@ -1235,6 +1296,14 @@ def _last_known_members(controller_id: str) -> dict:
         "members_from": at,
         "members_stale_seconds": max(0.0, time.time() - at),
     }
+
+
+def reset_members_for_tests() -> None:
+    """Forget the process's copy (a test that points GATEWAY_FLEET_MEMBERS somewhere else)."""
+    global _members_loaded
+    with _members_lock:
+        _last_members.clear()
+        _members_loaded = False
 
 
 def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
@@ -2370,6 +2439,10 @@ def _summarise(rows: list[dict]) -> dict:
     # other number, and the page says them in the same line (see `renderFleetCapacity`).
     not_answering = [row for row in rows if row.get("reachable") is False]
     not_checked = sum(_known_roster_count(row) for row in not_answering)
+    # A site never reached in this Gateway's life has no roster at all: its Mac count is *unknown*,
+    # which is not the same as zero. Published so the page can say "at least N" rather than a
+    # smaller total that reads as complete.
+    roster_unknown = sum(1 for row in not_answering if _known_roster_count(row) == 0)
     return {
         "locations": len(rows),
         "locations_up": sum(1 for row in rows if row["reachable"]),
@@ -2386,6 +2459,8 @@ def _summarise(rows: list[dict]) -> dict:
         # unknown: silence is "not checked", not a verdict.
         "machines_not_checked": not_checked,
         "locations_not_answering": len(not_answering),
+        # Unreachable sites with no roster known at all: their Mac count is unknown, not 0.
+        "sites_roster_unknown": roster_unknown,
         "machines_online": online,
         # A Lite Mode Mac switched off is not "offline" (a fault) but its own, expected count.
         "machines_offline": offline - off_lite,
@@ -3717,7 +3792,7 @@ def _node_reach_reason(machine: dict) -> str:
     another `unreachable` in exactly that slot. Only those two tokens are accepted: any other
     health word is a different fault and must not be read as a reachability reason.
 
-    ⚠ **The sentence outranks `health`, and the live fleet is why.** `terranash-1209` reports
+    ⚠ **The sentence outranks `health`, and the live fleet is why.** A fleet Mac reports
     `health: unreachable` while its probe detail says `(no_hub)` — the host answered. Taking
     `health` first called that Mac switched-off when something had just replied to it. A
     `no_hub` is positive evidence the Mac is up; `unreachable` is the absence of evidence, so
@@ -5075,7 +5150,7 @@ def site_cannot_take(provider_id: str, model_id: str) -> bool:
     Not answering, or stating it has no Mac for the model. Those are not a queue to stand in: only
     a fresh answer from the site or a different route changes them, so a job bound here must be
     moved or ended quickly instead of waiting out the placement ceiling (2026-11-17: two image jobs
-    spent 45 minutes at terranash-1500, which answered nothing). **Unknown is not a refusal** — no
+    spent 45 minutes at a fleet Mac, which answered nothing). **Unknown is not a refusal** — no
     row, or supply it does not state, leaves this `False` and the job keeps its normal line.
     """
     try:
@@ -5106,7 +5181,7 @@ def location_publishes_model(provider_id: str, model_id: str) -> bool | None:
 #: How long a location that has answered may stay silent before its models are withdrawn.
 #:
 #: A controller that misses one 6 s overview read while it is busy answering a render is not
-#: offline — measured live on terranash-1600, 2026-10-30: its models flipped `locked: true` and
+#: offline — measured live on a fleet Mac, 2026-10-30: its models flipped `locked: true` and
 #: back on consecutive catalogue reads seconds apart, because `usable_location_ids` read a single
 #: probe. The grace is the last *measured* answer, with its age (`answered_at`, which
 #: `_keep_last_known` keeps across a timeout), not an invented one; a site silent past it is
@@ -5860,7 +5935,7 @@ def _no_disk_for_output(row: dict, model_id: str, modality: str) -> bool:
     machines = [m for m in row.get("machines") or [] if isinstance(m, dict)]
     # **The controller's own disk gates its whole site.** A work POST is refused
     # `OUTPUT_STORAGE_BLOCKED` by the Mac that receives it, and the controller receives every one:
-    # measured 2026-11-16, terranash-1300 (disk "stop", 4.1 GB free) refused nine voice jobs
+    # measured 2026-11-16 on a fleet Mac (disk "stop", 4.1 GB free) refused nine voice jobs
     # fifteen times each while its own nodes were green.
     if any(str(m.get("machine") or "") == LOCAL_ID and stopped(m) in _DISK_STOPPED for m in machines):
         return True
@@ -6079,7 +6154,7 @@ def note_drain_refusal(provider_id: str, detail: str, now: float | None = None) 
 
 
 #: **A location that refused the connection takes no new work until it answers again**
-#: (2026-11-16: terranash-1200 refused connections at 21:10, yet 20 voice sections were still sent
+#: (2026-11-16: a fleet Mac refused connections at 21:10, yet 20 voice sections were still sent
 #: there and polled until they became holds). The fleet read is cached for `_CACHE_TTL` and a flapping
 #: Hub can pass one probe and refuse the next, so the worker's own refusal is the faster fact.
 #: `location id -> when it refused`; cleared by the next live read of that location

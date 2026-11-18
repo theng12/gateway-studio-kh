@@ -2456,7 +2456,7 @@ class Catalog:
         `locked`/`availability` is derived from it (`_story_row`), and leaving it out
         of the signature meant a site that answered again — or went quiet — kept
         publishing the previous verdict until the 20 s TTL ran out. Measured live
-        2026-10-30: terranash-1600 came back at 14:28:26 and its model stayed locked
+        2026-10-30: a fleet Mac came back at 14:28:26 and its model stayed locked
         until 14:28:46. The fleet read is the same cached, non-blocking one
         `rebuild` already takes (`snapshot(allow_stale=True)`), so the check stays
         ~O(1) and the catalogue lock/unlock is never older than the fleet answer it

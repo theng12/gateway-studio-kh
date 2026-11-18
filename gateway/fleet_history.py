@@ -928,7 +928,7 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
     # **A Mac its own Hub flagged is not "nothing wrong".** `needs_attention` carries a reason
     # (`fleet._attention`) that the page draws in amber, and the Likely-cause cell used to answer
     # "Nothing wrong reported" beside it — the two sentences contradicting each other on the same
-    # row (seen live on terranash-1403, 2026-10-30).
+    # row (seen live on a fleet Mac, 2026-10-30).
     #
     # The reason now carries the code that says what it is, and most of those codes are this
     # Gateway's own read: quoting a studio it watched go down as "the Hub reports a problem this

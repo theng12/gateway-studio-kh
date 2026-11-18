@@ -8416,6 +8416,12 @@ function fleetStatusLine(rows, machines) {
   // Said out loud: these rows are drawn, but they were not measured in this read.
   const carried = machines.filter(m => m.last_known === true).length;
   if (carried) parts.push(`${carried} shown from their last report — not counted as online.`);
+  // A site with no roster leaves the total smaller than the fleet; say so rather than let the
+  // reader take the number for the whole fleet (0.2.281).
+  if (s.sites_roster_unknown > 0) {
+    parts.push(`<span class="badge warn" title="Their Mac count is unknown, so the totals here cannot include them.">`
+      + `${s.sites_roster_unknown} site${s.sites_roster_unknown === 1 ? '' : 's'} with no known Macs</span>`);
+  }
   if (s.hub_latest) {
     const version = [`On latest ${s.on_latest ?? 0}/${s.version_known ?? 0} (Studio Hub ${s.hub_latest})`];
     if (s.hub_updating > 0) version.push(`${s.hub_updating} updating`);
@@ -8591,9 +8597,11 @@ function fleetLocationStatus(L) {
   if (L.reachable === true) return { main: 'Answering', sub: '', bad: false };
   if (L.pending === true) return { main: 'Just added', sub: 'Reading its Macs…', bad: false };
   const heard = fleetSiteLastHeard(L);
+  const known = (L.node_summary && L.node_summary.total != null) || (L.nodes || []).length;
   return {
     main: 'Not answering',
-    sub: `${fleetSiteCauseWord(L)} · ${heard ? `last heard ${heard}` : 'never heard from'}`,
+    sub: `${fleetSiteCauseWord(L)} · ${heard ? `last heard ${heard}` : 'never heard from'}`
+      + (known ? '' : ' · Mac count unknown'),
     // Silence is not a fault verdict: the row says it was not checked, and the Health column
     // carries whatever verdict the history supports.
     bad: false,
@@ -10485,9 +10493,12 @@ function renderFleetCapacity(d) {
   // smaller fleet (owner's Fleet, 2026-11-18: 29 online became 8 with three sites timing out).
   // The number comes from the same read as everything else and is never folded into a state.
   const notChecked = Number((d.summary || {}).machines_not_checked || 0);
+  const rosterUnknown = Number((d.summary || {}).sites_roster_unknown || 0);
   const notCheckedWhy = (d.locations || []).filter(L => L.reachable === false).map(L => {
     const heard = fleetSiteLastHeard(L);
-    return `${L.label || L.id}: ${fleetSiteCauseWord(L)}, ${heard ? `last heard ${heard}` : 'never heard from'}`;
+    const known = (L.node_summary && L.node_summary.total != null) || (L.nodes || []).length;
+    return `${L.label || L.id}: ${fleetSiteCauseWord(L)}, ${heard ? `last heard ${heard}` : 'never heard from'}`
+      + (known ? '' : ' — its Mac count is unknown');
   }).join('\n');
   const failures = fleetLocationFailures(d);
   const hiddenCount = fleetHiddenMachines(d);
@@ -10504,8 +10515,11 @@ function renderFleetCapacity(d) {
       <span class="fleet-lead-word">running now</span>
     </div>
     <div class="fleet-lead-split">${split}${unknown
-      ? `<span class="dim"> · </span>${button('unknown', `${unknown} unknown`)}` : ''}${notChecked
-      ? `<span class="dim"> · </span><span class="fleet-lead-notchecked" title="${esc(notCheckedWhy)}">${notChecked} Mac${notChecked === 1 ? '' : 's'} not checked</span>` : ''}${sites != null
+      ? `<span class="dim"> · </span>${button('unknown', `${unknown} unknown`)}` : ''}${notChecked || rosterUnknown
+      ? `<span class="dim"> · </span><span class="fleet-lead-notchecked" title="${esc(notCheckedWhy)}">${notChecked
+        ? `${rosterUnknown ? 'at least ' : ''}${notChecked} Mac${notChecked === 1 ? '' : 's'} not checked`
+        : 'Macs not checked: unknown'}</span>` : ''}${rosterUnknown
+      ? `<span class="dim"> · </span><span class="fleet-lead-notchecked" title="${esc(notCheckedWhy)}">${rosterUnknown} site${rosterUnknown === 1 ? '' : 's'} with no known Macs</span>` : ''}${sites != null
       ? `<span class="dim"> · </span>${button('sites', `${sites} site${sites === 1 ? '' : 's'} not answering`)}` : ''}${hiddenCount
       ? `<span class="dim"> · </span><span class="dim">${hiddenCount} machin${hiddenCount === 1 ? 'e' : 'es'} from ${esc(hiddenNames)} hidden${hiddenWorking ? ` (${hiddenWorking} working)` : ''} — </span><button type="button" class="sm" onclick="fleetShowAllLocations()">show</button>` : ''}</div>
     ${failures.length ? `<div class="fleet-lead-failures" aria-label="Failures by location">${

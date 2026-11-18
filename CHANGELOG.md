@@ -10,6 +10,15 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.281 — 2026-11-18
+
+- **What the fleet knows about a site survives a restart.** The roster each site last reported lived only in memory, so 0.2.280's own install restarted the Gateway and every unreachable site came back with no known Macs and "never heard from" — the count read as zero, which is the same "no data looks like none" problem one restart later. Each site's last roster and the time it answered are now saved and read back at boot; after a restart, a site that is unreachable still says when it was last heard from, and its Macs are counted as **not checked**.
+- **A site never reached says its Mac count is unknown, not zero.** The headline reads "at least N Macs not checked" when one of the silent sites has no known roster, names how many such sites there are, and the machine list says the total cannot include them. A fleet total can be incomplete only if the page says so.
+- **No private fleet names or tailnet addresses ship with the app.** A scan of the 0.2.280 binary found nine machine names and one live tailnet address inside code comments that are bundled into the app; they now read "a fleet Mac" and "a tailnet address". Comments only — no behaviour changed. The generic `100.64.0.0/10` range and the `100.64.0.9` placeholder stay.
+- **The worked example is a restart.** The test answers from all eight sites (46 Macs), restarts the process, then leaves one site (four Macs) unreachable: the fleet still totals 46, with four not checked and that site's last-heard time intact. A never-reached site reports its count as unknown.
+
+---
+
 ## 0.2.280 — 2026-11-18
 
 - **The Fleet says what it did not check.** When a site does not answer, its Macs were silently subtracted from every count — on 2026-11-18 three sites timed out in one read and the headline fell from 29 online to 8 with nothing on screen saying why. The summary now publishes **Macs not checked** as its own number, taken from the roster each silent site last reported, and the lead reads it beside the rest: `8 online · 42 Macs not checked · 6 sites not answering`. It is never folded into online, offline or unknown, and the fleet total does not shrink.

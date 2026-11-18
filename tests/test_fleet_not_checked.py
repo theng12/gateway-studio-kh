@@ -27,6 +27,7 @@ Run with::
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import time
@@ -87,12 +88,15 @@ class _Case(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
         for name, value in (("FLEET_PATH", root / "fleet.json"),
-                            ("HISTORY_PATH", root / "fleet_history.json")):
-            patcher = patch.object(fleet if name == "FLEET_PATH" else fleet_history, name, value)
+                            ("HISTORY_PATH", root / "fleet_history.json"),
+                            ("MEMBERS_PATH", root / "fleet_members.json")):
+            patcher = patch.object(fleet if name in ("FLEET_PATH", "MEMBERS_PATH") else fleet_history, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
         fleet_history.reset_for_tests()
         self.addCleanup(fleet_history.reset_for_tests)
+        fleet.reset_members_for_tests()
+        self.addCleanup(fleet.reset_members_for_tests)
         fleet._write([])
         with fleet._cache_lock:
             fleet._cache.update(at=0.0, value=None, last=None, gen=0)
@@ -101,6 +105,14 @@ class _Case(unittest.TestCase):
     def _read(self, rows: list[dict]) -> dict:
         with patch.object(fleet, "locations", lambda: [dict(r) for r in rows]):
             return fleet.snapshot(force=True)
+
+    def _restart(self) -> None:
+        """What a process start looks like: the in-memory rosters and the cache are gone, the
+        file on disk is not."""
+        fleet.reset_members_for_tests()
+        fleet.invalidate()
+        with fleet._cache_lock:
+            fleet._cache.update(at=0.0, value=None, last=None, gen=0)
 
 
 class TheSilentSitesMacsAreNotLostTest(_Case):
@@ -179,3 +191,71 @@ class TheSlowSiteIsMeasuredTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheRosterSurvivesARestartTest(_Case):
+    """Proven the way the Developer asked: a restart with a site unreachable, not by reading code.
+
+    Every site answers (46 Macs across 1100, 1200, 1300, 1400, 1500, 1600, 1700 and This Mac).
+    The process then restarts (in-memory rosters and cache cleared, the persisted file kept) and
+    one site — 1700, four Macs — is unreachable. The fleet still totals 46: 42 measured plus 4
+    not checked, and 1700 says when it was last heard from.
+    """
+
+    def _sites(self) -> list[dict]:
+        return [_location("l1100", "1100", 11), _location("l1200", "1200", 11),
+                _location("l1300", "1300", 4), _location("l1400", "1400", 8),
+                _location("l1500", "1500", 5), _location("l1600", "1600", 2),
+                _location("l1700", "1700", 4), _location("local", "This Mac", 1)]
+
+    def _after_restart_row(self, controller_id: str, label: str) -> dict:
+        """The row `locations()` makes for an unreachable site: its persisted roster attached."""
+        known = fleet._last_known_members(controller_id)
+        row = _silent(controller_id, label, 0)
+        row.update(nodes=known.get("nodes") or [], node_summary=known.get("node_summary") or {},
+                   members_from=known.get("members_from"),
+                   members_stale_seconds=known.get("members_stale_seconds"))
+        return row
+
+    def _answer_all(self) -> None:
+        """What a live fan-out does on its way past each answering controller."""
+        for row in self._sites():
+            fleet._remember_members(row["id"], row["nodes"], row["node_summary"])
+
+    def test_the_file_holds_the_roster_and_when_it_answered(self) -> None:
+        before = time.time()
+        self._read(self._sites())
+        self._answer_all()
+        raw = json.loads(fleet.MEMBERS_PATH.read_text(encoding="utf-8"))
+        entry = raw["controllers"]["l1700"]
+        self.assertEqual(len(entry["nodes"]), 4)
+        self.assertGreaterEqual(float(entry["at"]), before)
+        self.assertEqual(entry["summary"]["total"], 4)
+
+    def test_after_a_restart_the_unreachable_sites_macs_are_still_in_the_total(self) -> None:
+        warm = self._read(self._sites())
+        self._answer_all()
+        self.assertEqual(warm["summary"]["machines"], 46)
+        self._restart()
+
+        rows = [row for row in self._sites() if row["id"] != "l1700"]
+        rows.append(self._after_restart_row("l1700", "1700"))
+        after = self._read(rows)
+
+        self.assertEqual(after["summary"]["machines_not_checked"], 4,
+                         "1700's four Macs are not checked, not gone")
+        self.assertEqual(after["summary"]["sites_roster_unknown"], 0,
+                         "the roster was read back from disk, so the count is known")
+        self.assertEqual(after["summary"]["machines"] + after["summary"]["machines_not_checked"], 46,
+                         "the fleet total does not shrink across the restart")
+        site = next(row for row in after["locations"] if row["id"] == "l1700")
+        self.assertGreater(site["members_from"], 0)
+        self.assertGreater(site["members_stale_seconds"], 0)
+
+    def test_a_site_never_reached_says_its_mac_count_is_unknown(self) -> None:
+        self._restart()
+        rows = [_location("l1400", "1400", 8), _location("local", "This Mac", 1),
+                _silent("l9999", "9999", 0)]
+        after = self._read(rows)
+        self.assertEqual(after["summary"]["sites_roster_unknown"], 1)
+        self.assertEqual(after["summary"]["machines_not_checked"], 0)
