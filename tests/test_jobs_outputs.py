@@ -71,6 +71,27 @@ class JobsOutputsNative(unittest.TestCase):
         self.assertIn("table.menu", source)
         self.assertIn("Select the job to recover or close it.", source)
 
+    def test_a_preview_opens_only_through_the_injected_opener(self) -> None:
+        # A test must never take the owner's desktop (owner, 2026-11-18: "stop it from launching
+        # the music app"). The suite used to preview a fake .mp3 through `NSWorkspace`, and macOS
+        # handed it to Music in the foreground 1.8 s later — in our own gate run.
+        source = (ROOT / "menubar" / "JobsWindow.swift").read_text()
+        # The only LaunchServices call left is the shipped default opener: the preview path
+        # must go through `openFile`, or the next test that clicks it launches Music again.
+        self.assertIn("var openFile: (URL) -> Bool = { NSWorkspace.shared.open($0) }", source)
+        self.assertIn("self.openFile(localURL)", source)
+        self.assertEqual(
+            [line for line in source.splitlines()
+             if "NSWorkspace.shared.open(" in line and not line.lstrip().startswith("///")],
+            ["    var openFile: (URL) -> Bool = { NSWorkspace.shared.open($0) }"],
+        )
+        native = (ROOT / "tests" / "test_jobs_outputs.swift").read_text()
+        self.assertEqual(
+            native.count("openFile = {"), 3,
+            "every section that clicks Preview must inject the recorder",
+        )
+        self.assertIn("opened.count == 1", native)
+
     def test_output_library_uses_authenticated_local_file_flow(self) -> None:
         source = (ROOT / "menubar" / "JobsWindow.swift").read_text()
         self.assertIn("GatewayAPI.download(", source)

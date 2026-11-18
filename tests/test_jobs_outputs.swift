@@ -272,6 +272,11 @@ struct JobsOutputsCheck {
         let section = JobsSection()
         _ = section.view
         section.activated()
+        // **No section here may reach LaunchServices.** Opening a real `.mp3` launched Music in
+        // the foreground during a gate run (owner, 2026-11-18: "stop it from launching the music
+        // app"); the opener is injected below and every opened URL is recorded instead.
+        var opened: [URL] = []
+        section.openFile = { url in opened.append(url); return true }
 
         let table = descendants(section.view).compactMap { $0 as? NSTableView }.first!
         assert(table.numberOfRows == 6, "jobs did not load")
@@ -416,6 +421,7 @@ struct JobsOutputsCheck {
         let delayedSection = JobsSection()
         _ = delayedSection.view
         delayedSection.activated()
+        delayedSection.openFile = { url in opened.append(url); return true }
         let delayedTable = descendants(delayedSection.view).compactMap { $0 as? NSTableView }.first!
         delayedTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
@@ -425,11 +431,14 @@ struct JobsOutputsCheck {
         GatewayAPI.downloads[0].1(.success(Data("delayed-output".utf8)))
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         assert(
-            labels(delayedSection.view).contains {
-                $0.contains("Opened a local copy") || $0.contains("Could not open the local file")
-            },
+            labels(delayedSection.view).contains { $0.contains("Opened a local copy") },
             "same-job refresh invalidated delayed download: \(labels(delayedSection.view))"
         )
+        assert(opened.count == 1, "the preview opened \(opened.count) files through the injected opener")
+        assert(FileManager.default.fileExists(atPath: opened[0].path),
+               "the opened URL is not the local copy that was written")
+        assert(opened[0].pathExtension == "mp3",
+               "the opened copy should keep the output's own extension: \(opened[0].path)")
 
         // A user selection made while a jobs read is pending wins over the
         // selection that existed when that read began.
@@ -489,6 +498,7 @@ struct JobsOutputsCheck {
         let pollSection = JobsSection()
         _ = pollSection.view
         pollSection.activated()
+        pollSection.openFile = { _ in true }
         let pollTable = descendants(pollSection.view).compactMap { $0 as? NSTableView }.first!
         pollTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))

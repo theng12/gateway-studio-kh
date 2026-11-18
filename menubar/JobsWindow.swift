@@ -84,6 +84,12 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
     var confirmDiscard: (() -> Bool)?
     /// Asked before either bulk action, with its title and message; a property for the native test.
     var confirmBulk: ((String, String) -> Bool)?
+    /// Where an opened output goes. **Injectable for one reason only**: the native test clicks
+    /// Preview, and handing its `.mp3` to LaunchServices launched Music in the foreground during a
+    /// gate run (owner, 2026-11-18: *"stop it from launching the music app"* — a test may never
+    /// take the owner's desktop). The shipped app keeps `NSWorkspace.shared.open`; the test swaps
+    /// in a recorder, exactly as `confirmDiscard`/`confirmBulk` are swapped.
+    var openFile: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     private var showRemovedBox: NSButton!
     private var clearFailedButton: NSButton!
     private var resolveAllButton: NSButton!
@@ -917,7 +923,7 @@ final class JobsSection: NSObject, AppSection, NSTableViewDataSource, NSTableVie
                         DispatchQueue.main.async {
                             guard self.isCurrent(jobID: jobID, generation: generation) else { return }
                             if opens {
-                                guard NSWorkspace.shared.open(localURL) else {
+                                guard self.openFile(localURL) else {
                                     self.setStatus("Could not open the local file.", error: true)
                                     return
                                 }

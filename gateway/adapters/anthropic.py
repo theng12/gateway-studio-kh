@@ -388,6 +388,9 @@ class AnthropicBackend:
                 retryable=stop == "max_tokens",
                 upstream_accepted=True,
                 upstream_settled=True,
+                # A stop_reason of `refusal` is this model refusing its own answer: a pool
+                # advances past it rather than ending the walk.
+                refusal_scope="response" if code == "POLICY_REFUSAL" else None,
             )
             error.evidence = {"finish_reason": stop}
             if stop == "max_tokens":

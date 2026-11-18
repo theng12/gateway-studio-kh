@@ -415,6 +415,47 @@ class PoolFailoverTests(_TempEnv):
         self.assertEqual([], adapters["b::x"].calls, "gateway validation must not walk on")
         self.assertEqual([], adapters["c::x"].calls)
 
+    def test_a_members_content_filter_advances_to_the_third_member(self):
+        # Live 2026-11-18 on 1301: `story-studio-llm` is Haiku -> MiMo -> GPT-6 Luna. Haiku was
+        # unavailable, MiMo answered "answer stopped early (content_filter)" on an ordinary
+        # 19th-century script, the walk stopped there, and the healthy third member was never
+        # tried — eight chat jobs failed POOL_EXHAUSTED. A provider refusing *its own answer* is
+        # that model's verdict, not the request's.
+        from gateway.adapters.base import BackendError, BackendResult
+
+        self.pools.create("free", ["a::x", "b::x", "c::x"])
+        backend, adapters = self._backend({
+            "a::x": BackendError("a: answer stopped early (content_filter)", code="POLICY_REFUSAL",
+                                 status=200, refusal_scope="response"),
+            "b::x": BackendError("b: answer stopped early (content_filter)", code="POLICY_REFUSAL",
+                                 status=200, refusal_scope="response"),
+            "c::x": BackendResult(text="from c"),
+        })
+        result = backend.generate(self._request())
+        self.assertEqual("from c", result.text)
+        self.assertEqual(["x"], adapters["c::x"].calls, "the healthy third member must be tried")
+        refused = [a for a in result.payload["pool"]["attempts"]
+                   if a.get("outcome") == "failed"]
+        self.assertEqual(["a::x", "b::x"], [a["member"] for a in refused])
+        self.assertEqual({"POLICY_REFUSAL"}, {a["code"] for a in refused},
+                         "the row must name which member refused and why")
+        self.assertIn("content_filter", refused[0]["detail"])
+
+    def test_a_gateway_side_policy_refusal_still_stops_the_walk(self):
+        # A POLICY_REFUSAL the adapter did not mark as the model's own answer is about the
+        # request: every member would give it, so walking on would only repeat the same no.
+        from gateway.adapters.base import BackendError, BackendResult
+
+        self.pools.create("free", ["a::x", "b::x"])
+        backend, adapters = self._backend({
+            "a::x": BackendError("the request itself is refused", code="POLICY_REFUSAL", status=400),
+            "b::x": BackendResult(text="from b"),
+        })
+        with self.assertRaises(BackendError) as caught:
+            backend.generate(self._request())
+        self.assertEqual("POLICY_REFUSAL", caught.exception.code)
+        self.assertEqual([], adapters["b::x"].calls, "a request-level refusal must not walk on")
+
     def test_provider_400s_exhaust_the_pool_and_preserve_every_attempt(self):
         from gateway.adapters.base import BackendError
 

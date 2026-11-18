@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.273 — 2026-11-18
+
+- **A job whose model is a pool is tried once, not three times.** The pool has already asked every model in it before it gives up, so running the whole chain three more times pays each provider again and again. A pool job now ends after one walk, and its row says "1" allowed so the number is visible; other models keep the three machines. The number is a setting, one by default.
+- **A model's own content filter no longer ends the pool.** When one member refused its own answer mid-stream (a content filter on an ordinary script), the Gateway stopped there and never tried the healthy members after it — eight chat jobs failed that way. A refusal of *that model's answer* now moves to the next member and is recorded on the attempt, naming which model refused and why; only a refusal about the request itself still stops, because every member would give the same one.
+- **The app's own test no longer opens Music.** The Jobs window's Preview hands a local copy to macOS; the test that clicks it handed over an audio file, and macOS launched Music in the foreground during a gate run. Preview now goes through an opener the test replaces, so the check proves the same thing (a local copy was written and opened) without touching the desktop.
+
 ## 0.2.272 — 2026-11-18
 
 - **One finished job can now be retried on its own.** Cancelling or losing one job in a batch no longer forces the whole batch to be sent again: a finished row on the Jobs page has a **Retry** button that queues a fresh job with the same model, parameters, group, priority and requester, leaving its siblings and the finished row untouched. The new row says which job it came from, is counted as a separate job, and a job that is still running, still queued, or still waiting on a Hub recovery answer is refused with a sentence saying why.

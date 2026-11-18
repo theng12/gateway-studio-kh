@@ -139,6 +139,57 @@ class PoolRerouteTest(unittest.TestCase):
         self.assertTrue(store.deferred and store.deferred[0]["unsent"])
 
 
+class PoolAttemptsTest(unittest.TestCase):
+    """A pool job gets ONE attempt (owner, 2026-11-18: "fix and update the pool fallback from 3
+    retry to one as this reduce waste").
+
+    The pool's chain already tried every member inside one attempt, so replaying it walks every
+    provider in it again — the eight `POOL_EXHAUSTED` chat jobs on 1301 today would each have paid
+    `story-studio-llm` three times. Non-pool models keep the fleet's three machines.
+    """
+
+    def setUp(self) -> None:
+        concurrency.reset_for_tests()
+        self.addCleanup(concurrency.reset_for_tests)
+
+    def test_the_pool_ceiling_is_one_and_a_model_keeps_three(self) -> None:
+        pool_job = {"provider_id": "pool", "model_id": "story-studio-llm"}
+        self.assertEqual(1, concurrency.attempts_for(pool_job)["max_attempts"])
+        self.assertTrue(concurrency.attempts_for(pool_job).get("pool"))
+        self.assertEqual(3, concurrency.attempts_for(
+            {"provider_id": "openai-direct", "model_id": "gpt-6-luna"})["max_attempts"])
+        self.assertNotIn("pool", concurrency.attempts_for(None))
+
+    def test_the_number_is_a_setting_and_the_row_states_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / "settings.json"
+            settings.write_text(json.dumps({"retry": {"max_attempts": 3, "pool_max_attempts": 2}}),
+                                encoding="utf-8")
+            with patch.object(concurrency, "SETTINGS_PATH", settings):
+                concurrency.reset_for_tests()
+                self.assertEqual(2, concurrency.attempts_for(
+                    {"provider_id": "pool", "model_id": "p"})["max_attempts"])
+                self.assertEqual(3, concurrency.attempts_for(
+                    {"provider_id": "openai-direct", "model_id": "m"})["max_attempts"])
+        # Unsaved back to the default: the wording a pool row prints names the number enforced.
+        concurrency.reset_for_tests()
+        policy = concurrency.attempts_for({"provider_id": "pool", "model_id": "p"})
+        self.assertIn("A pool job gets 1 attempt", concurrency.retry_policy_wording(policy))
+
+    def test_one_walk_ends_the_job_even_though_another_machine_is_free(self) -> None:
+        store = _Store({"id": "pool-job", "provider_id": "pool", "model_id": "story-studio-llm",
+                        "modality": "chat"})
+        sites = [_Site("b")]
+        with patch.object(worker_module.fleet, "route",
+                          lambda *a, **k: (sites.pop(0), "") if sites else (None, "")):
+            answer = worker_module._next_machine(
+                store, "pool-job", "story-studio-llm", "chat", "pool",
+                code="POOL_EXHAUSTED", detail="no member answered")
+        self.assertIsNone(answer, "a pool job must not walk a second attempt")
+        self.assertEqual(1, len(store.log), "exactly one attempt was spent")
+        self.assertEqual([], store.routes, "nothing was re-routed")
+
+
 class ThreeMachinesTest(unittest.TestCase):
     """The policy table, driven through the real decision function."""
 

@@ -2021,7 +2021,8 @@ def _publish_attempt_evidence(body: dict[str, Any], job: dict[str, Any]) -> None
         return
     from . import concurrency
 
-    limit = int(concurrency.retry_policy()["max_attempts"])
+    policy = concurrency.attempts_for(job)
+    limit = int(policy["max_attempts"])
     body["attempts"] = [
         {
             "number": index + 1,
@@ -2044,7 +2045,7 @@ def _publish_attempt_evidence(body: dict[str, Any], job: dict[str, Any]) -> None
     body["attempts_used"] = min(counted, limit)
     body["attempts_refused"] = sum(1 for entry in attempts if entry.get("code") in _UNCOUNTED_ATTEMPT_CODES)
     body["attempts_allowed"] = limit
-    body["attempt_policy"] = concurrency.retry_policy_wording()
+    body["attempt_policy"] = concurrency.retry_policy_wording(policy)
 
 
 def _publish_time_limit(body: dict[str, Any], job: dict[str, Any]) -> None:

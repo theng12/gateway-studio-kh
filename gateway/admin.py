@@ -4545,10 +4545,11 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
         # in the owner's own words, is *"attempt n of 3"* asked **while the job
         # waits**. So the two counts and the wording are filled from the same policy
         # reader when the evidence had nothing to add.
+        policy = concurrency.attempts_for(job)
         row.setdefault("attempts", [])
         row.setdefault("attempts_used", 0)
-        row.setdefault("attempts_allowed", int(concurrency.retry_policy()["max_attempts"]))
-        row.setdefault("attempt_policy", concurrency.retry_policy_wording())
+        row.setdefault("attempts_allowed", int(policy["max_attempts"]))
+        row.setdefault("attempt_policy", concurrency.retry_policy_wording(policy))
         jobs.append(row)
 
     # The live books. Copied under no lock: each is replaced key by key on the

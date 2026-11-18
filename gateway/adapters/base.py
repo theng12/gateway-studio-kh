@@ -149,11 +149,18 @@ class BackendError(Exception):
         upstream_settled: bool = False,
         retry_after: float | None = None,
         quota_scope: str | None = None,
+        refusal_scope: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
         self.retryable = retryable
+        # **Whose verdict a refusal is** (0.2.273). A `POLICY_REFUSAL` from a provider's own
+        # content filter is that model's answer about *its* output; a gateway-side refusal is
+        # about the request and every member would give the same one. A pool must walk past the
+        # first and stop on the second, so the adapter that knows says which: `"response"` here,
+        # `None` (the request) everywhere else.
+        self.refusal_scope = refusal_scope
         # What the provider said about when a quota/rate limit lifts: seconds from now
         # (`Retry-After`, Google's `RetryInfo`), and whether the limit that was hit is a
         # per-minute or a per-day one. Both `None` when it said nothing; a pool reads them

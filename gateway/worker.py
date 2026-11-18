@@ -455,7 +455,7 @@ def reconcile_holds(store: JobStore, *, now: float | None = None) -> dict[str, i
                 out["still_open"] += 1
                 continue
             if not snapshot.get("known"):
-                limit = int(concurrency.retry_policy()["max_attempts"])
+                limit = int(concurrency.attempts_for(job)["max_attempts"])
                 attempted = sum(1 for item in store.attempts_of(job["id"])
                                 if item.get("code") != "RESTART_DEADLINE") if hasattr(store, "attempts_of") else 0
                 if attempted < limit:
@@ -1281,7 +1281,8 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     original = store.get(job_id) if hasattr(store, "get") else None
     if "measurement_target" in _job_params(original):
         return None  # An exact-node measurement cannot move, even after a known failure.
-    policy = concurrency.retry_policy()
+    # A pool job's ceiling is its own (one by default): its chain already walked every member.
+    policy = concurrency.attempts_for(original)
     # **The two id spellings, normalised in one place.** An attempt log stores the *provider* id
     # that routed the work (`studio-hub-9701220bf30f`) because that is what names a machine to an
     # operator; `fleet.route` compares `exclude_locations` against the bare **controller** id
@@ -2320,7 +2321,7 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                 # budget, so it cannot be why it ran out.
                 logged = [entry for entry in every
                           if entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES]
-                limit = int(concurrency.retry_policy()["max_attempts"])
+                limit = int(concurrency.attempts_for(current)["max_attempts"])
                 if logged and len(logged) >= limit:
                     terminal_detail = _tried_everything_detail(logged, limit=limit)
                 elif exc.code in _UNCOUNTED_CODES and len(every) > 1:

@@ -330,6 +330,8 @@ def _chat(request: BackendRequest) -> BackendResult:
             retryable=not policy_refusal,
             upstream_accepted=True,
             upstream_settled=True,
+            # This model's own content filter refused its own answer: a pool advances past it.
+            refusal_scope="response" if policy_refusal else None,
         )
         # **What was asked and what was sent**, so a truncated answer can be attributed without
         # inferring a cap from usage alone (live 2026-11-15: a caller's own 10,624 stopped the

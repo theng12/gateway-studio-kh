@@ -167,6 +167,14 @@ DEFAULT_PROVIDER = 1
 #: fifty want different answers and neither wants a release.
 DEFAULT_MAX_ATTEMPTS = 3
 
+#: **How many attempts a pool job gets: one** (owner, 2026-11-18: *"fix and update the pool
+#: fallback from 3 retry to one as this reduce waste"*). A pool's chain already tried every member
+#: inside a single attempt, so replaying it three times pays every provider in it again and again —
+#: on 2026-11-18 each of eight `POOL_EXHAUSTED` chat jobs would have walked `story-studio-llm`
+#: three times. A model whose routing policy is a pool is exhausted when its members are, so it is
+#: tried once. Editable as `retry.pool_max_attempts`, like every other default here.
+DEFAULT_POOL_MAX_ATTEMPTS = 1
+
 
 @dataclass(frozen=True)
 class Budget:
@@ -533,12 +541,46 @@ def retry_policy() -> dict[str, Any]:
     }
 
 
-def retry_policy_wording() -> str:
+def attempts_for(job: dict[str, Any] | None) -> dict[str, Any]:
+    """The attempt ceiling for **this** job: a pool's own number, otherwise the machine policy.
+
+    A pool job's chain already walked every member, so its ceiling defaults to one
+    (`DEFAULT_POOL_MAX_ATTEMPTS`) instead of the fleet's three machines — the owner's 2026-11-18
+    decision. Same shape as `retry_policy()`, so a caller can swap one for the other and print
+    `max_attempts`/`source` without asking which kind of job it holds.
+    """
+    from . import pools
+
+    policy = retry_policy()
+    provider = str((job or {}).get("provider_id") or "")
+    model = str((job or {}).get("model_id") or "")
+    if provider == pools.POOL_PROVIDER_ID or model.startswith(f"{pools.POOL_PROVIDER_ID}::"):
+        entry = _read_file().get("retry")
+        stated = _positive_int(entry.get("pool_max_attempts")) if isinstance(entry, dict) else None
+        policy = {
+            **policy,
+            "max_attempts": stated if stated is not None else DEFAULT_POOL_MAX_ATTEMPTS,
+            "source": SOURCE_CURATED if stated is not None else SOURCE_GATEWAY,
+            "pool": True,
+        }
+    return policy
+
+
+def retry_policy_wording(policy: dict[str, Any] | None = None) -> str:
     """The policy in the owner's own terms, for the console and the docs to quote.
 
     One string, so the page an operator reads and the document he asked for cannot drift: the
-    policy is enforced in `worker._next_machine` and stated here.
+    policy is enforced in `worker._next_machine` and stated here. `policy` is `attempts_for`'s
+    answer when the row is a pool job, so the number printed is the number enforced (`1`).
     """
+    policy = policy or retry_policy()
+    pool_sentence = (
+        f" A pool job gets {policy['max_attempts']} attempt: its chain already tried every member "
+        "inside one, so replaying the whole chain would pay each provider again."
+        if policy.get("pool") else
+        " A pool job gets one attempt for the same reason: its chain already tried every member "
+        "inside one."
+    )
     return (
         "A failed job is retried on a **different machine** — another Mac in the same cluster "
         "first, then any other site offering the same model — up to {n} attempts in total. A "
@@ -549,7 +591,7 @@ def retry_policy_wording() -> str:
         "one failed. A clone voice's reference clip travels with the job, so it is retried like any "
         "other job; only a voice whose clip lives on one Hub alone keeps that location, and its "
         "failure there is terminal after its own attempts."
-    ).format(n=retry_policy()["max_attempts"])
+    ).format(n=policy["max_attempts"]) + pool_sentence
 
 
 #: **How long a pool job waits for a busy member, and how long one cloud member call may take.**
@@ -1097,7 +1139,23 @@ def save_settings(payload: dict[str, Any]) -> dict[str, Any]:
                     f"retry.max_attempts must be a whole number of machines, not "
                     f"{entry.get('max_attempts') if isinstance(entry, dict) else stated!r}"
                 )
-            current["retry"] = {"max_attempts": attempts}
+            kept: dict[str, Any] = {"max_attempts": attempts}
+            # Saved beside the machine ceiling rather than replacing the file's other key.
+            pool_entry = entry.get("pool_max_attempts") if isinstance(entry, dict) else None
+            if pool_entry is not None:
+                pool_attempts = _positive_int(pool_entry)
+                if pool_attempts is None:
+                    raise SettingsRefused(
+                        f"retry.pool_max_attempts must be a whole number of attempts, not {pool_entry!r}"
+                    )
+                kept["pool_max_attempts"] = pool_attempts
+            else:
+                existing_retry = current.get("retry")
+                kept_pool = (_positive_int(existing_retry.get("pool_max_attempts"))
+                             if isinstance(existing_retry, dict) else None)
+                if kept_pool is not None:
+                    kept["pool_max_attempts"] = kept_pool
+            current["retry"] = kept
 
     if "queue" in payload:
         # Only the wait ceiling is editable from the page; the other queue numbers are kept as written.

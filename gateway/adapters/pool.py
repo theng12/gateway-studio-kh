@@ -179,8 +179,17 @@ def _stops_chain(error: BackendError) -> bool:
     Deliberately narrow. Provider 400s cover model-specific restrictions as well
     as malformed requests, so their status alone cannot speak for every member.
     `INVALID_REQUEST` is emitted by gateway-side validation and therefore can.
+
+    **A provider's content filter is that model's verdict, not the request's** (0.2.273). Live
+    2026-11-18: MiMo answered "answer stopped early (content_filter)" on an ordinary script,
+    the walk stopped there, and the healthy third member was never tried — so eight chat jobs
+    failed `POOL_EXHAUSTED`. Only a refusal about the *request* — the one the adapters do not
+    mark, because every member would give it — stops the walk; a refusal of the model's own
+    answer (`refusal_scope="response"`) advances and is recorded on the attempt.
     """
-    return error.code in {"INVALID_REQUEST", "POLICY_REFUSAL"}
+    if error.code == "INVALID_REQUEST":
+        return True
+    return error.code == "POLICY_REFUSAL" and getattr(error, "refusal_scope", None) != "response"
 
 
 def _never_connected(error: BaseException) -> bool:

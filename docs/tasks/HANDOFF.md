@@ -13,6 +13,17 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 ## Versions
 
+- **0.2.273** — 2026-11-18. Three Production-confirmed fixes. **A pool job gets one attempt**
+  (`concurrency.DEFAULT_POOL_MAX_ATTEMPTS = 1`, editable as `retry.pool_max_attempts`; the row
+  prints `attempts_allowed: 1`): its chain already walked every member, so replaying it three times
+  paid every provider again — eight `POOL_EXHAUSTED` chat jobs on 1301 today. **A member's own
+  content filter advances the pool**: `BackendError.refusal_scope="response"` is set by the
+  openai-compatible and Anthropic adapters when the provider refused its own answer, and
+  `adapters/pool._stops_chain` now walks past it (recording member + code + detail on the attempt);
+  `INVALID_REQUEST` and any unmarked refusal about the request still stop the walk. **The Jobs
+  window's Preview goes through an injectable opener** (`JobsSection.openFile`), so the native test
+  no longer hands an `.mp3` to LaunchServices — it launched Music in the foreground during a gate
+  run. The shipped app keeps `NSWorkspace.shared.open`.
 - **0.2.272** — 2026-11-18. Per-job retry (`POST /admin/api/jobs/{id}/retry` and the Jobs page's
   **Retry** button). Takes one terminal job id and queues a fresh job carrying the same request,
   params, routing, group, priority and requester, with `retry_of: <id>` published on the new row and
