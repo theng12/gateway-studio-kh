@@ -133,6 +133,73 @@ def set_network(location_id: str, name: object, machine: str | None = None) -> d
     return value
 
 
+def purge(location_id: str, machine_id: str | None = None) -> dict[str, int]:
+    """Drop LAN network labels and install-plan references for one node or controller."""
+    removed_networks = 0
+    removed_plan_entries = 0
+    if not location_id:
+        return {"networks": 0, "plan_entries": 0}
+    prefix = f"{location_id}/"
+    exact = f"{location_id}/{machine_id}" if machine_id else None
+    with _lock:
+        if networks_path().exists():
+            net = networks()
+            changed = False
+            if machine_id is None and location_id in net["locations"]:
+                net["locations"].pop(location_id, None)
+                removed_networks += 1
+                changed = True
+            gone_macs = [
+                k for k in net["machines"]
+                if (k == exact if exact is not None else k.startswith(prefix))
+            ]
+            for k in gone_macs:
+                net["machines"].pop(k, None)
+                removed_networks += 1
+                changed = True
+            if changed:
+                _write_json(networks_path(), net)
+        if plans_path().exists():
+            plans = read_plans()
+            plan_changed = False
+            for plan in plans:
+                macs = plan.get("macs")
+                if not isinstance(macs, list):
+                    continue
+                kept = []
+                for entry in macs:
+                    if not isinstance(entry, dict):
+                        kept.append(entry)
+                        continue
+                    key = str(entry.get("key") or "")
+                    loc = str(entry.get("location_id") or "")
+                    mid = str(entry.get("machine") or "")
+                    match = (
+                        (key == exact or (loc == location_id and mid == machine_id))
+                        if machine_id is not None
+                        else (key.startswith(prefix) or loc == location_id)
+                    )
+                    if match:
+                        removed_plan_entries += 1
+                        plan_changed = True
+                    else:
+                        kept.append(entry)
+                if len(kept) != len(macs):
+                    plan["macs"] = kept
+                resting = plan.get("resting")
+                if isinstance(resting, dict):
+                    gone_rest = [
+                        k for k in resting
+                        if (k == exact if exact is not None else k.startswith(prefix))
+                    ]
+                    for k in gone_rest:
+                        resting.pop(k, None)
+                        plan_changed = True
+            if plan_changed:
+                _save(plans)
+    return {"networks": removed_networks, "plan_entries": removed_plan_entries}
+
+
 def network_of(location_id: object, machine: object, table: dict[str, dict[str, str]] | None = None) -> str:
     table = table or networks()
     return table["machines"].get(f"{location_id}/{machine}") or table["locations"].get(str(location_id), "")

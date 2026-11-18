@@ -904,7 +904,8 @@ def reconcile_cached_locations() -> list[str]:
     return orphans
 
 
-def remove_controller(controller_id: str) -> bool:
+def remove_controller(controller_id: str, *, store: Any = None) -> bool:
+    """Remove a controller and purge every Gateway record for it and its nodes."""
     with _ROSTER_LOCK:
         rows = _read()
         keep = [row for row in rows if row.get("id") != controller_id]
@@ -915,8 +916,63 @@ def remove_controller(controller_id: str) -> bool:
     _clear_token(controller_id)
     # Nor its models, nor which of them the owner had switched on.
     _forget_models(controller_id)
+    _purge_controller_state(controller_id, store=store)
+    _scrub_cached_snapshot(controller_id)
     invalidate()
     return True
+
+
+def remove_node(controller_id: str, machine_id: str, *, store: Any = None) -> dict[str, Any]:
+    """Purge every Gateway record for one node (`fleet_history`, overrides, opt-ins, jobs, cache)."""
+    purged = _purge_node_state(controller_id, machine_id, store=store)
+    _scrub_cached_snapshot(controller_id, machine_id)
+    invalidate()
+    return purged
+
+
+def _active_store(explicit: Any) -> Any:
+    if explicit is not None:
+        return explicit
+    import sys
+    mod = sys.modules.get("gateway.runtime")
+    return getattr(mod, "store", None) if mod is not None else None
+
+
+def _purge_controller_state(controller_id: str, *, store: Any = None) -> dict[str, Any]:
+    from . import image_assignment, limits, model_share, render_optin, startup_control
+
+    fleet_history.purge_location(controller_id)
+    _purge_lite_mode_known(controller_id)
+    startup_control.purge_pending(controller_id)
+    render_optin.purge(controller_id)
+    image_assignment.purge(controller_id)
+    model_share.purge(controller_id)
+    limits.purge_provider(provider_id_for(controller_id))
+    db = _active_store(store)
+    db_counts = db.purge_provider_records(provider_id_for(controller_id), controller_id=controller_id) if db is not None else {}
+    return {"controller_id": controller_id, "db": db_counts}
+
+
+def _purge_node_state(controller_id: str, machine_id: str, *, store: Any = None) -> dict[str, Any]:
+    from . import image_assignment, model_share, render_optin, startup_control
+
+    history_count = fleet_history.purge_machine(controller_id, machine_id)
+    lite_known_count = _purge_lite_mode_known(controller_id, machine_id)
+    lite_pending_count = startup_control.purge_pending(controller_id, machine_id)
+    optin_count = render_optin.purge(controller_id, machine_id)
+    override_count = image_assignment.purge(controller_id, machine_id)
+    share_counts = model_share.purge(controller_id, machine_id)
+    db = _active_store(store)
+    db_counts = db.purge_node_records(controller_id, machine_id) if db is not None else {}
+    return {
+        "history": history_count,
+        "lite_mode_known": lite_known_count,
+        "lite_mode_pending": lite_pending_count,
+        "render_optin": optin_count,
+        "image_overrides": override_count,
+        "model_share": share_counts,
+        "db": db_counts,
+    }
 
 
 def replace_address(controller_id: str, url: str, token: str) -> dict | None:
@@ -1784,7 +1840,24 @@ def with_roster(value: dict) -> dict:
             row = {**row, "label": label, "url": configured.get("url")}
         rows.append(row)
     rows += [pending_location(row) for rid, row in roster.items() if rid not in seen]
-    return {**value, "locations": rows}
+    kept_ids = {str(r.get("id") or "") for r in rows}
+    if len(kept_ids) == len({str(r.get("id") or "") for r in (value.get("locations") or [])}):
+        return {**value, "locations": rows}
+    machines = [m for m in value.get("machines") or [] if str(m.get("location_id") or "") in kept_ids]
+    last_known = [m for m in value.get("last_known_machines") or [] if str(m.get("location_id") or "") in kept_ids]
+    running = [r for r in value.get("running") or [] if str(r.get("location_id") or "") in kept_ids]
+    issues = [i for i in value.get("issues") or [] if str(i.get("location_id") or "") in kept_ids]
+    summary = _summarise(rows)
+    summary["issues"] = len(issues)
+    return {
+        **value,
+        "locations": rows,
+        "machines": machines,
+        "last_known_machines": last_known,
+        "running": running,
+        "issues": issues,
+        "summary": summary,
+    }
 
 
 def locations() -> list[dict]:
@@ -2013,6 +2086,59 @@ _refresh_lock = threading.RLock()
 #: Set while a background revalidation is in flight, so a stale read starts one
 #: rather than one per reader.
 _revalidating = threading.Event()
+
+
+def _drop_from_snapshot(snap: dict, controller_id: str, machine_id: str | None = None) -> dict:
+    """Return a copy of `snap` with `controller_id` (or just `machine_id` inside it) removed."""
+    if machine_id is None:
+        rows = [r for r in (snap.get("locations") or []) if str(r.get("id") or "") != controller_id]
+        match = lambda item: str(item.get("location_id") or "") == controller_id  # noqa: E731
+        issue_match = lambda item: str(item.get("location_id") or "") == controller_id  # noqa: E731
+    else:
+        rows = []
+        for row in snap.get("locations") or []:
+            if str(row.get("id") or "") != controller_id:
+                rows.append(row)
+                continue
+            act = row.get("activity") if isinstance(row.get("activity"), dict) else {}
+            rows.append({
+                **row,
+                "machines": [m for m in (row.get("machines") or []) if str(m.get("machine") or "") != machine_id],
+                "nodes": [n for n in (row.get("nodes") or []) if str(n.get("id") or "") != machine_id],
+                "local_models": [m for m in (row.get("local_models") or []) if str(m.get("machine") or "") != machine_id],
+                "workers": [w for w in (row.get("workers") or []) if str(w.get("machine") or "") != machine_id],
+                "model_health": [h for h in (row.get("model_health") or []) if str(h.get("machine") or "") != machine_id],
+                "activity": {
+                    **act,
+                    "machines": [e for e in (act.get("machines") or []) if str(e.get("machine") or "") != machine_id],
+                },
+            })
+        match = lambda item: (str(item.get("location_id") or "") == controller_id  # noqa: E731
+                              and str(item.get("machine") or "") == machine_id)
+        issue_match = lambda item: (str(item.get("location_id") or "") == controller_id  # noqa: E731
+                                    and str(item.get("subject") or "") == machine_id)
+    machines = [m for m in (snap.get("machines") or []) if not match(m)]
+    last_known = [m for m in (snap.get("last_known_machines") or []) if not match(m)]
+    running = [r for r in (snap.get("running") or []) if not match(r)]
+    issues = [i for i in (snap.get("issues") or []) if not issue_match(i)]
+    summary = _summarise(rows)
+    summary["issues"] = len(issues)
+    return {
+        **snap,
+        "locations": rows,
+        "machines": machines,
+        "last_known_machines": last_known,
+        "running": running,
+        "issues": issues,
+        "summary": summary,
+    }
+
+
+def _scrub_cached_snapshot(controller_id: str, machine_id: str | None = None) -> None:
+    with _cache_lock:
+        for slot in ("value", "last"):
+            if isinstance(_cache.get(slot), dict):
+                _cache[slot] = _drop_from_snapshot(_cache[slot], controller_id, machine_id)
 
 
 def invalidate() -> None:
@@ -2807,6 +2933,24 @@ def remember_lite_mode(machines: list[dict]) -> None:
     scratch = LITE_MODE_KNOWN_PATH.with_name(LITE_MODE_KNOWN_PATH.name + ".tmp")
     scratch.write_text(json.dumps(known, sort_keys=True), encoding="utf-8")
     os.replace(scratch, LITE_MODE_KNOWN_PATH)
+
+
+def _purge_lite_mode_known(controller_id: str, machine_id: str | None = None) -> int:
+    known = _lite_mode_known()
+    if not known:
+        return 0
+    prefix = f"{controller_id}/"
+    exact = f"{controller_id}/{machine_id}" if machine_id else None
+    gone = [k for k in known if (k == exact if exact is not None else k.startswith(prefix))]
+    if not gone:
+        return 0
+    for k in gone:
+        known.pop(k, None)
+    LITE_MODE_KNOWN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    scratch = LITE_MODE_KNOWN_PATH.with_name(LITE_MODE_KNOWN_PATH.name + ".tmp")
+    scratch.write_text(json.dumps(known, sort_keys=True), encoding="utf-8")
+    os.replace(scratch, LITE_MODE_KNOWN_PATH)
+    return len(gone)
 
 
 def _lite_mode_on(key: str, workstation: dict | None, pending: dict, known: dict[str, bool]) -> bool:

@@ -66,6 +66,38 @@ def set_override(controller_id: str, machine_id: str, model: str | None) -> dict
         return current
 
 
+def purge(controller_id: str, machine_id: str | None = None) -> int:
+    """Drop image-model pin overrides for one machine or an entire controller."""
+    if not controller_id:
+        return 0
+    prefix = f"{controller_id}/"
+    exact = f"{controller_id}/{machine_id}" if machine_id else None
+    with _LOCK:
+        try:
+            current = overrides()
+        except RuntimeError:
+            return 0
+        gone = [
+            key for key in current
+            if (key == exact if exact is not None else key.startswith(prefix))
+        ]
+        if not gone:
+            return 0
+        for key in gone:
+            current.pop(key, None)
+        path = _path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(current, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(name, 0o600)
+        Path(name).replace(path)
+        return len(gone)
+
+
 def _tier_map() -> dict[str, str]:
     """RAM tier (GB, as text) -> Hub model id, from the image pool. The first image pool by name
     decides Auto; one pool is the intended setup, and Auto with two disagreeing pools has no answer."""

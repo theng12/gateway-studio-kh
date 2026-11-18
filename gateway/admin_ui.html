@@ -1863,6 +1863,7 @@ async function api(path, opts) {
     if (res.status === 401 || res.status === 403) showTokenPrompt(message);
     const error = new Error(message);
     error.status = res.status;   // a page that reads "switched off" from a 404 needs the code
+    error.body = body;           // a route's own flags (e.g. `can_force`) are part of the answer
     error.ambiguous = String(options.method || 'GET').toUpperCase() !== 'GET' && (res.status >= 500 || res.status === 408);
     throw error;
   }
@@ -8456,6 +8457,7 @@ function fleetLocationRow(L) {
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationCredentials(this)">Credentials…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAddress(this)">Address…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationNetwork(this)">Network…</button>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'connect')">Connect…</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationRefresh(this)">Refresh models</button>
       ${L.id === 'local' ? '' : `<button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'remove')">Remove</button>`}
       </div></span>
@@ -8516,8 +8518,19 @@ async function fleetLocationAction(button, action) {
     if (!label) { fleetLocationNote('A name is required. The location was not renamed.'); return; }
     method = 'PATCH'; body = { label };
   } else if (action === 'remove') {
-    if (!await uiConfirm(`Remove ${name}?\n\nThis gateway stops talking to that controller and forgets its credentials. Nothing on the controller itself changes, and its models stop being offered here until you add it again and paste a token.`)) return;
+    const machines = Array.isArray(location.machines) ? location.machines.length : 0;
+    const nodes = Array.isArray(location.nodes) ? location.nodes.length : 0;
+    const count = Math.max(machines, nodes);
+    const closing = count > 0
+      ? `\n\nIts ${count} Mac${count === 1 ? '' : 's'} go with it: every record of them is deleted from this Gateway — the fleet row, site membership, metrics, attention, job links and asset links. Nothing on the controller itself changes.`
+      : '\n\nEvery record of it is deleted from this Gateway. Nothing on the controller itself changes.';
+    if (!await uiConfirm(`Remove ${name}?${closing}\n\nThis cannot be undone from here. To bring it back, add it again and paste a token.`)) return;
     method = 'DELETE'; body = null;
+  } else if (action === 'connect') {
+    const value = await uiPrompt(`Connect a Mac to ${name}.\n\nThe controller issues a fresh join token the Mac uses once, or rejects the connection. Type the name the Mac should have, or leave blank for its own hostname.`, '');
+    if (value == null) return;
+    path = `/fleet/controllers/${encodeURIComponent(location.id)}/nodes/connect`;
+    method = 'POST'; body = { name: value.trim() || undefined };
   } else if (action === 'test') {
     path = `/fleet/controllers/${encodeURIComponent(location.id)}/test`;
   } else if (action === 'pause') {
@@ -8538,7 +8551,11 @@ async function fleetLocationAction(button, action) {
       fleetLocationNote(action === 'pause' ? `Paused ${name}. It gets no new work; jobs already running there finish.`
         : action === 'resume' ? `Resumed ${name}. Routing may use it again as soon as it answers.`
         : action === 'rename' ? `Renamed to “${body.label}”. Its address, credential and models are untouched.`
-        : `Removed ${name}. Its models are no longer offered here.`);
+        : action === 'connect' ? (result.ok === false
+          ? `No Mac was connected — ${result.detail || 'the controller gave no reason'}`
+          : `The controller accepted the connection${result.token ? `; join token: ${result.token}` : ''}`
+            + `${result.detail ? `. ${result.detail}` : ''}`)
+        : `Removed ${name}, with every record of it and of its Macs. Its models are no longer offered here.`);
       await loadFleet();
     }
   } catch (e) { fleetLocationNote(`Could not ${action} ${name} — ${e.message}`); }
@@ -8750,6 +8767,43 @@ async function fleetMachinePause(button, locationId, machineId, paused) {
     await loadFleet();
   } catch (e) {
     fleetNote('fleet-machine-action-note', `Could not ${paused ? 'pause' : 'resume'} ${name} — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+async function fleetMachineRemove(button, locationId, machineId) {
+  const machine = fleetMachineById(locationId, machineId);
+  if (!machine) { fleetNote('fleet-machine-action-note', 'That Mac is not in the list any more. Refresh and try again.'); return; }
+  const name = fleetMachineName(machine);
+  const sure = await uiConfirm(`Remove ${name}?\n\nThe controller deletes this Mac and revokes its credential, and every `
+    + `record of it is deleted from this Gateway — the fleet row, its site membership, metrics, attention, job links `
+    + `and asset links. It cannot check in here again.\n\nTo bring it back, connect it again: it returns as a new Mac, `
+    + `and its old jobs and history do not come back.`);
+  if (!sure) return;
+  button.disabled = true;
+  fleetNote('fleet-machine-action-note', `Removing ${name}…`);
+  const remove = force => api(`/fleet/controllers/${fleetSeg(machine.location_id)}/machines/${fleetSeg(machine.machine)}`
+    + (force ? '?force=true' : ''), { method: 'DELETE' });
+  try {
+    const result = await remove(false);
+    fleetNote('fleet-machine-action-note', result.hub?.already_gone
+      ? `Removed ${name} here. Its controller had no record of it any more.`
+      : `Removed ${name}. The controller deleted it and revoked its credential; it is gone from this Gateway.`);
+    await loadFleet();
+  } catch (e) {
+    if (e.body?.can_force) {
+      const forced = await uiConfirm(`The controller could not be reached to delete ${name}: ${e.message}\n\n`
+        + `Remove it from this Gateway only? Its controller keeps its record and credential until they are cleared there, `
+        + `so this Mac would need connecting again before it can check in here.`);
+      if (forced) {
+        try {
+          await remove(true);
+          fleetNote('fleet-machine-action-note', `Removed ${name} from this Gateway only. Its controller still has its record.`);
+          await loadFleet();
+          return;
+        } catch (again) { e = again; }
+      } else { fleetNote('fleet-machine-action-note', `${name} was left alone; nothing was removed.`); return; }
+    }
+    fleetNote('fleet-machine-action-note', `Could not remove ${name} — ${e.message}`);
   } finally { button.disabled = false; }
 }
 
@@ -8980,6 +9034,9 @@ function fleetMachineActionCell(m) {
   if (m.reachable === true) {
     more.push(`<button type="button"${ids} onclick="fleetPresetOpen(this, this.dataset.lid, this.dataset.mid)">Model Preset…</button>`);
     more.push(`<button type="button"${ids} onclick="fleetRemoveOpen(this, this.dataset.lid, this.dataset.mid)">Remove a Model…</button>`);
+  }
+  if (String(m.machine) !== 'local') {
+    more.push(`<button type="button"${ids} onclick="fleetMachineRemove(this, this.dataset.lid, this.dataset.mid)">Remove This Mac…</button>`);
   }
   if (m.startup && m.startup.macos_trash_auto_empty === false
       && m.reachable === true && m.startup.stale !== true) {

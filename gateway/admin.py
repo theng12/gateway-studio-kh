@@ -5348,9 +5348,63 @@ def fleet_set_credential(controller_id: str, payload: dict[str, Any]) -> Any:
 
 @router.delete("/api/fleet/controllers/{controller_id}", dependencies=[Depends(require_admin)])
 def fleet_remove_controller(controller_id: str) -> Any:
-    if not fleet.remove_controller(controller_id):
+    if not fleet.remove_controller(controller_id, store=store):
         return _error(404, "No such controller.")
-    return {"controllers": fleet.controllers()}
+    return {"ok": True, "removed": controller_id, "controllers": fleet.controllers()}
+
+
+@router.delete(
+    "/api/fleet/controllers/{controller_id}/machines/{machine_id}",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_remove_machine(controller_id: str, machine_id: str, force: bool = False) -> Any:
+    """Remove one node entirely from the Gateway (and unregister/revoke on its controller Hub)."""
+    if machine_id == fleet.LOCAL_ID:
+        return _error(400, "Cannot remove a controller's own Mac individually; remove the location instead.",
+                      "CANNOT_REMOVE_CONTROLLER_LOCAL")
+    if controller_id != fleet.LOCAL_ID and not any(c.get("id") == controller_id for c in fleet._read()):  # noqa: SLF001
+        return _error(404, "No such controller.")
+    hub_result: dict[str, Any] | None = None
+    try:
+        hub_result = startup_control.unregister_node(controller_id, machine_id)
+    except startup_control.StartupError as error:
+        code = str(error.body.get("code") or "")
+        if code == "NODE_NOT_FOUND":
+            hub_result = {"ok": True, "removed": False, "already_gone": True, "machine": machine_id}
+        elif force and code in {"CONTROLLER_UNREACHABLE", "HUB_TOO_OLD", "NODE_UNREACHABLE"}:
+            hub_result = {"ok": False, "forced_local": True, "code": code, "detail": error.body.get("detail")}
+        else:
+            body = dict(error.body)
+            if code in {"CONTROLLER_UNREACHABLE", "HUB_TOO_OLD", "NODE_UNREACHABLE"}:
+                body["can_force"] = True
+            return JSONResponse(status_code=error.status, content=body)
+    purged = fleet.remove_node(controller_id, machine_id, store=store)
+    return {
+        "ok": True,
+        "controller_id": controller_id,
+        "machine_id": machine_id,
+        "hub": hub_result,
+        "purged": purged,
+    }
+
+
+@router.post(
+    "/api/fleet/controllers/{controller_id}/nodes/connect",
+    dependencies=[Depends(require_admin)],
+)
+def fleet_connect_node(controller_id: str, payload: dict[str, Any] | None = None) -> Any:
+    """Ask a controller Hub for a fresh join token (or direct reconnect) for a Mac."""
+    if controller_id != fleet.LOCAL_ID and not any(c.get("id") == controller_id for c in fleet._read()):  # noqa: SLF001
+        return _error(404, "No such controller.")
+    data = payload or {}
+    try:
+        return startup_control.connect_node(
+            controller_id,
+            name=str(data.get("name") or "") or None,
+            address=str(data.get("address") or "") or None,
+        )
+    except startup_control.StartupError as error:
+        return JSONResponse(status_code=error.status, content=error.body)
 
 
 @router.patch("/api/fleet/controllers/{controller_id}", dependencies=[Depends(require_admin)])

@@ -120,6 +120,32 @@ def set_enabled(controller_id: str, machine_id: str, enabled: bool, *, by: str =
         os.replace(scratch, path)
 
 
+def purge(controller_id: str, machine_id: str | None = None) -> int:
+    """Drop remote-render opt-in rows for one machine or an entire controller."""
+    if not controller_id:
+        return 0
+    prefix = f"{controller_id}/"
+    exact = f"{controller_id}/{machine_id}" if machine_id else None
+    with _lock:
+        machines = _read()
+        gone = [
+            key for key in machines
+            if (key == exact if exact is not None else key.startswith(prefix))
+        ]
+        if not gone:
+            return 0
+        for key in gone:
+            machines.pop(key, None)
+        path = optin_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        scratch = path.with_name(path.name + ".tmp")
+        with os.fdopen(os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w",
+                       encoding="utf-8") as handle:
+            json.dump({"format": FORMAT, "machines": machines}, handle, sort_keys=True)
+        os.replace(scratch, path)
+        return len(gone)
+
+
 # --- what a Hub says about itself -----------------------------------------------------------------------
 
 def unqualified_claim(worker: object) -> str:

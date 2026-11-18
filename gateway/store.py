@@ -5176,6 +5176,134 @@ class JobStore:
         return {"archived": len(done_ids), "days": float(days), "file_count": files,
                 "vacuumed": vacuumed, "retired_files": self._retire_archive(out_dir, moment)}
 
+    @staticmethod
+    def _delete_job_artifacts(rows: list[sqlite3.Row]) -> int:
+        """Unlink local artifact files owned by deleted jobs (inside ARTIFACT_DIR only)."""
+        from . import config
+
+        try:
+            root = Path(config.ARTIFACT_DIR).resolve()
+        except OSError:
+            return 0
+        deleted = 0
+        for row in rows:
+            d = dict(row)
+            candidates: list[str] = []
+            if d.get("asset_path"):
+                candidates.append(str(d["asset_path"]))
+            for item in artifacts_of(d):
+                if isinstance(item, dict) and item.get("path"):
+                    candidates.append(str(item["path"]))
+            for raw_path in set(candidates):
+                try:
+                    p = Path(raw_path).resolve()
+                except OSError:
+                    continue
+                if p == root or not p.is_relative_to(root):
+                    continue
+                try:
+                    if p.is_file():
+                        p.unlink()
+                        deleted += 1
+                except OSError:
+                    continue
+        return deleted
+
+    def _purge_matching(
+        self,
+        job_rows: list[sqlite3.Row],
+        *,
+        summary_where: str,
+        summary_params: tuple[Any, ...],
+        locator_where: str | None,
+        locator_params: tuple[Any, ...],
+        render_where: str,
+        render_params: tuple[Any, ...],
+    ) -> dict[str, int]:
+        """Hard-delete jobs, summaries, locators, render rows, and artifact files in one transaction."""
+        job_ids = [str(r["id"]) for r in job_rows]
+        counts = {"jobs": 0, "job_summaries": 0, "review_locators": 0,
+                  "render_staging": 0, "render_journal": 0, "artifacts": 0}
+        with self._lock:
+            for start in range(0, len(job_ids), 500):
+                chunk = job_ids[start:start + 500]
+                marks = ",".join("?" * len(chunk))
+                cur = self._conn.execute(
+                    f"DELETE FROM review_candidate_locators WHERE gateway_job_id IN ({marks})",  # noqa: S608
+                    chunk,
+                )
+                counts["review_locators"] += int(cur.rowcount or 0)
+                cur = self._conn.execute(f"DELETE FROM jobs WHERE id IN ({marks})", chunk)  # noqa: S608
+                counts["jobs"] += int(cur.rowcount or 0)
+            if locator_where:
+                cur = self._conn.execute(f"DELETE FROM review_candidate_locators WHERE {locator_where}", locator_params)  # noqa: S608
+                counts["review_locators"] += int(cur.rowcount or 0)
+            cur = self._conn.execute(f"DELETE FROM job_summaries WHERE {summary_where}", summary_params)  # noqa: S608
+            counts["job_summaries"] = int(cur.rowcount or 0)
+            render_ids = [
+                str(r[0]) for r in self._conn.execute(
+                    f"SELECT id FROM render_staging WHERE {render_where}", render_params  # noqa: S608
+                ).fetchall()
+            ]
+            for start in range(0, len(render_ids), 500):
+                chunk = render_ids[start:start + 500]
+                marks = ",".join("?" * len(chunk))
+                self._conn.execute(f"DELETE FROM render_staging_assets WHERE render_id IN ({marks})", chunk)  # noqa: S608
+                self._conn.execute(f"DELETE FROM render_delivery WHERE render_id IN ({marks})", chunk)  # noqa: S608
+                cur = self._conn.execute(f"DELETE FROM render_staging WHERE id IN ({marks})", chunk)  # noqa: S608
+                counts["render_staging"] += int(cur.rowcount or 0)
+            cur = self._conn.execute(f"DELETE FROM render_journal WHERE {render_where}", render_params)  # noqa: S608
+            counts["render_journal"] = int(cur.rowcount or 0)
+            self._conn.commit()
+        counts["artifacts"] = self._delete_job_artifacts(job_rows)
+        return counts
+
+    def purge_provider_records(self, provider_id: str, *, controller_id: str | None = None) -> dict[str, int]:
+        """Remove all job, summary, locator, render, and artifact records for a removed controller."""
+        with self._lock:
+            job_rows = self._conn.execute(
+                "SELECT id, asset_path, artifacts_json FROM jobs WHERE provider_id = ?",
+                (provider_id,),
+            ).fetchall()
+        cid = controller_id if controller_id is not None else provider_id.removeprefix("studio-hub-")
+        return self._purge_matching(
+            job_rows,
+            summary_where="provider_id = ?",
+            summary_params=(provider_id,),
+            locator_where="provider_id = ?",
+            locator_params=(provider_id,),
+            render_where="destination_controller = ?",
+            render_params=(cid,),
+        )
+
+    def purge_node_records(self, controller_id: str, machine_id: str) -> dict[str, int]:
+        """Remove all job, summary, locator, render, and artifact records for one removed node."""
+        provider_id = f"studio-hub-{controller_id}"
+        with self._lock:
+            job_rows = self._conn.execute(
+                """
+                SELECT id, asset_path, artifacts_json FROM jobs
+                 WHERE provider_id = ?
+                   AND (
+                       (json_valid(result_json) AND json_extract(result_json, '$.payload.hub_machine') = ?)
+                    OR (json_valid(recovery_context) AND (
+                           json_extract(recovery_context, '$.hub_machine') = ?
+                        OR json_extract(recovery_context, '$.machine') = ?
+                       ))
+                   )
+                """,
+                (provider_id, machine_id, machine_id, machine_id),
+            ).fetchall()
+        return self._purge_matching(
+            job_rows,
+            summary_where="provider_id = ? AND machine = ?",
+            summary_params=(provider_id, machine_id),
+            locator_where=None,
+            locator_params=(),
+            render_where="destination_controller = ? AND destination_node = ?",
+            render_params=(controller_id, machine_id),
+        )
+
     def protected_input_paths(self) -> set[str]:
         """Inputs held by queued, running, or explicitly recoverable jobs."""
         with self._lock:
