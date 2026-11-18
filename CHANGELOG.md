@@ -10,6 +10,10 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.272 — 2026-11-18
+
+- **One finished job can now be retried on its own.** Cancelling or losing one job in a batch no longer forces the whole batch to be sent again: a finished row on the Jobs page has a **Retry** button that queues a fresh job with the same model, parameters, group, priority and requester, leaving its siblings and the finished row untouched. The new row says which job it came from, is counted as a separate job, and a job that is still running, still queued, or still waiting on a Hub recovery answer is refused with a sentence saying why.
+
 ## 0.2.271 — 2026-11-18
 
 - **A job now ends when the thing running it stops making progress.** A job the Hub reports as stalled — no progress past its own threshold — used to ride on to the lane's deadline with its row still saying "running". It now ends at once, saying how many seconds nothing moved and what the Hub's threshold was, and keeps its batch id; the old batch is recorded so the cleanup stops it first, and the row says a retry is safe after that. A late answer is still kept beside the verdict.

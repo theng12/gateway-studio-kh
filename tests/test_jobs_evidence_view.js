@@ -65,3 +65,14 @@ test('execution labels are escaped', async () => {
   assert.match(result, /1 reference image used/);
   assert.doesNotMatch(result, /<script>/);
 });
+
+test('terminal rows offer Retry and show retry_of; live or held rows do not offer Retry', async () => {
+  const retried = await render({ ...job, state: 'cancelled', retry_of: '1234567890abcdef' });
+  assert.match(retried, /Retry of 12345678/);
+  assert.match(retried, /retryJob\('test-job', this\)/);
+  const running = await render({ ...job, state: 'running' });
+  assert.doesNotMatch(running, /retryJob\(/);
+  const held = await render({ ...job, state: 'failed', recovery_required: true });
+  assert.doesNotMatch(held, /retryJob\(/);
+});
+

@@ -13,6 +13,12 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 ## Versions
 
+- **0.2.272** — 2026-11-18. Per-job retry (`POST /admin/api/jobs/{id}/retry` and the Jobs page's
+  **Retry** button). Takes one terminal job id and queues a fresh job carrying the same request,
+  params, routing, group, priority and requester, with `retry_of: <id>` published on the new row and
+  in `/admin/api/jobs`. Refuses a non-terminal or still-held row (`409 JOB_NOT_TERMINAL` /
+  `JOB_STILL_HELD`) with a plain sentence; never reopens or mutates the old row; counts the retry as
+  a new job.
 - **0.2.271** — 2026-11-18. A job now ends when its upstream stops progressing. A batch the Hub
   reports as stalled ends at the first stalled answer (`UPSTREAM_STALLED`), naming the seconds and
   its threshold, with the batch recorded for the cleanup; a `running` row with an upstream batch

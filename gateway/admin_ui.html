@@ -11407,9 +11407,12 @@ function jobsTable(rows, filtered = false) {
   return rows.length ? `<div class="tablewrap"><table style="min-width:1100px"><thead><tr>
       <th>Job</th><th>Image mode / references</th><th>State</th><th>Model</th><th>Location</th><th>Serving machine</th><th>Requested by</th><th>Caller</th><th class="num">Created</th>
     </tr></thead><tbody>${rows.map(j => `<tr>
-      <td class="mid">${esc(j.short_id || String(j.id).slice(0, 8))}</td>
+      <td class="mid">${esc(j.short_id || String(j.id).slice(0, 8))}${
+        j.retry_of ? `<div class="hint">Retry of ${esc(String(j.retry_of).slice(0, 8))}</div>` : ''}</td>
       <td>${imageJobEvidence(j)}</td>
-      <td><span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span></td>
+      <td><span class="badge ${stateBadgeClass(j.state)}">${esc(j.state)}</span>${
+        ['succeeded', 'failed', 'cancelled'].includes(j.state) && !j.recovery_required
+          ? ` <button class="sm" onclick="retryJob('${esc(j.id)}', this)">Retry</button>` : ''}</td>
       <td>${esc(j.modality)} · ${esc(j.model_name || j.model_id)}</td>
       <td>${esc(j.provider_name || '—')}</td>
       <td>${servingMachineCell(j)}</td>
@@ -11439,6 +11442,23 @@ async function loadJobs() {
     const d = await api('/jobs?limit=100' + filter);
     if (state.view === 'jobs' && filter === imageModeQuery('jobs-image-mode')) box.innerHTML = jobsTable(d.jobs || [], !!filter);
   } catch (e) { box.innerHTML = `<div class="empty">Could not read jobs: ${esc(e.message)}</div>`; }
+}
+
+async function retryJob(id, btn) {
+  const short = String(id).slice(0, 8);
+  const yes = await uiConfirm(
+    `Queue job ${short} again as a new job? It runs the same request, and the finished row stays as it is.`,
+    { title: 'Retry this job?', confirmLabel: 'Queue it again' });
+  if (!yes) return;
+  if (btn) btn.disabled = true;
+  try {
+    await api('/jobs/' + encodeURIComponent(id) + '/retry', { method: 'POST' });
+    if (state.view === 'jobs') await loadJobs();
+    else if (state.view === 'analytics') await loadImageUsage();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    await uiAlert(e.message);
+  }
 }
 
 let analyticsData = null;

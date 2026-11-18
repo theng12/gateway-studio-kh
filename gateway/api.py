@@ -1449,6 +1449,67 @@ def _discard_job(job_id: str, *, by: str | None = None,
     }
 
 
+def _retry_job(job_id: str, *, requested_by: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run one finished job again as a **new** job, on the operator's word.
+
+    A Mac held eleven jobs for 137 minutes with no way to redo a single one: the only route was
+    resubmitting the whole batch, so one stuck unit cost the operator its siblings too
+    (2026-11-18). This takes the one id that ended and queues the same request again — same
+    model, params, group and priority — through `_submit`, so the queue ceiling, the disk guard
+    and live catalogue resolution all apply: a model switched off since is refused with its
+    reason rather than queued to fail.
+
+    The old row is never reopened or written; the new row carries `previous_job_id`, which the
+    Jobs list publishes as `retry_of`. It is a separate job in the queue, the books and the
+    analytics — a retry is new work, not the same job run twice, and **the operator who pressed
+    it is named as its requester**: re-running somebody else's job must not grow their usage
+    without their asking. The original caller label rides along for continuity.
+    """
+    job = store.get(job_id)
+    if job is None:
+        raise GatewayError(404, "No such job.", "JOB_NOT_FOUND")
+    state = str(job.get("state") or "")
+    if state not in TERMINAL_STATES:
+        waiting = {"accepted": "still queued", "dispatching": "still being sent"}.get(
+            state, "still running")
+        raise GatewayError(
+            409,
+            f"That job is {waiting}, so there is no finished request to repeat. "
+            "Wait for it to settle, or cancel it first.",
+            "JOB_NOT_TERMINAL",
+        )
+    if _is_live_hold(job):
+        # Recorded `failed`, but its upstream may still deliver: a retry now would run the work
+        # twice. The hold has its own two ways out, and either one ends this state.
+        raise GatewayError(
+            409,
+            "That job is still waiting on the Hub's answer (Needs recovery), so it may yet "
+            "deliver. Recover the result or close the hold first; then retry if it really failed.",
+            "JOB_STILL_HELD",
+        )
+    try:
+        params = json.loads(job.get("params") or "{}")
+    except (TypeError, ValueError):
+        params = None
+    if not isinstance(params, dict):
+        raise GatewayError(
+            422, "This job's stored request cannot be read, so there is nothing to repeat.",
+            "RETRY_REQUEST_UNREADABLE")
+    # `_submit` takes these out of the request before storing it; put them back so the retry
+    # keeps the original's group and background priority.
+    if job.get("job_group"):
+        params["job_group"] = job["job_group"]
+    if job.get("priority") == BACKGROUND:
+        params["priority"] = BACKGROUND
+    fresh, _created = _submit(
+        str(job["modality"]), catalog_encode(job), params,
+        f"retry:{job_id}:{uuid.uuid4().hex}",
+        caller=job.get("caller"), requested_by=requested_by or requested_by_of(job),
+        retried_from=job,
+    )
+    return {"ok": True, "retry_of": job_id, "job": _job_envelope(fresh, native=True)}
+
+
 def _reconcile_recovery_hold(job_id: str) -> dict[str, Any]:
     """Ask the upstream to settle a hold from its original worker, on the operator's word.
 
@@ -1774,6 +1835,9 @@ def _job_envelope(job: dict[str, Any], *, native: bool = False) -> dict[str, Any
         # **Who asked**, or `null` for a job recorded before the Gateway knew. The page prints
         # "not recorded" for null; it never falls back to "owner", which would be a claim.
         "requested_by": requested_by_of(job),
+        # The finished job this one was queued to replace (0.2.272 per-job retry, or Story's
+        # re-POST of a cancelled key); null for a first attempt.
+        "retry_of": job.get("previous_job_id"),
         **ZERO_SETTLEMENT,
     }
 
@@ -2322,6 +2386,7 @@ def _submit(
     idempotency_key: str,
     caller: str | None = None,
     requested_by: dict[str, Any] | None = None,
+    retried_from: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Resolve a catalogue id and queue a job.
 
@@ -2363,8 +2428,8 @@ def _submit(
         raise GatewayError(403, "Only the owner's API key can target a measurement Mac.",
                            "MEASUREMENT_OWNER_REQUIRED")
     scope = idempotency_scope(requester)
-    #: The cancelled job this submission replaces, when it is a retry (0.2.257).
-    retried_from: dict[str, Any] | None = None
+    #: The finished job this submission replaces: a caller's re-POST of a cancelled key (0.2.257),
+    #: or the operator's per-job retry (0.2.272), which hands the old row in as `retried_from`.
     if idempotency_key:
         idempotency_key = scoped_idempotency_key(scope, idempotency_key)
     # **A replay is not a new submission, so it is answered before anything can refuse it.** A
@@ -2519,7 +2584,7 @@ def _submit(
              "cancel_reason": retried_from.get("cancel_reason"),
              "cancel_origin": retried_from.get("cancel_origin"),
              "cancelled_at": retried_from.get("cancelled_at")}
-            if retried_from else None),
+            if retried_from and str(retried_from.get("state") or "") == "cancelled" else None),
     )
     if modality == "video" and not created:
         _refuse_changed_video_request(job, params)

@@ -3156,6 +3156,23 @@ def discard_job(job_id: str, body: dict[str, Any] | None = None) -> Any:
         return _error(exc.status, exc.detail, exc.code)
 
 
+@router.post("/api/jobs/{job_id}/retry", dependencies=[Depends(require_admin)])
+def retry_job(job_id: str, request: Request) -> Any:
+    """Queue one finished job again as a new row; a live job is refused with its state.
+
+    Per-job retry (0.2.272): the operator's way to redo one unit without resubmitting a batch.
+    The finished row is never reopened — the retry is its own job, billed and counted as one,
+    and carries `retry_of` back to the id it came from. The operator is recorded as the new
+    job's requester, so re-running a guest's job does not grow that guest's usage.
+    """
+    from .api import GatewayError, _retry_job
+
+    try:
+        return _retry_job(job_id, requested_by=requested_by(request))
+    except GatewayError as exc:
+        return _error(exc.status, exc.detail, exc.code)
+
+
 @router.post("/api/jobs/{job_id}/reconcile-hold", dependencies=[Depends(require_admin)])
 def reconcile_hold_job(job_id: str) -> Any:
     """Ask the Hub to settle a "Needs recovery" job from its original worker (keeps a finished result).
@@ -4367,6 +4384,9 @@ def list_jobs(
                 "has_artifact": bool(job.get("asset_path")),
                 "error_code": job.get("error_code"),
                 "error_detail": job.get("error_detail"),
+                # The job this one was queued to replace — an operator's per-job retry
+                # (0.2.272) or Story's re-POST of a cancelled key. Null for a first attempt.
+                "retry_of": job.get("previous_job_id"),
                 **_lifecycle_fields(job),
                 # **What an operator can do about this hold, decided here.** The
                 # Jobs window used to infer it from `recovery_context`, so a hold
