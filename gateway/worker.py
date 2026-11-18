@@ -288,13 +288,14 @@ def lane_deadline_s(modality: str) -> float:
 #: ending a hold later than it strictly must is the harmless direction.
 UNASKABLE_HOLD_CEILING_S = CHAT_DEADLINE_CEILING_S + _LANE_DEADLINE_GRACE_S
 
-#: **The longest a Hub batch can legitimately run, with nothing polling it.** A running row with
-#: an upstream id is bounded on the poll path by the Hub's own lane number; this is the bound for
-#: the row *nobody is polling* (the poller died, or a restart could not resume it). It takes the
-#: largest batch lane the Hub publishes (`TTS_DEADLINE_CEILING_S`, 7,200 s -- voice and video)
-#: plus the usual grace, so a live job is never cut. shortcut: one number for every batch lane;
-#: upgrade to a per-row lane read if a Hub ever publishes a batch lane above 7,200 s.
+#: **The fallback bound for a `running` row nothing is polling, when no duration was measured.**
+#: The real bound is per machine and per model, from the Hub's own medians
+#: (`fleet.measured_duration_bound`); this is used only when that snapshot has no figure at all,
+#: and it is the largest batch lane the Hub publishes (`TTS_DEADLINE_CEILING_S`, 7,200 s -- voice
+#: and video) plus the usual grace, so a live job is never cut.
 BATCH_NO_POLL_CEILING_S = 7200.0 + _LANE_DEADLINE_GRACE_S
+#: The shortest a measured bound can be; below this the figure is noise (one fast run).
+BATCH_MEASURED_FLOOR_S = 900.0
 
 
 def _held_since(job: dict[str, Any]) -> float | None:
@@ -615,7 +616,9 @@ def reconcile_wedged_runs(store: JobStore, active_ids: set[str], *, now: float |
         return out
     moment = time.time() if now is None else float(now)
     try:
-        rows = finder(cutoff=moment - BATCH_NO_POLL_CEILING_S, limit=limit)
+        # Candidates are read at the floor; each row's own bound is applied below, because it
+        # differs per machine and per model.
+        rows = finder(cutoff=moment - BATCH_MEASURED_FLOOR_S, limit=limit)
     except Exception:  # noqa: BLE001 - an unreadable table is not a reason to stop dispatching
         log.exception("could not read running rows with an upstream batch")
         return out
@@ -647,6 +650,19 @@ def reconcile_wedged_runs(store: JobStore, active_ids: set[str], *, now: float |
             started = fresh.get("dispatch_started_at") or fresh.get("created_at")
             age = max(0.0, moment - float(started)) if isinstance(
                 started, (int, float)) and not isinstance(started, bool) else BATCH_NO_POLL_CEILING_S
+            # **The bound is per machine and per model**, from the Hub's own measured durations;
+            # only when nothing was ever measured does the lane's longest window stand in.
+            context_machine = str(context.get("hub_machine") or "") or None
+            bound, bound_source = fleet.measured_duration_bound(
+                str(fresh.get("model_id") or ""), context_machine,
+                cap_s=BATCH_NO_POLL_CEILING_S)
+            if bound is None:
+                bound, bound_source = BATCH_NO_POLL_CEILING_S, "the longest a Hub job can run"
+            if age < bound:
+                out["left"] += 1
+                continue
+            held_to = (f"longer than the {int(bound // 60)} min it is held to "
+                       f"({bound_source})")
             snapshot = _hub_batch_answer(provider_id, modality, batch_id, location)
             state = str((snapshot or {}).get("state") or "").lower()
             known = snapshot is not None and snapshot.get("known") is not False
@@ -661,10 +677,10 @@ def reconcile_wedged_runs(store: JobStore, active_ids: set[str], *, now: float |
                 log.warning("job %s: batch %s finished but could not be collected (%s)",
                             job_id, batch_id, rejected or ("adoption failed" if attempted else "not attempted"))
             if snapshot is not None and snapshot.get("known") is False:
-                detail = (f"No poll was recorded for this job for {int(age // 60)} min: the Gateway "
-                          f"stopped following batch {batch_id} and the row was still marked running. "
-                          f"{provider_id} has no record of that batch at all, so nothing is running "
-                          f"there. Nothing was lost - run the job again.")
+                detail = (f"No poll was recorded for this job for {int(age // 60)} min, {held_to}: "
+                          f"the Gateway stopped following batch {batch_id} and the row was still "
+                          f"marked running. {provider_id} has no record of that batch at all, so "
+                          f"nothing is running there. Nothing was lost - run the job again.")
                 _fail(store, job_id, code=UPSTREAM_UNPOLLED, detail=detail, retryable=True,
                       evidence={"hub_batch_id": batch_id})
                 out["ended"] += 1
@@ -686,8 +702,8 @@ def reconcile_wedged_runs(store: JobStore, active_ids: set[str], *, now: float |
             else:
                 why = (f"{provider_id} still reports batch {batch_id} as {state or 'running'}, "
                        f"with nothing here following it.")
-            detail = (f"No poll was recorded for this job for {int(age // 60)} min: the Gateway "
-                      f"stopped following it and the row was still marked running. {why} The "
+            detail = (f"No poll was recorded for this job for {int(age // 60)} min, {held_to}: the "
+                      f"Gateway stopped following it and the row was still marked running. {why} The "
                       f"batch is recorded so the cleanup stops it first; running the job again "
                       f"after that is safe, and a late answer is kept beside this failure.")
             _fail(store, job_id, code=UPSTREAM_UNPOLLED, detail=detail, retryable=False,
