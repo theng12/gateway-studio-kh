@@ -343,13 +343,45 @@ class AHoldNothingCanBeAskedAboutGetsACeiling(unittest.TestCase):
         self.assertEqual(out["expired"], 1)
         self.assertIn("no upstream id", self.store.get(job_id)["error_detail"])
 
-    def test_a_hub_hold_its_own_sweep_owns_is_untouched(self) -> None:
+    def test_a_hub_hold_inside_its_ceiling_is_left_to_its_sweep(self) -> None:
+        # The Hub answered, and the hold is still inside the ceiling, so the sweep keeps owning it.
         now = time.time()
-        job_id = self._hold(now=now, held_s=30 * 3600, modality="image", batch="batch-1")
+        job_id = self._hold(now=now, held_s=60.0, modality="image", batch="batch-1")
 
         out = self._run(now, snapshot={"known": True, "state": "running"})
 
-        self.assertEqual(out["expired"], 0, "the Hub sweep owns it; the ceiling must not race it")
+        self.assertEqual(out["expired"], 0, "inside the ceiling the Hub sweep still owns it")
+        self.assertEqual(out["still_open"], 1)
+        row = self.store.get(job_id)
+        self.assertEqual(row["recovery_state"], "unknown_outcome")
+        self.assertEqual(row["error_code"], "UNKNOWN_OUTCOME")
+
+    def test_a_hub_hold_past_its_ceiling_that_the_hub_keeps_reporting_running_expires(self) -> None:
+        # The Hub answered and the answer is known and non-terminal, but past the ceiling no answer
+        # can still be in flight, so the hold stops being published as running.
+        now = time.time()
+        job_id = self._hold(now=now, held_s=worker_module.UNASKABLE_HOLD_CEILING_S + 60,
+                            modality="image", batch="batch-1")
+
+        out = self._run(now, snapshot={"known": True, "state": "running"})
+
+        self.assertEqual(out["expired"], 1)
+        row = self.store.get(job_id)
+        self.assertEqual((row["state"], row["error_code"]), ("failed", "HOLD_EXPIRED"))
+        self.assertIsNone(row["recovery_state"])
+        self.assertEqual(row["recovery_context"], {"request_id": "r-1"},
+                         "the evidence is kept, exactly as an unaskable hold keeps it")
+        self.assertIn("the Hub still reported 'running'", row["error_detail"])
+
+    def test_a_hub_hold_past_its_ceiling_whose_hub_does_not_answer_is_left_alone(self) -> None:
+        # "I could not ask" is not "it is finished": a silent Hub gets no ceiling.
+        now = time.time()
+        job_id = self._hold(now=now, held_s=worker_module.UNASKABLE_HOLD_CEILING_S + 60,
+                            modality="image", batch="batch-1")
+
+        out = self._run(now, snapshot=None)
+
+        self.assertEqual(out["expired"], 0)
         self.assertEqual(out["still_open"], 1)
         row = self.store.get(job_id)
         self.assertEqual(row["recovery_state"], "unknown_outcome")

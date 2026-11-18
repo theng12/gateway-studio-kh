@@ -122,7 +122,8 @@ retried" and "we did not look" stay distinguishable. The Gateway's Jobs view ren
   `worker.UNASKABLE_HOLD_CEILING_S`) it is converted to a terminal failure `HOLD_EXPIRED` that
   names how long it waited and why nothing could settle it. Nothing is discarded: its context,
   upstream id, attempts and hold sentence stay on the row, and a late result is kept beside the
-  verdict.
+  verdict. The same ceiling ends a hold the Hub **can** be asked about, once the Hub has answered
+  and keeps reporting a non-terminal state past it; a Hub that does not answer is left alone.
 - **A job that fails for a reason that is about the *request*, not the machine, still spends its
   attempts.** A geometry refusal will fail identically on all three machines. This is bounded and
   harmless — it never duplicates work — but it is three round trips where one would do; the
