@@ -13,6 +13,15 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 ## Versions
 
+- **0.2.270** — 2026-11-18. Removing a Mac or a location now removes every Gateway record of it
+  (roster, credential, models, reachability history, Lite Mode settings, render opt-in, image pins,
+  network names, limit overrides, jobs, summaries, review locators, render rows and artifact files),
+  and a removed snapshot is scrubbed so the page stops drawing it. One Mac can be removed on its own
+  and a Mac can be connected back. **The Hub half is not in this release**: the Gateway speaks the
+  contract at `_orchestra/gateway-lead/evidence-node-removal-20261118/DESIGN.md` §3 and names
+  `HUB_TOO_OLD` / offers `can_force` until a Hub release implements unregister / `NODE_REMOVED` /
+  `nodes/connect`. Also in this release: a hold whose Hub keeps answering "running" past the 4h2m
+  ceiling now ends as `HOLD_EXPIRED`, and the free-space warning carries the time it was measured.
 - **0.2.262** — source prepared, not yet built or published at this checkpoint. The Launcher owns
   `~/Library/KHUpdater/state/hold-token` (0600, 64 hex) and atomically replaces it; Gateway reads it
   per request. Only direct-loopback POST/DELETE `/admin/api/maintenance/drain` accepts it, via
