@@ -616,6 +616,8 @@
   .fleet-lead-split, .fleet-lead-failures, .fleet-lead-foot { display: flex; flex-wrap: wrap;
     gap: var(--s8); align-items: center; }
   .fleet-lead-failure { text-align: left; }
+  /* A fact, not a fault: dim, with the reason list in its tooltip. */
+  .fleet-lead-notchecked { color: var(--dim); border-bottom: 1px dotted var(--dim); }
   .ft-details { margin-left: 6px; padding: 1px 6px; font-size: 11px; }
   .fleet-detail-row > td { padding: 0; border-top: 0; }
   .fleet-detail-body { display: grid; gap: 6px; padding: var(--s8) var(--s16) var(--s12);
@@ -7697,8 +7699,12 @@ function fleetMac(m) {
 
 function fleetSite(L) {
   const online = L.reachable === true;
+  const heard = L.reachable === false ? fleetSiteLastHeard(L) : null;
+  // "Not answering" and a warning colour: the Macs behind it were not checked, not seen broken.
   const badge = online ? '<span class="badge ok">Online</span>'
-    : L.reachable === false ? '<span class="badge bad">Unreachable</span>' : '<span class="badge">Not read</span>';
+    : L.reachable === false
+      ? `<span class="badge warn" title="${esc(`${fleetSiteCauseWord(L)}${heard ? ` · last heard ${heard}` : ' · never heard from'}`)}">Not answering</span>`
+      : '<span class="badge">Not read</span>';
   const macs = fleetMachineRows.filter(m => m.location_id === L.id);
   // A row kept from this site's last answer is a member, not a faulty Mac: saying "0 offline"
   // beside it is honest, and the count says which of them were not measured this read.
@@ -7720,10 +7726,13 @@ function fleetSite(L) {
           </div></span>
       </div>
     </div>
-    ${L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
+    ${L.reachable === false
+      ? `<div class="msg warn">${esc(`${fleetSiteCauseWord(L)}${heard ? ` · last heard ${heard}` : ' · never heard from'}`)}</div>`
+      : L.error ? `<div class="msg bad">${esc(L.error)}</div>` : ''}
     ${fleetCause({ kind: 'site', row: L })}
     <div class="fleet-mac-detail" ${detailOpen ? '' : 'hidden'}>
       <div class="row hint" style="gap:8px;align-items:center">${fleetStrip(L.history)}<span>${esc(fleetHistoryLine({ kind: 'site', row: L }))}</span></div>
+      ${L.reachable === false && L.error ? `<div class="hint">${esc(L.error)}</div>` : ''}
       <div class="hint">${esc([`${macs.length} Mac${macs.length === 1 ? '' : 's'}${
           carried ? ` (${carried} from their last report)` : ''}${offline ? ` · ${offline} offline` : ''}`,
         L.version ? `Hub ${L.version}` : '', `${(L.running_jobs || []).length} running`,
@@ -8552,20 +8561,52 @@ function fleetLocationHub(L) {
   }
 }
 
+//: Why a site did not answer, in plain words. `error_kind` is the Gateway's own vocabulary
+//: (`gateway/fleet.py::_probe`), not a sentence parsed back out of the error text.
+function fleetSiteCauseWord(L) {
+  switch (String(L.error_kind || '').toLowerCase()) {
+    case 'timeout': return 'no answer in time';
+    case 'refused': return 'refused the connection';
+    case 'http': return 'answered with an error';
+    case 'server_disconnected': return 'dropped the connection';
+    case 'local_hub_down': return 'Hub Studio KH is not running there';
+    case 'slow': return 'slow to answer';
+    case '': return L.slow === true ? 'slow to answer' : 'not answering';
+    default: return String(L.error_kind || '').replace(/_/g, ' ');
+  }
+}
+
+//: When this Gateway last heard from the site — the last successful read's roster, or the last
+//: reachable probe. `null` means it has never answered.
+function fleetSiteLastHeard(L) {
+  const at = L.members_from ?? L.last_reachable_at ?? null;
+  if (at == null || !isFinite(Number(at)) || Number(at) <= 0) return null;
+  return fleetClock(at);
+}
+
 function fleetLocationStatus(L) {
   // The address is a detail (it has its own Address… dialog and lives in the row tooltip); the
   // Status column says what is happening, in words.
   if (L.paused_at != null) return { main: 'Paused', sub: L.pause_reason || 'Paused: unreachable.', bad: true };
   if (L.reachable === true) return { main: 'Answering', sub: '', bad: false };
   if (L.pending === true) return { main: 'Just added', sub: 'Reading its Macs…', bad: false };
-  return { main: 'Not reachable', sub: L.error || '', bad: true };
+  const heard = fleetSiteLastHeard(L);
+  return {
+    main: 'Not answering',
+    sub: `${fleetSiteCauseWord(L)} · ${heard ? `last heard ${heard}` : 'never heard from'}`,
+    // Silence is not a fault verdict: the row says it was not checked, and the Health column
+    // carries whatever verdict the history supports.
+    bad: false,
+  };
 }
 
 // **One word where a sentence used to be** (owner, 2026-11-18). The cause sentence is still
 // there, in the cell's tooltip and in the location's Details; it is not in the scan path.
+// A site that did not answer is **not answering** — never "offline": its Macs were not checked,
+// and calling them offline would invent a verdict this read does not have.
 function fleetLocationStateWord(L) {
   if (L.paused_at != null) return 'Paused';
-  if (L.reachable === false) return 'Offline';
+  if (L.reachable === false) return 'Not answering';
   if (L.slow === true) return 'Slow';
   if (L.pending === true) return 'Starting';
   if (String(L.state || '').toLowerCase() === 'needs_attention') return 'Needs attention';
@@ -8586,9 +8627,9 @@ function fleetLocationRow(L) {
       <div class="ft-name">${esc(L.label || L.id || '—')}</div>
       ${caption ? `<div class="ft-sub">${esc(caption)}</div>` : ''}</td>
     <td class="nowrap" data-label="Health" title="${esc(verdict.tip)}">${fleetBadge(verdict.text, verdict.health)}</td>
-    <td class="nowrap" data-label="State" title="${esc(fleetCauseLine(L.causes) || fleetCauseTooltip(L.causes))}">
-      ${fleetBadge(fleetLocationStateWord(L), L.reachable === false || L.paused_at != null ? 'bad'
-        : L.slow === true || String(L.state || '') === 'needs_attention' ? 'warn' : 'ok')}</td>
+    <td class="nowrap" data-label="State" title="${esc(fleetCauseLine(L.causes) || fleetLocationStatus(L).sub || fleetCauseTooltip(L.causes))}">
+      ${fleetBadge(fleetLocationStateWord(L), L.paused_at != null ? 'bad'
+        : L.reachable === false || L.slow === true || String(L.state || '') === 'needs_attention' ? 'warn' : 'ok')}</td>
     <td class="nowrap" data-label="Network">${esc(L.network || '—')}</td>
     <td class="nowrap" data-label="Hub">${esc(fleetLocationHub(L))}</td>
     <td data-label="Members" title="${esc(fleetMembersTooltip(L))}"
@@ -10085,9 +10126,16 @@ function fleetMembersTooltip(L) {
   if (!summary && !(L.nodes || []).length) return '';
   const lines = [];
   if (summary && summary.total != null) {
-    let head = `${summary.reachable ?? 0} of ${summary.total} joined `
-      + (summary.total === 1 ? 'Mac is' : 'Macs are') + ' reachable now.';
-    if (summary.unauthorized > 0) head += ` ${summary.unauthorized} answered and refused this controller's credential.`;
+    // A site that is not answering keeps the roster it last published; saying "reachable now"
+    // over those numbers would present an old read as a live one.
+    const stale = L.reachable === false;
+    const heard = stale ? fleetSiteLastHeard(L) : null;
+    let head = stale
+      ? `Its last report named ${summary.total} ${summary.total === 1 ? 'Mac' : 'Macs'}`
+        + `${heard ? ` (${heard})` : ''}. The site is not answering, so none of them was checked now.`
+      : `${summary.reachable ?? 0} of ${summary.total} joined `
+        + (summary.total === 1 ? 'Mac is' : 'Macs are') + ' reachable now.';
+    if (!stale && summary.unauthorized > 0) head += ` ${summary.unauthorized} answered and refused this controller's credential.`;
     if (summary.removed > 0) head += ` ${summary.removed} removed from the group.`;
     lines.push(head);
   }
@@ -10350,7 +10398,7 @@ const FLEET_CAPACITY = [
   ['working', 'generating'], ['ready', 'ready'], ['long_idle', 'idle'],
   ['needs_attention', 'need attention'], ['just_finished', 'just finished'], ['offline', 'offline'],
 ];
-const FLEET_CAPACITY_WORDS = { unknown: 'unknown', sites: 'sites not reporting' };
+const FLEET_CAPACITY_WORDS = { unknown: 'unknown', sites: 'sites not answering' };
 let fleetCapacityPick = null;    // { key } while one capacity number filters the tables
 let fleetSitesDownOnly = false;  // the "sites not reporting" number is a filter too
 
@@ -10432,6 +10480,15 @@ function renderFleetCapacity(d) {
   const unknown = fleetCapacityCount(d, 'unknown');
   const sites = fleetCapacityCount(d, 'sites');
   const generating = fleetCapacityCount(d, 'working');
+  // **What this read did not check.** A site that did not answer contributes no machine rows;
+  // before 0.2.280 its Macs left the headline without a word, so a slow fan-out read as a
+  // smaller fleet (owner's Fleet, 2026-11-18: 29 online became 8 with three sites timing out).
+  // The number comes from the same read as everything else and is never folded into a state.
+  const notChecked = Number((d.summary || {}).machines_not_checked || 0);
+  const notCheckedWhy = (d.locations || []).filter(L => L.reachable === false).map(L => {
+    const heard = fleetSiteLastHeard(L);
+    return `${L.label || L.id}: ${fleetSiteCauseWord(L)}, ${heard ? `last heard ${heard}` : 'never heard from'}`;
+  }).join('\n');
   const failures = fleetLocationFailures(d);
   const hiddenCount = fleetHiddenMachines(d);
   const hiddenNames = [...(fleetHiddenLocations || [])].map(id =>
@@ -10447,8 +10504,9 @@ function renderFleetCapacity(d) {
       <span class="fleet-lead-word">running now</span>
     </div>
     <div class="fleet-lead-split">${split}${unknown
-      ? `<span class="dim"> · </span>${button('unknown', `${unknown} unknown`)}` : ''}${sites != null
-      ? `<span class="dim"> · </span>${button('sites', `${sites} site${sites === 1 ? '' : 's'} not reporting`)}` : ''}${hiddenCount
+      ? `<span class="dim"> · </span>${button('unknown', `${unknown} unknown`)}` : ''}${notChecked
+      ? `<span class="dim"> · </span><span class="fleet-lead-notchecked" title="${esc(notCheckedWhy)}">${notChecked} Mac${notChecked === 1 ? '' : 's'} not checked</span>` : ''}${sites != null
+      ? `<span class="dim"> · </span>${button('sites', `${sites} site${sites === 1 ? '' : 's'} not answering`)}` : ''}${hiddenCount
       ? `<span class="dim"> · </span><span class="dim">${hiddenCount} machin${hiddenCount === 1 ? 'e' : 'es'} from ${esc(hiddenNames)} hidden${hiddenWorking ? ` (${hiddenWorking} working)` : ''} — </span><button type="button" class="sm" onclick="fleetShowAllLocations()">show</button>` : ''}</div>
     ${failures.length ? `<div class="fleet-lead-failures" aria-label="Failures by location">${
       failures.map(line => `<button type="button" class="sm fleet-lead-failure"
@@ -11399,13 +11457,17 @@ function fleetGroupRow(item) {
   const site = item.kind === 'site';
   const name = site ? (row.label || row.id || '—') : fleetMachineName(row);
   const state = site
-    ? (row.reachable === true ? 'Online' : row.reachable === false ? 'Unreachable' : 'Not read')
+    ? (row.reachable === true ? 'Online' : row.reachable === false ? fleetLocationStateWord(row) : 'Not read')
     : fleetStateLabel(row);
   const health = site
-    ? (row.reachable === true ? 'ok' : row.reachable === false ? 'bad' : '')
+    ? (row.reachable === true ? 'ok' : row.reachable === false ? 'warn' : '')
     : fleetBadgeHealth(row);
   const verdict = fleetVerdict(row.history, site ? row.reachable === false : fleetOfflineMachine(row));
-  const cause = fleetCauseLine(row.causes) || '—';
+  const heard = site && row.reachable === false ? fleetSiteLastHeard(row) : null;
+  const cause = fleetCauseLine(row.causes)
+    || (site && row.reachable === false
+      ? `${fleetSiteCauseWord(row)}${heard ? ` · last heard ${heard}` : ' · never heard from'}`
+      : '—');
   const key = `${site ? 's' : 'm'}:${row.machine || row.id || row.label || ''}`;
   const openId = site ? (row.id || '') : (row.machine || '');
   return `<tr>

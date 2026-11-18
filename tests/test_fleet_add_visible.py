@@ -137,7 +137,8 @@ class ASlowLocationTest(_Case):
         self.assertEqual("0.6.141", row["version"])
         self.assertEqual("controller", row["role"])
         self.assertIn("Slow to answer", row["error"])
-        self.assertIn("didn't answer within 6 s", row["error"])
+        self.assertIn("didn't answer within", row["error"])
+        self.assertIn("last report", row["error"])
         self.assertIn("last report", row["error"])
 
 

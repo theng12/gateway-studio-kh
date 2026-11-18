@@ -82,7 +82,7 @@ test('the line reads in the owner’s order and words, and counts what the read 
   const at = order.map(fragment => text.indexOf(fragment));
   assert.ok(at.every(index => index >= 0), 'every count is drawn');
   assert.deepEqual([...at].sort((a, b) => a - b), at, 'the counts keep the owner’s order');
-  assert.match(text, /9 sites not reporting/, 'sites = locations minus those that answered');
+  assert.match(text, /9 sites not answering/, 'sites = locations minus those that answered');
 });
 
 test('an unknown state is shown when there is one, and never invented when there is not', () => {

@@ -230,7 +230,29 @@ def _location_takes_customer_jobs(location_id: str) -> bool:
 #: Per-request budget. A controller on the far end of a VPN is slower than
 #: loopback, and a location that takes longer than this is reported unreachable
 #: with the timeout as its reason rather than silently omitted.
-_TIMEOUT = 6.0
+#:
+#: **Ten seconds, and it grows for a site that has proven slow.** The old 6 s caught busy
+#: controllers: on 2026-11-18 three sites (1100, 1200, Shops) read as "unreachable — timeout"
+#: in one fan-out and answered in 0.06–0.6 s a minute later, which made the headline collapse
+#: from 29 online to 8. A site whose last probe took T seconds is given up to 3×T, never less
+#: than the default and never more than the cap; the row that does time out is counted as
+#: "not checked", never as gone (see `_summarise`).
+PROBE_TIMEOUT_S = 10.0
+PROBE_TIMEOUT_MAX_S = 20.0
+_TIMEOUT = PROBE_TIMEOUT_S
+
+#: The last successful probe's duration per controller, in seconds. In-process: it tunes the
+#: next probe, and a Gateway restart simply starts from the default.
+_probe_durations: dict[str, float] = {}
+
+
+def _probe_timeout(controller_id: str) -> float:
+    """How long this site gets: the default, or 3× its last measured probe, up to the cap."""
+    try:
+        last = float(_probe_durations.get(str(controller_id)) or 0.0)
+    except (TypeError, ValueError):
+        last = 0.0
+    return min(PROBE_TIMEOUT_MAX_S, max(PROBE_TIMEOUT_S, 3.0 * last))
 
 #: The best-effort reads, each with what an absent answer degrades to. **Fetched
 #: concurrently** -- see `_fetch_optional` for why that is not a micro-optimisation.
@@ -1349,8 +1371,9 @@ def _probe(base: str, token: str, *, timeout: float = _TIMEOUT) -> dict:
         # Routed, but silent: a different problem from a refusal, with a different fix.
         location["error_kind"] = "timeout"
         location["error"] = (
-            f"No answer within {int(_TIMEOUT)}s. The address is reachable but nothing replied — "
-            "check the machine is awake and that Tailscale is up at both ends."
+            f"No answer within {timeout:g}s. The address is reachable but nothing replied — "
+            "check the machine is awake and that Tailscale is up at both ends. Its Macs are "
+            "counted as not checked, never as gone."
         )
         # Slow, not gone: `_refresh` keeps what it last reported instead of blanking the row.
         location["slow"] = True
@@ -1940,9 +1963,11 @@ def locations() -> list[dict]:
     if local_base:
         # Stamped before the probe: one that began before a refusal must not clear it.
         local_started = time.time()
-        local = _probe(local_base, local_token)
+        local = _probe(local_base, local_token, timeout=_probe_timeout(LOCAL_ID))
         if local.get("reachable"):
             _remember_live_read(LOCAL_ID, local_started)
+            if isinstance(local.get("latency_ms"), (int, float)) and local["latency_ms"] > 0:
+                _probe_durations[LOCAL_ID] = float(local["latency_ms"]) / 1000.0
         local.update({
             "id": LOCAL_ID, "label": local_label(), "url": local_base, "local": True,
             # **The provider id this location is managed under.** A dashboard row
@@ -1977,17 +2002,23 @@ def locations() -> list[dict]:
     # waiting on the slowest site rather than on the work. The pool is bounded so
     # a large fleet cannot open an unbounded number of sockets.
     probes_started = time.time()
+    def probe_configured(row: dict) -> dict:
+        # Per site, from that site's own last measured duration (see `_probe_timeout`).
+        controller_id = str(row.get("id") or "")
+        return _probe(str(row["url"]), _token_for(controller_id),
+                      timeout=_probe_timeout(controller_id))
+
     with ThreadPoolExecutor(max_workers=min(_MAX_PROBES, len(configured))) as pool:
-        probed = list(pool.map(
-            lambda row: _probe(str(row["url"]), _token_for(str(row.get("id") or ""))),
-            configured,
-        ))
+        probed = list(pool.map(probe_configured, configured))
 
     for row, result in zip(configured, probed):
         controller_id = str(row.get("id") or "")
         reachable_now = bool(result.get("reachable"))
         if reachable_now:
             _remember_live_read(controller_id, probes_started)
+            # The next probe's bound follows what this site actually took (see `_probe_timeout`).
+            if isinstance(result.get("latency_ms"), (int, float)) and result["latency_ms"] > 0:
+                _probe_durations[controller_id] = float(result["latency_ms"]) / 1000.0
             # Remember what a live controller said about its members, so a later outage can still
             # name them (check 10 — a powered-down house must not look like an empty one).
             _remember_members(controller_id, result.get("nodes"), result.get("node_summary"))
@@ -2222,6 +2253,24 @@ def invalidate() -> None:
         _cache["gen"] += 1
 
 
+def _known_roster_count(row: dict) -> int:
+    """How many Macs an unreachable site last told us about — what this read did **not** check.
+
+    `locations()` attaches the last roster a controller published (`nodes`) to its row when the
+    probe fails; a site that has never answered carries none and reports 0 rather than guessing.
+    This number is separate from online, offline and unknown on purpose: none of those three may
+    absorb a Mac whose site was not heard from.
+    """
+    nodes = row.get("nodes")
+    if isinstance(nodes, list) and nodes:
+        return len(nodes)
+    for key in ("node_summary", "machine_summary"):
+        summary = row.get(key)
+        if isinstance(summary, dict) and isinstance(summary.get("total"), (int, float)):
+            return int(summary["total"])
+    return 0
+
+
 def _summarise(rows: list[dict]) -> dict:
     # Machine counts come from the Hub's own per-machine states, which are the only
     # place that distinguishes "ready" from "long idle" from "offline".
@@ -2315,6 +2364,12 @@ def _summarise(rows: list[dict]) -> dict:
     startups = [row.get("startup") for row in flat]
     statuses = [row.get("version_status") for row in flat]
     latest = next((row.get("hub_latest") for row in rows if isinstance(row.get("hub_latest"), dict)), None)
+    # **What this read did not check.** A site that did not answer contributes no rows to `flat`,
+    # and before this count its Macs simply disappeared from `machines` — 29 online became 8
+    # with nothing on the page saying why (2026-11-18). They are counted here, apart from every
+    # other number, and the page says them in the same line (see `renderFleetCapacity`).
+    not_answering = [row for row in rows if row.get("reachable") is False]
+    not_checked = sum(_known_roster_count(row) for row in not_answering)
     return {
         "locations": len(rows),
         "locations_up": sum(1 for row in rows if row["reachable"]),
@@ -2327,6 +2382,10 @@ def _summarise(rows: list[dict]) -> dict:
         "machines": machines_total,
         "machines_distinct": distinct_machines,
         "machines_shared_across_locations": max(0, machines_total - distinct_machines),
+        # Macs at sites that did not answer this read. Never folded into online, offline or
+        # unknown: silence is "not checked", not a verdict.
+        "machines_not_checked": not_checked,
+        "locations_not_answering": len(not_answering),
         "machines_online": online,
         # A Lite Mode Mac switched off is not "offline" (a fault) but its own, expected count.
         "machines_offline": offline - off_lite,
@@ -4314,6 +4373,9 @@ def _refresh() -> dict:
     removed = _apply_removed(rows, machines, last_known)
     summary = _summarise(rows)
     summary["issues"] += len(lite_issues)
+    # The carried rows are the same unmeasured Macs as the summary's roster count; take the
+    # larger so the headline can never say fewer Macs unchecked than the page still lists.
+    summary["machines_not_checked"] = max(summary["machines_not_checked"], len(last_known))
     value = {
         "locations": rows,
         "machines": machines,

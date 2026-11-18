@@ -282,8 +282,10 @@ test('a site cause is coloured by its own severity, and a down controller is red
   assert.match(ctx.nodes.get(GROUPS).innerHTML,
     /class="msg bad">Likely cause: The site&#39;s address answered nothing in time/);
   // The table shows one state word; the sentence moved into the cell's tooltip (owner, 2026-11-18).
+  // Silence is "Not answering" in a warning colour, not "Offline" in red: the Macs behind a
+  // silent site were not checked, not seen offline (0.2.280).
   assert.match(ctx.nodes.get(LOCATIONS).innerHTML,
-    /class="badge bad">Offline</);
+    /class="badge warn">Not answering</);
   assert.match(ctx.nodes.get(LOCATIONS).innerHTML,
     /title="The site&#39;s address answered nothing in time"/);
 });

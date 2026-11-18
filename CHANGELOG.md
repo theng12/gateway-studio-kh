@@ -10,6 +10,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.280 — 2026-11-18
+
+- **The Fleet says what it did not check.** When a site does not answer, its Macs were silently subtracted from every count — on 2026-11-18 three sites timed out in one read and the headline fell from 29 online to 8 with nothing on screen saying why. The summary now publishes **Macs not checked** as its own number, taken from the roster each silent site last reported, and the lead reads it beside the rest: `8 online · 42 Macs not checked · 6 sites not answering`. It is never folded into online, offline or unknown, and the fleet total does not shrink.
+- **A silent site is "Not answering", not "Offline".** Its row says why in plain words — no answer in time, refused the connection, answered with an error — and when it was last heard from ("last heard 21:32", or "never heard from"). Its Members cell says those are the Macs it last reported, not a live count.
+- **A slower probe bound, per site.** Six seconds was tight enough that busy controllers read as unreachable and flipped back within 32 s. The default is now 10 seconds, and a site that has answered slowly gets up to three times its own last response time, capped at 20 seconds. A site that answers — even at 5.9 or 6.1 seconds — is measured normally; only one that exceeds its own bound becomes "not checked", and its Macs stay in the total.
+
+---
+
 ## 0.2.279 — 2026-11-18
 
 - **Jobs leads with its answer.** The page opened on a bare "latest 100 jobs" table, with the state spelled the Gateway's way (`accepted`, `queued`). It now opens with the count of what the loaded rows are doing — running · waiting · succeeded · failed · cancelled — and each count is the filter for it: click "waiting" and the table holds only those, say how many of the read it is showing, and a Show all restores it. The raw Gateway word stays in the badge's tooltip. The line says plainly when it is the latest 100 and not every job the Gateway has run.
