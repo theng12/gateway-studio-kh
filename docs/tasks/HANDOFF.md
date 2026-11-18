@@ -13,6 +13,14 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 
 ## Versions
 
+- **0.2.271** — 2026-11-18. A job now ends when its upstream stops progressing. A batch the Hub
+  reports as stalled ends at the first stalled answer (`UPSTREAM_STALLED`), naming the seconds and
+  its threshold, with the batch recorded for the cleanup; a `running` row with an upstream batch
+  that nothing in the process is polling is ended by the hold sweep (same thread and 60 s timer)
+  once past `BATCH_NO_POLL_CEILING_S` (7,200 s + grace), after one Hub read — collected if it had
+  finished, `UPSTREAM_UNPOLLED` otherwise, retryable only when the Hub never heard of the batch.
+  A re-follow no longer restarts the window: the follow loop stops once the Hub's own `run_seconds`
+  reaches the lane ceiling. The sweep's counters are published as `wedged_sweep` in `/health`.
 - **0.2.270** — 2026-11-18. Removing a Mac or a location now removes every Gateway record of it
   (roster, credential, models, reachability history, Lite Mode settings, render opt-in, image pins,
   network names, limit overrides, jobs, summaries, review locators, render rows and artifact files),
