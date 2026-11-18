@@ -523,6 +523,26 @@ class FleetDiskIssueTests(unittest.TestCase):
                           "disk_total_gb": 256.0}])
         self.assertEqual([i for i in fleet._issues_for(row) if i["code"].startswith("disk_")], [])
 
+    def test_disk_issue_and_row_include_measured_time(self) -> None:
+        import time as _time
+        node_seen = 1794970000.0
+        expected_hhmm = _time.strftime("%H:%M", _time.localtime(node_seen))
+        row = {
+            "id": "ctl", "label": "Site", "local": False, "reachable": True,
+            "machines": [
+                {"machine": "n1", "label": "Node 1", "reachable": True, "disk_free_gb": 12.0,
+                 "disk_total_gb": 256.0, "disk": {"state": "red", "free_gb": 12.0, "total_gb": 256.0}},
+            ],
+            "nodes": [{"id": "n1", "last_seen_at": node_seen}],
+            "activity": {"machines": [{"machine": "n1", "state": "ready"}], "pulse": {}},
+            "running_jobs": [], "local_models": [], "workers": [], "probe_machines_hidden": 0,
+        }
+        flat = fleet.machines_flat([row])
+        self.assertEqual(flat[0]["disk"]["measured_at"], node_seen)
+        issues = [i for i in fleet._issues_for(row) if i["code"] == "disk_red"]
+        self.assertEqual(len(issues), 1)
+        self.assertIn(f"Node 1 12 GB free at {expected_hhmm}", issues[0]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

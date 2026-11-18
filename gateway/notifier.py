@@ -680,15 +680,24 @@ class Notifier:
             disk = machine.get("disk") or {}
             if not machine.get("reachable") or disk.get("state") not in ("amber", "red", "stop"):
                 continue
+            measured_at = disk.get("measured_at")
+            if not isinstance(measured_at, (int, float)) or isinstance(measured_at, bool):
+                measured_at = machine.get("checked_in_at")
+            if not isinstance(measured_at, (int, float)) or isinstance(measured_at, bool):
+                measured_at = None
             rows.append({"key": f"disk:{machine.get('location_id')}:{machine.get('machine')}",
                          "name": str(machine.get("label") or machine.get("machine")),
                          "group": str(machine.get("location") or ""), "state": disk["state"],
-                         "free_gb": disk.get("free_gb")})
+                         "free_gb": disk.get("free_gb"),
+                         "measured_at": float(measured_at) if measured_at else None})
         own = self._get_disk()
         if own.get("state") in ("amber", "red") or own.get("refusing"):
+            own_at = own.get("measured_at")
+            own_measured = float(own_at) if isinstance(own_at, (int, float)) and not isinstance(own_at, bool) else time.time()
             rows.append({"key": "disk:gateway", "name": "The Gateway's Mac", "group": "",
                          "state": "stop" if own.get("refusing") else own["state"],
-                         "free_gb": own.get("free_gb")})
+                         "free_gb": own.get("free_gb"),
+                         "measured_at": own_measured})
         return rows
 
     def disk_conditions(self, snap: dict) -> list[Condition]:
@@ -697,10 +706,13 @@ class Notifier:
             if row["state"] not in ("red", "stop"):
                 continue
             free = f", {row['free_gb']:g} GB free" if row["free_gb"] is not None else ""
+            at = row.get("measured_at")
+            when = (f" at {time.strftime('%H:%M', time.localtime(at))}"
+                    if isinstance(at, (int, float)) and not isinstance(at, bool) and at > 0 else "")
             where = f" ({row['group']})" if row["group"] else ""
             word = "full" if row["state"] == "stop" else "almost full"
             out.append(Condition(
-                row["key"], "disk_memory", f"{row['name']}{where}: disk {word}{free}",
+                row["key"], "disk_memory", f"{row['name']}{where}: disk {word}{free}{when}",
                 back=f"{row['name']}{where}: disk space is back to normal", icon="💾"))
         return out
 

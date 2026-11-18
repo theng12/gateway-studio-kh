@@ -8191,7 +8191,7 @@ function fleetMachineRow(m) {
         style="${carried ? '' : fleetCauseStyle(fleetCauseHealth(m.causes, m))}">${esc(m.attention && m.attention_source !== 'last_known' ? m.attention : cause)}</div>${
       !carried && m.attention && m.attention_source !== 'last_known'
         ? `<div class="ft-sub hint">measured ${new Date((m.attention_measured_at || 0) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
-        : carried && m.attention_source === 'last_known'
+        : m.attention_source === 'last_known'
         ? `<div class="ft-sub hint">Not checked in since ${new Date((m.attention_measured_at || 0) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
         : ''}</td>
     <td class="nowrap" data-label="Version"><div>${carried
@@ -8200,6 +8200,9 @@ function fleetMachineRow(m) {
       versionCaption ? `<div class="ft-sub">${versionCaption}</div>` : ''}</div></td>
     <td class="nowrap" data-label="Disk"><div>${carried || m.reachable === false ? '—'
       : `${esc(fleetGb(diskFree) + ' free')}${fleetMeter(fleetFraction(diskFree, fleetDiskTotal(m)), fleetDiskHealth(m))}`}${
+      !carried && m.reachable !== false && diskFree != null && ((m.disk && m.disk.measured_at) || m.checked_in_at)
+        ? `<div class="ft-sub hint">as of ${new Date((((m.disk && m.disk.measured_at) || m.checked_in_at)) * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`
+        : ''}${
       gateSpace ? `<div class="ft-sub" title="${esc(gateStorageTip)}">${esc(gateSpace)}</div>` : ''}${
       gateCleanup ? `<div class="ft-sub" title="${esc(gateStorageTip)}">${esc(gateCleanup)}</div>` : ''}</div></td>
     <td class="nowrap" data-label="Memory"><div>${carried || m.reachable === false ? '—'
