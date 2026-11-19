@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.292 — 2026-11-19
+
+- **A size the model cannot render is refused, not quietly swapped for another one.** A request that named its own width and height was answered with the model's nearest preset and reported as a success, so the picture was not the size anyone asked for and nothing said so. It now refuses with `INVALID_SIZE`, naming both the size asked for and the size the model renders. The refusal is not retried on another machine, because every machine would give the same answer. Geometry that matches what the model renders still goes through untouched.
+- **Checked before shipping:** no cloud job on 1301 has ever carried a width/height, so this cannot change an existing flow — the only jobs that ever send geometry are Hub jobs, where the numbers are forwarded exactly as given.
+
+---
+
 ## 0.2.291 — 2026-11-19
 
 - **The placement ceiling now caps, even for a job nobody looks at again.** Every placement check ran only when a job came up as due, so a job deferred with a long backoff was never examined and waits measured between 5 minutes and 3.5 hours against a 45-minute ceiling. Each pass now also looks at age: a job that has waited past its bound is ended at that bound with the same sentence and the same per-site reasons as before, whether or not it was due. A hold still cancels nothing.

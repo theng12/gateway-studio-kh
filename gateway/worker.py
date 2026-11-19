@@ -102,7 +102,9 @@ UPSTREAM_STALLED = "UPSTREAM_STALLED"
 #: Its own sentence says which of the three cases it was (still running there / never heard of /
 #: could not ask), because an operator acts differently on each.
 UPSTREAM_UNPOLLED = "UPSTREAM_UNPOLLED"
-_NO_REROUTE_CODES = {"DEADLINE_EXCEEDED", UPSTREAM_STALLED}
+#: `INVALID_SIZE` joins them for the same reason (0.2.292): a geometry the model cannot render is a
+#: property of the **request**, so every other machine would answer with the identical refusal.
+_NO_REROUTE_CODES = {"DEADLINE_EXCEEDED", UPSTREAM_STALLED, "INVALID_SIZE"}
 
 #: HTTP statuses that refuse **the request itself**, so no other machine would answer differently.
 #: 422 is "unprocessable entity": the Hub read the request and found its content invalid (a

@@ -235,14 +235,22 @@ def _size_for(params: dict[str, Any]) -> str:
     Story Studio is shown is the size the provider is sent. It used to be a local
     DALL·E-3-era table here (`1792x1024`, `1024x1792`) that disagreed with the
     catalogue *and* is refused by `gpt-image-1`.
+
+    **A size this provider cannot render is refused, not rounded.** `image_size_for` used to
+    substitute the preset for the requested orientation, so a custom geometry came back as a
+    successful render at a different size. `INVALID_SIZE` says so instead, and it is not retryable:
+    every machine would refuse the same numbers.
     """
     from ..providers.definitions import image_size_for
 
-    return image_size_for(
-        str(params.get("aspect_ratio") or "16:9"),
-        params.get("width"),
-        params.get("height"),
-    )
+    try:
+        return image_size_for(
+            str(params.get("aspect_ratio") or "16:9"),
+            params.get("width"),
+            params.get("height"),
+        )
+    except ValueError as exc:
+        raise BackendError(str(exc), code="INVALID_SIZE", upstream_accepted=False) from None
 
 
 def _chat(request: BackendRequest) -> BackendResult:

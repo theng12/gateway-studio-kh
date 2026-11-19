@@ -250,13 +250,20 @@ HUB_IMAGE_SIZE_BY_RATIO: dict[str, tuple[int, int]] = {
 def image_size_for(aspect_ratio: str, width: object = None, height: object = None) -> str:
     """The `size` string to send, given a ratio and optional explicit geometry.
 
-    An explicit width/height is honoured only in *orientation* — the exact numbers
-    a caller sends are not forwardable, because OpenAI-family endpoints reject
-    arbitrary sizes — and the result always comes from `IMAGE_SIZE_BY_RATIO`, so
-    the request cannot disagree with the geometry the catalogue published.
+    The result always comes from `IMAGE_SIZE_BY_RATIO`, so the request cannot disagree with the
+    geometry the catalogue published.
+
+    **Explicit numbers are no longer rounded to a nearby preset.** This honoured a caller's
+    width/height *in orientation only* and substituted the preset for that orientation — so a
+    request for 1344x768 on a 16:9 lane was answered with the lane's 16:9 preset and reported
+    success. That is a silent substitution: the picture is not the size asked for and nothing says
+    so (owner's rule, 2026-11-19). Geometry that matches the preset is sent as it is; anything else
+    raises `ValueError`, which the adapter turns into a named refusal (`INVALID_SIZE`). Cloud image
+    endpoints render their own preset sizes, so refusing is the honest answer rather than a guess.
     """
     ratio = str(aspect_ratio or "16:9")
-    if not (isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0):
+    explicit = isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0
+    if not explicit:
         chosen = IMAGE_SIZE_BY_RATIO.get(ratio) or IMAGE_SIZE_BY_RATIO["16:9"]
     elif width > height:
         chosen = IMAGE_SIZE_BY_RATIO["16:9"]
@@ -264,6 +271,15 @@ def image_size_for(aspect_ratio: str, width: object = None, height: object = Non
         chosen = IMAGE_SIZE_BY_RATIO["9:16"]
     else:
         chosen = IMAGE_SIZE_BY_RATIO["1:1"]
+    if explicit and (int(width), int(height)) != tuple(chosen):
+        # **A refusal a caller can act on.** "Unsupported" leaves them guessing; the sizes this
+        # lane does render are one join away and are the answer to "what do I send instead".
+        choices = ", ".join(sorted({f"{w}x{h}" for w, h in IMAGE_SIZE_BY_RATIO.values()}))
+        raise ValueError(
+            f"This model renders {chosen[0]}x{chosen[1]} for {ratio}, not "
+            f"{int(width)}x{int(height)}, which was asked for. It does not take custom sizes; the "
+            f"sizes it renders are {choices}. Nothing is substituted for the size asked for."
+        )
     return f"{chosen[0]}x{chosen[1]}"
 
 
