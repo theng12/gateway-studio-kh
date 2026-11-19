@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.288 — 2026-11-19
+
+- **Signed with the current KH Studio identity.** 0.2.287 and every build before it carry the retired certificate, whose subject also carried a personal email address; the new one has a plain `CN=KH Studio Local Signing` with no email. Published artifacts are never re-signed in place, so this is a new version with no code change: the same 0.2.287 build, signed by the identity that replaces it.
+
+---
+
 ## 0.2.287 — 2026-11-19
 
 - **The Updater's own quit is no longer met by a question nobody answers.** The app decided whether to challenge a stop by looking at whether a person was there — the window active and up — and the Updater quits by sending a Quit AppleEvent, so whenever the window happened to be in front an install sat behind a dialog until the 40 s deadline replied. Who sent the event now decides: the Updater's stop holds, settles and quits with no dialog, and a person's Quit may still be challenged.
