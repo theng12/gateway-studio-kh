@@ -247,6 +247,19 @@ one-file command above. (Cost: a person who runs discover first reads the suite 
 - **Always rebuild when the claim is about the app bundle:** `./menubar/build.sh` (build + install);
   use `--no-install` unless installing at a quiet point. **"It builds" is not "it works."**
 
+## Where a built artifact is — two paths, and they are not interchangeable
+
+- **Unaccepted build → a candidate inside the app's own worktree:**
+  `worktrees/<task>/dist/.candidates/<commit>-<stamp>.<rand>/Gateway Studio KH-<version>-<commit>-<stamp>.dmg`.
+  `menubar/build.sh` stages it here and says so on its last line.
+- **Accepted release → canonical `repository/dist/`**, and only after the build is installed and
+  verified. That folder means "accepted" and has for every release since 0.2.287; an uninstalled
+  DMG put there breaks the one convention that makes it readable.
+- **Quote the absolute candidate path beside every hash.** A hash without a path is not verifiable,
+  and two people have already looked in `repository/dist/` for a build that had not installed yet.
+- `My Own Apps/gateway-studio-kh/dist` is a **dangling** link to the pre-reorganisation path and
+  answers nothing; it is pending a decision, so do not use it as a way to find anything.
+
 ## Working rules
 
 - **Every removal goes to that project's `_trash/` — never `rm`**, including files you decide are
