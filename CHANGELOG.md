@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.290 — 2026-11-19
+
+- **A job that finds nowhere else to go now says why.** Routing computed a reason for every site it passed over and then threw them away, so a job that ran out of machines ended with one sentence naming the site it was waiting on — the failure that could not be diagnosed on 2026-11-19, where the job's record held one site and no attempts. The reasons now go into the failure, into the wait reason, and onto the newest attempt entry: "Every other location was passed over: Site X (paused: every Mac here that can run this model is paused)". They are recorded as evidence, never counted as attempts.
+- **The placement ceiling was looking for another machine in the wrong lane.** It read the job's modality out of the request parameters, which never contain one, so every image and video job looked like a text-to-speech job and the failover walked the wrong lane — it could not find another location by construction. It now reads the job's own modality, which is what every other part of the worker already does.
+
+---
+
 ## 0.2.289 — 2026-11-19
 
 - **A site with nothing free and nothing running for the model is an answer, not a 45-minute wait.** A job bound to a site that published the model and reported no free Mac for it waited out the full placement ceiling. The site had answered 148 times that day and was taking other work, so the job was not stuck — it was standing in a queue that would never move for it. That shape now takes the existing 5-minute path and ends named. A site whose Macs are genuinely busy with this model still keeps the full wait, because that queue does move.

@@ -1266,13 +1266,21 @@ def _pool_members_for(job: dict | None, modality: str) -> list[str] | None:
 
 
 def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
-                  provider_id: str, *, code: str, detail: str) -> str | None:
+                  provider_id: str, *, code: str, detail: str,
+                  rejections: list[dict] | None = None) -> str | None:
     """Record this attempt and name the next machine to try, or `None`.
 
     A7's whole decision, in one place. Returns the provider id of a machine that has **not**
     been tried, or `None` when there is nothing left to try — either because the attempts are
     used up (so the caller must fail the job properly) or because no other machine offers the
     model (so the caller must wait rather than burn an attempt).
+
+    **`rejections` is filled with why every other location was passed over** (see `fleet.route`)
+    whenever nothing is chosen. The callers put that on the failure detail and on the attempt log:
+    a sentence naming only the site the job waited on is undiagnosable, and the live 2026-11-19
+    stall ended exactly that way — `attempted_locations` one site, `attempt_count` 0, failover ran
+    and left no explanation. A **pool** re-route does not fill it (`pool_candidates` has its own
+    per-member walk); that is stated here rather than left to look like an oversight.
 
     **The attempt is recorded before the choice, not after.** The log is what the ceiling is
     measured against and what the terminal failure is built from, and a crash between "we tried
@@ -1307,7 +1315,8 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     if record is None:
         # A store without the record still gets the old one-step behaviour rather than none.
         tried = {_location(provider_id)}
-        chosen, _ = fleet.route(model_id, modality, exclude_locations=tried)
+        chosen, _ = fleet.route(model_id, modality, exclude_locations=tried,
+                                rejections=rejections)
         return chosen.id if chosen is not None and _location(chosen.id) not in tried else None
     attempts = record(job_id, location_id=provider_id, code=code, detail=detail) or []
     # Only this round: a job that waited for a free Mac (`defer(new_round=True)`) starts over.
@@ -1316,10 +1325,6 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     tried.add(_location(provider_id))
     tried.discard("")
 
-    if sum(entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES for entry in attempts) >= int(policy["max_attempts"]):
-        # The same ceiling applies before either a direct-model or an image-pool re-route.
-        return None
-
     # An image-pool job may move to any location with a free Mac assigned one of its members, but only
     # while nothing was accepted upstream (held, batch and unknown-outcome jobs stay where they are).
     job = store.get(job_id) if hasattr(store, "get") else None
@@ -1327,6 +1332,20 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     # **A re-route obeys the same capability rule as the submit** — a reference job is not sent to a
     # location whose worker never advertised `edit`, however many attempts it has left.
     require_capability = fleet.required_capability(modality, _job_params(job))
+
+    if sum(entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES for entry in attempts) >= int(policy["max_attempts"]):
+        # The same ceiling applies before either a direct-model or an image-pool re-route.
+        if rejections is not None and pool_members is None:
+            # **The reasons are still worth having when the budget is gone.** This is the ending
+            # that used to say only "waiting for a free Mac at <one site>": the job is not going
+            # to be sent again, so the walk is run once for the record — nothing is recorded as an
+            # attempt and nothing is chosen. (A pool job keeps its own per-member sentence.)
+            fleet.route(model_id, modality, exclude_locations=tried,
+                        require_capability=require_capability,
+                        image_params=_job_params(job) if modality == "image" else None,
+                        rejections=rejections)
+        return None
+
     # Looked up before either branch: the pool branch reads it too, and reading it after the assignment
     # below made `room` a local the pool branch used unbound (UnboundLocalError on every pool re-route).
     room = _ROOM_HOOKS.get(job_id)
@@ -1343,10 +1362,12 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
 
     if room is None:
         chosen, _note = fleet.route(model_id, modality, exclude_locations=tried,
-                                    require_capability=require_capability, image_params=_job_params(job) if modality == "image" else None)
+                                    require_capability=require_capability, image_params=_job_params(job) if modality == "image" else None,
+                                    rejections=rejections)
     else:
         chosen, _note = fleet.route(model_id, modality, exclude_locations=tried, load=room,
-                                    require_capability=require_capability, image_params=_job_params(job) if modality == "image" else None)
+                                    require_capability=require_capability, image_params=_job_params(job) if modality == "image" else None,
+                                    rejections=rejections)
     if chosen is None or _location(chosen.id) in tried:
         return None
     record_route = getattr(store, "record_route", None)
@@ -1394,6 +1415,27 @@ _JUST_SENT_S = 30.0
 #: A late rebind that raised waits this long before the next try, doubling up to the cap.
 _REBIND_BACKOFF_S = 1.0
 _REBIND_BACKOFF_CAP_S = 60.0
+
+
+def _refused_elsewhere(rejections: list[dict] | None) -> str:
+    """One sentence naming every location the route passed over, or `""` when there were none.
+
+    The other half of `_tried_everything_detail`: that sentence says what the machines **tried**
+    said, this one says what the machines **not tried** said, which is what a reader needs when
+    nothing was chosen. Empty when the walk produced no rows, so a caller can append it blindly.
+    """
+    rows = [row for row in rejections or [] if isinstance(row, dict)]
+    if not rows:
+        return ""
+    parts = []
+    for row in rows[:6]:
+        where = str(row.get("label") or row.get("provider_id") or row.get("location_id")
+                    or "a location")
+        why = str(row.get("reason") or "unknown")
+        said = str(row.get("detail") or "").strip()
+        parts.append(f"{where} ({why}{': ' + said if said else ''})")
+    more = f", and {len(rows) - 6} more" if len(rows) > 6 else ""
+    return "Every other location was passed over: " + "; ".join(parts) + more + "."
 
 
 def _tried_everything_detail(attempts: list[dict[str, Any]], *, limit: int,
@@ -2263,14 +2305,19 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             # refuse it the same way. Measured live 2026-11-19: a job sent `width/height: 512`
             # got `HTTP 422 Choose a qualified 1K aspect ratio` on three locations in turn before
             # failing. One attempt is the whole answer.
+            # Fresh per failure: the reasons belong to *this* walk of the fleet.
+            rejections: list[dict] = []
             if (not unknown and pinned is None and exc.status not in _REQUEST_REFUSAL_STATUSES
                     and (exc.code not in _NO_REROUTE_CODES
                          or (kind_is_hub and _deadline_reroute_left(store, job_id)))
                     and (exc.code != WORKSTATION_YIELDED or kind_is_hub)):
                 moved = _next_machine(
                     store, job_id, model_id, modality, provider_id,
-                    code=exc.code, detail=detail,
+                    code=exc.code, detail=detail, rejections=rejections,
                 )
+                note_rejections = getattr(store, "note_rejections", None)
+                if note_rejections is not None:
+                    note_rejections(job_id, rejections)
                 if moved == QUEUED_IN_GATEWAY:
                     log.warning("job %s: %s could not run it (%s); every other lane is full, so it "
                                 "waits in the Gateway queue", job_id, provider_id, exc.code)
@@ -2343,6 +2390,12 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
                         "This voice exists only on that location, so it was not moved to another Mac."
                         if pinned is not None else "No other location offering this model could take it."
                     ) + " Nothing was charged; run it again."
+            # **The other half of that sentence**: the machines that were *passed over* said why
+            # too, and until 0.2.290 those reasons were computed and thrown away (`fleet.route`
+            # was called without `rejections`), which is what made a live stall undiagnosable.
+            elsewhere = _refused_elsewhere(rejections)
+            if elsewhere:
+                terminal_detail = f"{terminal_detail.rstrip()} {elsewhere}"
             # **A stalled batch is handed to the cleanup before the verdict is written.** The Hub
             # still holds it, so the operator's "run it again" is only safe once it is stopped;
             # recording it here means a crash after this point cannot lose the name.
@@ -3542,12 +3595,26 @@ class Worker:
                     ceiling = min(ceiling, _UNUSABLE_SITE_WAIT_S)
                 waited = time.time() - started
                 if waited >= ceiling:
-                    modality = str(_job_params(job).get("modality") or "tts")
+                    # **The modality is the job's own column, not a key in `params`.** `params`
+                    # carries the request's parameters and never `modality` (checked against live
+                    # image jobs on 1301, 2026-11-19), so this read `"tts"` for every image and
+                    # video job and the ceiling's failover walked the **tts** lane: it could not
+                    # find another location by construction, which is why the live stall recorded
+                    # one site and `attempt_count` 0 instead of a reason.
+                    modality = str(job.get("modality")
+                                   or _job_params(job).get("modality") or "tts")
+                    rejections: list[dict] = []
                     moved = _next_machine(
                         self.store, job_id, model_id, modality, provider_id,
                         code="PLACEMENT_TIMEOUT",
                         detail=f"No Mac freed in {int(waited // 60)} min",
+                        rejections=rejections,
                     )
+                    # Guarded like every other store method here: this whole block sits inside a
+                    # `try`, and a store without the method would swallow the failure itself.
+                    note_rejections = getattr(self.store, "note_rejections", None)
+                    if note_rejections is not None:
+                        note_rejections(job_id, rejections)
                     if moved:
                         self._placement_wait_started.pop(job_id, None)
                         log.warning("job %s: placement ceiling hit after %d min; moving to %s",
@@ -3556,6 +3623,9 @@ class Worker:
                     detail = (f"{fleet.site_wait_reason(provider_id, model_id)} waited "
                               f"{int(waited // 60)} min; nothing was sent to any provider, "
                               f"so retrying is safe.")
+                    elsewhere = _refused_elsewhere(rejections)
+                    if elsewhere:
+                        detail = f"{detail} {elsewhere}"
                     _fail(self.store, job_id, code="PLACEMENT_TIMEOUT",
                           retryable=True, detail=detail)
                     self._placement_wait_started.pop(job_id, None)

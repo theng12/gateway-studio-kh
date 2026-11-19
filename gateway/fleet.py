@@ -6912,6 +6912,7 @@ def route(
     exclude_locations: set[str] | None = None,
     load: Callable[[str], tuple[int, int, int]] | None = None,
     require_capability: str | None = None, image_params: dict | None = None,
+    rejections: list[dict] | None = None,
 ) -> tuple[ProviderDefinition | None, str]:
     """Choose the location that should run this model. Never raises.
 
@@ -6921,10 +6922,16 @@ def route(
     ranks by the worker's live books (`apply_load`); a full lane is still returned, last, so the
     caller can tell "every lane is full" from "nowhere". `require_capability` drops every location
     whose worker does not advertise the token — see `routing_candidates`.
+
+    **`rejections` is how a caller finds out why.** Without it this returns one sentence — "every
+    location that offers X refused it" — and the walk's per-location reasons are discarded, which
+    is what made a live 2026-11-19 stall undiagnosable: the job named only the site it was stuck
+    on. Pass a list and `routing_candidates` fills it with `{location_id, provider_id, label,
+    reason, detail}` for every location passed over.
     """
     candidates = routing_candidates(
         model_id, modality, only_location=only_location, exclude_locations=exclude_locations,
-        require_capability=require_capability, image_params=image_params,
+        require_capability=require_capability, image_params=image_params, rejections=rejections,
     )
     if load is not None and candidates:
         candidates = apply_load(candidates, load)

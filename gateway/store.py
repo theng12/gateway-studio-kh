@@ -3653,6 +3653,36 @@ class JobStore:
             self._conn.commit()
             return log
 
+    def note_rejections(self, job_id: str, rejections: list[dict]) -> None:
+        """Attach the route's per-location reasons to the **newest** attempt entry.
+
+        The attempt log records the machines that were *tried*; these are the machines that were
+        *not*. Their reasons were the missing half of every "no other machine can take it"
+        failure (2026-11-19: a job whose `attempted_locations` was one site and `attempt_count` 0 —
+        failover ran and left no explanation). Attached to the entry rather than appended as one,
+        so nothing is counted as an attempt, nothing joins `attempted_locations`, and
+        `_tried_everything_detail` keeps reading machines. A crash between recording the attempt
+        and this call loses a hint, never the attempt — the right order.
+        """
+        rows = [row for row in rejections or [] if isinstance(row, dict)]
+        if not rows:
+            return
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT attempt_log FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                return
+            log = _loads_list(row["attempt_log"])
+            if not log:
+                return
+            log[-1]["rejections"] = rows
+            self._conn.execute(
+                "UPDATE jobs SET attempt_log = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(log), time.time(), job_id),
+            )
+            self._conn.commit()
+
     def holds(self, *, limit: int = 200, sweepable: bool = False,
               provider_ids: list[str] | None = None) -> list[dict[str, Any]]:
         """Recovery holds: newest first for display, fair keyset batches for a sweep.
