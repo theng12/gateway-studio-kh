@@ -650,7 +650,7 @@ class EveryCauseSaysHowBadItIs(HistoryCase):
         "hub_behind": "warn", "flapping": "warn", "nightly_drops": "warn",
         "studio_down": "warn", "studio_not_ready": "warn", "job_stalled": "warn",
         "health_word": "warn", "recent_job_failed": "warn", "hub_flagged": "warn",
-        "no_model_ready": "warn",
+        "no_model_ready": "warn", "queue_stuck": "warn",
         "on_wifi": "info",
     }
 
@@ -660,7 +660,7 @@ class EveryCauseSaysHowBadItIs(HistoryCase):
     #: Which codes each builder can produce, so the two tests together cover every one.
     SITE_CODES = {"controller_refused", "controller_silent", "controller_disconnected",
                   "controller_error", "local_hub_down", "controller_failed",
-                  "flapping", "fine", "no_evidence"}
+                  "flapping", "queue_stuck", "fine", "no_evidence"}
     MACHINE_CODES = set(EXPECTED) - (SITE_CODES - {"flapping", "fine", "no_evidence"})
 
     def test_every_machine_cause_code_and_its_severity(self) -> None:
@@ -728,6 +728,8 @@ class EveryCauseSaysHowBadItIs(HistoryCase):
         seen |= self.severities(fleet_history.site_causes(
             location(), {"observed": True, "problematic": True, "drops_day": 5,
                          "drops_week": 20}, 4))
+        seen |= self.severities(fleet_history.site_causes(
+            location(running_jobs=[{"queued": 1, "running": 0}]), {}, 4))
         seen |= self.severities(fleet_history.site_causes(location(), {}, 4))
 
         self.assertEqual(seen, {code: self.EXPECTED[code] for code in seen},
@@ -767,6 +769,32 @@ class EveryCauseSaysHowBadItIs(HistoryCase):
             if isinstance(value, ast.Constant):
                 self.assertIn(value.value, fleet_history.CAUSE_SEVERITIES,
                               f"line {call.lineno}: {value.value!r}")
+
+
+class AStuckQueueIsNamed(HistoryCase):
+    """Seen live 2026-11-19: a controller held 68 batches at `queued`, `running: 0`, and the page
+    said "Nothing wrong reported" beside them. The probe only answers "is it reachable"; the queue
+    depth is a fact the Gateway already fetched and must not drop on the floor.
+    """
+
+    def causes(self, location_row: dict) -> list[dict]:
+        snapshot = {"locations": [location_row], "machines": [], "summary": {}}
+        fleet_history.annotate(snapshot)
+        return snapshot["locations"][0]["causes"]
+
+    def test_a_queue_with_nothing_running_is_named_with_its_depth(self) -> None:
+        causes = self.causes(location(running_jobs=[{"queued": 1, "running": 0}] * 68))
+        self.assertEqual([cause["code"] for cause in causes], ["queue_stuck"])
+        self.assertIn("68", causes[0]["text"])
+        self.assertEqual(causes[0]["severity"], "warn")
+
+    def test_a_queue_that_is_moving_is_not_a_fault(self) -> None:
+        self.assertEqual([cause["code"] for cause in self.causes(
+            location(running_jobs=[{"queued": 4, "running": 2}]))], ["fine"])
+
+    def test_an_idle_controller_is_still_fine(self) -> None:
+        self.assertEqual([cause["code"] for cause in self.causes(
+            location(running_jobs=[]))], ["fine"])
 
 
 class TheSnapshotCarriesIt(HistoryCase):

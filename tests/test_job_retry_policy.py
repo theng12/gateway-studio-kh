@@ -401,6 +401,11 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
             if self.behaviour == "engine":
                 raise BackendError("ffmpeg not found on PATH", code="PROVIDER_FAILED",
                                    upstream_accepted=False, upstream_settled=True)
+            if self.behaviour == "request_shape":
+                # The Hub's own words, Production 2026-11-19: a job sent `width/height: 512`.
+                raise BackendError("hub submit HTTP 422: Choose a qualified 1K aspect ratio",
+                                   code="PROVIDER_FAILED", status=422, retryable=False,
+                                   upstream_accepted=False)
             return BackendResult(content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01", media_type="image/png")
 
     def _run_single_site(self, behaviour: str, *, params=None, extra_sites=False):
@@ -466,6 +471,17 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
         self.assertEqual([entry["location"] for entry in store.log],
                          ["studio-hub-a", "studio-hub-b"])
         self.assertEqual(store.routes, ["studio-hub-b", "studio-hub-c"])
+
+    def test_a_422_request_refusal_is_terminal_at_the_first_site(self) -> None:
+        # Seen live 2026-11-19: a job sent `width/height: 512` was refused by three locations in
+        # turn, each saying "Choose a qualified 1K aspect ratio", before failing. The request was
+        # wrong, not the machine, so the first refusal is the whole answer.
+        store, dispatch = self._run(["request_shape", "ok"])
+        self.assertEqual(dispatch, ["studio-hub-a"],
+                         "a request-shape refusal must not be spent on another location")
+        self.assertEqual(store.routes, [])
+        self.assertEqual([f["code"] for f in store.failed], ["PROVIDER_FAILED"])
+        self.assertEqual(store.holds, [], "nothing was sent, so there is no outcome to reconcile")
 
     def test_a_memory_handback_moves_the_job_to_another_machine_excluding_this_one(self) -> None:
         store, dispatch = self._run(["memory", "ok"])

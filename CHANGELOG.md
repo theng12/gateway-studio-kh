@@ -10,6 +10,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.286 — 2026-11-19
+
+- **A controller holding work it never started no longer reads "Nothing wrong reported".** A site that answers can still have a queue nothing is running against, and the Fleet page only asked whether it answered. The cause now names the depth: "68 jobs are queued here and none has started." Seen live on 2026-11-19, when 68 batches sat waiting at one site under a green row.
+- **A refused request is refused once, not spent on three sites.** The Hub's `HTTP 422 Choose a qualified 1K aspect ratio` was treated as a failure of the Mac it was sent to, so one wrong request was tried on three locations in turn before failing. A 422 is about the request itself: the first answer is the whole answer.
+- **Installing a model says why it cannot instead of "nothing to do".** A model missing on every target answered "every Mac that can run it has it already, or is offline" — neither half true — when the real reason was that those Hubs did not offer it. The answer now names each Mac's own reason, and only a plan where every Mac genuinely has it reads as nothing to do.
+
+---
+
 ## 0.2.285 — 2026-11-19
 
 - **Work the Hub never started is no longer reported as a render that stalled.** The Hub's own "stalled" flag counts from a batch being made, not from it starting, so a site that accepts work and never places it looked exactly like a hung render — 127 jobs ended overnight with "no progress for 901 s" although not one had reached a Mac. A queued item is now taken back out of the queue before the job moves on, and the row says what happened: "the Hub never put this job on a Mac".

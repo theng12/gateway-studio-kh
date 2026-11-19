@@ -950,6 +950,16 @@ def machine_causes(machine: dict, history: dict, site: dict | None, threshold: i
     return [NOTHING_WRONG]
 
 
+def _queue_depth(location: dict) -> tuple[int, int]:
+    """(queued, running) items across the batches this controller is holding."""
+    queued = running = 0
+    for job in location.get("running_jobs") or []:
+        if isinstance(job, dict):
+            queued += int(_num(job.get("queued")) or 0)
+            running += int(_num(job.get("running")) or 0)
+    return queued, running
+
+
 def site_causes(location: dict, history: dict, threshold: int) -> list[dict]:
     """Why one site's controller is not answering, from its own probe's classification."""
     if location.get("reachable") is True:
@@ -960,6 +970,17 @@ def site_causes(location: dict, history: dict, threshold: int) -> list[dict]:
                 history.get("problematic_basis")
                 or f"The threshold is {threshold} drops in 24 h; it has "
                    f"{history.get('drops_week')} in the last {WINDOW_DAYS} days.", severity="warn")]
+        # **A controller that answers can still be holding work it never started.** Seen live
+        # 2026-11-19: a site's Hub held 68 batches at `queued`, `running: 0`, and the Fleet page
+        # said "Nothing wrong reported" beside them. A queue that is moving is not a fault, so
+        # this only fires when nothing at all is running.
+        queued, running = _queue_depth(location)
+        if queued and not running:
+            return [_cause(
+                "queue_stuck",
+                f"{queued} job{'s are' if queued != 1 else ' is'} queued here and none has started.",
+                "Its Hub is holding work it has not put on a Mac.",
+                severity="warn")]
         return [NOTHING_WRONG]
     kind = location.get("error_kind")
     error = location.get("error")

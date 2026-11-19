@@ -104,6 +104,11 @@ UPSTREAM_STALLED = "UPSTREAM_STALLED"
 UPSTREAM_UNPOLLED = "UPSTREAM_UNPOLLED"
 _NO_REROUTE_CODES = {"DEADLINE_EXCEEDED", UPSTREAM_STALLED}
 
+#: HTTP statuses that refuse **the request itself**, so no other machine would answer differently.
+#: 422 is "unprocessable entity": the Hub read the request and found its content invalid (a
+#: `512` geometry against a `1K` rule), which is the caller's to fix, not a property of the Mac.
+_REQUEST_REFUSAL_STATUSES = frozenset({422})
+
 #: A shop's workstation Mac stopped the job (macOS critical memory pressure for 20 s, rare) and its
 #: controller had nowhere else for it (Hub workstation mode, owner request 2026-10-03). Free work that
 #: never finished: it moves at once to the next location, and **does not count against the retry
@@ -2253,7 +2258,12 @@ def _dispatch(job: dict[str, Any], store: JobStore, provider_id: str, model_id: 
             # A pinned voice is excluded: its reference clip lives on one controller, so there is
             # no other machine that could serve it and a "retry" would only be a slower failure.
             # A workstation yield is free Studio Hub work only: no paid lane is ever moved on it.
-            if (not unknown and pinned is None
+            #
+            # **A 422 is about the request, not the machine**, so every other location would
+            # refuse it the same way. Measured live 2026-11-19: a job sent `width/height: 512`
+            # got `HTTP 422 Choose a qualified 1K aspect ratio` on three locations in turn before
+            # failing. One attempt is the whole answer.
+            if (not unknown and pinned is None and exc.status not in _REQUEST_REFUSAL_STATUSES
                     and (exc.code not in _NO_REROUTE_CODES
                          or (kind_is_hub and _deadline_reroute_left(store, job_id)))
                     and (exc.code != WORKSTATION_YIELDED or kind_is_hub)):

@@ -183,15 +183,18 @@ class ScopedAdmissionTest(Case):
         self.assertEqual([entry["key"] for entry in self.raw_plan()["macs"]], [TARGET])
 
     def test_scoped_target_still_has_to_be_online_and_memory_eligible(self) -> None:
+        # An offline Mac is a no-op for now; a Mac the package does not fit is a refusal. The two
+        # must not share one sentence: 2026-11-19, "every Mac that can run it has it already, or
+        # is offline" was said about a model installed nowhere, and neither half was true.
         cases = {
-            "offline": {"reachable": False},
-            "below package tier": {"fits": False},
+            "offline": ({"reachable": False}, "NOTHING_TO_DO"),
+            "below package tier": ({"fits": False}, "MODEL_NOT_INSTALLABLE"),
         }
-        for label, target in cases.items():
+        for label, (target, code) in cases.items():
             with self.subTest(label=label):
                 with self.assertRaises(model_share.ShareError) as refused:
                     model_share.start(FISH, scoped_snapshot(target=target), targets=[TARGET])
-                self.assertEqual(refused.exception.body["code"], "NOTHING_TO_DO")
+                self.assertEqual(refused.exception.body["code"], code)
                 self.assertEqual(model_share.read_plans(), [])
                 self.assertEqual((self.hubs.shares, self.hubs.installs), ([], []))
 
@@ -235,6 +238,38 @@ class ScopedExplicitOffTest(Case):
 
         decisions = json.loads((self.data / "models-cache.json").read_text(encoding="utf-8"))["enabled"]
         self.assertIs(decisions[provider_id][model_id], False)
+
+
+class ANothingToDoNamesItsReason(Case):
+    """2026-11-19: `qwen3-5-9b-4bit` answered "every Mac that can run it has it already, or is
+    offline" for a model installed nowhere, on targets whose Hub did not offer it. Both halves of
+    that sentence were false, the model really was missing, and the code read as a no-op.
+    """
+
+    def not_offered(self) -> dict:
+        """One target: the model is absent and its Hub publishes no install for it."""
+        out = snapshot((SOURCE_LOCATION, SOURCE_MACHINE, True),
+                       (TARGET_LOCATION, TARGET_MACHINE, False))
+        for row in out["machines"]:
+            row["installable_models"] = []
+        for loc in out["locations"]:
+            if loc["id"] == TARGET_LOCATION:
+                for row in loc["local_models"]:
+                    row["package_id"] = "some-other-model"
+        return out
+
+    def test_a_missing_model_the_hub_does_not_offer_is_a_refusal_that_says_so(self) -> None:
+        with self.assertRaises(model_share.ShareError) as refused:
+            model_share.start(FISH, self.not_offered(), targets=[TARGET])
+        self.assertEqual(refused.exception.body["code"], "MODEL_NOT_INSTALLABLE")
+        self.assertIn("does not offer this model", refused.exception.body["detail"])
+
+    def test_a_plan_where_every_mac_already_has_it_is_still_nothing_to_do(self) -> None:
+        with self.assertRaises(model_share.ShareError) as refused:
+            model_share.start(FISH, snapshot((SOURCE_LOCATION, SOURCE_MACHINE, True)),
+                              targets=[f"{SOURCE_LOCATION}/{SOURCE_MACHINE}"])
+        self.assertEqual(refused.exception.body["code"], "NOTHING_TO_DO")
+        self.assertIn("No Mac needs it now", refused.exception.body["detail"])
 
 
 if __name__ == "__main__":

@@ -241,11 +241,19 @@ def _model_rows(snapshot: dict[str, Any], package_id: str) -> dict[str, dict[str
             if isinstance(row, dict) and row.get("package_id") == package_id and row.get("machine")}
 
 
+#: Skip sentences that are about *now* — the model is fine, that Mac is not free or not here.
+#: Every other skip is a refusal about the model itself, and the caller must be told which.
+_OFFLINE = "Offline."
+_PAUSED = "This Mac is paused for generation."
+_DOWNLOADING = "It is already downloading it."
+_SKIPPED_FOR_NOW = frozenset({_OFFLINE, _PAUSED, _DOWNLOADING})
+
+
 def _why_not(row: dict[str, Any], model: dict[str, Any] | None) -> str:
     if model is None:
         return "Its Studio Hub does not offer this model."
     if model.get("active_download"):
-        return "It is already downloading it."
+        return _DOWNLOADING
     if (row.get("workstation") or {}).get("enabled"):
         return "Lite Mode: this model is not one Lite Mode runs."
     return "Not enough memory for this model."
@@ -298,15 +306,24 @@ def start(package_id: str, snapshot: dict[str, Any] | None = None, *, targets: o
             if (model or {}).get("cache_state") == "cached":
                 entry["state"] = "have"
             elif loc == fleet.LOCAL_ID and this_mac_paused:
-                entry.update(state="skipped", detail="This Mac is paused for generation.")
+                entry.update(state="skipped", detail=_PAUSED)
             elif row.get("reachable") is not True:
-                entry.update(state="skipped", detail="Offline.")
+                entry.update(state="skipped", detail=_OFFLINE)
             elif not offered:
                 entry.update(state="skipped", detail=_why_not(row, model))
             macs.append(entry)
         if not any(e["state"] == "waiting" for e in macs):
-            raise ShareError(409, "No Mac needs it: every Mac that can run it has it already, or is offline.",
-                             "NOTHING_TO_DO")
+            # **Name the reason each Mac gave.** Seen live 2026-11-19: `qwen3-5-9b-4bit` answered
+            # "every Mac that can run it has it already, or is offline" for a model installed
+            # nowhere — every target was skipped because its Hub did not offer it. Both halves of
+            # that sentence were false, and neither said what to fix. A skip that is only about
+            # *now* is still a no-op; a skip about the model itself is a refusal.
+            reasons = sorted({str(e.get("detail") or "It already has it.") for e in macs})
+            now = all(e["state"] == "have" or e.get("detail") in _SKIPPED_FOR_NOW for e in macs)
+            raise ShareError(
+                409,
+                ("No Mac needs it now: " if now else "No Mac can take it: ") + "; ".join(reasons) + ".",
+                "NOTHING_TO_DO" if now else "MODEL_NOT_INSTALLABLE")
         macs.sort(key=lambda e: (e["network"] or "~", str(e["label"]).lower()))
         plan = {"id": uuid.uuid4().hex[:12], "package_id": package_id, "label": label or package_id,
                 "state": "running", "created_at": round(time.time(), 3), "macs": macs, "resting": {}}
