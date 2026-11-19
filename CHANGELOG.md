@@ -10,6 +10,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.294 — 2026-11-20
+
+- **An image-pool job that finds nowhere to go now says which sites it passed over, and why.** The pool re-route walked every site once per model in the pool, worked out a reason for each one it skipped, and then threw them all away — so a job that ran out of places ended with one sentence naming no site at all. It now records them: "Every other location was passed over: Site X (model_not_installed: no Mac here is assigned <model>, one of this pool's models)".
+- **The reason only a pool has is written down too.** A site can be perfectly able to run a pool's model and still have no Mac *assigned* it — the pool's own rule, and the refusal a pool job meets most. That check ran after the site had already been accepted, so it left no trace; it now says so explicitly, and names the model.
+- **A chosen site is never reported as passed over.** A pool walks the same site once per model, so a site can be refused for one model and picked for another; the reasons now carry one row per site, and never the site the job was sent to.
+
+---
+
 ## 0.2.293 — 2026-11-20
 
 - **The placement bound cannot be crowded out of its own queue.** The sweep that ends a job waiting too long asked for "every unfinished job, oldest first" and then skipped the running ones — so on a busy fleet, old running rows filled that list and the waiting job it was looking for was never reached. It now asks for exactly the shape it acts on (waiting, never sent), which is also the read the database can answer from an index. Measured on the controller: 65 running against 199 waiting.

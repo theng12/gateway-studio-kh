@@ -1281,8 +1281,9 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     whenever nothing is chosen. The callers put that on the failure detail and on the attempt log:
     a sentence naming only the site the job waited on is undiagnosable, and the live 2026-11-19
     stall ended exactly that way — `attempted_locations` one site, `attempt_count` 0, failover ran
-    and left no explanation. A **pool** re-route does not fill it (`pool_candidates` has its own
-    per-member walk); that is stated here rather than left to look like an oversight.
+    and left no explanation. An **image-pool** re-route fills it the same way (0.2.294, see
+    `fleet.pool_candidates`), including the reason only a pool has: a site that can run the member
+    but has no Mac assigned it.
 
     **The attempt is recorded before the choice, not after.** The log is what the ceiling is
     measured against and what the terminal failure is built from, and a crash between "we tried
@@ -1337,15 +1338,22 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
 
     if sum(entry.get("code") not in _UNCOUNTED_ATTEMPT_CODES for entry in attempts) >= int(policy["max_attempts"]):
         # The same ceiling applies before either a direct-model or an image-pool re-route.
-        if rejections is not None and pool_members is None:
+        if rejections is not None:
             # **The reasons are still worth having when the budget is gone.** This is the ending
             # that used to say only "waiting for a free Mac at <one site>": the job is not going
             # to be sent again, so the walk is run once for the record — nothing is recorded as an
-            # attempt and nothing is chosen. (A pool job keeps its own per-member sentence.)
-            fleet.route(model_id, modality, exclude_locations=tried,
-                        require_capability=require_capability,
-                        image_params=_job_params(job) if modality == "image" else None,
-                        rejections=rejections)
+            # attempt and nothing is chosen. A pool walks its own members the same way (0.2.294),
+            # so the same sentence names the sites for both kinds of job.
+            if pool_members is None:
+                fleet.route(model_id, modality, exclude_locations=tried,
+                            require_capability=require_capability,
+                            image_params=_job_params(job) if modality == "image" else None,
+                            rejections=rejections)
+            else:
+                fleet.route_pool(pool_members, modality, exclude_locations=tried,
+                                 require_capability=require_capability,
+                                 image_params=_job_params(job) if modality == "image" else None,
+                                 rejections=rejections)
         return None
 
     # Looked up before either branch: the pool branch reads it too, and reading it after the assignment
@@ -1353,7 +1361,8 @@ def _next_machine(store: JobStore, job_id: str, model_id: str, modality: str,
     room = _ROOM_HOOKS.get(job_id)
     if pool_members is not None:
         chosen, member, _note = fleet.route_pool(pool_members, modality, exclude_locations=tried,
-                                                 load=room, require_capability=require_capability, image_params=_job_params(job) if modality == "image" else None)
+                                                 load=room, require_capability=require_capability, image_params=_job_params(job) if modality == "image" else None,
+                                                 rejections=rejections)
         if chosen is None or not store.record_route(job_id, chosen.id, model_id=member):
             return None
         if room is not None and room(chosen.id, claim=True)[0] <= 0:

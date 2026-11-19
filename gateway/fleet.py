@@ -6971,6 +6971,7 @@ def assigned_macs(row: dict, member: str, modality: str = "image") -> set[str]:
 def pool_candidates(
     members: list[str], modality: str, *, only_location: str | None = None,
     exclude_locations: set[str] | None = None, require_capability: str | None = None, image_params: dict | None = None,
+    rejections: list[dict] | None = None,
 ) -> list[dict]:
     """Every (location, member) that can take an image-pool job now, each tagged `_member`.
 
@@ -6978,6 +6979,11 @@ def pool_candidates(
     it; a member nobody is assigned to sits out, so no job is sent where the Hub would refuse it.
     `require_capability` asks the same question of each member's row, so a reference job routed
     through a pool skips a site whose worker cannot run it either.
+
+    `rejections` collects both halves of "why this site was passed over", in the rows
+    `routing_candidates` writes: the member's own walk, **and** the pool's second check — a site
+    that can run the member but has no Mac assigned it. That second reason is the one a pool job
+    meets most, and until 0.2.294 it left no row at all, so a pool failure named no site.
     """
     rows = {str(r.get("id")): r for r in snapshot(allow_stale=True).get("locations") or []}
     found: list[dict] = []
@@ -6989,13 +6995,24 @@ def pool_candidates(
         for candidate in routing_candidates(member, modality, only_location=only_location,
                                             exclude_locations=exclude_locations,
                                             require_capability=require_capability, image_params=image_params,
-                                            respect_model_supply=False):
-            assigned = assigned_macs(rows.get(str(candidate.get("location_id"))) or {}, member, modality)
+                                            respect_model_supply=False, rejections=rejections):
+            location_id = str(candidate.get("location_id"))
+            assigned = assigned_macs(rows.get(location_id) or {}, member, modality)
             if "image_limit_machines" in candidate:
                 assigned &= set(candidate["image_limit_machines"])
-            if assigned:
-                slots = min(candidate["slots"], len(assigned)) if "image_limit_machines" in candidate else candidate["slots"]
-                found.append({**candidate, "slots": slots, "_member": member})
+            if not assigned:
+                if rejections is not None:
+                    rejections.append({
+                        "location_id": location_id,
+                        "provider_id": candidate.get("provider_id") or provider_id_for(location_id),
+                        "label": candidate.get("label") or location_id,
+                        "machine": None,
+                        "reason": "model_not_installed",
+                        "detail": f"no Mac here is assigned {member}, one of this pool's models",
+                    })
+                continue
+            slots = min(candidate["slots"], len(assigned)) if "image_limit_machines" in candidate else candidate["slots"]
+            found.append({**candidate, "slots": slots, "_member": member})
     return found
 
 
@@ -7008,16 +7025,19 @@ def route_pool(
     exclude_locations: set[str] | None = None,
     load: Callable[[str], tuple[int, int, int]] | None = None,
     require_capability: str | None = None, image_params: dict | None = None,
+    rejections: list[dict] | None = None,
 ) -> tuple[Any, str | None, str | None]:
     """Route an image-pool job to the best location with a free Mac assigned one of its members.
 
-    Returns `(definition, member model id, note)`, or `(None, None, reason)`.
+    Returns `(definition, member model id, note)`, or `(None, None, reason)`. `rejections` is filled
+    like `route`'s — one row per site the walk passed over; see `pool_candidates`.
     """
     from .providers import registry
 
     candidates = pool_candidates(members, modality, only_location=only_location,
                                  exclude_locations=exclude_locations,
-                                 require_capability=require_capability, image_params=image_params)
+                                 require_capability=require_capability, image_params=image_params,
+                                 rejections=rejections)
     if load is not None and candidates:
         candidates = apply_load(candidates, load)
     if not candidates:
@@ -7027,6 +7047,19 @@ def route_pool(
             return None, None, "every location with a Mac assigned a pool model refused it"
         return None, None, "no Mac is assigned a pool model it can run right now"
     chosen = min(candidates, key=lambda c: rank_candidate(c, routing_key or "pool"))
+    if rejections is not None:
+        # One row per site, and never the site that was chosen: a pool walks the same site once per
+        # member, so it can be refused for one member and picked for another — and a sentence saying
+        # a site was "passed over" while it runs the job is worse than no sentence.
+        kept: list[dict] = []
+        seen: set[str] = set()
+        for row in rejections:
+            key = str(row.get("location_id") or "")
+            if key == str(chosen["location_id"]) or key in seen:
+                continue
+            seen.add(key)
+            kept.append(row)
+        rejections[:] = kept
     for definition, model in registry.models.enabled_models(modality):
         if definition.id == chosen["provider_id"] and model["model_id"] == chosen["_member"]:
             note = (f"{chosen['label']}: {chosen['queue']} queued / {chosen['slots']} eligible"
