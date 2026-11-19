@@ -3419,6 +3419,12 @@ class Worker:
             try:
                 if self._render_service is not None and not self.dispatch_paused():
                     self._render_service.dispatch_pass()
+                # **A bound that is only checked on the next look is not a bound.** Every
+                # placement check lives under `for job in due:` below, so a job deferred with a
+                # long backoff was never examined and measured waits reached 214 minutes against
+                # a 45-minute ceiling. This pass looks at age, not readiness.
+                if not self.dispatch_paused():
+                    self._sweep_placement_bound()
                 for job in due:
                     if self._stop.is_set():
                         return
@@ -3781,6 +3787,42 @@ class Worker:
             log.exception("could not start the superseded-batch sweep; the next pass will try again")
             return False
         return True
+
+    def _sweep_placement_bound(self) -> None:
+        """End a placement wait at its bound even when the job is never due again.
+
+        `_note_waiting` is the whole placement decision — move it, or fail it named — but it is
+        reached only from the `for job in due:` loop, so a job deferred with a long backoff sat
+        past its ceiling unexamined (measured 2026-11-19: 5.0–214.2 min against a 45-minute bound
+        across 580 jobs). This pass looks at **age**, not readiness, and hands each such job to the
+        same decision with its true start time, so nothing is decided twice or differently.
+
+        Three conditions, each load-bearing:
+
+          * **accepted and never sent** — a dispatched job's outcome is not ours to assume, and an
+            upstream id means the Hub may be holding work (that half needs a withdraw first, see
+            the backlog row);
+          * **not paused** — a drain takes no new work and cancels nothing, so a hold never ends a
+            queued job;
+          * `setdefault` on the wait clock — a job already being tracked keeps the time it started,
+            and one that was never seen gets its arrival time, which is the bound's true origin.
+        """
+        ceiling = float(concurrency.queue_wait_budget()["placement_wait_ceiling_seconds"])
+        cutoff = time.time() - ceiling
+        read = getattr(self.store, "waiting_past", None)
+        if read is None:
+            return
+        for job in read(cutoff):
+            if (job.get("state") != "accepted" or job.get("upstream_job_id")
+                    or job.get("dispatch_started_at")):
+                continue
+            job_id = job["id"]
+            self._placement_wait_started.setdefault(
+                job_id, float(job.get("created_at") or time.time()))
+            try:
+                self._note_waiting(job)
+            except Exception:  # noqa: BLE001 - one row never stops the sweep
+                log.debug("could not bound the placement wait of %s", job_id, exc_info=True)
 
     def _sweep_holds(self) -> None:
         try:

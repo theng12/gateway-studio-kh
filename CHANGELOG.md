@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.291 — 2026-11-19
+
+- **The placement ceiling now caps, even for a job nobody looks at again.** Every placement check ran only when a job came up as due, so a job deferred with a long backoff was never examined and waits measured between 5 minutes and 3.5 hours against a 45-minute ceiling. Each pass now also looks at age: a job that has waited past its bound is ended at that bound with the same sentence and the same per-site reasons as before, whether or not it was due. A hold still cancels nothing.
+- **Not covered yet, and said plainly:** a job the Hub has already accepted (it has an upstream id) is left alone by this pass. Ending one without first taking its batch back could abandon work the Hub is still running, so that half needs the withdrawal path and is recorded as the next item rather than guessed at.
+
+---
+
 ## 0.2.290 — 2026-11-19
 
 - **A job that finds nowhere else to go now says why.** Routing computed a reason for every site it passed over and then threw them away, so a job that ran out of machines ended with one sentence naming the site it was waiting on — the failure that could not be diagnosed on 2026-11-19, where the job's record held one site and no attempts. The reasons now go into the failure, into the wait reason, and onto the newest attempt entry: "Every other location was passed over: Site X (paused: every Mac here that can run this model is paused)". They are recorded as evidence, never counted as attempts.

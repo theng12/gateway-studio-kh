@@ -4642,6 +4642,28 @@ class JobStore:
             ).fetchall()
         return [self._row_dict(r) for r in rows]
 
+    def waiting_past(self, cutoff: float, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Non-terminal jobs created before `cutoff`, **due or not**.
+
+        `due()` answers "what may run now"; this answers "what has been waiting too long", which is
+        a different question and the one a bound measured from submit needs. A job deferred with a
+        long backoff is absent from `due()` by design, and that absence is how a placement wait
+        outlived its ceiling by hours (2026-11-19). Oldest first, bounded, so a store with a large
+        history costs one indexed read and not a full table.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE state NOT IN ('succeeded', 'failed', 'cancelled')
+                  AND created_at <= ?
+                ORDER BY created_at, id
+                LIMIT ?
+                """,
+                (cutoff, limit),
+            ).fetchall()
+        return [self._row_dict(r) for r in rows]
+
     def recent(self, limit: int = 20, *, offset: int = 0) -> list[dict[str, Any]]:
         if offset > 2**63 - 1:  # a validated page can still exceed SQLite's integer range
             return []
