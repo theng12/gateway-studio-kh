@@ -584,6 +584,11 @@ def status() -> dict[str, Any]:
         "providers": registry.provider_counts(),
         "jobs_processed": worker.processed,
         "jobs": store.stats(),
+        # **Whether a hold is in effect right now.** Only `POST /api/maintenance/drain` — the route
+        # guarded by the Launcher's hold-token — pauses dispatch, so `true` here is the Gateway's own
+        # proof that the Updater asked for this moment. The app reads it to tell an Updater's stop
+        # from a person's: attendance is not authorship (`QuitAuthorship` in `menubar/main.swift`).
+        "dispatch_paused": worker.dispatch_paused(),
         "uptime_seconds": int(time.time() - STARTED_AT),
         "catalog": {
             modality: len(catalog.rows(modality))

@@ -1037,14 +1037,25 @@ final class GatewayController {
     /// and running work resumes after a restart. Only a send still unanswered after the drain
     /// becomes a manual recovery hold. Fails open: a gateway that does not answer has nothing
     /// to lose, and the owner must always be able to stop it.
-    func confirmIfBusy(_ verb: String, then proceed: @escaping (Bool) -> Void) {
-        GatewayAPI.get("/admin/api/status", timeout: 3) { result in
+    ///
+    /// `senderBundleID` is the Quit AppleEvent's sender, read while that event was being handled.
+    /// When it names the Updater — or the Gateway reports a hold in effect, which only the Updater's
+    /// hold-token route can take — there is nobody to answer a dialog and the stop goes ahead. The
+    /// menu's own Stop and Restart pass neither, so they always ask.
+    func confirmIfBusy(_ verb: String, senderBundleID: String? = nil, corroborateWithHold: Bool = false,
+                       then proceed: @escaping (Bool) -> Void) {
+        GatewayAPI.get("/admin/api/status", timeout: 3) { [weak self] result in
             guard case .success(let payload) = result,
                   let byState = (payload["jobs"] as? [String: Any])?["by_state"] as? [String: Any]
             else { return proceed(true) }
             let running = byState["running"] as? Int ?? 0
             let waiting = byState["accepted"] as? Int ?? 0
             guard running + waiting > 0 else { return proceed(true) }
+            let holding = corroborateWithHold && (payload["dispatch_paused"] as? Bool ?? false)
+            if let why = QuitAuthorship.whyNotAsked(senderBundleID: senderBundleID, holding: holding) {
+                self?.noteInLog("\(verb): not asking — \(why). Holding, settling and quitting.")
+                return proceed(true)
+            }
             proceed(PageKit.confirm(
                 "\(verb) the gateway?",
                 "\(running) job\(running == 1 ? " is" : "s are") running and \(waiting) waiting. "
@@ -1151,16 +1162,59 @@ enum OrphanSweep {
 // MARK: - Who asked to quit
 
 enum QuitSource {
-    static func describe() -> String {
+    /// The Quit AppleEvent's sender, or nil for this app's own menu, ⌘Q, or macOS.
+    ///
+    /// Read **while the event is being handled** and kept: `currentAppleEvent` is only valid then,
+    /// and the answer is needed later, inside an asynchronous status read.
+    static func sender() -> (bundleID: String?, description: String) {
         guard let event = NSAppleEventManager.shared().currentAppleEvent,
               let pid = event.attributeDescriptor(forKeyword: AEKeyword(keySenderPIDAttr))?.int32Value,
               pid > 0, pid != getpid() else {
-            return "this app's own menu or macOS"
+            return (nil, "this app's own menu or macOS")
         }
         let sender = NSRunningApplication(processIdentifier: pid)
-        return "\(sender?.bundleIdentifier ?? sender?.localizedName ?? "a process") (pid \(pid))"
+        let who = sender?.bundleIdentifier ?? sender?.localizedName ?? "a process"
+        return (sender?.bundleIdentifier, "\(who) (pid \(pid))")
+    }
+
+    static func describe() -> String { sender().description }
+}
+
+// BEGIN quit-authorship (compiled on its own by tests/test_quit_authorship.py)
+/// **Attendance is not authorship.**
+///
+/// The app used to ask "may this stop be challenged with a dialog?" by looking at whether a person
+/// was there (`NSApp.isActive && MainWindow.shared.isShown`). That is a guess about the audience, not
+/// about the author: the owner can be looking at the window while the Updater is the one asking, and
+/// then a modal nobody must answer sits in front of an install. Measured on 1301, 2026-11-15: every
+/// install failed for exactly this class of reason.
+///
+/// A Quit AppleEvent names its sender, so the question has a real answer. Two signals, one decision:
+///
+/// * **who sent it** — the Updater's own bundle id, when the event carried one;
+/// * **a hold in effect** — `POST /api/maintenance/drain` is the only route that pauses dispatch and
+///   it is guarded by the Launcher's hold-token, so a stop that follows one is the Updater asking
+///   even when the sender cannot be named. Corroboration, not a second trust model.
+enum QuitAuthorship {
+    /// The Updater and every helper it runs — `com.khupdater.launcher`, `.agent`, `.feed`, `.last`,
+    /// `.menu`, `.publisher`. A prefix rather than a list of ids, so a helper added later cannot go
+    /// unrecognised, and no other app asks this one to quit on nobody's behalf.
+    static let automatedPrefix = "com.khupdater."
+
+    /// Whether this stop must go ahead with no dialog. A person's Quit still may be challenged.
+    static func isAutomated(senderBundleID: String?, holding: Bool) -> Bool {
+        if let id = senderBundleID, id.hasPrefix(automatedPrefix) { return true }
+        return holding
+    }
+
+    /// Why the app is not asking, for the log. `nil` means it should ask.
+    static func whyNotAsked(senderBundleID: String?, holding: Bool) -> String? {
+        if let id = senderBundleID, id.hasPrefix(automatedPrefix) { return "the Updater (\(id)) asked" }
+        if holding { return "a hold is in effect, so the Updater asked" }
+        return nil
     }
 }
+// END quit-authorship
 
 // MARK: - Launch at login
 
@@ -1622,26 +1676,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             replied = true
             NSApp.reply(toApplicationShouldTerminate: ok)
         }
-        // **An unattended quit has nobody to answer a dialog.** The Updater quits by sending a
-        // Quit AppleEvent and waits 60 seconds; `PageKit.confirm` is a modal `NSAlert.runModal()`,
-        // which never returns when no one is there — so `reply(toApplicationShouldTerminate:)`
-        // never fired and the app never quit. Measured on 1301, 2026-11-15: every install failed
-        // because the host always has jobs running or queued. Ask only when the question can
-        // actually be seen (the app is active and its window is up); otherwise go straight to
-        // stopping the gateway.
-        let attended = NSApp.isActive && MainWindow.shared.isShown
         // **Who asked, written down** (1301, 2026-11-16: Gateway stopped before 21:38 and nothing
         // said why). A Quit AppleEvent names its sender; no sender is this app's own menu or macOS.
-        GatewayController.shared.noteInLog("quit requested by \(QuitSource.describe())"
+        // Read here, while the event is being handled, because `confirmIfBusy` answers later.
+        let source = QuitSource.sender()
+        let attended = NSApp.isActive && MainWindow.shared.isShown
+        GatewayController.shared.noteInLog("quit requested by \(source.description)"
                                            + (attended ? "" : " (unattended)"))
         // Armed **before** any dialog, and shorter than the installer's wait: whatever happens
         // below, termination is answered within 40 seconds. A modal can never hang it again.
         DispatchQueue.main.asyncAfter(deadline: .now() + 40) { finish(true) }
-        guard attended else {
-            GatewayController.shared.stopAnything { stopped in finish(stopped) }
-            return .terminateLater
-        }
-        GatewayController.shared.confirmIfBusy("Quit") { ok in
+        // **Attendance is not authorship** (`QuitAuthorship`). This used to skip the dialog only when
+        // it judged nobody was watching, which challenged the Updater's own quit whenever the owner
+        // happened to have the window in front — a modal nobody answers, in front of an install, for
+        // up to the 40 s deadline. Who sent the event decides; a hold in effect corroborates it.
+        GatewayController.shared.confirmIfBusy("Quit", senderBundleID: source.bundleID,
+                                               corroborateWithHold: true) { ok in
             guard ok else { return finish(false) }
             // A wedged backend must not keep the app alive forever.
             DispatchQueue.main.asyncAfter(deadline: .now() + 25) { finish(true) }

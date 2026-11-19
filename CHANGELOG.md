@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.287 — 2026-11-19
+
+- **The Updater's own quit is no longer met by a question nobody answers.** The app decided whether to challenge a stop by looking at whether a person was there — the window active and up — and the Updater quits by sending a Quit AppleEvent, so whenever the window happened to be in front an install sat behind a dialog until the 40 s deadline replied. Who sent the event now decides: the Updater's stop holds, settles and quits with no dialog, and a person's Quit may still be challenged.
+- **A hold in effect is the second, independent signal.** Only the Launcher's hold-token route can pause dispatch, so a stop that follows one is the Updater asking even when the AppleEvent names no sender. It corroborates the sender — no new credential, no new header, and the app still asks for anything a person asked for.
+
+---
+
 ## 0.2.286 — 2026-11-19
 
 - **A controller holding work it never started no longer reads "Nothing wrong reported".** A site that answers can still have a queue nothing is running against, and the Fleet page only asked whether it answered. The cause now names the depth: "68 jobs are queued here and none has started." Seen live on 2026-11-19, when 68 batches sat waiting at one site under a green row.
