@@ -4643,19 +4643,28 @@ class JobStore:
         return [self._row_dict(r) for r in rows]
 
     def waiting_past(self, cutoff: float, *, limit: int = 200) -> list[dict[str, Any]]:
-        """Non-terminal jobs created before `cutoff`, **due or not**.
+        """Jobs still waiting to be placed, created before `cutoff`, **due or not**.
 
         `due()` answers "what may run now"; this answers "what has been waiting too long", which is
         a different question and the one a bound measured from submit needs. A job deferred with a
         long backoff is absent from `due()` by design, and that absence is how a placement wait
-        outlived its ceiling by hours (2026-11-19). Oldest first, bounded, so a store with a large
-        history costs one indexed read and not a full table.
+        outlived its ceiling by hours (2026-11-19).
+
+        **The predicate is the sweep's own, not "non-terminal".** It filtered
+        `state NOT IN (terminal)` and ordered by `created_at`, so every old `running` job sorted
+        ahead of the waiting ones and spent the row budget — on a fleet with 200 old running jobs
+        the sweep would read only rows it skips and the bound would quietly stop being enforced
+        (measured shape on 1301, 2026-11-19: 65 running against 199 accepted). `accepted`,
+        never-sent rows are exactly what `_sweep_placement_bound` acts on, and
+        `jobs_state_created` serves this read.
         """
         with self._lock:
             rows = self._conn.execute(
                 """
                 SELECT * FROM jobs
-                WHERE state NOT IN ('succeeded', 'failed', 'cancelled')
+                WHERE state = 'accepted'
+                  AND upstream_job_id IS NULL
+                  AND dispatch_started_at IS NULL
                   AND created_at <= ?
                 ORDER BY created_at, id
                 LIMIT ?
