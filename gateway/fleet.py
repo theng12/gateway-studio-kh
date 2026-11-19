@@ -1209,6 +1209,14 @@ def _hub_version_relation(version: object) -> str | None:
 #: that site last answered are written to `fleet_members.json` and read back at boot.
 _last_members: dict[str, tuple[float, list[dict], dict]] = {}
 _MEMBERS_STALE_AFTER_S = 120.0
+
+#: **How old a fleet view may be and still route from it.** `allow_stale` hands back the cached
+#: snapshot however old it is, which is right for a catalogue page and wrong for a routing choice:
+#: a stalled refresher leaves every row saying `reachable: True` for ever, and nothing else on the
+#: row ages out — `_machine_offline` reads "not stated" as unknown by design. Eight refresher
+#: intervals (the refresher runs every 15 s): well past a slow fan-out, far short of "this view is
+#: history". Past it a location is `unknown`, which is honest and is never read as a refusal.
+_ROUTING_VIEW_MAX_AGE_S = 120.0
 MEMBERS_PATH = Path(os.environ.get("GATEWAY_FLEET_MEMBERS") or (DATA_DIR / "fleet_members.json"))
 _members_lock = threading.Lock()
 _members_loaded = False
@@ -5147,11 +5155,19 @@ def site_wait_reason(provider_id: str, model_id: str) -> str:
 def site_cannot_take(provider_id: str, model_id: str) -> bool:
     """True when this location could not take this model even if one of its Macs were free.
 
-    Not answering, or stating it has no Mac for the model. Those are not a queue to stand in: only
-    a fresh answer from the site or a different route changes them, so a job bound here must be
-    moved or ended quickly instead of waiting out the placement ceiling (2026-11-17: two image jobs
-    spent 45 minutes at a fleet Mac, which answered nothing). **Unknown is not a refusal** — no
-    row, or supply it does not state, leaves this `False` and the job keeps its normal line.
+    Not answering, stating it has no Mac for the model, or stating that **none of the Macs that
+    can run it is free**. None of those is a queue to stand in: only a fresh answer from the site
+    or a different route changes them, so a job bound here must be moved or ended quickly instead
+    of waiting out the placement ceiling (2026-11-17: two image jobs spent 45 minutes at a fleet Mac,
+    which answered nothing).
+
+    **The third case is measured** (2026-11-19): a site that had answered 148 times that day kept
+    `model_supply[model].available` at 0 for a whole 45-minute wait, and the job ended saying only
+    "waiting for a free Mac" — 45 minutes for an answer the site gave in its first reply. The check
+    runs on every pass, so one free Mac restores the full ceiling at once; it is not a latch.
+
+    **Unknown is not a refusal** — no row, a site that does not state this model's supply, or a
+    supply with no `available` leaves this `False` and the job keeps its normal line.
     """
     try:
         row = next((r for r in snapshot(allow_stale=True).get("locations") or []
@@ -5162,7 +5178,19 @@ def site_cannot_take(provider_id: str, model_id: str) -> bool:
         return False
     if row.get("reachable") is False:
         return True
-    return publishes_model(row, model_id) is False
+    if publishes_model(row, model_id) is False:
+        return True
+    supply = (row.get("model_supply") or {}).get(model_id)
+    if not isinstance(supply, dict) or _as_optional_int(supply.get("available")) != 0:
+        return False
+    # **A busy site is a queue worth standing in — this is not that.** `routing_candidates` keeps
+    # a site whose eligible Macs are all busy, deliberately (`test_a_busy_mac_stays_a_candidate`),
+    # and a job bound there must keep waiting for it. What this catches is the other shape: no Mac
+    # free **and no work on this model in flight at the site**, which is not a queue that moves —
+    # it is an answer the site has already given, and 45 minutes is the wrong price for it.
+    busy = any(str(job.get("model_id") or "") == model_id
+               for job in row.get("running_jobs") or [] if isinstance(job, dict))
+    return not busy
 
 
 def location_publishes_model(provider_id: str, model_id: str) -> bool | None:
@@ -6379,11 +6407,20 @@ def routing_candidates(
     # view up to one refresher interval old can be wrong about a site that died
     # seconds ago, and the job then settles as `failed` -- which is the outcome
     # this endpoint already prefers to making the caller wait.
-    locations = snapshot(allow_stale=True).get("locations") or []
+    view = snapshot(allow_stale=True)
+    locations = view.get("locations") or []
     rows = {str(row.get("id")): row for row in locations}
     candidates: list[dict] = []
     seconds: Callable[[str, str], float] | None = None
     now = time.time()
+    # **A view of unbounded age is not a fleet read.** `allow_stale` returns the cached snapshot
+    # however old it is (`fleet.py:4360`), which is right for a catalogue page and wrong for a
+    # routing decision: a site's row keeps saying `reachable: True` for as long as the refresher is
+    # stalled, and nothing else on the row ages out, because `_machine_offline` reads "not stated"
+    # as unknown rather than offline by design. Past this age the row is `unknown`, which is what
+    # "we have not heard" has always meant here — never a refusal, and never a candidate.
+    generated = _num(view.get("generated_at"))
+    view_age = (now - generated) if generated else None
 
     def reject(definition: Any, location_id: str, row: dict, reason: str, detail: str,
                machine: str | None = None, last_seen_at: float | None = None) -> None:
@@ -6412,6 +6449,12 @@ def routing_candidates(
             # next site, not the same one again.
             continue
         row = rows.get(location_id) or {}
+        if view_age is not None and view_age > _ROUTING_VIEW_MAX_AGE_S:
+            # Everything below reads the row as a live answer; it is not one. Said as `unknown`,
+            # because that is the truth and it is never read as "this site refused".
+            reject(definition, location_id, row, "unknown",
+                   f"the fleet read is {int(view_age)} s old")
+            continue
         if require_capability and not advertises(model, require_capability):
             # **Capability, not memory, is the gateway's question.** The Hub already decided per
             # Mac whether the weights are there and the RAM is enough, and a Mac that cannot do the

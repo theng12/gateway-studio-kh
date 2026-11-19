@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.289 — 2026-11-19
+
+- **A site with nothing free and nothing running for the model is an answer, not a 45-minute wait.** A job bound to a site that published the model and reported no free Mac for it waited out the full placement ceiling. The site had answered 148 times that day and was taking other work, so the job was not stuck — it was standing in a queue that would never move for it. That shape now takes the existing 5-minute path and ends named. A site whose Macs are genuinely busy with this model still keeps the full wait, because that queue does move.
+- **An old fleet read is not a fleet read.** Routing decided from the last cached snapshot however old it was, and nothing on a row ages out, so a stalled refresher left every site looking reachable for ever. Past two minutes the row is reported as unknown — what "we have not heard" has always meant here — and the skip says how old the read was.
+
+---
+
 ## 0.2.288 — 2026-11-19
 
 - **Signed with the current KH Studio identity.** 0.2.287 and every build before it carry the retired certificate, whose subject also carried a personal email address; the new one has a plain `CN=KH Studio Local Signing` with no email. Published artifacts are never re-signed in place, so this is a new version with no code change: the same 0.2.287 build, signed by the identity that replaces it.

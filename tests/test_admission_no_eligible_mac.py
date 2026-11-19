@@ -22,6 +22,12 @@ fallback). A Mac that is merely busy — `eligible 1, available 0` — keeps que
 `waiting` sentence. One read cannot flip a model off: the 45 s `LOCK_ANSWER_GRACE_S` that protects
 a slow site answer protects a missed `eligible > 0` the same way, per (site, model). Image pools
 are exempt: a pool's authority is its own `assigned_macs`, not a per-model statement.
+
+**And a job already bound to a site is bounded on the same evidence** (0.2.289): a site that
+publishes this model and has nothing free **and no work on it in flight** is not a queue that
+moves, so its wait drops from the 45-minute ceiling to `_UNUSABLE_SITE_WAIT_S` (5 min). It stays a
+routing candidate, deliberately — see `test_a_busy_mac_stays_a_candidate`; the two are different
+questions asked at different moments.
 """
 from __future__ import annotations
 
@@ -281,6 +287,74 @@ class ThePublishedRowLocksTest(_Case):
         row = self._row([_site(SITE_1600, eligible=1, accepting=False)], [SITE_1600])
         self.assertIs(row["locked"], True, row)
         self.assertEqual(row["lock_reason"], catalog._NO_MAC_REASON)
+
+
+class ABoundJobOnASiteWithNothingFreeTest(_Case):
+    """The third shape (0.2.289): publishes the model, nothing free, nothing in flight on it.
+
+    Measured 2026-11-19: a site that had answered 148 times that day kept `available` at 0 for a
+    whole 45-minute wait while taking other work, and the job ended saying only "waiting for a
+    free Mac" -- 45 minutes for an answer the site gave in its first reply.
+    """
+
+    def _row(self, *, available: int, running: tuple[str, ...] = (), supply=None) -> dict:
+        row = _site(SITE_1600, eligible=3, available=available, reachable_macs=3)
+        if supply is not None:
+            row["model_supply"] = {MODEL_ID: supply}
+        row["running_jobs"] = [{"id": f"batch-{i}", "model_id": m}
+                               for i, m in enumerate(running)]
+        return row
+
+    def _cannot_take(self, row: dict) -> bool:
+        with patch.object(fleet, "snapshot", lambda **_kw: {"locations": [row]}):
+            return fleet.site_cannot_take(f"studio-hub-{SITE_1600}", MODEL_ID)
+
+    def test_nothing_free_and_nothing_in_flight_cannot_take(self) -> None:
+        """The failing path: the site answers, publishes the model, and has nothing to run it on."""
+        self.assertTrue(self._cannot_take(self._row(available=0)))
+
+    def test_one_free_mac_restores_the_normal_ceiling(self) -> None:
+        self.assertFalse(self._cannot_take(self._row(available=1)))
+
+    def test_no_available_key_is_unknown_not_a_refusal(self) -> None:
+        self.assertFalse(self._cannot_take(self._row(available=0, supply={"eligible": 3})))
+
+    def test_work_on_this_model_at_the_site_is_a_queue_that_moves(self) -> None:
+        self.assertFalse(self._cannot_take(self._row(available=0, running=(MODEL_ID,))))
+
+    def test_work_on_another_model_does_not_keep_the_job_waiting(self) -> None:
+        self.assertTrue(self._cannot_take(self._row(available=0, running=("some/other-model",))))
+
+
+class AStaleFleetReadIsNotAFleetTest(_Case):
+    """`allow_stale` returns the cached snapshot however old it is -- right for a page, wrong here.
+
+    Nothing else ages a row out: `_machine_offline` reads "not stated" as unknown, and a stalled
+    refresher leaves every row saying `reachable: True`. Past `_ROUTING_VIEW_MAX_AGE_S` the row is
+    `unknown`, which is what "we have not heard" has always meant -- never a refusal.
+    """
+
+    def _candidates(self, *, age: float, rejections: list[dict] | None = None) -> list[dict]:
+        row = _site(SITE_1600, eligible=1, available=1, reachable_macs=1)
+        view = {"locations": [row], "generated_at": time.time() - age}
+        snap = patch.object(fleet, "snapshot", lambda **_kw: view)
+        enabled = patch.object(registry.models, "enabled_models", _enabled(SITE_1600))
+        with snap, enabled:
+            return fleet.routing_candidates(MODEL_ID, MODALITY, rejections=rejections)
+
+    def test_a_view_past_the_bound_offers_nothing(self) -> None:
+        # Ten minutes: no plausible bound is longer, and a slow fan-out is not this slow.
+        self.assertEqual(self._candidates(age=600.0), [])
+
+    def test_a_fresh_view_still_offers_the_site(self) -> None:
+        candidate, = self._candidates(age=1.0)
+        self.assertEqual(candidate["location_id"], SITE_1600)
+
+    def test_the_skip_says_unknown_and_says_how_old(self) -> None:
+        rejections: list[dict] = []
+        self._candidates(age=600.0, rejections=rejections)
+        self.assertEqual([r["reason"] for r in rejections], ["unknown"])
+        self.assertIn("600 s old", rejections[0]["detail"])
 
 
 class PoolsStayExemptTest(_Case):
