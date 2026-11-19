@@ -81,7 +81,10 @@ function payload(overrides = {}) {
   return {
     generated_at: Date.now() / 1000, waiting: 1, truncated: false,
     jobs: [waitingJob()],
-    lanes: [{ modality: 'image', waiting: 1, in_flight: 0, limit: 2, source: 'curated', detail: 'provider-concurrency.local.json caps image at 2' }],
+    lanes: [{ modality: 'image', waiting: 1, in_flight: 0, offered: 3, used: 0, idle: 3,
+              offer_source: 'fleet._eligible_macs over registry.models.enabled_models',
+              offer_detail: '3 Macs can run this lane now, at 1 site',
+              limit: 2, source: 'curated', detail: 'provider-concurrency.local.json caps image at 2' }],
     sites: [{ provider_id: 'studio-hub-blue', provider_name: 'Blue Room', in_flight: 1,
               budget: { limit: 1, source: 'hub', detail: 'the Hub reports 1 free Mac for this operation' } }],
     pool: { limit: 4, source: 'gateway', detail: 'nothing set it, so 4', in_flight: 1 },
@@ -157,14 +160,33 @@ test('a job that has never been tried says so and is still numbered', () => {
   assert.match(html, /not tried yet/);
 });
 
-test('what bounds a lane is drawn from the live budgets, not re-derived', () => {
+test('each lane draws the capacity it offers, and the site budgets are still live', () => {
   const { context, nodes } = queueContext(async () => payload());
   context.renderQueue(payload());
   const html = nodes.get('queue').innerHTML;
-  assert.match(html, /What is bounding each lane/);
-  assert.match(html, /provider-concurrency\.local\.json caps image at 2/);
+  assert.match(html, /What each lane can run/);
   assert.match(html, /the Hub reports 1 free Mac for this operation/);
-  assert.match(html, /<th>Cap in force<\/th>/, 'the lane ceiling carries its source beside it');
+  assert.match(html, /<th>Offered<\/th>/);
+  assert.match(html, /<th>Used<\/th>/);
+  assert.match(html, /<th>Idle<\/th>/);
+  assert.match(html, /3 Macs can run this lane now, at 1 site/,
+    'the figure carries the sentence saying where it came from');
+  // The lane's cap is the gate's number, not a capacity claim: it must not appear as one here.
+  assert.doesNotMatch(html, /Cap in force/);
+  assert.doesNotMatch(html, /provider-concurrency\.local\.json caps image at 2/);
+});
+
+test('a lane whose sites do not report per-machine detail says not reported, never 0', () => {
+  const { context, nodes } = queueContext(async () => payload());
+  context.renderQueue(payload({
+    lanes: [{ modality: 'image', waiting: 1, in_flight: 0, offered: null, used: 0, idle: null,
+              offer_source: 'fleet._eligible_macs over registry.models.enabled_models',
+              offer_detail: 'not reported: no site in this lane publishes per-machine detail',
+              limit: null, source: 'fleet', detail: 'follows the fleet' }],
+  }));
+  const html = nodes.get('queue').innerHTML;
+  assert.match(html, /not reported/, 'an absent reading must be written as absent');
+  assert.match(html, /no site in this lane publishes per-machine detail/);
 });
 
 test('a site with no resolved budget says so rather than defaulting to a number', () => {

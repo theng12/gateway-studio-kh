@@ -1306,9 +1306,12 @@
     <p class="hint" style="margin:0 0 12px">
       Every job <b>waiting</b> right now — accepted but not yet dispatched, deferred or not —
       in the order the gateway will take them, with each one's position and the size of the
-      queue it sits in. Below that, <b>what is bounding each lane</b>: the pool, each operation's
-      cap, and each site's own budget as the worker last resolved it. A running job is not in
-      this queue at all, so <b>position 3 of 7</b> counts only work still waiting.
+      queue it sits in. Below that, <b>what each lane can run</b>: how many Macs it is
+      <b>offered</b>, how many it is <b>using</b>, and how many are <b>idle</b> — the figure that
+      makes "jobs waiting while Macs sit free" visible — followed by each site's own budget as the
+      worker last resolved it. A lane whose sites do not report per-machine detail says
+      <b>not reported</b>, never <b>0</b>. A running job is not in this queue at all, so
+      <b>position 3 of 7</b> counts only work still waiting.
     </p>
     <div class="row" style="margin:0 0 12px">
       <div class="stat" id="queue-summary">loading…</div>
@@ -4268,13 +4271,22 @@ function renderQueue(data) {
         <td title="${esc(job.attempt_policy || '')}">${queueAttemptText(job)}</td>
       </tr>`;
   }).join('');
+  // **The offer table is the capacity figure on this page, and the only one.** The lane's cap
+  // (`limit`) is the gate's own number and is shown where it is edited; here a second number beside
+  // "offered" is how a reader ends up fixing the display and leaving the gate. Absent is written as
+  // "not reported" — never 0 — because a zero that means "unknown" is the same defect as a stale
+  // failure row.
+  const offerCell = value => value == null
+    ? '<span class="muted" title="no site in this lane publishes per-machine detail">not reported</span>'
+    : esc(value);
   const laneRows = lanes.map(lane => `
       <tr>
         <td>${esc(lane.modality || '—')}</td>
         <td>${esc(lane.waiting ?? 0)}</td>
-        <td>${esc(lane.in_flight ?? 0)}</td>
-        <td>${esc(lane.limit ?? '—')} <span class="muted">${esc(lane.source || '')}</span></td>
-        <td class="muted">${esc(lane.detail || '')}</td>
+        <td>${offerCell(lane.offered)}</td>
+        <td>${offerCell(lane.used)}</td>
+        <td>${offerCell(lane.idle)}</td>
+        <td class="muted">${esc(lane.offer_detail || '')}</td>
       </tr>`).join('');
   const siteRows = sites.map(site => `
       <tr>
@@ -4298,11 +4310,11 @@ function renderQueue(data) {
       ${esc(wait.defer_cap_seconds ?? '—')}s between them (${esc(wait.source || 'unknown')}).
       A position counts only jobs still waiting, in the order the gateway will take them.
     </div>
-    <h3 style="margin:24px 0 6px">What is bounding each lane</h3>
+    <h3 style="margin:24px 0 6px">What each lane can run</h3>
     <table class="grid">
-      <thead><tr><th>Operation</th><th>Waiting</th><th>Running</th><th>Cap in force</th>
-        <th>Where it came from</th></tr></thead>
-      <tbody>${laneRows || '<tr><td colspan="5" class="muted">No lane is capped and nothing is waiting or running.</td></tr>'}</tbody>
+      <thead><tr><th>Operation</th><th>Waiting</th><th>Offered</th><th>Used</th><th>Idle</th>
+        <th>Where the offer comes from</th></tr></thead>
+      <tbody>${laneRows || '<tr><td colspan="6" class="muted">No lane is capped and nothing is waiting or running.</td></tr>'}</tbody>
     </table>
     <h3 style="margin:24px 0 6px">Sites</h3>
     <p class="hint" style="margin:0 0 8px">What each location running work right now will accept,

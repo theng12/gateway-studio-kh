@@ -4642,13 +4642,30 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
         # it; an uncapped, empty lane would be six rows of "the whole pool".
         if not waiting_by_lane.get(lane) and not running and budget.source != concurrency.SOURCE_CURATED:
             continue
+        # **The capacity figure, and the only one** (0.2.295, Production's ask). `offered` is how
+        # many Macs routing could send this lane's work to right now — computed by
+        # `fleet.lane_offer` from the same functions the router reads, never a second calculation —
+        # `used` is what the lane is running, and `idle` is the difference nobody could see before:
+        # jobs waiting while Macs sit free. `offered`/`idle` are `None` when no site reports
+        # per-machine detail, because an absent reading must not render as `0`.
+        offer = fleet.lane_offer(lane)
+        offered = offer["offered"]
         lanes.append({
             "modality": lane,
             "waiting": waiting_by_lane.get(lane, 0),
             "in_flight": running,
+            "offered": offered,
+            "used": running,
+            "idle": None if offered is None else max(int(offered) - running, 0),
+            "offer_source": offer["source"],
+            "offer_detail": offer["detail"],
+            "offer_sites_counted": offer["sites_counted"],
+            "offer_sites_uncounted": offer["sites_uncounted"],
             # The **longest** deadline among this lane's jobs, because that is what a wait can
             # cost: a lane holding one two-hour video can hold it for two hours.
             "deadline_seconds": lane_deadlines.get(lane),
+            # The gate's own cap and where it came from. Not a capacity claim — dispatch reads this
+            # same number — and the page shows the offer above it, never this, as capacity.
             **budget.as_dict(),
         })
 

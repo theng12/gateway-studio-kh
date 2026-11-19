@@ -10,6 +10,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.295 — 2026-11-20
+
+- **The Queue page now says how much capacity each lane offers, and how much of it is idle.** Until now the only number beside a lane was its cap, which is the gate's own limit and not what the fleet can actually run — so "74 jobs waiting while Macs sit free" was invisible in the app that exists to show it. Each lane now reads **Offered / Used / Idle**: how many Macs could take that lane's work right now, how many it is using, and the difference.
+- **The figure is the router's own, not a second calculation.** `offered` counts the Macs the same rule routing uses says may run one of that lane's models now (`fleet._eligible_macs`, over the model set `routing_candidates` reads). A Mac the router would skip is not counted, so the page and the router cannot disagree.
+- **"Not reported" is never shown as 0.** A Hub too old to publish per-machine detail leaves the figure unknown, and the page says so; when only some sites report, the number is what those sites say and the sentence names the ones it could not count.
+
+---
+
 ## 0.2.294 — 2026-11-20
 
 - **An image-pool job that finds nowhere to go now says which sites it passed over, and why.** The pool re-route walked every site once per model in the pool, worked out a reason for each one it skipped, and then threw them all away — so a job that ran out of places ended with one sentence naming no site at all. It now records them: "Every other location was passed over: Site X (model_not_installed: no Mac here is assigned <model>, one of this pool's models)".

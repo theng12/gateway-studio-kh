@@ -7068,6 +7068,75 @@ def route_pool(
     return None, None, "resolved location has no enabled member"
 
 
+def lane_offer(modality: str) -> dict[str, Any]:
+    """How many Macs could run something in this lane **right now**, and from which sites.
+
+    The queue view's capacity figure (0.2.295, Production's ask): 74 image jobs waiting while Macs
+    sit idle was invisible, and a number computed a second way would disagree with the router the
+    first time somebody compared them. So this reads nothing of its own — the lane's models are
+    the set `routing_candidates` reads (`registry.models.enabled_models`), and a Mac counts when
+    `_eligible_macs` says it may run one of them now, which is the same rule
+    `routing_candidates`'s `slots`/`available` and the pool's `assigned_macs` are built on.
+
+    **A Mac is counted once**, however many of the lane's models it can run: the question is "how
+    many Macs", not "how many (Mac, model) pairs".
+
+    `offered` is `None` — never `0` — when no site reports per-machine detail, because an absent
+    reading that renders as zero is the same defect as a stale failure row. When some sites report
+    and others do not, the figure is what the reporting sites say and `detail` names the ones it
+    could not count.
+    """
+    from .providers import registry
+
+    rows = [row for row in snapshot(allow_stale=True).get("locations") or [] if isinstance(row, dict)]
+    models: dict[str, list[str]] = {}
+    for definition, model in registry.models.enabled_models(modality):
+        model_id = str((model or {}).get("model_id") or "")
+        if model_id:
+            models.setdefault(str(getattr(definition, "id", "") or ""), []).append(model_id)
+
+    offered = 0
+    counted: list[str] = []
+    uncounted: list[str] = []
+    for row in rows:
+        provider_id = str(row.get("provider_id") or provider_id_for(str(row.get("id") or "")))
+        # A cloud lane has no Macs to offer; its capacity is a provider quota and is not this
+        # figure. Saying "0 Macs" for it would be true and useless, so it is not counted here.
+        if not is_location_provider(provider_id) or not models.get(provider_id):
+            continue
+        label = str(row.get("label") or row.get("id") or provider_id)
+        if not row.get("local_models"):
+            # The Hub answered, but not with per-Mac detail: unknown, and unknown is not zero.
+            uncounted.append(label)
+            continue
+        macs: set[str] = set()
+        for model_id in models[provider_id]:
+            macs |= set(_eligible_macs(row, model_id, modality))
+        offered += len(macs)
+        counted.append(label)
+
+    if not counted:
+        return {
+            "offered": None,
+            "source": "fleet._eligible_macs over registry.models.enabled_models",
+            "detail": ("not reported: no site in this lane publishes per-machine detail"
+                       if uncounted else "not reported: no fleet site offers this lane"),
+            "sites_counted": 0,
+            "sites_uncounted": uncounted,
+        }
+    detail = (f"{offered} Mac{'s' if offered != 1 else ''} can run this lane now, "
+              f"at {len(counted)} site{'s' if len(counted) != 1 else ''}")
+    if uncounted:
+        detail += f"; not counted: {', '.join(uncounted)} (no per-machine detail)"
+    return {
+        "offered": offered,
+        "source": "fleet._eligible_macs over registry.models.enabled_models",
+        "detail": detail,
+        "sites_counted": len(counted),
+        "sites_uncounted": uncounted,
+    }
+
+
 def hub_version_for(provider_id: str) -> str:
     """The Hub build behind a provider id, from the warm snapshot, or `""`.
 
