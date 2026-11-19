@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.285 — 2026-11-19
+
+- **Work the Hub never started is no longer reported as a render that stalled.** The Hub's own "stalled" flag counts from a batch being made, not from it starting, so a site that accepts work and never places it looked exactly like a hung render — 127 jobs ended overnight with "no progress for 901 s" although not one had reached a Mac. A queued item is now taken back out of the queue before the job moves on, and the row says what happened: "the Hub never put this job on a Mac".
+- **The batch is withdrawn before the job is handed on, never left behind.** That is what kept 46 batches queued at one site with nothing running against them. If the Hub does not confirm taking it back, the Gateway keeps asking rather than closing the job on a guess.
+
+---
+
 ## 0.2.284 — 2026-11-19
 
 - **The build checks everything it copies, not a list of places.** 0.2.283's check named three paths inside the app; a directory copied in later would have been outside it. The build now scans the whole bundled resources tree, as its last step before signing, so the tree checked is the tree that ships — including text copied in by a future release.

@@ -107,6 +107,51 @@ class TheHubStallEndsThePoll(unittest.TestCase):
                               deadline_seconds=7200.0, progress=HubProgress())
         self.assertEqual(outcome["item"]["state"], "done")
 
+
+class AQueuedItemIsNeverCalledStalled(unittest.TestCase):
+    """Measured 2026-11-19: 127 jobs ended as "the Hub reported this job stalled: no progress for
+    901 s" while every one was still **queued** and had never reached a Mac. The Hub's clock
+    counts from the batch being made, not from it starting, so a site that never places work
+    looks exactly like a render that hung. What the operator needs is the fact underneath."""
+
+    class _Queued:
+        def get(self, _url: str, headers=None):  # noqa: ANN001, ARG002
+            return _Response({"items": [{"state": "queued"}], "no_progress_s": 901.0,
+                              "stalled_after_s": 900, "stalled": True})
+
+    _CANCELLED = {"ok": True, "status": 200, "route": "/api/hub/jobs/batch-q1",
+                  "answer": {"ok": True, "queued_cancelled": 1,
+                             "running_signalled": 0, "running_pending": 0}}
+
+    def test_it_is_withdrawn_and_the_job_handed_on(self):
+        from gateway.adapters import studio_hub
+        with patch.object(studio_hub, "_cancel_batch", return_value=self._CANCELLED) as cancel:
+            with self.assertRaises(BackendError) as caught:
+                _poll_batch(self._Queued(), "http://site.test", {}, "batch-q1", 0,
+                            deadline_seconds=7200.0, progress=HubProgress())
+        error = caught.exception
+        cancel.assert_called_once()
+        self.assertEqual(error.code, "NO_AVAILABLE_MACHINE")
+        self.assertIn("never put this job on a Mac", str(error))
+        self.assertIn("901 s", str(error))
+        self.assertTrue(error.retryable)
+        self.assertFalse(error.upstream_accepted, "nothing ran, so the job may move")
+        self.assertTrue(error.upstream_settled, "the Hub confirmed the withdrawal")
+
+    def test_an_unconfirmed_withdrawal_never_becomes_a_stall_claim(self):
+        from gateway.adapters import studio_hub
+
+        class _KeepWaiting(Exception):
+            pass
+
+        refused = {"ok": False, "status": None, "route": "/api/hub/jobs/batch-q1",
+                   "error": "ConnectTimeout: timed out"}
+        with patch.object(studio_hub, "_cancel_batch", return_value=refused), \
+                patch.object(studio_hub.time, "sleep", side_effect=_KeepWaiting):
+            with self.assertRaises(_KeepWaiting):
+                _poll_batch(self._Queued(), "http://site.test", {}, "batch-q1", 0,
+                            deadline_seconds=7200.0, progress=HubProgress())
+
     def test_the_lane_ceiling_travels_with_the_evidence(self):
         # The worker's follow guard needs the limit the poll was given, so that follows cannot
         # multiply the window.

@@ -1119,32 +1119,6 @@ def _poll_batch(
         last = summary
         if progress is not None:
             progress.note(summary)
-        # **The Hub's own stall signal ends the wait.** It is the party that measures progress
-        # (`stalled = no_progress_s >= max(15 min, 5 x average)`), it states that on every poll,
-        # and until now nothing on this side acted on it: a batch that stopped producing rode to
-        # the lane's deadline with its row still saying `running`. A stalled item is not busy, so
-        # the poll ends here — terminal, naming the seconds and the Hub's own threshold.
-        if progress is not None and progress.stalled:
-            no_progress = progress.worst_no_progress_s or 0.0
-            against = (f" against the Hub's {progress.stalled_after_s} s threshold"
-                       if progress.stalled_after_s is not None else "")
-            raise BackendError(
-                f"the Hub reported this job stalled: no progress for {no_progress:.0f} s"
-                f"{against}. The wait was ended instead of running on to the lane's deadline. "
-                f"The batch is recorded so the cleanup stops it first; running the job again "
-                f"after that is safe, and a late answer is kept beside this failure.",
-                code="UPSTREAM_STALLED",
-                # Retryable **because the cleanup stops the old batch first**: the sentence and
-                # the flag say the same thing, which is the rule ("past the bound: fail
-                # retryable with the reason"). Not re-routed automatically (`_NO_REROUTE_CODES`):
-                # a second submission is the caller's decision, not a silent move.
-                retryable=True,
-                upstream_accepted=True,
-                upstream_settled=True,
-                recovery={"batch_id": batch_id, "item_index": item_index,
-                          "jobs_path": jobs_path, "location": base},
-            )
-
         items = summary.get("items") or []
         item = items[item_index] if item_index < len(items) else None
         state = str((item or {}).get("state") or summary.get("state") or "").lower()
@@ -1167,6 +1141,52 @@ def _poll_batch(
         if (running and isinstance(stated, (int, float)) and not isinstance(stated, bool)
                 and math.isfinite(stated) and stated > limit):
             limit = float(stated)
+        # **The Hub's own stall signal ends the wait — for work that started.** It is the party
+        # that measures progress (`stalled = no_progress_s >= max(15 min, 5 x average)`), it
+        # states that on every poll, and a batch that stopped producing must not ride to the
+        # lane's deadline with its row still saying `running`.
+        #
+        # **A queued item is a different fact.** The Hub's `no_progress_s` counts from the moment
+        # the batch was made, so work it never placed is called stalled at its threshold with
+        # nothing running: measured 2026-11-19, 127 jobs failed as "the Hub reported this job
+        # stalled" at exactly 901 s and not one had ever reached a Mac, while 46 of the batches
+        # sat queued at the site. A queued item has provably not run, so it is taken back out of
+        # the queue and the job handed on — never reported as a render that stalled.
+        if progress is not None and progress.stalled:
+            no_progress = progress.worst_no_progress_s or 0.0
+            against = (f" against the Hub's {progress.stalled_after_s} s threshold"
+                       if progress.stalled_after_s is not None else "")
+            if not running and not seen_machine:
+                if queued_for >= withdraw_after and _withdrawn(base, headers, batch_id, jobs_path):
+                    raise BackendError(
+                        f"the Hub never put this job on a Mac: it sat queued for "
+                        f"{no_progress:.0f} s{against} and the batch was withdrawn from the queue "
+                        f"before anything ran. Nothing was charged; the job can go to another "
+                        f"location.",
+                        code=NO_AVAILABLE_MACHINE,
+                        retryable=True,
+                        upstream_accepted=False,
+                        upstream_settled=True,
+                    )
+                withdraw_after = queued_for + 60.0  # not confirmed: keep asking, once a minute
+                time.sleep(POLL_INTERVAL_S)
+                continue
+            raise BackendError(
+                f"the Hub reported this job stalled: no progress for {no_progress:.0f} s"
+                f"{against}. The wait was ended instead of running on to the lane's deadline. "
+                f"The batch is recorded so the cleanup stops it first; running the job again "
+                f"after that is safe, and a late answer is kept beside this failure.",
+                code="UPSTREAM_STALLED",
+                # Retryable **because the cleanup stops the old batch first**: the sentence and
+                # the flag say the same thing, which is the rule ("past the bound: fail
+                # retryable with the reason"). Not re-routed automatically (`_NO_REROUTE_CODES`):
+                # a second submission is the caller's decision, not a silent move.
+                retryable=True,
+                upstream_accepted=True,
+                upstream_settled=True,
+                recovery={"batch_id": batch_id, "item_index": item_index,
+                          "jobs_path": jobs_path, "location": base},
+            )
         if state == "running":
             reported = (item or {}).get("elapsed_s")
             if isinstance(reported, (int, float)) and not isinstance(reported, bool) and reported >= 0:
