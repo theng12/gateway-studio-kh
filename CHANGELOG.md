@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.293 — 2026-11-20
+
+- **The placement bound cannot be crowded out of its own queue.** The sweep that ends a job waiting too long asked for "every unfinished job, oldest first" and then skipped the running ones — so on a busy fleet, old running rows filled that list and the waiting job it was looking for was never reached. It now asks for exactly the shape it acts on (waiting, never sent), which is also the read the database can answer from an index. Measured on the controller: 65 running against 199 waiting.
+- **A finished job no longer leaves its clocks behind.** Four paths end a job and move on without clearing the two per-job timers the scheduler keeps in memory, so every finished job left an entry in both for the life of the process. Nothing was ever misread — job ids are unique — but it was unbounded growth in the scheduler itself, and it is now cleared wherever a job ends.
+
+---
+
 ## 0.2.292 — 2026-11-19
 
 - **A size the model cannot render is refused, not quietly swapped for another one.** A request that named its own width and height was answered with the model's nearest preset and reported as a success, so the picture was not the size anyone asked for and nothing said so. It now refuses with `INVALID_SIZE`, naming both the size asked for and the size the model renders. The refusal is not retried on another machine, because every machine would give the same answer. Geometry that matches what the model renders still goes through untouched.

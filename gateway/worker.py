@@ -3439,6 +3439,14 @@ class Worker:
                     if (self._expired_in_queue(job) or self._stranded_on_paused(job)
                             or self._image_limits_refused(job)
                             or self._no_eligible_machine(job)):
+                        # **The job is over; forget its per-job clocks with it.** Every path
+                        # below still cleans up, but these four end a row and `continue` — so a
+                        # settled job's placement clock and rebind backoff outlived it in two
+                        # dicts that nothing prunes. Ids are unique so nothing is misread, but it
+                        # is unbounded growth in the scheduler's own memory: exactly the shape of
+                        # a sticky map, and cheap to close here.
+                        self._placement_wait_started.pop(job["id"], None)
+                        self._rebind_backoff.pop(job["id"], None)
                         continue
                     # Reserve first, then claim: a claim that fails must not leave the
                     # budget holding a slot nobody will ever release.
