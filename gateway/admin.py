@@ -49,7 +49,7 @@ from . import price_evidence
 from . import pricing
 from .pricing import row_price
 from . import qualification
-from . import admin_session, maintenance, model_share, render_optin, startup_control
+from . import admin_session, maintenance, model_share, operator_key, render_optin, startup_control
 from . import orphans
 from .config import is_loopback, request_is_loopback
 from .hub import hub_status
@@ -223,6 +223,28 @@ def require_local_app(
     bearer = (authorization or "")
     if not bearer.lower().startswith("bearer ") or not _key_matches(bearer[7:].strip()):
         raise AdminError(403, "Set the browser password in the Gateway app on its own Mac.")
+
+
+def require_admin_or_scope(scope: str):
+    """`require_admin`, **or** an operator key that carries `scope` (0.2.297, step 1 of the design).
+
+    Additive on purpose: a request that carries no `kho_` token goes through `require_admin`
+    exactly as before, so nothing loses a guard it has today. A request that does carry one is
+    checked against the key's own scopes and refused by name when it lacks the one asked for.
+    """
+    def dependency(request: Request, authorization: str | None = Header(default=None)) -> None:
+        record = operator_key.matches(authorization)
+        if record is None:
+            return require_admin(request, authorization)
+        if not operator_key.allows(record, scope):
+            raise AdminError(
+                403,
+                f"This operator key does not carry the {scope!r} scope. Its scopes are "
+                f"{', '.join(record.get('scopes') or [])}.",
+                "OPERATOR_SCOPE_REQUIRED",
+            )
+        operator_key.touch(record)
+    return dependency
 
 
 def require_owner(request: Request, authorization: str | None = Header(default=None)) -> None:
@@ -5147,7 +5169,51 @@ def _with_last_known_machines(live: list[dict[str, Any]], carried: list[dict[str
     return sorted(live + kept, key=lambda row: order.get(str(row.get("location_id")), len(order)))
 
 
-@router.get("/api/fleet", dependencies=[Depends(require_admin)])
+@router.get(
+    "/api/settings/operator-keys",
+    dependencies=[Depends(require_admin), Depends(require_owner_console)],
+)
+def operator_keys_list() -> Any:
+    """The operator keys this Mac holds — name, scopes, issued, last used, revoked.
+
+    Owner's app window only (`require_owner_console`), like the key it replaces: listing what
+    credentials exist is itself owner information. The hashes are never returned.
+    """
+    return {"keys": operator_key.list_keys(), "scopes": list(operator_key.SCOPES),
+            "path": str(operator_key.path())}
+
+
+@router.post(
+    "/api/settings/operator-keys",
+    dependencies=[Depends(require_admin), Depends(require_owner_console)],
+)
+def operator_keys_issue(payload: dict[str, Any]) -> Any:
+    """Issue one operator key. Body `{"name", "scopes": [...]}`.
+
+    **The token is in this answer and nowhere else** — only its SHA-256 is stored, so a key that is
+    not copied now has to be revoked and reissued.
+    """
+    try:
+        token, record = operator_key.mint(payload.get("name"), payload.get("scopes") or [],
+                                          issued_by="gateway-settings")
+    except ValueError as error:
+        return _error(400, str(error), "BAD_OPERATOR_KEY")
+    return {"ok": True, "key": token, "record": record,
+            "warning": "This is the only time this key is shown. Copy it now."}
+
+
+@router.delete(
+    "/api/settings/operator-keys/{key_id}",
+    dependencies=[Depends(require_admin), Depends(require_owner_console)],
+)
+def operator_keys_revoke(key_id: str) -> Any:
+    """Revoke one key. The record stays — that a credential existed is evidence, not clutter."""
+    if not operator_key.revoke(key_id):
+        return _error(404, "No such key, or it was already revoked.", "NO_SUCH_OPERATOR_KEY")
+    return {"ok": True, "revoked": key_id, "keys": operator_key.list_keys()}
+
+
+@router.get("/api/fleet", dependencies=[Depends(require_admin_or_scope("read"))])
 def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     """Every location, its machines and its in-flight work.
 

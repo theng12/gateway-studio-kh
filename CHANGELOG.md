@@ -10,6 +10,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.297 — 2026-11-20
+
+- **The operator key exists: one estate credential, scoped and revocable.** The first step of the approved design, and deliberately the smallest one — the lock before the door. A `kho_` key lives in one 0600 file in the same shape as the update hold's token, is stored only as a SHA-256 (the token is shown once, at issue), and carries named scopes (`read`, `create`, `ops`, `release`, `owner`, `empty-trash`). Revoking keeps the record: that a credential existed is evidence.
+- **Nothing was loosened to make room for it.** A request that carries no `kho_` key goes through exactly the guard it went through before; the first route to accept a key is the fleet read, and only with the `read` scope. A key without that scope is refused by name, and `empty-trash` is never implied by any other scope — the wide destructive door is issued to nothing by default.
+- **Not yet visible in the app:** issuing and revoking is a route pair (`/admin/api/settings/operator-keys`, owner-window only). The Settings card that shows and copies a key is the next piece, so nobody looks for it tonight and concludes it is missing.
+
+---
+
 ## 0.2.296 — 2026-11-20
 
 - **An offline site is no longer described as one that cannot report.** The queue's capacity sentence listed every site it could not count with the same words — "no per-machine detail" — which is the reason for an old Hub, not for a Mac that is switched off. Found on the live fleet, where both uncounted sites were simply offline. The two reasons now read differently: "not answering" for a site the fleet read says is unreachable, "no per-machine detail" for one that answers without per-Mac facts.
