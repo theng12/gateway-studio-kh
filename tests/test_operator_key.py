@@ -136,6 +136,35 @@ class TheGuard(unittest.TestCase):
         self.assertNotEqual(response.status_code, 200,
                             "a revoked key authenticated off loopback")
 
+    def test_a_revoked_key_is_refused_on_a_loopback_install(self) -> None:
+        """The proof that revocation means something: the same client, before and after.
+
+        A loopback-bound Gateway is every Mac in the fleet, so if a revoked key fell through to the
+        loopback trust it would still be accepted there and revocation would be theatre.
+        """
+        token, record = operator_key.mint("reader", ["read"])
+        first = self.client.get("/admin/api/fleet", headers=self._headers(token))
+        self.assertEqual(first.status_code, 200)
+        operator_key.revoke(record["id"])
+        after = self.client.get("/admin/api/fleet", headers=self._headers(token))
+        self.assertEqual(after.status_code, 403, "a revoked key was still accepted")
+        body = after.json()
+        self.assertEqual(body.get("code"), "OPERATOR_KEY_REFUSED")
+        self.assertIn("revoked", json.dumps(body).lower(), f"the refusal must say why: {body}")
+
+    def test_prefix_spellings_are_refused_rather_than_downgraded(self) -> None:
+        """`KHO_…` is the same claim as `kho_…`; a claim not honoured is refused, never ignored."""
+        for spelling in ("KHO_" + "a" * 20, "Kho_" + "a" * 20, "kho_" + "a" * 20):
+            response = self.client.get("/admin/api/fleet",
+                                       headers={"Authorization": "Bearer " + spelling})
+            self.assertEqual(response.status_code, 403, f"{spelling} slipped through")
+            self.assertEqual(response.json().get("code"), "OPERATOR_KEY_REFUSED")
+        # And a bearer that is not an operator key at all still takes the old path.
+        unchanged = self.client.get("/admin/api/fleet",
+                                    headers={"Authorization": "Bearer offer-fixture-key"})
+        self.assertEqual(unchanged.status_code, 200,
+                         "a non-operator credential must keep the behaviour it had")
+
     def test_the_old_path_is_unchanged_when_no_key_is_present(self) -> None:
         """The whole point of step 1: nothing that worked before stops working."""
         response = self.client.get("/admin/api/fleet", headers=self._headers())

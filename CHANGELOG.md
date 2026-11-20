@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.298 — 2026-11-20
+
+- **A revoked operator key is now refused everywhere — including on the Mac that issued it.** 0.2.297 fell through to the ordinary admin guard when a presented key did not match, and on a loopback-bound Gateway — every Mac in the fleet — that guard trusts the local machine, so a **revoked key was still accepted**. Revocation was true only away from loopback. A key that is presented but not valid is now refused where it is presented, naming that it was revoked or is wrong.
+- **A key spelled `KHO_…` is the same claim as `kho_…`.** The prefix is matched case-insensitively for recognition, so a near-miss is refused rather than quietly ignored — the same fall-through that made revocation ineffective would have let a typo through on any Mac.
+
+---
+
 ## 0.2.297 — 2026-11-20
 
 - **The operator key exists: one estate credential, scoped and revocable.** The first step of the approved design, and deliberately the smallest one — the lock before the door. A `kho_` key lives in one 0600 file in the same shape as the update hold's token, is stored only as a SHA-256 (the token is shown once, at issue), and carries named scopes (`read`, `create`, `ops`, `release`, `owner`, `empty-trash`). Revoking keeps the record: that a credential existed is evidence.

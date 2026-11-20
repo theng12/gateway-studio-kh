@@ -235,6 +235,16 @@ def require_admin_or_scope(scope: str):
     def dependency(request: Request, authorization: str | None = Header(default=None)) -> None:
         record = operator_key.matches(authorization)
         if record is None:
+            # **A key that is presented but not valid is refused here, not downgraded.** Falling
+            # through to `require_admin` would accept it on a loopback-bound install — every Mac
+            # in the fleet — which would make revocation a no-op exactly where it matters most.
+            if operator_key.looks_like_key(authorization):
+                raise AdminError(
+                    403,
+                    "That operator key is not valid, has been revoked, or is spelled wrong. "
+                    "Issue a new one in Settings → Operator keys.",
+                    "OPERATOR_KEY_REFUSED",
+                )
             return require_admin(request, authorization)
         if not operator_key.allows(record, scope):
             raise AdminError(
