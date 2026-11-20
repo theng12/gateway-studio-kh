@@ -156,6 +156,18 @@ def matches(authorization: str | None) -> dict[str, Any] | None:
     return _find(token)
 
 
+def looks_like_key(authorization: str | None) -> bool:
+    """Is this request *trying* to present an operator key, whatever its spelling?
+
+    Matched case-insensitively on purpose: `KHO_…` and `kho_…` are the same claim, and a claim that
+    is not honoured must be **refused**, never quietly downgraded to whatever the route trusts next.
+    On a loopback-bound install that fall-through would accept a revoked key.
+    """
+    bearer = str(authorization or "")
+    token = bearer[7:].strip() if bearer.lower().startswith("bearer ") else ""
+    return token.lower().startswith(PREFIX)
+
+
 def touch(record: dict[str, Any]) -> None:
     """Remember that a key was used; the write is batched (see the module docstring)."""
     global _last_flush
