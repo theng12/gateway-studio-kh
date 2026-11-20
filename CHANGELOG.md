@@ -10,6 +10,14 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.300 — 2026-11-20
+
+- **The app no longer stops itself when it clears an old login item.** Found the hard way on the publisher: 0.2.299 was installed, the app was started through its own launch job, and it quit **0.14 s later** — `launchservicesd` recorded `QUITTING: pid=13878` right after the one-time cleanup that removes an old `SMAppService` registration. Clearing that label stops the process wearing it, and the process wearing it was the job that had just started the app. The updater saw a process appear and never become healthy, rolled back, and the Mac was left with **no job and nothing running** for 17 minutes.
+- **The cleanup now follows the rule the rest of the login-item code already follows:** the copy launchd started never touches its own job. A launch that is not the job still clears the row — that is the case the cleanup was written for, and a Mac in that state cannot be running under the job at all, because the job could not be imported while the label was taken. Both directions are tested natively.
+- **A skipped cleanup is said out loud**, with its reason, so a Mac that legitimately still carries the row is visible in the log rather than silently doing nothing.
+
+---
+
 ## 0.2.299 — 2026-11-20
 
 - **"Used" and "Offered" are now the same unit: Macs.** Found live on the publisher — the tts lane read 26 offered and 43 used, which is not a lane over capacity, it is two numbers counting different things. `offered` counts fleet Macs; `used` counted every running job in the lane, cloud work included, and cloud work never occupies one of those Macs. A lane running only on the cloud now reads `used 0`, and `idle` is `offered − used` in one unit.

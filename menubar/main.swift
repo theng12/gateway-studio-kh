@@ -1231,6 +1231,23 @@ enum LaunchAgentJobCheck {
             line.trimmingCharacters(in: .whitespaces) == "path = \(plistPath)"
         }
     }
+
+    /// **May the old `SMAppService` row be cleared by this launch?**
+    ///
+    /// Clearing it unregisters the label, and macOS stops the process wearing it — including the
+    /// LaunchAgent job that started this very copy. Measured on 1301, 2026-11-20: an install
+    /// launched the app through the job, the migration unregistered the label, and
+    /// `launchservicesd` recorded `QUITTING: pid=13878` **0.14 s after it started**. The updater
+    /// saw a process appear and never become healthy, rolled back, and the Mac was left with no
+    /// job and nothing running for 17 minutes.
+    ///
+    /// So the rule is the one `refresh()` already follows — the copy launchd started never
+    /// touches its own job. The case the migration was written for (a stale row holding the label,
+    /// 1301 2026-11-17) **cannot** be running under this job: the job could not have been imported
+    /// while the label was taken. That case still reaches the unregister.
+    static func shouldClearLegacyRow(hasRow: Bool, launchedByJob: Bool) -> Bool {
+        hasRow && !launchedByJob
+    }
 }
 // END launch-agent-job-check
 
@@ -1304,7 +1321,18 @@ enum LaunchAgent {
     static func clearLegacyRegistration() {
         guard #available(macOS 13.0, *) else { return }
         let record = SMAppService.agent(plistName: "\(label).plist")
-        guard record.status != .notRegistered else { return }
+        // **Never unregister the job that is supervising this process** (2026-11-20, 1301).
+        // Unregistering the label stops the process wearing it — and an install starts this app
+        // through that very job, so the migration killed the copy it had just launched, 0.14 s in.
+        guard LaunchAgentJobCheck.shouldClearLegacyRow(hasRow: record.status != .notRegistered,
+                                                      launchedByJob: runningAsAgent) else {
+            // Said out loud, with the reason: a skip that is silent is the same defect as a
+            // swallowed failure, and someone reading a Mac's log has to know why a row was left.
+            if record.status != .notRegistered {
+                NSLog("launch-at-login: leaving the old SMAppService row for %@ in place — this launch is that job, and clearing it would stop the only copy running; it is cleared by a launch that is not started by the job", label)
+            }
+            return
+        }
         do {
             try record.unregister()
             NSLog("launch-at-login: cleared the old SMAppService registration for \(label)")

@@ -153,6 +153,24 @@ class LoginItemIsAPlistAgent(unittest.TestCase):
         repair = self._function("repairIfNeeded", "static var currentBuild")
         self.assertIn("clearLegacyRegistration()", repair, "cleared on launch")
 
+    def test_the_migration_never_unregisters_the_job_that_started_it(self) -> None:
+        """1301, 2026-11-20: an install launched the app through this job, the migration cleared the
+        label, macOS stopped the job, and the app quit 0.14 s after it started. The updater read
+        that as "not healthy", rolled back, and the Mac was left with no job and nothing running.
+
+        The guard is the rule `refresh` already follows: the copy launchd started never touches its
+        own job. It is the decision that is tested natively (both directions, above); this pins
+        that the decision is actually used here, and that a skip is said out loud.
+        """
+        clear = self._function("clearLegacyRegistration", "static func repairIfNeeded(")
+        self.assertIn("LaunchAgentJobCheck.shouldClearLegacyRow(", clear,
+                      "the guard is the shared, tested decision, not a second copy of the rule")
+        self.assertIn("launchedByJob: runningAsAgent", clear,
+                      "`runningAsAgent` is how a job-launched copy is recognised (XPC_SERVICE_NAME)")
+        self.assertLess(clear.index("shouldClearLegacyRow"), clear.index("record.unregister()"),
+                        "the guard runs before anything is unregistered")
+        self.assertIn("leaving the old SMAppService row", clear, "a skip is logged with its reason")
+
     def test_a_failed_unregister_is_not_silent(self) -> None:
         """A swallowed failure left the old row holding the label, and every later import was
         refused with "same label as an existing service" (1301, 2026-11-17)."""

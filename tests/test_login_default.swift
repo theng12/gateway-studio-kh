@@ -64,6 +64,18 @@ enum LoginDefaultCheck {
                                               plistPath: "/Users/one/Library/LaunchAgents/kh.gateway.other.plist"),
               "another plist's path is not our job")
 
+        // Both directions of the legacy-row guard (1301, 2026-11-20). Clearing the row stops the
+        // process wearing the label, so a launch that IS the job must leave it alone; a launch that
+        // is not the job clears it, which is the case the migration exists for.
+        check(LaunchAgentJobCheck.shouldClearLegacyRow(hasRow: true, launchedByJob: false),
+              "a launch that is not the job clears the old row (the 2026-11-17 case)")
+        check(!LaunchAgentJobCheck.shouldClearLegacyRow(hasRow: true, launchedByJob: true),
+              "a launch that IS the job leaves the old row alone, or it stops itself")
+        check(!LaunchAgentJobCheck.shouldClearLegacyRow(hasRow: false, launchedByJob: false),
+              "no row: nothing to clear")
+        check(!LaunchAgentJobCheck.shouldClearLegacyRow(hasRow: false, launchedByJob: true),
+              "no row: nothing to clear, job or not")
+
         if failures == 0 { print("PASS: login default") }
         exit(failures == 0 ? 0 : 1)
     }
