@@ -49,13 +49,14 @@ MODALITY = "image"
 SITE = "loc1"
 
 
-def _site(*, machines: int, eligible: int, reports_detail: bool = True) -> dict:
+def _site(*, machines: int, eligible: int, reports_detail: bool = True,
+          reachable: bool = True) -> dict:
     """One Hub row: `machines` Macs, the first `eligible` of them memory-eligible for the member."""
     row = {
         "id": SITE,
         "provider_id": f"studio-hub-{SITE}",
         "label": "Site One",
-        "reachable": True,
+        "reachable": reachable,
         "slow": False,
         "answered_at": 1.0,
         "role": "controller",
@@ -69,6 +70,11 @@ def _site(*, machines: int, eligible: int, reports_detail: bool = True) -> dict:
         "running_jobs": [],
         "model_supply": {MEMBER: {"eligible": machines, "available": eligible}},
     }
+    if not reachable:
+        row["machines"] = []
+        row["machine_summary"] = {"reachable": 0, "total": 0}
+        row["model_supply"] = {}
+        return row
     if reports_detail:
         row["local_models"] = [
             {"model_id": MEMBER, "machine": f"mac-{i}", "modality": MODALITY,
@@ -91,7 +97,7 @@ def _enabled(requested: str):
         return []
     row = {"model_id": MEMBER, "display_name": "z-image", "modality": MODALITY,
            "enabled": True, "raw": {}}
-    return [(_definition(SITE), row), (_definition("loc2"), row)]
+    return [(_definition(SITE), row), (_definition("loc2"), row), (_definition("loc3"), row)]
 
 
 class OfferTable(unittest.TestCase):
@@ -150,6 +156,28 @@ class OfferTable(unittest.TestCase):
         detail = str(lane.get("offer_detail") or "")
         self.assertIn("Site Two", detail,
                       f"a partial figure did not name the site it could not count: {detail}")
+
+
+    def test_an_offline_site_is_not_called_an_old_hub(self) -> None:
+        """Two different unknowns, two sentences: found live on 1301, 0.2.295."""
+        offline = _site(machines=0, eligible=0, reports_detail=False, reachable=False)
+        offline["id"] = "loc3"
+        offline["provider_id"] = "studio-hub-loc3"
+        offline["label"] = "Site Offline"
+        body = self._queue([_site(machines=3, eligible=2), offline])
+        lane = self._lane(body)
+        self.assertEqual(lane["offered"], 2)
+        detail = str(lane.get("offer_detail") or "")
+        self.assertIn("Site Offline", detail)
+        self.assertIn("not answering", detail,
+                      f"an offline site was described as a Hub that cannot report: {detail}")
+
+    def test_a_lane_whose_only_site_is_offline_says_so(self) -> None:
+        body = self._queue([_site(machines=0, eligible=0, reports_detail=False, reachable=False)])
+        lane = self._lane(body)
+        self.assertIsNone(lane["offered"])
+        self.assertIn("answering", str(lane.get("offer_detail") or "").lower())
+
 
     def test_the_old_capacity_number_is_not_beside_it(self) -> None:
         """One capacity figure: the page renders the offer, and the JSON names what produced it."""

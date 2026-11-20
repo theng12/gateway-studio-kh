@@ -7097,7 +7097,8 @@ def lane_offer(modality: str) -> dict[str, Any]:
 
     offered = 0
     counted: list[str] = []
-    uncounted: list[str] = []
+    unanswered: list[str] = []
+    unreported: list[str] = []
     for row in rows:
         provider_id = str(row.get("provider_id") or provider_id_for(str(row.get("id") or "")))
         # A cloud lane has no Macs to offer; its capacity is a provider quota and is not this
@@ -7105,9 +7106,15 @@ def lane_offer(modality: str) -> dict[str, Any]:
         if not is_location_provider(provider_id) or not models.get(provider_id):
             continue
         label = str(row.get("label") or row.get("id") or provider_id)
+        # **Two different unknowns, two different sentences** (0.2.296, found live on 1301): a site
+        # that is not answering and a Hub too old to publish per-Mac facts both leave the figure
+        # short, but a reader told the wrong one stops looking. The fleet row's own `reachable`
+        # decides which; "not stated" is not "offline", so only an explicit False lands here.
+        if row.get("reachable") is False:
+            unanswered.append(label)
+            continue
         if not row.get("local_models"):
-            # The Hub answered, but not with per-Mac detail: unknown, and unknown is not zero.
-            uncounted.append(label)
+            unreported.append(label)
             continue
         macs: set[str] = set()
         for model_id in models[provider_id]:
@@ -7116,24 +7123,31 @@ def lane_offer(modality: str) -> dict[str, Any]:
         counted.append(label)
 
     if not counted:
+        if unreported:
+            why = "not reported: no site in this lane publishes per-machine detail"
+        elif unanswered:
+            why = "not reported: no site in this lane is answering"
+        else:
+            why = "not reported: no fleet site offers this lane"
         return {
             "offered": None,
             "source": "fleet._eligible_macs over registry.models.enabled_models",
-            "detail": ("not reported: no site in this lane publishes per-machine detail"
-                       if uncounted else "not reported: no fleet site offers this lane"),
+            "detail": why,
             "sites_counted": 0,
-            "sites_uncounted": uncounted,
+            "sites_uncounted": unanswered + unreported,
         }
     detail = (f"{offered} Mac{'s' if offered != 1 else ''} can run this lane now, "
               f"at {len(counted)} site{'s' if len(counted) != 1 else ''}")
-    if uncounted:
-        detail += f"; not counted: {', '.join(uncounted)} (no per-machine detail)"
+    if unanswered:
+        detail += f"; not counted: {', '.join(unanswered)} (not answering)"
+    if unreported:
+        detail += f"; not counted: {', '.join(unreported)} (no per-machine detail)"
     return {
         "offered": offered,
         "source": "fleet._eligible_macs over registry.models.enabled_models",
         "detail": detail,
         "sites_counted": len(counted),
-        "sites_uncounted": uncounted,
+        "sites_uncounted": unanswered + unreported,
     }
 
 

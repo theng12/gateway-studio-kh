@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.296 — 2026-11-20
+
+- **An offline site is no longer described as one that cannot report.** The queue's capacity sentence listed every site it could not count with the same words — "no per-machine detail" — which is the reason for an old Hub, not for a Mac that is switched off. Found on the live fleet, where both uncounted sites were simply offline. The two reasons now read differently: "not answering" for a site the fleet read says is unreachable, "no per-machine detail" for one that answers without per-Mac facts.
+- **A build leaves a pointer where a reader looks.** `dist/` never receives an unaccepted DMG — that is deliberate — but `ls dist/` then looked like "nothing was built" to two readers in one night. Each build now writes `dist/LATEST-CANDIDATE.txt`: the candidate's path, its sha256 and when it was built.
+
+---
+
 ## 0.2.295 — 2026-11-20
 
 - **The Queue page now says how much capacity each lane offers, and how much of it is idle.** Until now the only number beside a lane was its cap, which is the gate's own limit and not what the fleet can actually run — so "74 jobs waiting while Macs sit free" was invisible in the app that exists to show it. Each lane now reads **Offered / Used / Idle**: how many Macs could take that lane's work right now, how many it is using, and the difference.

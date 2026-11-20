@@ -742,6 +742,12 @@ hdiutil create -volname "Gateway Studio KH" -srcfolder "$DMG_STAGE" -format UDZO
 preserve_path "$DMG_STAGE"
 echo "Candidate DMG: $CANDIDATE"
 echo "     (canonical dist/ is untouched until this build is accepted)"
+# A reader who runs `ls dist/` to answer "has it built yet" sees only `.candidates/` and concludes
+# nothing was built — that cost a coordinator two wrong conclusions on 2026-11-20. The candidate
+# still does not go in dist/ (unaccepted is not accepted); this one-line pointer does, and it is
+# rewritten by every build.
+printf '%s\n%s\n%s\n' "$CANDIDATE" "$(shasum -a 256 "$CANDIDATE" | awk '{print $1}')" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DIST/LATEST-CANDIDATE.txt"
 
 if [ "$INSTALL" = "1" ]; then
   # Prefer the system /Applications folder. `~/Applications` is hidden by
