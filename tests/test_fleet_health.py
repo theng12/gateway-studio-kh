@@ -314,5 +314,36 @@ class TheHeadlineSaysMacsAndWorkersSeparately(unittest.TestCase):
         self.assertNotIn(None, (summary["machines_distinct"], summary["machines_shared_across_locations"]))
 
 
+class AStalledJobLineNamesWhoActsAndByWhen(unittest.TestCase):
+    """Row `20261120-182`, answered in `_orchestra/gateway-lead/fleet-watch-stalled-20261120/`.
+
+    "Job X is stalled." gave a reader no actor, no action and no clock, so the reasonable guess was
+    that the machine would fix it — nothing does, on purpose (the Hub's flag is a second-hand
+    judgement about a Mac that says it is healthy). The line now names all three, and the clock is
+    the Hub's own `stalled_after_s`, so a stale line reads stale instead of reading current.
+    """
+
+    def issue(self, job: dict) -> dict:
+        row = group(1)
+        row["running_jobs"] = [job]
+        return next(entry for entry in fleet._issues_for(row) if entry["code"] == "running_stalled")
+
+    def test_the_line_says_how_long_who_acts_and_how(self) -> None:
+        got = self.issue({"id": "add37ff6eb", "modality": "image", "stalled": True,
+                          "no_progress_s": 2040, "stalled_after_s": 1800})
+        self.assertIn("34 min", got["message"], f"the clock is missing: {got['message']}")
+        self.assertIn("Nothing restarts it by itself", got["message"])
+        self.assertIn("a person should", got["message"], "no actor was named")
+        self.assertIn("kh-fleet-restart", got["message"], "the action was not named")
+        self.assertIn("4 min past the 30 min this Hub calls stalled", got["message"],
+                      "the Hub's own ceiling is not quoted, so the line cannot go visibly stale")
+
+    def test_a_job_the_hub_calls_stalled_with_no_clock_invents_none(self) -> None:
+        got = self.issue({"id": "j1", "modality": "image", "stalled": True})
+        self.assertIn("is stalled", got["message"])
+        self.assertNotIn("0 min", got["message"], "an absent duration was rendered as a zero")
+        self.assertNotIn("past the", got["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

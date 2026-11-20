@@ -304,16 +304,25 @@ def requested_by(request: Request) -> dict[str, Any]:
     return {"role": "key", "label": caller_hint(request) or "Story Studio"}
 
 
-def require_owner_console(request: Request) -> None:
+def require_owner_console_for(what: str):
     """The owner's own Gateway app window and nothing else: not the key, a browser session or loopback alone.
 
-    Checked on top of `require_admin` for actions that cannot be undone (a permanent Trash Folder delete).
+    Checked on top of `require_admin` for actions that cannot be undone or that are owner
+    information (a permanent Trash delete, the operator keys). `what` is the refused action, so
+    the sentence names what the caller was trying to do rather than whatever route registered
+    this guard first — the operator-key routes were telling people a Trash delete had failed.
     The proof is the per-launch secret only the app holds (`admin_session.OWNER_HEADER`).
     """
-    if not (request_is_loopback(request)
-            and admin_session.owner_console(request.headers.get(admin_session.OWNER_HEADER))):
-        raise AdminError(403, "Permanent delete works only from the Gateway app on its own Mac (Fleet > Machines "
-                              "> … > Trash…). If the app did not start this gateway, restart it from the app.")
+    def dependency(request: Request) -> None:
+        if not (request_is_loopback(request)
+                and admin_session.owner_console(request.headers.get(admin_session.OWNER_HEADER))):
+            raise AdminError(403, f"{what} works only from the Gateway app on its own Mac. "
+                                  "If the app did not start this gateway, restart it from the app.")
+    return dependency
+
+
+require_owner_console = require_owner_console_for(
+    "Permanent delete (Fleet > Machines > … > Trash…)")
 
 
 def require_maintenance(
@@ -4616,6 +4625,9 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
     # reading two instants, not a corrupted book.
     in_flight = dict(getattr(worker, "_in_flight", {}) or {})
     lane_in_flight = dict(getattr(worker, "_lane_in_flight", {}) or {})
+    #: `(provider_id, modality) -> this gateway's running jobs there`, so `used` below can count
+    #: only the sites `offered` counts (0.2.299 — the two figures were in different units).
+    per_lane = dict(getattr(worker, "_per_lane", {}) or {})
     budgets = dict(getattr(worker, "budgets", {}) or {})
 
     def provider_name(provider_id: str) -> str:
@@ -4682,13 +4694,19 @@ def queue_view(limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
         # per-machine detail, because an absent reading must not render as `0`.
         offer = fleet.lane_offer(lane)
         offered = offer["offered"]
+        # **Macs for Macs** (0.2.299, found live: tts offered 26, used 43). `offered` counts
+        # fleet sites; a lane's cloud jobs are not at a site and can never occupy one of those
+        # Macs, so counting them here subtracted work from capacity it never used. `in_flight`
+        # stays the whole lane, because that is a different question ("how much is running").
+        used = sum(count for (provider_id, lane_name), count in per_lane.items()
+                   if lane_name == lane and fleet.is_location_provider(provider_id))
         lanes.append({
             "modality": lane,
             "waiting": waiting_by_lane.get(lane, 0),
             "in_flight": running,
             "offered": offered,
-            "used": running,
-            "idle": None if offered is None else max(int(offered) - running, 0),
+            "used": used,
+            "idle": None if offered is None else max(int(offered) - used, 0),
             "offer_source": offer["source"],
             "offer_detail": offer["detail"],
             "offer_sites_counted": offer["sites_counted"],
@@ -5181,7 +5199,7 @@ def _with_last_known_machines(live: list[dict[str, Any]], carried: list[dict[str
 
 @router.get(
     "/api/settings/operator-keys",
-    dependencies=[Depends(require_admin), Depends(require_owner_console)],
+    dependencies=[Depends(require_admin), Depends(require_owner_console_for("Operator key management"))],
 )
 def operator_keys_list() -> Any:
     """The operator keys this Mac holds — name, scopes, issued, last used, revoked.
@@ -5195,7 +5213,7 @@ def operator_keys_list() -> Any:
 
 @router.post(
     "/api/settings/operator-keys",
-    dependencies=[Depends(require_admin), Depends(require_owner_console)],
+    dependencies=[Depends(require_admin), Depends(require_owner_console_for("Operator key management"))],
 )
 def operator_keys_issue(payload: dict[str, Any]) -> Any:
     """Issue one operator key. Body `{"name", "scopes": [...]}`.
@@ -5214,7 +5232,7 @@ def operator_keys_issue(payload: dict[str, Any]) -> Any:
 
 @router.delete(
     "/api/settings/operator-keys/{key_id}",
-    dependencies=[Depends(require_admin), Depends(require_owner_console)],
+    dependencies=[Depends(require_admin), Depends(require_owner_console_for("Operator key management"))],
 )
 def operator_keys_revoke(key_id: str) -> Any:
     """Revoke one key. The record stays — that a credential existed is evidence, not clutter."""
