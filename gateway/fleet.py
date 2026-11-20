@@ -3892,6 +3892,17 @@ def _is_reach_error(text: object) -> bool:
     return any(phrase in lowered for phrase in _REACH_PHRASES)
 
 
+def _is_silent(seconds: object) -> bool:
+    """Is this a duration the Hub actually sent? `None` and `0` mean "not reported", not "zero"."""
+    return isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and seconds > 0
+
+
+def _minutes(seconds: float) -> str:
+    """A wait in the words a person uses. Under a minute is still a wait, so it is not rounded to 0."""
+    total = int(seconds)
+    return f"{total // 60} min" if total >= 60 else f"{total} s"
+
+
 def _issue(
     severity: str, code: str, location_id: object, location: object,
     subject: str, message: str, action: str,
@@ -4293,9 +4304,22 @@ def _issues_for(row: dict) -> list[dict]:
         if not isinstance(job, dict) or not job.get("stalled"):
             continue
         job_id = str(job.get("id") or job.get("model") or "job")
+        # **Who acts, what they do, and by what clock** (0.2.299, row `20261120-182`). "Job X is
+        # stalled." names none of the three, so a reader assumes the machine will fix it; nothing
+        # here does, on purpose — the Hub's flag is a second-hand judgement about a Mac that says
+        # it is healthy, and acting on it would restart a studio under a running job. The clock is
+        # the Hub's own `stalled_after_s`, never a number of ours, so the line ages honestly: a
+        # job silent well past that ceiling is one nobody has looked at yet.
+        silent = job.get("no_progress_s")
+        ceiling = job.get("stalled_after_s")
+        silence = f"has not progressed for {_minutes(silent)}" if _is_silent(silent) else "is stalled"
+        past = (f", {_minutes(silent - ceiling)} past the {_minutes(ceiling)} this Hub calls stalled"
+                if _is_silent(silent) and _is_silent(ceiling) and silent > ceiling else "")
         out.append(_issue(
             "error", "running_stalled", location_id, location, job_id,
-            f"Job {job_id} is stalled.", "Fleet → Jobs",
+            f"Job {job_id} {silence}{past}. Nothing restarts it by itself — a person should start "
+            "that Mac's services (Fleet → Machines → Start services) or run kh-fleet-restart by hand.",
+            "Fleet → Jobs",
         ))
 
     hidden = int(row.get("probe_machines_hidden") or 0)

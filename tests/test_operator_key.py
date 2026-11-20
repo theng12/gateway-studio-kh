@@ -171,6 +171,20 @@ class TheGuard(unittest.TestCase):
         self.assertEqual(response.status_code, 200,
                          "a loopback caller with no kho_ key must still pass require_admin")
 
+    def test_the_refusal_names_the_action_not_some_other_route(self) -> None:
+        """Found live: these routes refused with the Trash-delete sentence (0.2.299).
+
+        One guard is registered by several routes, so a fixed sentence told a reader their key
+        action had failed as a permanent delete — wrong about what is at stake, and wrong about
+        what they can do next.
+        """
+        response = self.client.get("/admin/api/settings/operator-keys",
+                                   headers={"Authorization": "Bearer offer-fixture-key"})
+        self.assertEqual(response.status_code, 403)
+        text = json.dumps(response.json())
+        self.assertIn("Operator key management", text, f"the refusal did not name the action: {text}")
+        self.assertNotIn("Trash", text, f"an operator-key call was refused as a Trash delete: {text}")
+
     def test_issue_and_revoke_are_the_owner_window_only(self) -> None:
         self.assertEqual(self.client.get("/admin/api/settings/operator-keys",
                                          headers=self._headers()).status_code, 200)

@@ -104,9 +104,13 @@ class OfferTable(unittest.TestCase):
     def setUp(self) -> None:
         worker._lane_in_flight.clear()
         worker._in_flight.clear()
+        worker._per_lane.clear()
+        self.addCleanup(worker._per_lane.clear)
         # A lane is published when something is waiting or running in it; these tests are about the
-        # figure, so the lane is given one running job rather than a queued one.
+        # figure, so the lane is given one running job rather than a queued one. `used` counts jobs
+        # at fleet sites only (0.2.299), so that one job is placed where the queue reads it.
         worker._lane_in_flight[MODALITY] = 1
+        worker._per_lane[(f"{fleet.PROVIDER_PREFIX}{SITE}", MODALITY)] = 1
         self.addCleanup(worker._lane_in_flight.clear)
 
     def _queue(self, rows: list[dict]) -> dict:
@@ -135,6 +139,20 @@ class OfferTable(unittest.TestCase):
         self.assertTrue(candidates, "the router found no candidate for a Mac the offer counted")
         self.assertEqual(lane["used"], 1)
         self.assertEqual(lane["idle"], 1, "idle capacity is the number nobody can see today")
+
+    def test_a_lane_running_on_the_cloud_is_not_counted_as_used(self) -> None:
+        """Found live on 1301: tts offered 26, used 43. A cloud job occupies no fleet Mac.
+
+        `offered` counts Macs, so `used` must count jobs at those same Macs; counting the whole
+        lane subtracted cloud work from capacity it never used.
+        """
+        worker._per_lane.clear()
+        worker._per_lane[("fal", MODALITY)] = 3
+        lane = self._lane(self._queue([_site(machines=3, eligible=2)]))
+        self.assertEqual(lane["offered"], 2)
+        self.assertEqual(lane["used"], 0, "a cloud job was subtracted from a Mac's capacity")
+        self.assertEqual(lane["idle"], 2)
+        self.assertEqual(lane["in_flight"], 1, "in_flight answers a different question and is unchanged")
 
     def test_a_hub_without_per_machine_detail_is_not_reported_not_zero(self) -> None:
         body = self._queue([_site(machines=3, eligible=0, reports_detail=False)])
