@@ -249,6 +249,10 @@ one-file command above. (Cost: a person who runs discover first reads the suite 
 
 ## Where a built artifact is — two paths, and they are not interchangeable
 
+- **A fresh worktree cannot build until `data/final-render/` is copied into it** (`cp -R
+  data/final-render <worktree>/data/`). Without it the build stops with "selected render authority
+  source is unavailable" — met again on 2026-11-20 in a worktree created an hour after the previous
+  one, so it is a per-worktree step, not a one-time setup.
 - **Unaccepted build → a candidate inside the app's own worktree:**
   `worktrees/<task>/dist/.candidates/<commit>-<stamp>.<rand>/Gateway Studio KH-<version>-<commit>-<stamp>.dmg`.
   `menubar/build.sh` stages it here and says so on its last line.
