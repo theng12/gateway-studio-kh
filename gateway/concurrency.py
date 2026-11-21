@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -672,6 +673,22 @@ def liveness_budget() -> dict[str, Any]:
     }
 
 
+def fleet_view_age(view: dict[str, Any], *, now: float | None = None) -> float | None:
+    """How old a fleet view is, read exactly as routing reads it (`fleet.routing_candidates`)."""
+    from . import fleet
+
+    generated = fleet._num(view.get("generated_at"))
+    return ((now if now is not None else time.time()) - generated) if generated else None
+
+
+def stale_fleet_reason(age: float) -> str:
+    """The one sentence that says why a reader stopped trusting a fleet view."""
+    from . import fleet
+
+    return (f"fleet read is {int(age)} s old, past the "
+            f"{int(fleet._ROUTING_VIEW_MAX_AGE_S)} s routing bound")
+
+
 def live_capacity(*, worker: Any = None, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """**What the fleet can actually do right now**, per modality and in total.
 
@@ -701,13 +718,24 @@ def live_capacity(*, worker: Any = None, rows: list[dict[str, Any]] | None = Non
     """
     per_modality: dict[str, int] = {}
     locations: list[dict[str, Any]] = []
+    from . import fleet as fleet_module
+
+    now = time.time()
+    generated_at: float | None = None
     if rows is None:
         try:
-            from . import fleet as fleet_module
-
-            rows = fleet_module.snapshot(allow_stale=True).get("locations") or []
+            view = fleet_module.snapshot(allow_stale=True)
+            rows = view.get("locations") or []
+            generated = fleet_module._num(view.get("generated_at"))
+            generated_at = generated if generated else None
         except Exception:  # noqa: BLE001 - an unreadable fleet is zero capacity, not a crash
             rows = []
+    else:
+        # These rows came from the fan-out that is calling us; stamping them here keeps the
+        # display honest without re-entering that fan-out for a snapshot.
+        generated_at = now
+    age = (now - generated_at) if generated_at else None
+    stale = age is not None and age > fleet_module._ROUTING_VIEW_MAX_AGE_S
     for row in rows:
         provider_id = str(row.get("provider_id") or "")
         reachable = row.get("reachable") is not False
@@ -735,15 +763,24 @@ def live_capacity(*, worker: Any = None, rows: list[dict[str, Any]] | None = Non
         locations.append(entry)
     total = sum(per_modality.values())
     pool = global_budget()
+    source = "the live fleet, summed over reachable locations"
+    if stale and age is not None:
+        source = ("the last fleet read, summed over reachable locations ("
+                  + stale_fleet_reason(age) + "); not current")
     return {
         "total": total,
         "by_modality": per_modality,
         "locations": locations,
+        # A display may sum an old read, but it must say when the read was made and that the
+        # figure is not current: routing has already refused to choose from a view this old.
+        "generated_at": generated_at,
+        "age_seconds": age,
+        "stale": stale,
         # **The pool is a local pool, not the published answer.** It bounds how many jobs *this*
         # gateway runs at once; the fleet figure is what the fleet can do. `global` is reported
         # beside it so a reader can see the two disagree rather than discovering it by counting.
         "pool": {"limit": pool.limit, "source": pool.source, "detail": pool.detail},
-        "source": "the live fleet, summed over reachable locations",
+        "source": source,
     }
 
 

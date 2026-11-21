@@ -2800,7 +2800,18 @@ class Worker:
         try:
             from . import fleet
 
-            for row in fleet.snapshot(allow_stale=True).get("locations") or []:
+            view = fleet.snapshot(allow_stale=True)
+            age = concurrency.fleet_view_age(view)
+            if age is not None and age > fleet._ROUTING_VIEW_MAX_AGE_S:
+                # Routing refuses to choose from a view this old, so admission must not sum
+                # a budget from it. Say which honest budget is used in its place.
+                budget = concurrency.cloud_budget(provider_id)
+                return concurrency.Budget(
+                    budget.limit, budget.source,
+                    concurrency.stale_fleet_reason(age)
+                    + "; no live budget, so using the stated/cloud one: " + budget.detail,
+                )
+            for row in view.get("locations") or []:
                 if str(row.get("provider_id") or "") != provider_id:
                     continue
                 reading = concurrency.hub_slot_reading(row, operation)
