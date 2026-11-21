@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.302 — 2026-11-22
+
+- **No change in how Gateway works: this release is the one that proves the app's new home.** The project moved to its own folder, and 0.2.302 is the first version gated, built and published from there. The code is the same as 0.2.301; the version number and these notes are the only difference.
+
+---
+
 ## 0.2.301 — 2026-11-21
 
 - **Admission no longer counts capacity from a fleet read routing would refuse.** Routing has stopped choosing from a fleet snapshot older than 120 s since 0.2.289, but the two places that decide how much can run — the per-provider budget and the published live capacity — still summed whatever the cache held. A Gateway that lost contact with its sites could keep admitting work against a figure an hour old. Admission now reuses that same 120 s bound: past it, the per-provider budget falls back to the stated or cloud limit and says so — *"fleet read is 300 s old, past the 120 s routing bound; no live budget, so using the stated/cloud one: …"* — instead of presenting an old sum as live.
