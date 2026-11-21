@@ -2136,6 +2136,83 @@ def locations() -> list[dict]:
     return rows
 
 
+def refresh_location(controller_id: str) -> dict | None:
+    """One bounded read of one location: the Fleet page's "ask this Mac now".
+
+    The whole-fleet refresh waits for every controller and rewrites the cache, the history and
+    the pause stamps; this one probes only the named site, inside the same per-site bound
+    `_probe_timeout` gives the fan-out (`PROBE_TIMEOUT_S`…`PROBE_TIMEOUT_MAX_S`, scaled by that
+    site's own last probe), and writes nothing anywhere: it is an answer to a question, not a
+    pass of the refresher. When the site does not answer, the plain reason `_probe` worked out
+    travels with the answer and its Macs are carried from the last read, marked `last_known`
+    with their own "Not checked in since HH:MM" — never drawn as a fresh fault.
+
+    `None` means the location is not in the roster at all (the caller says so); a location that
+    exists but did not answer is a result, not an error.
+    """
+    now = time.time()
+    configured: dict | None = None
+    if controller_id == LOCAL_ID:
+        try:
+            base, token = hub_base_url() or "", hub_token() or ""
+        except Exception as exc:  # noqa: BLE001 - a missing Hub is a state, not a crash
+            base, token, configured = "", "", {"error": str(exc)}
+        if not base:
+            row = _unread_location(LOCAL_ID, local_label(), "", local=True)
+            row.update(reachable=False, error_kind="local_hub_down",
+                       error=(configured or {}).get("error")
+                       or "Studio Hub is not running on this Mac.")
+            timeout = _probe_timeout(LOCAL_ID)
+        else:
+            configured = {}
+    else:
+        configured = next((r for r in _read() if str(r.get("id") or "") == controller_id), None)
+        if configured is None:
+            return None
+        base, token = str(configured.get("url") or ""), _token_for(controller_id)
+    timeout = _probe_timeout(controller_id)
+    if configured is not None and base:
+        row = _probe(base, token, timeout=timeout)
+        row.update({
+            "id": controller_id,
+            "label": local_label() if controller_id == LOCAL_ID
+            else str(configured.get("label") or base),
+            "url": base, "local": controller_id == LOCAL_ID,
+            "provider_id": provider_id_for(controller_id),
+        })
+        if not row.get("reachable") and controller_id != LOCAL_ID:
+            # The same roster a whole-fleet outage carries, so a one-location read of a
+            # silent site names the same Macs the fan-out did.
+            last_known = _last_known_members(controller_id)
+            if last_known:
+                row.update(last_known)
+        _stamp_pause(row, controller_id)
+        _qualify_location_labels(row)
+    with _cache_lock:
+        previous = _cache["value"] or _cache["last"]
+    if not row.get("reachable"):
+        # The whole-fleet path stamps `answered_at` here (`_keep_last_known`); the carry below
+        # needs it too, but keeps this probe's own bound-specific reason rather than the
+        # fan-out's generic sentence.
+        old = next((r for r in (previous or {}).get("locations") or []
+                    if str(r.get("id") or "") == controller_id), None)
+        if old and old.get("answered_at"):
+            row["answered_at"] = old["answered_at"]
+    carried = [] if row.get("reachable") else _carry_last_known_machines([row], previous)
+    return {
+        "id": controller_id,
+        "label": row.get("label"),
+        "reachable": bool(row.get("reachable")),
+        "error": row.get("error"),
+        "error_kind": row.get("error_kind"),
+        # The bound this read was held to, so a slow answer can be judged against it.
+        "bound_seconds": timeout,
+        "measured_at": now,
+        "not_checked": not bool(row.get("reachable")),
+        "machines": machines_flat([row]) if row.get("reachable") else carried,
+    }
+
+
 #: What the snapshot may write back to a roster row: its reachability, and nothing else.
 _REACHABILITY_KEYS = ("paused_at", "pause_reason", "unreachable_since", "last_reachable_at")
 
@@ -3436,6 +3513,22 @@ def _attention(entry: dict, workers: list[dict], phantom: list[dict], health: ob
     return ("long_idle" if age >= _LONG_IDLE_S else "ready"), None, None
 
 
+def _attention_status(source: str | None, measured_at: float | None) -> str:
+    """One plain sentence beside a verdict: is it current, and when was it measured.
+
+    A stale figure may be shown with its time, but must never read as current — so the
+    last-known wording is the page's own "Not checked in since HH:MM", and a row the
+    controller never dated says so rather than borrowing "now".
+    """
+    if str(source or "") != "current" and measured_at:
+        return time.strftime("Not checked in since %H:%M", time.localtime(measured_at))
+    if str(source or "") != "current":
+        return "Not checked in — the controller did not say when it last saw this Mac."
+    if not measured_at:
+        return "Measured just now."
+    return time.strftime("Measured at %H:%M", time.localtime(measured_at))
+
+
 def project_developer_gate_inventory(raw: Any, *, controller_id: str | None,
                                      node_id: str) -> dict[str, Any] | None:
     """Preserve only closed facts bound to this controller and physical node."""
@@ -3602,6 +3695,9 @@ def machines_flat(rows: list[dict]) -> list[dict]:
                 "attention_code": code,
                 "attention_measured_at": attention_measured_at,
                 "attention_source": attention_source,
+                # The page's own sentence for the two states, so a stale row can never be
+                # mistaken for a live one by a reader that only has the machine row.
+                "attention_status": _attention_status(attention_source, attention_measured_at),
                 "checked_in_at": node.get("last_seen_at"),
                 "hub_version": version,
                 "version_status": version_status(
@@ -4662,6 +4758,7 @@ def _carry_last_known_machines(rows: list[dict], previous: dict | None) -> list[
                 # draws "not checked in since HH:MM" instead of a fault sentence.
                 "attention_source": "last_known",
                 "attention_measured_at": float(as_of),
+                "attention_status": _attention_status("last_known", float(as_of)),
             })
     return carried
 

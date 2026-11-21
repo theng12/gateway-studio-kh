@@ -5304,6 +5304,22 @@ def fleet_snapshot(force: bool = False) -> dict[str, Any]:
     return out
 
 
+@router.post("/api/fleet/controllers/{controller_id}/refresh", dependencies=[Depends(require_admin)])
+def fleet_refresh_location(controller_id: str) -> Any:
+    """Ask one location now, inside its own bound, and return what was measured.
+
+    The page's Refresh button fans out to every controller; this asks exactly one Mac's site —
+    "is this row still amber?" — and answers with that location's fresh machine rows. Each row
+    carries its cause, when it was measured and whether it is `current` or `last_known`; a site
+    that misses its bound comes back with the plain reason and its Macs carried from the last
+    read, marked `last_known` ("Not checked in since HH:MM"), never drawn as a live fault.
+    """
+    result = fleet.refresh_location(controller_id)
+    if result is None:
+        return _error(404, "No such location.", "NO_SUCH_LOCATION")
+    return result
+
+
 @router.post("/api/fleet/counters/reset", dependencies=[Depends(require_admin)])
 def reset_fleet_counters() -> dict[str, Any]:
     """Every Mac's done/failed/median count from now on (Fleet -> Machines, "Reset counters").
