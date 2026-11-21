@@ -40,7 +40,7 @@ import tempfile
 from pathlib import Path
 
 APP = "Gateway Studio KH"
-DEFAULT_PROJECT = "/build/Developer/My Own Apps/gateway-kh/repository"
+DEFAULT_PROJECT = "/build/Developer/_orchestra/developer-media/gateway-studio-kh/app"
 DEFAULT_HELPER = "/build/Developer/Shared Tools/portfolio/tools/release-dist.py"
 MANIFEST = ".release-dist.json"
 CHUNK = 1 << 20
