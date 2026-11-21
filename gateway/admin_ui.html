@@ -7735,6 +7735,7 @@ function fleetSite(L) {
           data-menu="card-${esc(detailKey)}" onclick="toggleCardMenuFor(this)">More…</button>
           <div class="more-menu" id="pmenu-card-${esc(detailKey)}" hidden>
             <button type="button" data-fleet-key="${esc(detailKey)}" onclick="fleetCardDetails(this)">${detailOpen ? 'Hide details' : 'Details'}</button>
+            <button type="button" data-id="${esc(L.id)}" onclick="fleetAskOneLocation(this)">Ask now</button>
           </div></span>
       </div>
     </div>
@@ -8666,6 +8667,7 @@ function fleetLocationRow(L) {
       <button type="button" class="sm" aria-haspopup="true" aria-expanded="false"
         data-menu="loc-more-${esc(L.id)}" onclick="toggleCardMenuFor(this)">More…</button>
       <div class="more-menu" id="pmenu-loc-more-${esc(L.id)}" hidden>
+      <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetAskOneLocation(this)">Ask now</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'test')">Test</button>
       <button type="button" class="sm" data-fleet-key="s:${esc(L.id || '')}" onclick="fleetShowDetails(this)">Details</button>
       <button type="button" class="sm" data-id="${esc(L.id)}" onclick="fleetLocationAction(this,'rename')">Rename</button>
@@ -8685,6 +8687,54 @@ function fleetLocationRow(L) {
 function fleetLocationNote(text) {
   const note = document.getElementById('fleet-location-action-note');
   if (note) note.textContent = text;
+}
+
+// ---- Ask one location now --------------------------------------------------
+//
+// "Ask now" is one location, one bounded read (POST /fleet/controllers/<id>/refresh) — not the
+// whole-fleet Refresh beside it, which waits for every controller. The route writes nothing, so
+// the page folds the answer into its own copy: the tables then show what was just measured instead
+// of the last whole-fleet read, and a site that missed its bound says so instead of reading as a
+// fresh fault.
+function fleetLocationReadNote(answer) {
+  const name = answer.label || answer.id || 'That location';
+  const count = (answer.machines || []).length;
+  const when = answer.measured_at
+    ? new Date(answer.measured_at * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
+    : '';
+  if (answer.reachable !== true) {
+    return `${name} did not answer inside its ${answer.bound_seconds} s bound — `
+      + `${answer.error || 'no reason was given'}. Its ${count === 1 ? 'Mac is' : `${count} Macs are`}`
+      + ' shown from the last read.';
+  }
+  return `${name} answered inside its ${answer.bound_seconds} s bound — ${count} `
+    + `Mac${count === 1 ? '' : 's'}${when ? ` measured at ${when}` : ''}.`;
+}
+
+async function fleetAskOneLocation(button) {
+  const id = button.dataset.id;
+  button.disabled = true;
+  fleetLocationNote(`Asking ${id} now — this waits for its own bound…`);
+  try {
+    const answer = await api(`/fleet/controllers/${encodeURIComponent(id)}/refresh`, {method: 'POST'});
+    fleetLocationNote(fleetLocationReadNote(answer));
+    fleetApplyLocationRead(id, answer);
+  } catch (e) {
+    fleetLocationNote(`Could not ask ${id} — ${e.message}`);
+  } finally { button.disabled = false; }
+}
+
+function fleetApplyLocationRead(id, answer) {
+  if (!lastFleetPayload) return;
+  const kept = (lastFleetPayload.machines || []).filter(m => String(m.location_id) !== String(id));
+  const locations = (lastFleetPayload.locations || []).map(L => String(L.id) === String(id)
+    ? Object.assign({}, L, {reachable: answer.reachable === true, error: answer.error || null})
+    : L);
+  lastFleetPayload = Object.assign({}, lastFleetPayload,
+    {machines: kept.concat(answer.machines || []), locations});
+  fleetMachineRows = lastFleetPayload.machines;
+  renderFleetTabs();
+  renderFleet(lastFleetPayload);
 }
 
 function openAddLocation() {
