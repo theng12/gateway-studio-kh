@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.301 — 2026-11-21
+
+- **Admission no longer counts capacity from a fleet read routing would refuse.** Routing has stopped choosing from a fleet snapshot older than 120 s since 0.2.289, but the two places that decide how much can run — the per-provider budget and the published live capacity — still summed whatever the cache held. A Gateway that lost contact with its sites could keep admitting work against a figure an hour old. Admission now reuses that same 120 s bound: past it, the per-provider budget falls back to the stated or cloud limit and says so — *"fleet read is 300 s old, past the 120 s routing bound; no live budget, so using the stated/cloud one: …"* — instead of presenting an old sum as live.
+- **A displayed capacity figure now carries the time it was measured.** The live capacity publishes `generated_at`, `age_seconds` and `stale`, and its source line says *"the last fleet read, summed over reachable locations (fleet read is 300 s old, past the 120 s routing bound); not current"* when the read is old. A stale number may be shown; it may not read as current. Rows handed in by the caller's own fan-out are stamped as just measured, so the display never re-enters the fan-out to look fresher than it is.
+
+---
+
 ## 0.2.300 — 2026-11-20
 
 - **The app no longer stops itself when it clears an old login item.** Found the hard way on the publisher: 0.2.299 was installed, the app was started through its own launch job, and it quit **0.14 s later** — `launchservicesd` recorded `QUITTING: pid=13878` right after the one-time cleanup that removes an old `SMAppService` registration. Clearing that label stops the process wearing it, and the process wearing it was the job that had just started the app. The updater saw a process appear and never become healthy, rolled back, and the Mac was left with **no job and nothing running** for 17 minutes.
