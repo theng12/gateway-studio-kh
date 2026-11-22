@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.303 — 2026-11-22
+
+- **One Mac's site can be asked again without waiting for the whole fleet.** "Refresh" on the Fleet page waits for every location to answer, so re-checking one amber row meant holding a full fan-out. Each location row and site card now has **Ask now**: it asks just that site, inside that site's own time limit, and says plainly whether the answer is current or carried from its last read — a silent site shows its Macs as "Not checked in since HH:MM" instead of as a fresh fault. Nothing is written by the question: it is an answer, not a refresh pass.
+- **Every attention sentence now says when it was measured.** A row's cause carries "Measured at HH:MM" and a carried row says when it was last seen, so a stale figure can be shown without reading as current.
+
+---
+
 ## 0.2.302 — 2026-11-22
 
 - **No change in how Gateway works: this release is the one that proves the app's new home.** The project moved to its own folder, and 0.2.302 is the first version gated, built and published from there. The code is the same as 0.2.301; the version number and these notes are the only difference.
