@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.304 — 2026-11-22
+
+- **The Launcher card now says what Gateway is.** Gateway's row carries its category and its one-line description, so the app list describes what the app does instead of leaving it blank. No change in how Gateway works.
+
+---
+
 ## 0.2.303 — 2026-11-22
 
 - **One Mac's site can be asked again without waiting for the whole fleet.** "Refresh" on the Fleet page waits for every location to answer, so re-checking one amber row meant holding a full fan-out. Each location row and site card now has **Ask now**: it asks just that site, inside that site's own time limit, and says plainly whether the answer is current or carried from its last read — a silent site shows its Macs as "Not checked in since HH:MM" instead of as a fresh fault. Nothing is written by the question: it is an answer, not a refresh pass.
