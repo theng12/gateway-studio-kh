@@ -11,6 +11,15 @@
     <description>The newest Gateway Studio KH for Macs that already have it.</description>
     <language>en</language>
       <item>
+      <title>Version 0.2.306</title>
+      <pubDate>Mon, 23 Nov 2026 15:48:51 +0000</pubDate>
+      <sparkle:version>0.2.306</sparkle:version>
+      <sparkle:shortVersionString>0.2.306</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[- **Updates can hold your work again, and stop borrowing the shared token file.** Gateway now keeps its own hold token in its own folder, copying the shared one across once the first time it starts; the old shared file is never read again. When the token cannot be read, the app says so on screen in plain words instead of quietly refusing every update.]]></description>
+      <enclosure url="https://github.com/theng12/gateway-studio-kh/releases/download/0.2.306/b78e590ff156-Gateway.Studio.KH-0.2.306-7415b104-202611231536.dmg" length="65514493" type="application/octet-stream" sparkle:edSignature="mhnBt6x3Q5SKd11fWLowUUWX6sW1mlGvUR+rLyrB1ptmcmm+5v0rPObomFzo7HSp1fwk0NuzEfvjkK+CRqXsDw==" />
+    </item>
+    <item>
       <title>Version 0.2.305</title>
       <pubDate>Mon, 23 Nov 2026 13:06:57 +0000</pubDate>
       <sparkle:version>0.2.305</sparkle:version>
