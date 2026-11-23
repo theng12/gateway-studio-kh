@@ -25,6 +25,16 @@ import Cocoa
 import ServiceManagement
 import WebKit
 
+// MARK: - Updater
+
+/// The shim's state callback: 0 idle, 1 updating, 2 relaunching. A C function pointer cannot
+/// capture, so this is file scope. State 2 means Sparkle is about to terminate the app — the
+/// gateway's own drain has already been sent by the shim, so there is nothing to do here but
+/// leave a line a person can find in the log.
+private func khSparkleStateChanged(_ state: Int32) {
+    NSLog("kh-sparkle: state %d", state)
+}
+
 // MARK: - App paths
 
 /// Every writable location the app uses, in one place.
@@ -1830,6 +1840,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             LaunchAgent.install()
         } else if ConfigStore.shared.config.launchAtLoginOptedOut != true {
             LaunchAgent.repairIfNeeded(current: ownExecutable)
+        }
+
+        // **Start the updater once, after the menu-bar item exists** (INTEGRATION.md §2). It reads
+        // SUFeedURL, SUPublicEDKey and KHHoldURL from Info.plist, holds work on this app's own drain
+        // route *before* it fetches the feed, and draws nothing. A refusal is a log line here, never
+        // a dialog: an update that cannot hold is refused rather than installed over running work.
+        kh_sparkle_set_state_callback(khSparkleStateChanged)
+        if kh_sparkle_start() != 0 {
+            NSLog("kh-sparkle: refused: %@", String(cString: kh_sparkle_last_error()))
         }
 
         // Editing shortcuts (⌘A/⌘C/⌘V/⌘X/⌘Z) are dispatched through the main

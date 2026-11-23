@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.305 — 2026-11-23
+
+- **Gateway can now update itself, and it holds your work first.** The app checks a signed feed in the background and installs a new version without a window, a prompt or a click. Before it fetches anything it puts its own work on hold through the same maintenance hold an install already uses, so no running job is cut off; if the hold cannot be taken, the update is refused instead of forced. Work resumes by itself when the check finishes.
+- **Gateway now requires macOS 12 or later.** The updater's library is built for it.
+
+---
+
 ## 0.2.304 — 2026-11-22
 
 - **The Launcher card now says what Gateway is.** Gateway's row carries its category and its one-line description, so the app list describes what the app does instead of leaving it blank. No change in how Gateway works.
