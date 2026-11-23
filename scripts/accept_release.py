@@ -40,8 +40,11 @@ import tempfile
 from pathlib import Path
 
 APP = "Gateway Studio KH"
-DEFAULT_PROJECT = "/build/Developer/_orchestra/developer-media/gateway-studio-kh/app"
-DEFAULT_HELPER = "/build/Developer/Shared Tools/portfolio/tools/release-dist.py"
+DEFAULT_PROJECT = os.environ.get("GATEWAY_RELEASE_PROJECT", str(Path(__file__).resolve().parent.parent))
+DEFAULT_HELPER = os.environ.get(
+    "GATEWAY_RELEASE_DIST_HELPER",
+    str(Path.home() / "Developer" / "Shared Tools" / "portfolio" / "tools" / "release-dist.py"),
+)
 MANIFEST = ".release-dist.json"
 CHUNK = 1 << 20
 VERSION_RE = re.compile(r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$")

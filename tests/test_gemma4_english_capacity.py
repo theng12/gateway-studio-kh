@@ -13,7 +13,7 @@ Verifies the Gateway's contracts for `studio-hub::mlx-community/gemma-4-26B-A4B-
    - Hub 422 room-left on long English prompts triggers one re-send resized to room left with fresh request ID.
    - Truncated completions (`finish_reason: "length"`) surface loudly as `INCOMPLETE_OUTPUT`.
 3. Fit-aware fleet capacity & admission:
-   - Gemma 4 (26B) is fit-aware: only Macs with >= 32 GB RAM (e.g. terranash-1607) are eligible.
+   - Gemma 4 (26B) is fit-aware: only Macs with >= 32 GB RAM (e.g. studio-1607) are eligible.
    - Busy node (`eligible: 1, available: 0`) queues the job in `accepted` state.
    - Node outage (`eligible: 0`) triggers `states_no_mac` and 503 `MODEL_LOCKED` refusal at the door.
    - Paused nodes (like Mac Studio) are excluded from routing candidates.
@@ -283,8 +283,8 @@ class Gemma4FitAwareCapacityTest(unittest.TestCase):
             "capacity": {"accepting_customer_jobs": True, "queue_depth": 0},
             "paused_at": time.time() if paused else None,
             "machines": [
-                {"machine": "terranash-1607-m2-pro-32-512", "reachable": True, "memory_gb": 34.36},
-                {"machine": "terranash-1601-m2-8-256", "reachable": True, "memory_gb": 8.59},
+                {"machine": "studio-1607-m2-pro-32-512", "reachable": True, "memory_gb": 34.36},
+                {"machine": "studio-1601-m2-8-256", "reachable": True, "memory_gb": 8.59},
             ],
             "model_supply": {MODEL_ID: {"eligible": eligible, "available": available}},
         }
@@ -302,7 +302,7 @@ class Gemma4FitAwareCapacityTest(unittest.TestCase):
         )
 
     def test_single_eligible_node_provides_exact_slot_capacity(self) -> None:
-        """Site 1600 provides exactly 1 slot (terranash-1607) for Gemma 4."""
+        """Site 1600 provides exactly 1 slot (studio-1607) for Gemma 4."""
         snap, enabled = self.patches([self._site_row(SITE_1600, eligible=1, available=1)], [SITE_1600])
         with snap, enabled:
             candidates = fleet.routing_candidates(MODEL_ID, "chat")

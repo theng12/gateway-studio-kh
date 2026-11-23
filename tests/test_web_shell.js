@@ -113,7 +113,7 @@ test('the shell is a left sidebar beside one page, and a top bar at phone width'
 
 function statusPayload(extra) {
   return Object.assign({
-    version: '0.2.236', computer_name: 'terranash-1301',
+    version: '0.2.236', computer_name: 'studio-1301',
     models: {by_modality: {}, publishable_models: 1, withheld_models: 0},
     providers: {enabled: 1, total: 2},
     hub: {running: true, base_url: 'http://127.0.0.1:8787'},

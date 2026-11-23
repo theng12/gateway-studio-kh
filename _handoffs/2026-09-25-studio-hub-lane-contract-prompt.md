@@ -125,7 +125,7 @@ offerable.
 
 - **A node `detail` is empty.** `/api/hub/fleet/nodes` returns
   `"could not reach the node: "` — nothing after the colon — for every node at
-  `terranash-1100-m4-16-256`, while the other site says `"All connection
+  `studio-1100-m4-16-256`, while the other site says `"All connection
   attempts failed"`. The gateway now quotes that sentence on the Machines tab, so
   an empty one is a dead end for the owner.
 - **`workers[].studio_version` is the literal string `"standalone"`** on the
@@ -141,9 +141,9 @@ offerable.
 
 ### 6. One fault we can see from here, in case it is yours
 
-The node `vengthengs-mac-studio-hub` answers **`401 Unauthorized`** on
+The node `owner-mac-studio-hub` answers **`401 Unauthorized`** on
 `/studio/voice/api/transcribe/availability` (and the `/studio/transcription/…`
-spelling) for controller `terranash-1100-m4-16-256`; 7 model rows carry that as
+spelling) for controller `studio-1100-m4-16-256`; 7 model rows carry that as
 their catalogue error. The node is otherwise joined, and it is unreachable at the
 moment of writing, so this may be a stale reading. From our side it looks like
 either a credential mismatch between that controller and that node's voice studio,

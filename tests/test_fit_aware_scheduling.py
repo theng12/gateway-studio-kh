@@ -509,7 +509,7 @@ class SpeedByMacClassTest(_Case):
 
 
 class RefusedConnectionTest(_Case):
-    """terranash-1200 refused connections at 21:10 on 2026-11-16, yet sections kept going there."""
+    """studio-1200 refused connections at 21:10 on 2026-11-16, yet sections kept going there."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -578,7 +578,7 @@ class OutputSpaceTest(_Case):
             self.assertFalse(fleet.routing_candidates(HEAVY, "tts")[0]["spent"])
 
     def test_a_controller_out_of_disk_spends_its_whole_site_for_voice_output(self) -> None:
-        """terranash-1300 (disk "stop") refused at its door while its nodes were green (2026-11-16)."""
+        """studio-1300 (disk "stop") refused at its door while its nodes were green (2026-11-16)."""
         site = _site("a", op_total=1, supply={HEAVY: 1})
         site["machines"] = [
             {"machine": "local", "label": "ctl", "reachable": True, "health": "up",

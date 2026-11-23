@@ -762,7 +762,7 @@ class OneFaultOneRowTests(unittest.TestCase):
         )
 
     def test_the_probes_sentence_outranks_a_health_word_that_disagrees(self) -> None:
-        # **Found in the live fleet, not in a fixture.** `terranash-1209` reports
+        # **Found in the live fleet, not in a fixture.** `studio-1209` reports
         # `health: unreachable` while its own probe detail says `(no_hub)` — something
         # answered. Reading `health` first called that Mac switched-off when a host had just
         # replied to it. `no_hub` is positive evidence the Mac is up; `unreachable` is the

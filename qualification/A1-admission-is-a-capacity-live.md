@@ -12,21 +12,21 @@ reachable is given **zero**, which is what routing already assumed (audit M2).
 | This Mac | True | 1 | 1 | 1 | **1** | hub | 0 |
 | This Mac | True | 1 | 1 | 1 | **1** | hub | 0 |
 | This Mac | True | 2 | 1 | 1 | **1** | hub | 0 |
-| terranash-1100-m4-16-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
-| terranash-1100-m4-16-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
-| terranash-1100-m4-16-256 | True | 2 | 1 | 1 | **1** | hub | 0 |
-| terranash-1200-m4-24-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
-| terranash-1200-m4-24-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
-| terranash-1200-m4-24-256 | True | 2 | 1 | 1 | **1** | hub | 0 |
-| terranash-1300-m4-24-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
-| terranash-1300-m4-24-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
-| terranash-1300-m4-24-256 | True | 2 | 1 | 1 | **1** | hub | 0 |
-| terranash-1400-m4-24-256 | False | None | None | None | **0** | hub | 0 |
-| terranash-1400-m4-24-256 | False | None | None | None | **0** | hub | 0 |
-| terranash-1400-m4-24-256 | False | None | None | None | **0** | hub | 0 |
-| terranash-1500-m4-24-256 | False | None | None | None | **0** | hub | 0 |
-| terranash-1500-m4-24-256 | False | None | None | None | **0** | hub | 0 |
-| terranash-1500-m4-24-256 | False | None | None | None | **0** | hub | 0 |
+| studio-1100-m4-16-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
+| studio-1100-m4-16-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
+| studio-1100-m4-16-256 | True | 2 | 1 | 1 | **1** | hub | 0 |
+| studio-1200-m4-24-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
+| studio-1200-m4-24-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
+| studio-1200-m4-24-256 | True | 2 | 1 | 1 | **1** | hub | 0 |
+| studio-1300-m4-24-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
+| studio-1300-m4-24-256 | True | 1 | 1 | 1 | **1** | hub | 0 |
+| studio-1300-m4-24-256 | True | 2 | 1 | 1 | **1** | hub | 0 |
+| studio-1400-m4-24-256 | False | None | None | None | **0** | hub | 0 |
+| studio-1400-m4-24-256 | False | None | None | None | **0** | hub | 0 |
+| studio-1400-m4-24-256 | False | None | None | None | **0** | hub | 0 |
+| studio-1500-m4-24-256 | False | None | None | None | **0** | hub | 0 |
+| studio-1500-m4-24-256 | False | None | None | None | **0** | hub | 0 |
+| studio-1500-m4-24-256 | False | None | None | None | **0** | hub | 0 |
 
 Raw rows, per location, for the lanes above:
 
@@ -160,7 +160,7 @@ Raw rows, per location, for the lanes above:
    "source": "hub"
   }
  },
- "label": "terranash-1100-m4-16-256",
+ "label": "studio-1100-m4-16-256",
  "reachable": true
 }
 {
@@ -226,7 +226,7 @@ Raw rows, per location, for the lanes above:
    "source": "hub"
   }
  },
- "label": "terranash-1200-m4-24-256",
+ "label": "studio-1200-m4-24-256",
  "reachable": true
 }
 {
@@ -292,7 +292,7 @@ Raw rows, per location, for the lanes above:
    "source": "hub"
   }
  },
- "label": "terranash-1300-m4-24-256",
+ "label": "studio-1300-m4-24-256",
  "reachable": true
 }
 {
@@ -358,7 +358,7 @@ Raw rows, per location, for the lanes above:
    "source": "hub"
   }
  },
- "label": "terranash-1400-m4-24-256",
+ "label": "studio-1400-m4-24-256",
  "reachable": false
 }
 {
@@ -424,7 +424,7 @@ Raw rows, per location, for the lanes above:
    "source": "hub"
   }
  },
- "label": "terranash-1500-m4-24-256",
+ "label": "studio-1500-m4-24-256",
  "reachable": false
 }
 ```

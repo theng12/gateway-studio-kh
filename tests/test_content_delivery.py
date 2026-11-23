@@ -23,7 +23,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 TEMP = tempfile.TemporaryDirectory(prefix="gateway-content-delivery-")
 SUPPORT = Path(TEMP.name)
-STORY_SOURCE = Path("/build/Developer/story-studio-kh")
+STORY_SOURCE = os.environ.get("GATEWAY_STORY_SOURCE")
+if not STORY_SOURCE:
+    raise SystemExit("GATEWAY_STORY_SOURCE is not set; point it at the Story Studio checkout")
+STORY_SOURCE = Path(STORY_SOURCE)
 STORY_FIXTURE = SUPPORT / "story-fixture"
 STORY_REGISTRY = STORY_FIXTURE / "content-packs" / "authoring-registry.json"
 os.environ.update({

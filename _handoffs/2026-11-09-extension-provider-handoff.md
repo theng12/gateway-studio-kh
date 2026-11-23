@@ -1,6 +1,6 @@
 # Extension-provider handoff — read this first
 
-**Canonical handoff:** `/build/Developer/chrome-extensions/_handoffs/2026-11-09-gateway-extension-provider-handoff.md`
+**Canonical handoff:** `~/Developer/chrome-extensions/_handoffs/2026-11-09-gateway-extension-provider-handoff.md`
 
 It covers:
 

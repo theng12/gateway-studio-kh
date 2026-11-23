@@ -10,11 +10,11 @@ controllers:
 
 | Controller | Tailscale SSH (:22) | Hub (:47873) | Gateway says |
 |---|---|---|---|
-| terranash-1100 | open | **open** | green, 0.6.63 |
-| terranash-1200 | open | **refused** | red — "Nothing is listening on that address…" |
-| terranash-1300 | open | **refused** | red |
-| terranash-1400 | open | **open** | green, 0.6.63 |
-| terranash-1500 | open | **refused** | red |
+| studio-1100 | open | **open** | green, 0.6.63 |
+| studio-1200 | open | **refused** | red — "Nothing is listening on that address…" |
+| studio-1300 | open | **refused** | red |
+| studio-1400 | open | **open** | green, 0.6.63 |
+| studio-1500 | open | **refused** | red |
 
 So the Machines are up, on the tailnet, and reachable. Their Studio Hub is bound
 to `127.0.0.1` only. The gateway's red row is **correct** — it is reported as a
@@ -120,7 +120,7 @@ that Mac. A Hub whose services are stopped, or whose bind failed on one address,
 should say so where the tick is, rather than looking identical to a healthy one.
 
 **And it was proved, not guessed, within the hour.** One controller
-(`terranash-1200`) read red for a whole session while its Settings showed Tailscale
+(`studio-1200`) read red for a whole session while its Settings showed Tailscale
 ticked, identical to the Macs that worked. The owner stopped its services and
 started them again — nothing else, no setting changed — and it came up green in
 9 ms and has stayed up. So the preference was already correct and the *running

@@ -114,7 +114,7 @@ empty.
   `capacity.by_operation` (Gap 1).
 
 This is what turns "3 machines report this model" into "the Voice worker on
-`terranash-1101` has it loaded and is free". `workers[].available_capacity`
+`studio-1101` has it loaded and is free". `workers[].available_capacity`
 already gives the slots; this is the missing half.
 
 ## Gap 4 — a model health answer with a reason
@@ -230,7 +230,7 @@ Every machine at a site carries the same sentence, and the Hub gives no reason:
 ```
 This Mac (agent)         state=long_idle  completed=11  median_runtime_s=null
                          limitation="Direct activity partially unavailable"
-terranash-1100 (controller, 4 machines)  state=unknown  completed=0
+studio-1100 (controller, 4 machines)  state=unknown  completed=0
                          median_runtime_s=null
                          2 machines "Activity reporter temporarily unavailable"
                          2 machines "Direct activity partially unavailable"

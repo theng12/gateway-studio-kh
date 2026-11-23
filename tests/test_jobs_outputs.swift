@@ -523,8 +523,8 @@ struct JobsOutputsCheck {
             "provider_name": "Mock", "created_at": 1.0, "outputs": [], "duration_s": 12.5,
             "queue_position": 3, "queue_size": 5,
             "attempts": [
-                ["number": 1, "machine": "terranash-1102", "failure_reason": "out of memory", "at": 2.0],
-                ["number": 2, "machine": "terranash-1200", "failure_code": "BUSY", "at": 3.0],
+                ["number": 1, "machine": "studio-1102", "failure_reason": "out of memory", "at": 2.0],
+                ["number": 2, "machine": "studio-1200", "failure_code": "BUSY", "at": 3.0],
             ],
             "attempts_used": 2, "attempts_allowed": 3,
         ]
@@ -536,7 +536,7 @@ struct JobsOutputsCheck {
         factsTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         let facts = labels(factsSection.view).joined(separator: "\n")
-        assert(facts.contains("Attempt 2 of 3") && facts.contains("terranash-1102 — out of memory"),
+        assert(facts.contains("Attempt 2 of 3") && facts.contains("studio-1102 — out of memory"),
                "attempts were not drawn: \(facts)")
         assert(facts.contains("position 3 of 5"), "queue position hidden without a defer reason: \(facts)")
 

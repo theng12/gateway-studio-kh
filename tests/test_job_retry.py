@@ -44,9 +44,9 @@ os.environ.update(
 )
 
 HUB = SimpleNamespace(
-    id="studio-hub-terranash-1200",
+    id="studio-hub-studio-1200",
     kind="studio_hub",
-    display_name="terranash-1200",
+    display_name="studio-1200",
     base_url="http://127.0.0.1:47873",
 )
 MODEL = {"model_id": "qwen-image", "raw": {"capabilities": ["txt2img"]}}
@@ -120,7 +120,7 @@ class JobRetryTests(unittest.TestCase):
         cancel_res = self.client.post(
             f"/v1/images/{second['id']}/cancel",
             headers=self.headers,
-            json={"reason": "stuck on terranash-1200"},
+            json={"reason": "stuck on studio-1200"},
         )
         self.assertEqual(cancel_res.status_code, 200, cancel_res.text)
         self.assertEqual(cancel_res.json()["state"], "cancelled")
@@ -146,7 +146,7 @@ class JobRetryTests(unittest.TestCase):
         self.assertIsNotNone(fresh_row)
         self.assertEqual(fresh_row["modality"], "image")
         self.assertEqual(fresh_row["model_id"], "qwen-image")
-        self.assertEqual(fresh_row["provider_id"], "studio-hub-terranash-1200")
+        self.assertEqual(fresh_row["provider_id"], "studio-hub-studio-1200")
         self.assertEqual(fresh_row["job_group"], "ep-04/scene-2")
         self.assertEqual(fresh_row["priority"], "background")
         self.assertEqual(fresh_row["caller"], "story-studio")

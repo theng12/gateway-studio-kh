@@ -1,6 +1,6 @@
 """Renaming a Mac from the Fleet page, and a renamed Mac showing its new name.
 
-Live 2026-10-02: terranash-0108-m1-8-256 was renamed terranash-1409-m1-8-256 on the Mac; its controller's
+Live 2026-10-02: studio-0108-m1-8-256 was renamed studio-1409-m1-8-256 on the Mac; its controller's
 roster, and so this Fleet page, kept the old name. The row's name is the controller's roster name
 (`machine_label`), and nothing the gateway receives carries the Mac's own name, so the Hub fixes the
 roster (the release after 0.6.132). The owner also asked to rename a Mac from here. What these tests pin:
@@ -35,7 +35,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from gateway import api, config, fleet, startup_control  # noqa: E402
 
-NODE = "terranash-0108-m1-8-256-hub"
+NODE = "studio-0108-m1-8-256-hub"
 
 
 class _Isolated(unittest.TestCase):
@@ -51,9 +51,9 @@ class _Isolated(unittest.TestCase):
 class LabelTests(unittest.TestCase):
     def test_the_row_is_named_by_the_roster_so_a_renamed_roster_renames_the_row(self) -> None:
         row = {"id": "ctl1", "label": "Site A", "local": False}
-        machine = {"machine": NODE, "label": "terranash-0108-m1-8-256"}
-        self.assertEqual(fleet.machine_label(row, machine, {"id": NODE, "name": "terranash-1409-m1-8-256"}),
-                         "terranash-1409-m1-8-256")
+        machine = {"machine": NODE, "label": "studio-0108-m1-8-256"}
+        self.assertEqual(fleet.machine_label(row, machine, {"id": NODE, "name": "studio-1409-m1-8-256"}),
+                         "studio-1409-m1-8-256")
 
 
 class RenameTests(_Isolated):
@@ -65,7 +65,7 @@ class RenameTests(_Isolated):
         self.addCleanup(patcher.stop)
         self.seen: list[httpx.Request] = []
 
-    def rename(self, answer, name="terranash-1409-m1-8-256", machine=NODE):
+    def rename(self, answer, name="studio-1409-m1-8-256", machine=NODE):
         def handler(request: httpx.Request) -> httpx.Response:
             self.seen.append(request)
             if isinstance(answer, Exception):
@@ -76,12 +76,12 @@ class RenameTests(_Isolated):
 
     def test_it_goes_to_the_controller_on_the_fleet_credential_and_drops_the_cached_fleet(self) -> None:
         with patch.object(fleet, "invalidate") as invalidated:
-            answer = self.rename(httpx.Response(200, json={"ok": True, "node": NODE, "name": "terranash-1409"}),
-                                 "  terranash-1409  ")
+            answer = self.rename(httpx.Response(200, json={"ok": True, "node": NODE, "name": "studio-1409"}),
+                                 "  studio-1409  ")
         request = self.seen[0]
         self.assertEqual(str(request.url), f"http://100.64.0.2:47873/api/hub/fleet/nodes/{NODE}/name")
         self.assertEqual(request.headers["X-Hub-Token"], "fleet-token-value")
-        self.assertEqual(json.loads(request.content), {"name": "terranash-1409"})
+        self.assertEqual(json.loads(request.content), {"name": "studio-1409"})
         self.assertTrue(answer["ok"])
         invalidated.assert_called_once()
 

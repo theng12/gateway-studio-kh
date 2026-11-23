@@ -33,7 +33,7 @@ Build C when someone else's compute joins the fleet, because that is the one cas
 Measured from this Mac over Tailscale, not assumed:
 
 - **58 macOS peers**, of which **25 were online** when I looked. The rest are off, not gone.
-- The names encode the layout: `terranash-0307` is **location 03, machine 07**. Reading them:
+- The names encode the layout: `studio-0307` is **location 03, machine 07**. Reading them:
   locations `00`–`04` hold **10–11 machines each**, and `06` holds one. So this is roughly
   **6 sites of ~10 machines**, not 10 sites of 5.
 - **Online/offline is lumpy per site.** Location `00` was fully online; location `02` had **zero**

@@ -1,4 +1,4 @@
-"""A Mac with no model it can run reads "Needs attention", not "Ready" (2026-10-04, terranash-1108).
+"""A Mac with no model it can run reads "Needs attention", not "Ready" (2026-10-04, studio-1108).
 
 1108 showed Ready, 0 done, 0 failed for days: its five studios were up, so its Hub called it ready,
 but every model was `download_required` (no model files at all), so routing never picked it.

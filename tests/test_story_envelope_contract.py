@@ -156,7 +156,7 @@ class EnvelopeContractTests(_Case):
 class ScrubTests(_Case):
     def test_no_address_or_hub_route_survives_in_any_published_text(self) -> None:
         for text in ("could not reach the Hub at http://100.103.25.41:47873 (ConnectError)",
-                     "lost contact with https://mac.tail1234.ts.net:47873 while polling",
+                     "lost contact with https://studio.example:47873 while polling",
                      "GET 100.103.25.41:47873/api/hub/jobs/abc/items/0",
                      "reconcile at /api/hub/jobs/abc/items/0/reconcile"):
             clean = api.scrub(text)

@@ -10,7 +10,7 @@ Uses TemporaryDirectory for all fixtures (no manual cleanup). Runs with the
 canonical .venv/bin/python from the repo root with PYTHONPATH pointing at this
 worktree so imports resolve here, not in the canonical checkout.
 
-    cd /build/Developer/My\ Own\ Apps/gateway-studio-kh/repository
+    cd /path/to/gateway-studio-kh/repository
     .venv/bin/python /path/to/worktree/tests/test_maintenance_pairing.py -v
 """
 from __future__ import annotations

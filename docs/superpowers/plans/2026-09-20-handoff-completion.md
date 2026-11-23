@@ -126,7 +126,7 @@ Gateway or create a second identity registry. Story dependencies have now been
 installed with lifecycle scripts disabled. Production trust and receipt/Keychain checks remain mandatory
 for installation, independently of authoring/export readiness.
 
-- [ ] Read current `/build/Developer/story-studio-kh` consumer source and applicable instructions. Record required manifests, account/quote/purchase/receipt/download fields, trust/identity/keychain rules and supported install entry point before implementation.
+- [ ] Read current `~/Developer/story-studio-kh` consumer source and applicable instructions. Record required manifests, account/quote/purchase/receipt/download fields, trust/identity/keychain rules and supported install entry point before implementation.
 - [ ] Implement local import/inspect/hash/archive validation and inventory in private Application Support. Preserve imported archives; reject unsafe archives and incompatible manifests.
 - [ ] Implement real same-origin delivery using verified consumer protocol. Never manufacture signatures, ownership or fulfilled purchases for undeliverable files.
 - [ ] Add library UI with inspect/import/download and one supported authoring/preview/export kind using actual schema; keep transferred authoring sources intact.

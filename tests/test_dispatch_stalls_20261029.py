@@ -155,11 +155,11 @@ class PublishesModelTest(unittest.TestCase):
 
 class PublicationAdmissionTest(_Base):
     def test_a_site_that_does_not_publish_the_model_gets_no_room_for_it(self) -> None:
-        self.sites = [_site("terranash", macs=1, supply={OTHER_MODEL: {"eligible": 1, "available": 1}},
+        self.sites = [_site("studio", macs=1, supply={OTHER_MODEL: {"eligible": 1, "available": 1}},
                             models=[OTHER_MODEL])]
         worker = Worker(self.store, interval_s=10.0, pool_size=0)
-        job = self.store.get(self.job(IMAGE_MODEL, site="terranash"))
-        self.assertEqual(0, worker._job_room(job, _pid("terranash")))
+        job = self.store.get(self.job(IMAGE_MODEL, site="studio"))
+        self.assertEqual(0, worker._job_room(job, _pid("studio")))
         self.assertFalse(worker._admit(job))
 
     def test_an_unreachable_site_gets_no_room(self) -> None:
@@ -197,12 +197,12 @@ class PublicationAdmissionTest(_Base):
 
     def test_a_job_bound_to_a_site_that_does_not_publish_its_model_is_rebound(self) -> None:
         self.sites = [
-            _site("terranash", macs=1, supply={OTHER_MODEL: {"eligible": 1, "available": 1}},
+            _site("studio", macs=1, supply={OTHER_MODEL: {"eligible": 1, "available": 1}},
                   models=[OTHER_MODEL]),
             _site("img1", macs=2),
         ]
         worker = Worker(self.store, interval_s=10.0, pool_size=0)
-        job_id = self.job(IMAGE_MODEL, site="terranash")
+        job_id = self.job(IMAGE_MODEL, site="studio")
         self.assertTrue(worker._rebind(self.store.get(job_id)))
         self.assertEqual(_pid("img1"), self.store.get(job_id)["provider_id"])
 
@@ -220,15 +220,15 @@ class StrandedRowsTest(_Base):
         """The rows a live Gateway holds: stranded normal TTS at a site that cannot run them, and
         accepted background image rows elsewhere. One pass must settle both, untouched."""
         self.sites = [
-            # Terranash: often unreachable, and its published supply leaves Breeze-TTS out.
-            _site("terranash", macs=1, supply={OTHER_MODEL: {"eligible": 1, "available": 1}},
+            # Studio Site: often unreachable, and its published supply leaves Breeze-TTS out.
+            _site("studio", macs=1, supply={OTHER_MODEL: {"eligible": 1, "available": 1}},
                   models=[OTHER_MODEL]),
             _site("img1", macs=6, supply={IMAGE_MODEL: {"eligible": 6, "available": 6}},
                   models=[IMAGE_MODEL]),
             _site("tts1", macs=3, supply={TTS_MODEL: {"eligible": 3, "available": 3}},
                   models=[TTS_MODEL]),
         ]
-        stranded = [self.job(TTS_MODEL, site="terranash") for _ in range(3)]
+        stranded = [self.job(TTS_MODEL, site="studio") for _ in range(3)]
         background = [self.job(IMAGE_MODEL, site="img1", background=True) for _ in range(6)]
         rows_before = {job_id: self.store.get(job_id) for job_id in stranded + background}
 
@@ -267,7 +267,7 @@ class StrandedRowsTest(_Base):
             self.assertEqual(before["idempotency_key"], rows[job_id]["idempotency_key"])
             self.assertEqual(before["created_at"], rows[job_id]["created_at"])
         self.assertEqual(set(job_id for job_id, _ in started), set(stranded + background))
-        self.assertNotIn(_pid("terranash"), {where for _, where in started})
+        self.assertNotIn(_pid("studio"), {where for _, where in started})
 
 
 # ── 2. A pool member wait is bounded and says why ────────────────────────
@@ -759,9 +759,9 @@ class TtsStatusAfterSubmitTimeoutsTest(_Base):
     def test_a_job_failed_after_repeated_submit_timeouts_reads_failed(self) -> None:
         from gateway import api
 
-        self.sites = [_site("terranash", macs=1, supply={OTHER_MODEL: {"eligible": 1, "available": 1}},
+        self.sites = [_site("studio", macs=1, supply={OTHER_MODEL: {"eligible": 1, "available": 1}},
                             models=[OTHER_MODEL])]
-        job_id = self.job(TTS_MODEL, site="terranash")
+        job_id = self.job(TTS_MODEL, site="studio")
         # Exactly the worker's own settlement after the Hub never answered a submit.
         worker_module._fail(
             self.store, job_id, code="SITE_CAPACITY_UNAVAILABLE", retryable=True,

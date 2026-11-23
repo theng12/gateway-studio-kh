@@ -9,7 +9,7 @@
 |---|---|
 | Gateway listener | `python3.1` pid 60989, `TCP *:8787 (LISTEN)` — every interface |
 | Primary LAN address | `192.168.1.239` on **en1** |
-| Tailscale address | `100.126.154.54` on **utun1** (`m2-max-32-512.tail4e72cf.ts.net`) |
+| Tailscale address | `100.126.154.54` on **utun1** (`<tailnet-host>`) |
 | macOS application firewall | **disabled** (`State = 0`) |
 | Unauthenticated `/v1/models` over LAN | **401** |
 | Unauthenticated `/admin/api/status` over LAN | **401** |
@@ -125,7 +125,7 @@ It reads the passphrase from a prompt and never stores or echoes it, so **run it
 yourself in a terminal** — that keeps the secret out of this session:
 
 ```bash
-cd /build/Developer/gateway-kh/worktrees/handoff-completion
+cd ~/Developer/gateway-kh/worktrees/handoff-completion
 scripts/encrypt_content_authority_backup.sh
 ```
 

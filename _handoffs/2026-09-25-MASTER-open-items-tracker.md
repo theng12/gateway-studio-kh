@@ -400,7 +400,7 @@ carefully.
   made.** closed 2026-09-25 by HUB-3 + HUB-1: the live bind is a fact on `/api/health`
   rather than a tick on a page, and automatic listening is recomputed every launch, so
   "the preference was right and the running process was on loopback" is no longer
-  reachable by construction. The proof was `terranash-1200` on 0.6.63; re-prove on a
+  reachable by construction. The proof was `studio-1200` on 0.6.63; re-prove on a
   0.6.64 node during the rollout.
 
 - [x] **HUB-7 — guard a stale `listenHost` address.** closed 2026-09-25 by HUB-1:
@@ -1592,7 +1592,7 @@ stop reading its silence as an answer. That line is worth more than the four row
   **Worth knowing for the next refresh:** the Hub bundle on the drives was correct and
   the index was wrong, so *only* the index needed changing. Read the bundle; do not
   assume the index is the stale half or the fresh half.
-- [ ] **OWNER-1 — re-join `vengthengs-mac-studio-hub` with the controller's current
+- [ ] **OWNER-1 — re-join `owner-mac-studio-hub` with the controller's current
   Fleet token** (the fix for the 401). truth: that node's own app.
 - [ ] **OWNER-3 — 9 nodes still offline.** last verified: 2026-09-25 →
   `summary.machines_offline: 9`, against `machines_online: 6`.
@@ -1615,7 +1615,7 @@ http://127.0.0.1:8787/admin/api/fleet` → `locations_up 6/6`, every controller
 **Chat lane through the gateway** — `POST /v1/chat/responses` with
 `"model_id": "studio-hub::mlx-community/Qwen3.5-9B-4bit"`: local `"Red, Blue, Green"`
 / `finish_reason stop` / `usage 22/5/27` / `generation_seconds 0.573`; remote
-`"remote ok"` / `generation_seconds 1.485` on `terranash-1100`. Studio Hub's own
+`"remote ok"` / `generation_seconds 1.485` on `studio-1100`. Studio Hub's own
 `GET /api/hub/jobs` records them as `"modality": "chat"`.
 
 **Local chat row** (`GET /v1/models`) — `context_window_tokens 262144` with
@@ -1648,7 +1648,7 @@ at 0.6.65. Nothing is broken by the skew; it is recorded because "what is held" 
 "what the kit has" are two different facts and only one of them was checked at push
 time.
 
-**Lane contract, by model id, 2026-09-25** — read from `terranash-1100-m4-16-256`,
+**Lane contract, by model id, 2026-09-25** — read from `studio-1100-m4-16-256`,
 Hub 0.6.63 build `a4a78dc`: `/api/hub/catalog` (236 rows, 96 carrying a contract),
 `/studio/chat/api/catalog` (1 row) and `/api/hub/model-packages` (24 rows, 21 carrying
 one). Joining on **model id** rather than index, the package surface adds
@@ -1662,7 +1662,7 @@ the error this file used to carry.
 
 | What | Path |
 |---|---|
-| GatewayKH checkout | `/build/Developer/gateway-kh/repository/` |
+| GatewayKH checkout | `~/Developer/gateway-kh/repository/` |
 | Hub lane + version declaration | `gateway/adapters/studio_hub.py` |
 | Discovery (what the Hub states) | `gateway/providers/discovery.py` |
 | Catalogue rows (`_chat_row`) | `gateway/catalog.py` |

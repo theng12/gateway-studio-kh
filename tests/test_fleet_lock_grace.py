@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A slow read does not withdraw a whole site's models, and recovery is immediate.
 
-**Measured live on terranash-1600, 2026-10-30.** The site answered, then missed one 6 s
+**Measured live on studio-1600, 2026-10-30.** The site answered, then missed one 6 s
 overview read while it was busy, and every model it offers flipped `locked: true` — then
 back — between consecutive catalogue reads seconds apart:
 
@@ -46,7 +46,7 @@ def _site(**overrides) -> dict:
     row = {
         "id": SITE,
         "provider_id": f"studio-hub-{SITE}",
-        "label": "Terranash-1600",
+        "label": "studio-1600",
         "reachable": True,
         "slow": False,
         "answered_at": time.time(),

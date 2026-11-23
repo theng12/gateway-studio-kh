@@ -545,7 +545,7 @@ class ACauseCitesItsEvidence(HistoryCase):
         self.assertEqual([cause["code"] for cause in causes], ["fine"])
 
     def test_a_mac_its_hub_flagged_never_says_nothing_wrong(self) -> None:
-        # Seen live on terranash-1403, 2026-10-30: the row said "Needs attention — X studio not
+        # Seen live on studio-1403, 2026-10-30: the row said "Needs attention — X studio not
         # running" in amber beside "Likely cause: Nothing wrong reported". The Hub's own sentence
         # is the smallest truthful answer for a verdict this Gateway cannot see into; it is quoted
         # rather than restated as a finding of its own. (A reason this Gateway *can* name now gets

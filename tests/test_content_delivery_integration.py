@@ -19,7 +19,10 @@ import httpx
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STORY = Path(os.environ.get("GATEWAY_STORY_SOURCE", "/build/Developer/story-studio-kh"))
+STORY = os.environ.get("GATEWAY_STORY_SOURCE")
+if not STORY:
+    raise SystemExit("GATEWAY_STORY_SOURCE is not set; point it at the Story Studio checkout")
+STORY = Path(STORY)
 NODE = os.environ.get("GATEWAY_AUTHORING_NODE") or shutil.which("node") or "/opt/homebrew/bin/node"
 API_KEY = "content-delivery-integration-fixture"
 

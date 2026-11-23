@@ -88,7 +88,7 @@ def group(nodes: int = 3, *, held: str = LATEST) -> dict:
     """One controller and its idle nodes, exactly as the live 1100 group read on 2026-10-02."""
     mids = [f"node-{i}" for i in range(1, nodes + 1)]
     return {
-        "id": "ctrl-1100", "label": "terranash-1100", "url": "http://100.64.0.1:47873", "local": False,
+        "id": "ctrl-1100", "label": "studio-1100", "url": "http://100.64.0.1:47873", "local": False,
         "reachable": True, "role": "controller", "version": LATEST, "hub_version_relation": "newer",
         "error": None, "drained": False, "ready": True,
         "release": {"version": held, "published_at": NOW - 6 * 3600, "publisher_id": "gatewaykh",
@@ -301,7 +301,7 @@ class TheHeadlineSaysMacsAndWorkersSeparately(unittest.TestCase):
 
     def test_a_mac_at_two_locations_is_two_rows_and_one_mac(self) -> None:
         first, second = group(nodes=2), group(nodes=2)
-        second["id"], second["label"] = "ctrl-1101", "terranash-1101"
+        second["id"], second["label"] = "ctrl-1101", "studio-1101"
         summary = read(first, second)[2]
         self.assertEqual(summary["machines"], 6, "the table's own number: 3 Macs at 2 locations")
         self.assertEqual(summary["machines_distinct"], 3)
