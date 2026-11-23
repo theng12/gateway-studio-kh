@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Gateway Studio KH's Sparkle feed. The release pass rewrites this file from the exact
+     published DMG bytes (sign_update) — never by hand. An empty channel is honest: it says
+     there is nothing to update to, not that an unsigned item exists. -->
+<rss version="2.0"
+     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+     xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Gateway Studio KH</title>
+    <link>https://theng12.github.io/gateway-studio-kh/appcast.xml</link>
+    <description>The newest Gateway Studio KH for Macs that already have it.</description>
+    <language>en</language>
+  </channel>
+</rss>
