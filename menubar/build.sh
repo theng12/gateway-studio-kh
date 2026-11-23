@@ -749,6 +749,23 @@ find "$APP/Contents/Resources/python" -name '*.py' -exec dirname {} \; 2>/dev/nu
 mkdir -p "$APP/Contents/Frameworks"
 cp -R "$SPARKLE_SHIM/vendor/Sparkle.framework" "$APP/Contents/Frameworks/"
 
+# **Library validation off, for the app and the framework it loads.** A self-signed framework inside
+# a hardened-runtime app is refused at launch with "different Team IDs" — and `--verify --deep
+# --strict` stays green through it, because the seal is intact; only a real launch shows it. Gateway
+# does not enable the runtime today, so this is inert until it does, and it is here so that switch
+# cannot turn into a launch-killer. The file is written beside the bundle, never inside it.
+ENTITLEMENTS="$(dirname "$APP")/gateway-entitlements.plist"
+cat > "$ENTITLEMENTS" <<'ENTITLEMENTS_PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
+ENTITLEMENTS_PLIST
+
 find "$APP/Contents/Resources" -type f \( -name '*.so' -o -name '*.dylib' \) -print0 \
   | xargs -0 -n 50 codesign --force --timestamp=none --sign "$SIGN"
 # The runtime copy keeps the stable identifier it always had. The helper bundle is
@@ -767,8 +784,8 @@ done
 codesign --force --timestamp=none --sign "$SIGN" "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
 codesign --force --timestamp=none --sign "$SIGN" "$SPARKLE_FRAMEWORK/Versions/B/Autoupdate"
 codesign --force --timestamp=none --sign "$SIGN" "$SPARKLE_FRAMEWORK/Versions/B"
-codesign --force --timestamp=none --sign "$SIGN" "$SPARKLE_FRAMEWORK"
-codesign --force --timestamp=none --sign "$SIGN" "$APP"
+codesign --force --timestamp=none --sign "$SIGN" --entitlements "$ENTITLEMENTS" "$SPARKLE_FRAMEWORK"
+codesign --force --timestamp=none --sign "$SIGN" --entitlements "$ENTITLEMENTS" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 # Each build is a **candidate**, not an accepted release: it lands outside the
