@@ -81,7 +81,23 @@ echo "==> compiling menu bar app (Swift)"
 # compiles cleanly back to 11.0, so state the floor rather than inherit it.
 # `GATEWAY_APP_ARCH` lets the same script build an Intel slice.
 TARGET_ARCH="${GATEWAY_APP_ARCH:-$(uname -m)}"
-MACOS_MIN="${GATEWAY_MACOS_MIN:-11.0}"
+# The Sparkle shim's objects are minos 12.0, so the app floor is 12.0 (INTEGRATION.md §8).
+MACOS_MIN="${GATEWAY_MACOS_MIN:-12.0}"
+
+# **The updater is part of the app, so a build without it refuses.** The shim (static
+# library, C header, vendored Sparkle.framework) is delivered by System; this script only
+# consumes it. A path that does not have all three pieces is a refused build, never an app
+# that silently ships without an updater.
+SPARKLE_SHIM="${KH_SPARKLE_SHIM:-}"
+[ -n "$SPARKLE_SHIM" ] || {
+  echo "ERROR: KH_SPARKLE_SHIM must name the sparkle-shim folder (dist/, include/, vendor/)" >&2
+  exit 2
+}
+for piece in "$SPARKLE_SHIM/dist/libkhsparkle.a" "$SPARKLE_SHIM/include/khsparkle.h" \
+             "$SPARKLE_SHIM/vendor/Sparkle.framework"; do
+  [ -e "$piece" ] || { echo "ERROR: sparkle-shim piece missing: $piece" >&2; exit 2; }
+done
+
 swiftc \
   -swift-version 5 \
   -O \
@@ -90,6 +106,11 @@ swiftc \
   -framework WebKit \
   -framework AVFoundation \
   -framework AVKit \
+  -F "$SPARKLE_SHIM/vendor" \
+  -framework Sparkle \
+  -L "$SPARKLE_SHIM/dist" -lkhsparkle \
+  -import-objc-header "$SPARKLE_SHIM/include/khsparkle.h" \
+  -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
   -o "$APP/Contents/MacOS/$APP_NAME" \
   "$HERE"/*.swift
 
@@ -620,6 +641,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <!-- A regular app: Dock icon and Cmd-Tab, with the menu bar bolt still there
          as a convenience. Closing the window keeps the app (and gateway) alive. -->
     <key>LSUIElement</key><false/>
+    <!-- Sparkle (INTEGRATION.md §1). The shim reads these; the public key is Gateway's own
+         EdDSA half (~/.kh-sparkle/kh.gateway.app/private.key signs the appcast; the private
+         half never enters this repo). KHHoldURL is the one hold route the publish hold also
+         uses: the updater holds work on the default port before it fetches the feed, and a
+         changed GATEWAY_PORT makes the hold refuse, which refuses the update rather than
+         skipping the hold. -->
+    <key>SUFeedURL</key><string>https://theng12.github.io/gateway-studio-kh/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>yO6k+ESSic39EHYDd4N44qMfkY9AeThmgOwrxi7uGHE=</string>
+    <key>KHHoldURL</key><string>http://127.0.0.1:8787/admin/api/maintenance/drain</string>
+    <key>KHHoldTokenFile</key><string>~/Library/KHUpdater/state/hold-token</string>
+    <key>SUEnableAutomaticChecks</key><true/>
 </dict>
 </plist>
 PLIST
@@ -708,6 +740,12 @@ find "$APP/Contents/Resources" -type d -name "__pycache__" -prune -print | while
 # removable. `sitecustomize.py` is still shipped, so no run even tries.
 find "$APP/Contents/Resources/python" -name '*.py' -exec dirname {} \; 2>/dev/null | sort -u \
   | while IFS= read -r DIR; do [ -e "$DIR/__pycache__" ] || : > "$DIR/__pycache__"; done
+# **Copy the updater framework before anything is signed** (INTEGRATION.md §3B item 2).
+# The app links against vendor/Sparkle.framework; the copy inside the bundle is what ships,
+# and it must be in place before the signing and verifying steps below.
+mkdir -p "$APP/Contents/Frameworks"
+cp -R "$SPARKLE_SHIM/vendor/Sparkle.framework" "$APP/Contents/Frameworks/"
+
 find "$APP/Contents/Resources" -type f \( -name '*.so' -o -name '*.dylib' \) -print0 \
   | xargs -0 -n 50 codesign --force --timestamp=none --sign "$SIGN"
 # The runtime copy keeps the stable identifier it always had. The helper bundle is
@@ -715,6 +753,18 @@ find "$APP/Contents/Resources" -type f \( -name '*.so' -o -name '*.dylib' \) -pr
 # signing the executable alone would be undone. Nested code first, then the app.
 codesign --force --timestamp=none --sign "$SIGN" --identifier kh.gateway.python "$PY_HELPER"
 codesign --force --timestamp=none --sign "$SIGN" "$HELPER"
+# Sparkle's nested code, deepest first, then the framework, then the app (INTEGRATION.md §3B
+# items 3-4). The `--deep --strict` verify below is the proof the order is complete; it is the
+# check, never something to relax. Sparkle 2.10.1 ships Versions/B with Current -> B.
+SPARKLE_FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+[ -d "$SPARKLE_FRAMEWORK" ] || { echo "ERROR: Sparkle.framework missing from the bundle" >&2; exit 1; }
+for xpc in "$SPARKLE_FRAMEWORK"/Versions/B/XPCServices/*.xpc; do
+  [ -e "$xpc" ] && codesign --force --timestamp=none --sign "$SIGN" "$xpc"
+done
+codesign --force --timestamp=none --sign "$SIGN" "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
+codesign --force --timestamp=none --sign "$SIGN" "$SPARKLE_FRAMEWORK/Versions/B/Autoupdate"
+codesign --force --timestamp=none --sign "$SIGN" "$SPARKLE_FRAMEWORK/Versions/B"
+codesign --force --timestamp=none --sign "$SIGN" "$SPARKLE_FRAMEWORK"
 codesign --force --timestamp=none --sign "$SIGN" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
