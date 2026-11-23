@@ -1,0 +1,10 @@
+    <item>
+      <title>Version 0.2.305</title>
+      <pubDate>Mon, 23 Nov 2026 13:06:57 +0000</pubDate>
+      <sparkle:version>0.2.305</sparkle:version>
+      <sparkle:shortVersionString>0.2.305</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[- **Gateway can now update itself, and it holds your work first.** The app checks a signed feed in the background and installs a new version without a window, a prompt or a click. Before it fetches anything it puts its own work on hold through the same maintenance hold an install already uses, so no running job is cut off; if the hold cannot be taken, the update is refused instead of forced. Work resumes by itself when the check finishes.
+- **Gateway now requires macOS 12 or later.** The updater's library is built for it.]]></description>
+      <enclosure url="https://github.com/theng12/gateway-studio-kh/releases/download/0.2.305/ecd95740fb7d-Gateway.Studio.KH-0.2.305.dmg" length="68502240" type="application/octet-stream" sparkle:edSignature="ahSu+2hPP5bMgTzBtXB646O+R39e1gdKMLmTSYwwi/hu1w/tKg0Watk+bNIyX0TOr0k7C8H/GODTzUkb1bqwCw==" />
+    </item>
