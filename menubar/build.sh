@@ -653,7 +653,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>SUFeedURL</key><string>https://theng12.github.io/gateway-studio-kh/appcast.xml</string>
     <key>SUPublicEDKey</key><string>yO6k+ESSic39EHYDd4N44qMfkY9AeThmgOwrxi7uGHE=</string>
     <key>KHHoldURL</key><string>http://127.0.0.1:8787/admin/api/maintenance/drain</string>
-    <key>KHHoldTokenFile</key><string>~/Library/KHUpdater/state/hold-token</string>
+    <key>KHHoldTokenFile</key><string>~/Library/Application Support/gateway-kh/hold-token</string>
     <key>SUEnableAutomaticChecks</key><true/>
 </dict>
 </plist>
