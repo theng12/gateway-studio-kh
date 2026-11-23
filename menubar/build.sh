@@ -633,7 +633,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>Gateway Studio KH</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$MARKETING_VERSION</string>
-    <key>CFBundleVersion</key><string>$BUILD_ID</string>
+    <!-- Sparkle compares this against the appcast's sparkle:version, so it must sort: the build
+         stamp (`78311f2e-…`) sorts below `a1c4282-…` and would hide every update. The exact stamp
+         still travels as GatewayBuild. -->
+    <key>CFBundleVersion</key><string>$MARKETING_VERSION</string>
     <key>GatewayBuild</key><string>$BUILD_ID</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>$MACOS_MIN</string>
