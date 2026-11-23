@@ -140,7 +140,7 @@ class EmptyTrashTests(_Isolated):
     """
     KEY = {"Authorization": "Bearer trash-fixture-key"}
     EMPTY = "/admin/api/fleet/trash/empty"
-    EMPTIED = {"machine": "node-1", "label": "terranash-1500", "state": "emptied",
+    EMPTIED = {"machine": "node-1", "label": "studio-1500", "state": "emptied",
                "freed_bytes": 2_000, "deleted_count": 3}
 
     def setUp(self) -> None:

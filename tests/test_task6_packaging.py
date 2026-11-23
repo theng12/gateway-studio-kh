@@ -33,9 +33,10 @@ PY_VERSION = "3.11.16"
 PY_TAG = "20260901"
 PY_ARCH = "aarch64"
 ACCEPT_SCRIPT = ROOT / "scripts" / "accept_release.py"
-RELEASE_DIST_HELPER = Path(
-    "/build/Developer/Shared Tools/portfolio/tools/release-dist.py"
-)
+RELEASE_DIST_HELPER = os.environ.get("GATEWAY_RELEASE_DIST_HELPER")
+if not RELEASE_DIST_HELPER:
+    raise SystemExit("GATEWAY_RELEASE_DIST_HELPER is not set; point it at release-dist.py in Shared Tools")
+RELEASE_DIST_HELPER = Path(RELEASE_DIST_HELPER)
 
 
 def _write_executable(path: Path, body: str) -> None:

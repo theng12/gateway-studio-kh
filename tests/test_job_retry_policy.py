@@ -382,13 +382,13 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
                                    code="INSUFFICIENT_MEMORY", retryable=True,
                                    upstream_accepted=False, upstream_settled=True)
             if self.behaviour == "storage_blocked":
-                # The Hub's door, word for word from Production 2026-11-16 (terranash-1300).
+                # The Hub's door, word for word from Production 2026-11-16 (studio-1300).
                 raise BackendError("the location cannot serve this model right now (OUTPUT_STORAGE_BLOCKED): "
                                    "managed output storage has insufficient free space; empty the Trash "
                                    "Folder to free space", code="LOCATION_NOT_READY", status=507,
                                    retryable=True, upstream_accepted=False)
             if self.behaviour == "refused_poll":
-                # Production 2026-11-16, terranash-1200: accepted, then refused mid-poll.
+                # Production 2026-11-16, studio-1200: accepted, then refused mid-poll.
                 raise BackendError("lost contact with the location while polling batch ab0a235660 (item 0) "
                                    "for 60s: [Errno 61] Connection refused",
                                    code="PROVIDER_SUBMISSION_UNCERTAIN", retryable=False,
@@ -535,7 +535,7 @@ class EndToEndThroughThreeSitesTest(unittest.TestCase):
 
     def test_a_job_held_for_a_storage_blocked_site_moves_on_instead_of_waiting(self) -> None:
         """Production 2026-11-16, job 7dd410fb's shape: two counted attempts elsewhere, then fifteen
-        refusals from terranash-1300's full disk while 23 Macs were eligible. Under 0.2.260 the
+        refusals from studio-1300's full disk while 23 Macs were eligible. Under 0.2.260 the
         refusals spent the third attempt, so the job could only wait on the same full Mac."""
         before = [("studio-hub-b", "PROVIDER_FAILED"), ("studio-hub-c", "PROVIDER_SUBMISSION_UNCERTAIN")]
         before += [("studio-hub-a", "LOCATION_NOT_READY")] * 15

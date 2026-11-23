@@ -35,13 +35,13 @@ func makeRow(_ machine: FleetMachine, _ payload: [String: Any]?, error: String? 
 }
 
 let mac = decodeMachine("""
-{"location_id":"ctl1","location":"Terranash","machine":"node-1","label":"terranash-1500","chip":"M4 Pro",
+{"location_id":"ctl1","location":"Studio Site","machine":"node-1","label":"studio-1500","chip":"M4 Pro",
  "disk_free_gb":40.0,"available_gb":7.5,
  "disk":{"state":"green","free_gb":40.0,"total_gb":500.0}}
 """)
 // A Mac whose Hub states none of the three fleet figures: only the trash answer can supply them.
 let bare = decodeMachine("""
-{"location_id":"ctl1","location":"Terranash","machine":"node-2","label":"terranash-1200"}
+{"location_id":"ctl1","location":"Studio Site","machine":"node-2","label":"studio-1200"}
 """)
 
 let fresh = Date().timeIntervalSince1970
@@ -92,7 +92,7 @@ check(memoryOnly.memoryText != "not reported", "and it is drawn in its own colum
 
 // 7. The Mac's macOS Trash (Hub 0.6.243), read from the fleet row into its own column.
 let withMacos = decodeMachine("""
-{"location_id":"ctl1","machine":"node-3","label":"terranash-1300",
+{"location_id":"ctl1","machine":"node-3","label":"studio-1300",
  "macos_trash":{"count":4,"bytes":1500000000}}
 """)
 let macosRow = makeRow(withMacos, ["supported": true, "status": "fresh", "measured_at": fresh,
@@ -149,17 +149,17 @@ check(total.contains("1 Mac not reported"), "a Mac that stated nothing is named,
 let said = FleetTrash.outcome([
     "totals": ["emptied": 1, "skipped": 1, "failed": 1, "freed_bytes": 2_000_000_000, "left_bytes": 300_000_000],
     "machines": [
-        ["machine": "node-1", "label": "terranash-1500", "state": "emptied", "freed_bytes": 2_000_000_000],
-        ["machine": "node-2", "label": "terranash-1200", "state": "skipped", "reason": "its switch is off"],
+        ["machine": "node-1", "label": "studio-1500", "state": "emptied", "freed_bytes": 2_000_000_000],
+        ["machine": "node-2", "label": "studio-1200", "state": "skipped", "reason": "its switch is off"],
         ["machine": "node-3", "state": "failed", "reason": "permission denied", "left_bytes": 300_000_000],
         ["location_id": "ctl9", "state": "skipped", "reason": "offline"],
     ]])
 check(said.hasPrefix("emptied 1 · skipped 1 · failed 1"), "the outcome leads with the counts")
-check(said.contains("terranash-1200 skipped: its switch is off"), "a skipped Mac says why")
+check(said.contains("studio-1200 skipped: its switch is off"), "a skipped Mac says why")
 check(said.contains("node-3 failed: permission denied (\(FleetTrash.size(300_000_000)) left)"),
       "a failed Mac says why and what is left")
 check(said.contains("site ctl9 skipped: offline"), "an offline site is named as skipped")
-check(!said.contains("terranash-1500"), "an emptied Mac is in the totals, not the exceptions")
+check(!said.contains("studio-1500"), "an emptied Mac is in the totals, not the exceptions")
 
 if failures > 0 {
     print("FAIL: \(failures) check(s) failed")

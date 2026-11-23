@@ -1,14 +1,14 @@
 # S9 — fleet acceptance rehearsal
 
 - **Run:** 2026-09-28T07:52:06+00:00 (finished 2026-09-28T07:58:04+00:00)
-- **Driver:** `/build/Developer/_orchestra/rehearsal/run_rehearsal.py`
+- **Driver:** `~/Developer/_orchestra/rehearsal/run_rehearsal.py`
 - **Work dir (kept):** `/private/var/folders/p8/wwyv7rc96s51h1b1rrx6scmc0000gn/T/s9-rehearsal-3149t3zc`
 - **Studio Hub under test:** `HEAD = 94d5bfd`
 - **Gateway under test:** `HEAD = 89a1880`
 - **Hub source root:** `/private/var/folders/p8/wwyv7rc96s51h1b1rrx6scmc0000gn/T/s9-rehearsal-3149t3zc/src/studio-hub`
 - **Gateway source root:** `/private/var/folders/p8/wwyv7rc96s51h1b1rrx6scmc0000gn/T/s9-rehearsal-3149t3zc/src/gateway-kh`
-- **Hub interpreter:** `/build/Developer/studio-hub-kh/.build/hub-gate/bin/python3`
-- **Gateway interpreter:** `/build/Developer/gateway-kh/repository/.venv/bin/python`
+- **Hub interpreter:** `~/Developer/studio-hub-kh/.build/hub-gate/bin/python3`
+- **Gateway interpreter:** `~/Developer/gateway-kh/repository/.venv/bin/python`
 
 ## What was rehearsed
 
@@ -1779,7 +1779,7 @@ _handover to http://127.0.0.1:50545: {'node-c': 'verified'}, verified 1/1; follo
     "role": "controller",
     "machine": {
       "id": "s9-node-b",
-      "name": "vengthengs-Mac-Studio"
+      "name": "studio-Mac-Studio"
     },
     "nodes": [
       {
@@ -1945,7 +1945,7 @@ _restart -> own credential HTTP 401; join with the Fleet token refused HTTP 403 
     "fleet_credential_origin": "adopted",
     "handed_over_to": null,
     "handed_over_at": null,
-    "machine_name": "vengthengs-Mac-Studio",
+    "machine_name": "studio-Mac-Studio",
     "database_configured": false,
     "database_endpoint": null,
     "database_source": null,
@@ -1958,7 +1958,7 @@ _restart -> own credential HTTP 401; join with the Fleet token refused HTTP 403 
     "target": "controller-a",
     "status": 401,
     "payload": {
-      "detail": "POST /api/hub/fleet/nodes was refused by vengthengs-Mac-Studio (s9-controller-a): a credential that is neither this Mac's Hub token nor the Fleet token this Mac holds. The route requires this Mac's Hub token, or a Fleet token matching the one this Mac holds. If the caller presented a Fleet token, the two Macs hold different Fleet tokens: re-join this Mac from its controller with the current Fleet Token."
+      "detail": "POST /api/hub/fleet/nodes was refused by studio-Mac-Studio (s9-controller-a): a credential that is neither this Mac's Hub token nor the Fleet token this Mac holds. The route requires this Mac's Hub token, or a Fleet token matching the one this Mac holds. If the caller presented a Fleet token, the two Macs hold different Fleet tokens: re-join this Mac from its controller with the current Fleet Token."
     }
   },
   "join_attempt": {

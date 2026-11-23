@@ -6,7 +6,7 @@ exactly one endpoint and treats it as GenStudio; it needs no code change, only `
 key. `README.md` has the design; this file is the part that is expensive to rediscover.
 
 Delegation, parallelism and the shared lead workflow: invoke the global `efficient-orchestration`
-skill and follow [LEAD-RULES.md](/build/Developer/_orchestra/developer-handoff/LEAD-RULES.md).
+skill and follow `~/Developer/_orchestra/developer-handoff/LEAD-RULES.md`.
 Ponytail/Graphify apply here and to delegated workers.
 
 ## Gateway UI is a web page; the Mac app shows it
@@ -287,7 +287,7 @@ one-file command above. (Cost: a person who runs discover first reads the suite 
 - **Never hand another session a description of behaviour that is not deployed yet.** Either restart
   and measure the **running** service, or say the change is built but not live.
 - Prefer **graphify** over grepping for architecture, caller and impact questions:
-  `graphify query "<q>" --graph /build/Developer/_graphs/gateway/graphify-out/graph.json`.
+  `graphify query "<q>" --graph ~/Developer/_graphs/gateway/graphify-out/graph.json`.
   It refreshes hourly from `main`; nobody runs `graphify update` by hand. It reports a false syntax
   error in `menubar/VoicesWindow.swift` — a parser limitation; `swiftc -parse` is clean.
 - **A page must never be able to resize the window.** A page with a *required* height propagates it

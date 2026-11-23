@@ -70,11 +70,11 @@ One row in full — `AITRADER/FLUX2-klein-4B-mlx-4bit`:
 | machine | enabled | modality |
 |---|---|---|
 | Studio Hub (this Mac) | True | image |
-| terranash-1100-m4-16-256 | True | image |
-| terranash-1200-m4-24-256 | True | image |
-| terranash-1300-m4-24-256 | False | image |
-| terranash-1400-m4-24-256 | False | image |
-| terranash-1500-m4-24-256 | False | image |
+| studio-1100-m4-16-256 | True | image |
+| studio-1200-m4-24-256 | True | image |
+| studio-1300-m4-24-256 | False | image |
+| studio-1400-m4-24-256 | False | image |
+| studio-1500-m4-24-256 | False | image |
 
 **A new location now inherits this Mac's Hub's own decisions for the same models** (`enable_seed.sentence` on the add result reports the real counts), so the operator ticks a model once for the fleet instead of once per Mac. Existing locations keep their own per-Mac choices, and the model row's tick is the one-click remedy.
 

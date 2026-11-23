@@ -254,7 +254,7 @@ Gateway job `d05eba6d-3136-45f5-92f1-f22494f7b565` (TN0407 Chapter04 audio) fail
 - **0.2.235 (Shipped 2026-11-06, commit `9653608` / `7cb3dc2`):**
   - Shipped explicit publication origin guard `X-Gateway-Origin` (`G176`), Qwen per-model geometry list discovery (`G177`), menu version line placement above Quit (`G178`), owned release staging in `DATA_DIR/releases` refusing Downloads (`G179`), and exact-version Content Pack retirement with successor requirement and named body ceiling (`G180`).
 - **0.2.236 (Shipped 2026-11-07, commit `edcb2b6` / `e43d3ad`):**
-  - Shipped real macOS ComputerName in shared admin header and sidebar (`G181`), verified live on both local (`vengtheng’s Mac Studio`) and 1301 (`terranash-1301-m1-16-1000`).
+  - Shipped real macOS ComputerName in shared admin header and sidebar (`G181`), verified live on both local (`the Mac Studio`) and 1301 (`studio-1301-m1-16-1000`).
   - Shipped deterministic three-party barrier for voice pool concurrency test (`G182`), eliminating wall-clock timing flakiness.
 
 ---
@@ -269,7 +269,7 @@ The following concrete planning gaps have been confirmed through isolated read-o
   1. `renderFleetLocations` (`admin_ui.html:8138`) filters rows by search and location state but never applies `fleetSort`; `fleetSetSort` updates the Groups order only.
   2. Machines uses separate `machineSort` state and header controls, so the visible overall order and actual table order can diverge.
   3. `fleetMachineRowsFor` inverts the entire null-last comparison for descending headers; existing unknown-last test covers ascending only.
-  4. An isolated Node VM probe of the actual current page reproduced disk-descending `[unknown, large, small]` for values `null/302/9`, instead of `[large, small, unknown]`. Evidence: `/build/Developer/_orchestra/gateway-lead/next-batch-20261107/descending-sort-reproduction.json` and read-only probe `reproduce-descending-unknown.js`.
+  4. An isolated Node VM probe of the actual current page reproduced disk-descending `[unknown, large, small]` for values `null/302/9`, instead of `[large, small, unknown]`. Evidence: `~/Developer/_orchestra/gateway-lead/next-batch-20261107/descending-sort-reproduction.json` and read-only probe `reproduce-descending-unknown.js`.
 - **Small change & next action:**
   1. Use the existing stable row ordering for Locations and the default Machines order; preserve explicit header sorting and make the selected sort's scope truthful.
   2. Extend `tests/test_fleet_machines_view.js` to assert descending sort with null/unknown values for `disk`, `memory`, and `network`.

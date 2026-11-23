@@ -49,13 +49,13 @@ test('a cloud job says it has no Mac, and a settled fleet job with no evidence s
 test('the table separates Location from Serving machine and drops the not-recorded noise', () => {
   const rows = [{ id: 'abcdef123456', short_id: 'abcdef12', modality: 'image',
     image_mode: 'text-to-image', submitted_reference_count: 0, state: 'accepted',
-    model_id: 'qwen-image', model_name: 'Qwen Image', provider_name: 'terranash-1500',
+    model_id: 'qwen-image', model_name: 'Qwen Image', provider_name: 'studio-1500',
     fleet: true, executed_by: null, created_at: Date.now() / 1000, caller: 'story' }];
   const html = vm.runInContext(`jobsTable(${JSON.stringify(rows)})`, ctx);
   assert.match(html, /<th>Location<\/th>/);
   assert.match(html, /<th>Serving machine<\/th>/);
   assert.doesNotMatch(html, /<th>Where<\/th>/);
-  assert.match(html, /terranash-1500/);
+  assert.match(html, /studio-1500/);
   assert.match(html, /Waiting for execution/);
   assert.doesNotMatch(html, /Gateway settled: not recorded/);
   assert.doesNotMatch(html, /Gateway dispatched: not recorded/);

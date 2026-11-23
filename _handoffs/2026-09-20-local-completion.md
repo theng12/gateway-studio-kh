@@ -8,7 +8,7 @@ means inherited or worker evidence not yet independently confirmed.
 
 ## Boundaries and recovery
 
-- Global owner rules are in `/build/.codex/AGENTS.md`: Ponytail and
+- Global owner rules are in `~/.codex/AGENTS.md`: Ponytail and
   Graphify always; Impeccable and relevant Superpowers workflows as needed.
 - Development is isolated in `worktrees/handoff-completion`, branch
   `codex/handoff-completion`, beneath the Gateway container. The original
@@ -16,7 +16,7 @@ means inherited or worker evidence not yet independently confirmed.
 - Private transfer, authoring sources and optional history remain outside Git.
   No old jobs are replayed, no voice sharing granted, no hosted Actions enabled.
 - `[MEASURED]` Fresh pre-install backup:
-  `/build/Developer/gateway-kh/backups/pre-handoff-install-20260920-qsDeJN`.
+  `~/Developer/gateway-kh/backups/pre-handoff-install-20260920-qsDeJN`.
   Ten recording digests match both the transferred catalogue and metadata;
   all non-path catalogue fields match the transfer. Six live catalogue/settings
   files match this backup. The live job database is empty and its integrity
@@ -83,7 +83,7 @@ original store authority or a supported publisher-signed export and Story Studio
   Ten recording SHA-256 values and six restored catalogue/settings files remain
   byte-identical to the pre-install backup after startup. No real generation.
 - `[MEASURED]` The normal checkout is
-  `/build/Developer/gateway-kh/repository`; local main was fast-forwarded
+  `~/Developer/gateway-kh/repository`; local main was fast-forwarded
   to the reviewed work. The unrelated `.DS_Store` modification was retained with
   identical SHA-256. No push, publish, hosted workflow or remote mutation occurred.
 - `[MEASURED]` Existing `menubar.json` was backed up and only its `gatewayDir`
@@ -169,7 +169,7 @@ still needs manual reconciliation; no provider-specific recovery poller is claim
   archive library 9; 23 installed Python packages are dependency-compatible.
   Existing upstream deprecation and intentional duplicate-ZIP warnings remain.
 - `[MEASURED]` Fresh private backup before installation:
-  `/build/Developer/gateway-kh/backups/pre-authoring-install-20260921-DVfK1s`.
+  `~/Developer/gateway-kh/backups/pre-authoring-install-20260921-DVfK1s`.
   Previous app signature, SQLite online-backup integrity and exported native
   Create preferences verify. No live application data was replaced.
 - `[MEASURED]` Code-only Graphify update: 2,517 nodes / 6,235 edges. The graph is

@@ -36,7 +36,7 @@ from gateway import config, content_delivery  # noqa: E402
 WARS_PACK_ID = "com.storystudio.pack.topic.historical-wars-treaties-world-order-v2"
 WARS_VERSION = "1.0.0"
 WARS_DIGEST = "747e64a9531f5d8676c0207889fe4ea4eaea6e539caed933bc509b8dd30b2dd7"
-WARS_KNOWN_BACKUP = Path("/build/Developer/gateway-kh/backups/retired-wars-merge-20260922") / WARS_DIGEST / "archive.sspack"
+WARS_KNOWN_BACKUP = Path(os.environ.get("GATEWAY_WARS_BACKUP", str(Path.home() / "Developer" / "gateway-kh" / "backups" / "retired-wars-merge-20260922"))) / WARS_DIGEST / "archive.sspack"
 
 
 def audit_authority(data_dir: Path) -> dict:

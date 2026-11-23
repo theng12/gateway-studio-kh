@@ -145,7 +145,7 @@ class CanPublishReadinessTests(unittest.TestCase):
         self.assertTrue(self._publishable(None))
 
     def _ready_on_a_mac(self, ready: bool | None) -> bool:
-        """The live Hub 0.6.206 row shape for one model at terranash-1600 (2026-10-30)."""
+        """The live Hub 0.6.206 row shape for one model at studio-1600 (2026-10-30)."""
         raw = {
             "catalogued": True,
             # The package list is the **controller's own disk**: the 1600 controller does not

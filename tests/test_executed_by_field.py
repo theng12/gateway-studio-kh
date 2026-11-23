@@ -64,7 +64,7 @@ class ExecutedByFieldTests(unittest.TestCase):
         """A succeeded job with hub_machine in result_json.payload shows executed_by."""
         job_id = _submit_and_succeed("image", {
             "payload": {
-                "hub_machine": "terranash-1305",
+                "hub_machine": "studio-1305",
                 "hub_batch_id": "batch-123",
             },
             "text": "generated image data",
@@ -77,7 +77,7 @@ class ExecutedByFieldTests(unittest.TestCase):
         jobs = response.json()["jobs"]
         target = next((j for j in jobs if j["id"] == job_id), None)
         self.assertIsNotNone(target, "job should be in the list")
-        self.assertEqual(target["executed_by"], "terranash-1305")
+        self.assertEqual(target["executed_by"], "studio-1305")
 
     def test_executed_by_is_none_when_hub_machine_absent(self) -> None:
         """A succeeded job without hub_machine shows executed_by as None."""
@@ -115,7 +115,7 @@ class ExecutedByFieldTests(unittest.TestCase):
     def test_executed_by_is_extracted_from_failed_job_evidence(self) -> None:
         """A failed job with hub_machine in result_json.payload shows executed_by."""
         job_id = _submit_and_fail("video", {
-            "hub_machine": "terranash-1310",
+            "hub_machine": "studio-1310",
             "hub_batch_id": "batch-456",
             "run_seconds": 12.5,
         })
@@ -127,7 +127,7 @@ class ExecutedByFieldTests(unittest.TestCase):
         jobs = response.json()["jobs"]
         target = next((j for j in jobs if j["id"] == job_id), None)
         self.assertIsNotNone(target, "job should be in the list")
-        self.assertEqual(target["executed_by"], "terranash-1310")
+        self.assertEqual(target["executed_by"], "studio-1310")
 
     def test_dispatch_and_settlement_clocks_survive_later_bookkeeping(self) -> None:
         row, _ = store.submit(modality="image", model_id="test-model", params={},

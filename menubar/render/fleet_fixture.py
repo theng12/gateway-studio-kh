@@ -147,11 +147,11 @@ UPDATES = ("macOS is set to download updates automatically (8-15 GB each). Turn 
 def many(rows: list) -> list:
     """GATEWAY_RENDER_FIXTURE=many: 45 Macs in all, most of them saying the same Hub warning, as on the live fleet.
 
-    A big controller group ("Terranash") of 37 Macs: its own Mac comes through labelled "This Mac" (what a Hub
+    A big controller group ("Studio Site") of 37 Macs: its own Mac comes through labelled "This Mac" (what a Hub
     calls itself), 17 download macOS updates automatically, a few more carry the Time Machine and low-disk
     warnings, eight are off.
     """
-    names = [f"terranash-{1100 + i}-m4-16-256" for i in range(37)]
+    names = [f"studio-{1100 + i}-m4-16-256" for i in range(37)]
     machines, activities, nodes = [], [], []
     for i, name in enumerate(names):
         free = 29.8 if i == 4 else 12.0 if i == 9 else 4.0 if i == 11 else 180.0 + i
@@ -173,7 +173,7 @@ def many(rows: list) -> list:
             nodes.append(node(name, "unreachable" if 28 <= i < 36 else "reachable",
                               address=f"http://100.64.1.{i}:47873", seen=3 * HOUR if 28 <= i < 36 else 5,
                               detail="could not reach the node: All connection attempts failed" if 28 <= i < 36 else None))
-    big = location("ctrl-terranash", "Terranash", "http://100.64.1.1:47873", machines=machines, activities=activities,
+    big = location("ctrl-studio", "Studio Site", "http://100.64.1.1:47873", machines=machines, activities=activities,
                    nodes=nodes, workers=[worker(n, "voice", online=not (28 <= i < 36)) for i, n in enumerate(names)])
     return [rows[0], rows[1], rows[2], big, rows[3]]
 
@@ -248,8 +248,8 @@ def health(flavour: str) -> list:
         """`no_hub`: offline Macs that answer but run no Studio Hub. `stops`: mid -> the `last_stop` its Mac recorded."""
         stops = stops or {}
         versions = versions or {}
-        mids = [f"terranash-{label[-4:-2]}{i:02d}-m2-8-256" for i in range(1, n + 1)]
-        ctl = f"terranash-{label[-4:]}-m4-16-256"
+        mids = [f"studio-{label[-4:-2]}{i:02d}-m2-8-256" for i in range(1, n + 1)]
+        ctl = f"studio-{label[-4:]}-m4-16-256"
         machines = [machine("local", ctl, "Apple M4", 16.0, 9.8, 120.0, disk_total=245.0, start=start(versions.get("local", held)))]
         machines[0]["label"] = ctl
         activities = [idle("local", 15 * HOUR, state="long_idle")]
@@ -304,40 +304,40 @@ def health(flavour: str) -> list:
     # 1401 never answers (its old stop belongs to an earlier outage); 1402 answers with no Hub, and its Mac
     # recorded a force-quit after the controller last saw it; 1403 has no Hub and an older crash; 1404 is up.
     why_offline = dict(
-        offline={"terranash-1401-m2-8-256", "terranash-1402-m2-8-256", "terranash-1403-m2-8-256"},
-        no_hub={"terranash-1402-m2-8-256", "terranash-1403-m2-8-256"},
-        stops={"terranash-1401-m2-8-256": {"reason": "quit", "at": NOW - 3 * DAY, "label": "Quit", "relaunched": True},
-               "terranash-1402-m2-8-256": {"reason": "force_quit", "at": NOW - 5 * HOUR + 60, "label": "Force-quit",
+        offline={"studio-1401-m2-8-256", "studio-1402-m2-8-256", "studio-1403-m2-8-256"},
+        no_hub={"studio-1402-m2-8-256", "studio-1403-m2-8-256"},
+        stops={"studio-1401-m2-8-256": {"reason": "quit", "at": NOW - 3 * DAY, "label": "Quit", "relaunched": True},
+               "studio-1402-m2-8-256": {"reason": "force_quit", "at": NOW - 5 * HOUR + 60, "label": "Force-quit",
                                            "relaunched": False},
-               "terranash-1403-m2-8-256": {"reason": "crashed", "at": NOW - 40 * HOUR, "label": "Crashed (restarted)",
+               "studio-1403-m2-8-256": {"reason": "crashed", "at": NOW - 40 * HOUR, "label": "Crashed (restarted)",
                                            "relaunched": True},
-               "terranash-1404-m2-8-256": {"reason": "updated", "at": NOW - 2 * HOUR, "label": "Restarted for an update",
+               "studio-1404-m2-8-256": {"reason": "updated", "at": NOW - 2 * HOUR, "label": "Restarted for an update",
                                            "relaunched": True}})
     if flavour == "health-offline":
         # GATEWAY_RENDER_FIXTURE=health-offline: why a Mac is offline (`last_stop`), a short page that fits one screen.
-        rows = [local, site("c1400", "terranash-1400", 5, **why_offline)]
+        rows = [local, site("c1400", "studio-1400", 5, **why_offline)]
     elif flavour == "health-mixed":
         # Published five minutes ago to 1100 and 1200 (their Macs are still installing it); 1300 was not
         # in that publish, so it and its Macs are behind and the line says to publish to that group.
         rows = [local,
-                site("c1100", "terranash-1100", 10, versions={"terranash-1103-m2-8-256": "0.6.131",
-                                                          "terranash-1107-m2-8-256": "0.6.131"}),
-                site("c1200", "terranash-1200", 8, versions={"terranash-1205-m2-8-256": "0.6.126"}),
-                site("c1300", "terranash-1300", 9, held="0.6.131",
-                     versions={"local": "0.6.131", "terranash-1302-m2-8-256": "0.6.126",
-                               **{f"terranash-13{i:02d}-m2-8-256": "0.6.131" for i in (1, 3, 4, 5)}})]
+                site("c1100", "studio-1100", 10, versions={"studio-1103-m2-8-256": "0.6.131",
+                                                          "studio-1107-m2-8-256": "0.6.131"}),
+                site("c1200", "studio-1200", 8, versions={"studio-1205-m2-8-256": "0.6.126"}),
+                site("c1300", "studio-1300", 9, held="0.6.131",
+                     versions={"local": "0.6.131", "studio-1302-m2-8-256": "0.6.126",
+                               **{f"studio-13{i:02d}-m2-8-256": "0.6.131" for i in (1, 3, 4, 5)}})]
     elif flavour == "health-catchup":
         # A controller that joined later than the others: its rows still render; nothing is pushed.
-        rows = [local, site("c1100", "terranash-1100", 4), site("c1600", "terranash-1600", 3),
-                site("c1500", "terranash-1500", 3), site("c1400", "terranash-1400", 3),
-                site("c1300", "terranash-1300", 3), site("c1200", "terranash-1200", 4)]
+        rows = [local, site("c1100", "studio-1100", 4), site("c1600", "studio-1600", 3),
+                site("c1500", "studio-1500", 3), site("c1400", "studio-1400", 3),
+                site("c1300", "studio-1300", 3), site("c1200", "studio-1200", 4)]
     elif flavour == "health-problem":
         rows = [local,
-                site("c1100", "terranash-1100", 10, crashed={("terranash-1104-m2-8-256", "voice")},
-                     startup_off={"terranash-1109-m2-8-256"}),
-                site("c1200", "terranash-1200", 8, versions={"terranash-1205-m2-8-256": "0.6.126"},
-                     red={"terranash-1203-m2-8-256"}),
-                site("c1400", "terranash-1400", 8, **why_offline)]
+                site("c1100", "studio-1100", 10, crashed={("studio-1104-m2-8-256", "voice")},
+                     startup_off={"studio-1109-m2-8-256"}),
+                site("c1200", "studio-1200", 8, versions={"studio-1205-m2-8-256": "0.6.126"},
+                     red={"studio-1203-m2-8-256"}),
+                site("c1400", "studio-1400", 8, **why_offline)]
         rows[1]["running_jobs"] = [batch("b-9001", "voice", QWEN, "Chapter 4 narration", total=12, done=5, running=1,
                                          queued=6, started=50 * MIN, stalled=True)]
     elif flavour.startswith("health-rollout"):
@@ -345,15 +345,15 @@ def health(flavour: str) -> list:
         # updating themselves), 1200 is installing, the rest wait. `-failed`: 1200 never came back.
         old = "0.6.131"
         rows = [local,
-                site("c1100", "terranash-1100", 10, versions={"terranash-1103-m2-8-256": old,
-                                                          "terranash-1107-m2-8-256": old,
+                site("c1100", "studio-1100", 10, versions={"studio-1103-m2-8-256": old,
+                                                          "studio-1107-m2-8-256": old,
                                                           **({"local": old} if flavour == "health-rollout-errors" else {})}),
-                site("c1200", "terranash-1200", 8, held=old,
-                     versions={"local": old, **{f"terranash-12{i:02d}-m2-8-256": old for i in range(1, 9)}})]
-        for lid, label, n in (("c1300", "terranash-1300", 9), ("c1400", "terranash-1400", 8),
-                              ("c1500", "terranash-1500", 3), ("c1600", "terranash-1600", 4)):
+                site("c1200", "studio-1200", 8, held=old,
+                     versions={"local": old, **{f"studio-12{i:02d}-m2-8-256": old for i in range(1, 9)}})]
+        for lid, label, n in (("c1300", "studio-1300", 9), ("c1400", "studio-1400", 8),
+                              ("c1500", "studio-1500", 3), ("c1600", "studio-1600", 4)):
             rows.append(site(lid, label, n, held=old, versions={"local": old, **{
-                f"terranash-{label[-4:-2]}{i:02d}-m2-8-256": old for i in range(1, n + 1)}}))
+                f"studio-{label[-4:-2]}{i:02d}-m2-8-256": old for i in range(1, n + 1)}}))
         rows[2]["reachable"] = flavour.endswith(("failed", "errors"))
         if flavour == "health-rollout-errors":
             # GATEWAY_RENDER_FIXTURE=health-rollout-errors: Hub 0.6.152 `startup.last_update_error`. The rollout is at 1100,
@@ -365,14 +365,14 @@ def health(flavour: str) -> list:
                 row["startup"]["last_update_error"] = {"build": "e6a8b80", **error}
             failed("local", phase="downloading", at=NOW - 20 * MIN,
                    reason="Install the update failed. HTTP 404 for the release image (not_ready for 15 min).")
-            failed("terranash-1107-m2-8-256", phase="installing", at=NOW - 2 * HOUR,
+            failed("studio-1107-m2-8-256", phase="installing", at=NOW - 2 * HOUR,
                    reason="The app that landed reports build 91ac2f0, not e6a8b80.")
-            failed("terranash-1103-m2-8-256", phase="verifying", at=NOW - 2 * DAY, reason="The signature did not verify.")
-            failed("terranash-1105-m2-8-256", phase="staging", at=NOW - 3 * HOUR, reason="Not enough disk space to stage it.")
+            failed("studio-1103-m2-8-256", phase="verifying", at=NOW - 2 * DAY, reason="The signature did not verify.")
+            failed("studio-1105-m2-8-256", phase="staging", at=NOW - 3 * HOUR, reason="Not enough disk space to stage it.")
     else:
-        rows = [local, site("c1100", "terranash-1100", 10), site("c1200", "terranash-1200", 8),
-                site("c1300", "terranash-1300", 9), site("c1400", "terranash-1400", 8),
-                site("c1500", "terranash-1500", 3)]
+        rows = [local, site("c1100", "studio-1100", 10), site("c1200", "studio-1200", 8),
+                site("c1300", "studio-1300", 9), site("c1400", "studio-1400", 8),
+                site("c1500", "studio-1500", 3)]
     return rows
 
 def assemble(rows: list) -> dict:

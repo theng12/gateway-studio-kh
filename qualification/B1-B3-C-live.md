@@ -33,11 +33,11 @@ Gateway **0.2.63**, build `677ff0d-202609280520`, installed and running on 8787.
 | location | reachable | node_summary | node rows carry |
 |---|---|---|---|
 | This Mac | True | total 0 · reachable 0 · unauthorized 0 | — |
-| terranash-1100-m4-16-256 | True | total 5 · reachable 0 · unauthorized 0 | address, detail, id, joined_at, name, role, state, studios |
-| terranash-1200-m4-24-256 | True | total 6 · reachable 0 · unauthorized 0 | address, detail, host, id, joined_at, name, role, state, studios, version |
-| terranash-1300-m4-24-256 | True | total 1 · reachable 0 · unauthorized 0 | address, detail, host, id, joined_at, name, role, state, studios, version |
-| terranash-1400-m4-24-256 | False | total None · reachable None · unauthorized None | — |
-| terranash-1500-m4-24-256 | False | total None · reachable None · unauthorized None | — |
+| studio-1100-m4-16-256 | True | total 5 · reachable 0 · unauthorized 0 | address, detail, id, joined_at, name, role, state, studios |
+| studio-1200-m4-24-256 | True | total 6 · reachable 0 · unauthorized 0 | address, detail, host, id, joined_at, name, role, state, studios, version |
+| studio-1300-m4-24-256 | True | total 1 · reachable 0 · unauthorized 0 | address, detail, host, id, joined_at, name, role, state, studios, version |
+| studio-1400-m4-24-256 | False | total None · reachable None · unauthorized None | — |
+| studio-1500-m4-24-256 | False | total None · reachable None · unauthorized None | — |
 
 Every decoded field is optional on purpose: the rows above come from controllers on older Hubs and simply do not carry `last_seen_at`, so the app draws an em dash rather than a zero.
 
@@ -63,7 +63,7 @@ Every decoded field is optional on purpose: the rows above come from controllers
   "max_deferrals": 240,
   "defer_cap_seconds": 300.0,
   "source": "gateway",
-  "path": "/build/Library/Application Support/gateway-kh/data/provider-concurrency.local.json"
+  "path": "~/Library/Application Support/gateway-kh/data/provider-concurrency.local.json"
  }
 }
 ```

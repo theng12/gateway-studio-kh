@@ -54,14 +54,14 @@ through Story Studio's real installer.
 
 ## 2. Current checkout, branch, base SHA, runtime
 
-- Container: `/build/Developer/gateway-kh`
+- Container: `~/Developer/gateway-kh`
 - Checkout: `repository/` — the only worktree, branch `main` = `origin/main`,
   clean tree. The old `worktrees/handoff-completion/` and branch
   `codex/content-pack-delivery` are gone. `[MEASURED] 2026-09-23`
 - Running gateway (stable): **version 0.2.17** on **port 8787**, regular Dock app,
   real jobs and provider keys in use. The exact build stamp is in
   `docs/tasks/HANDOFF.md`. `[MEASURED] 2026-09-23`
-- Story source dependency: `/build/Developer/story-studio-kh` at
+- Story source dependency: `~/Developer/story-studio-kh` at
   `866c375d` (2026-09-23), `node_modules` present. Installed
   `/Applications/Story Studio KH.app` **1.4.219**. `[MEASURED] 2026-09-23`
 - `.venv` Python 3.11.16; Node v26.8.2.
@@ -422,7 +422,7 @@ gateway. Enabled the tailnet path on the working instance:
   bind `0.0.0.0` and **never the Tailscale address alone** — that would take
   loopback dark and break local Story Studio.
 - This Mac is `m2-max-32-512`, Tailscale IPv4 **100.126.154.54**, MagicDNS
-  `m2-max-32-512.tail4e72cf.ts.net`.
+  `<tailnet-host>`.
 - Verified `[MEASURED]`: `/v1/models` from the Tailscale IP with the key → 200
   (124 models); without a key → 401; `/admin/api/status` without a key → 401;
   `/health` → 200 (health is unauthenticated by design); loopback still 200.

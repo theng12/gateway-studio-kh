@@ -40,13 +40,13 @@ class AdminWhatsNewTest(unittest.TestCase):
 
     def test_status_publishes_the_computer_name_read_once(self):
         computer_name.cache_clear()
-        done = subprocess.CompletedProcess([], 0, stdout='terranash-1301\n', stderr='')
+        done = subprocess.CompletedProcess([], 0, stdout='studio-1301\n', stderr='')
         with patch('gateway.admin.subprocess.run', return_value=done) as run:
             client = TestClient(app, client=('127.0.0.1', 50000))
             first = client.get('/admin/api/status').json()
             second = client.get('/admin/api/status').json()
-        self.assertEqual(first['computer_name'], 'terranash-1301')
-        self.assertEqual(second['computer_name'], 'terranash-1301')
+        self.assertEqual(first['computer_name'], 'studio-1301')
+        self.assertEqual(second['computer_name'], 'studio-1301')
         self.assertEqual(run.call_count, 1, 'the name is read once, not on every status poll')
 
     def test_status_says_when_the_computer_name_is_unavailable(self):

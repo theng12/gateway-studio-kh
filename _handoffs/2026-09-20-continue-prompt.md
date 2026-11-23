@@ -8,7 +8,7 @@ conversation — everything it needs is on disk.
 ---
 
 ```
-Work in /build/Developer/gateway-kh — the gateway-kh project (one API in
+Work in ~/Developer/gateway-kh — the gateway-kh project (one API in
 front of every local Studio Hub location and ~18 cloud providers, so Story Studio KH
 points at a single URL: http://127.0.0.1:8000). Python/FastAPI gateway plus a macOS
 menu-bar app in menubar/. Use .venv/bin/python for everything.

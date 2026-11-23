@@ -7,7 +7,7 @@ document is the *state*, not the rules.
 
 ## The repository
 
-`/build/Developer/gateway-kh` — one API in front of every local Studio
+`~/Developer/gateway-kh` — one API in front of every local Studio
 Hub location and ~18 cloud providers, so **Story Studio KH points at a single URL**
 (`http://127.0.0.1:8000`). Python/FastAPI gateway + a macOS menu-bar app (AppKit) in
 `menubar/`. Python lives in `.venv` — use `.venv/bin/python` for everything.

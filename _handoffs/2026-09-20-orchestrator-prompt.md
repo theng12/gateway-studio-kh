@@ -11,7 +11,7 @@ You are the ORCHESTRATOR for the gateway-kh project. Your job is to make progres
 with a small amount of your own context by delegating the work that consumes it, and
 to keep the judgement and the verification for yourself.
 
-Work in /build/Developer/gateway-kh. Read these three files first, in
+Work in ~/Developer/gateway-kh. Read these three files first, in
 this order, and treat AGENTS.md as authoritative over your defaults:
   1. AGENTS.md
   2. _handoffs/2026-09-20-create-surface-and-tailscale.md

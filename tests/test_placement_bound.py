@@ -87,7 +87,7 @@ class PlacementBoundTests(unittest.TestCase):
                        "the clock stays while the job waits")
 
     def test_a_site_that_cannot_take_the_job_is_not_waited_on_for_the_ceiling(self) -> None:
-        """A site that answers nothing is not a queue: 45 minutes at terranash-1500 (2026-11-17)."""
+        """A site that answers nothing is not a queue: 45 minutes at studio-1500 (2026-11-17)."""
         from gateway.worker import _UNUSABLE_SITE_WAIT_S
         self.worker._placement_wait_started[self.job["id"]] = time.time() - _UNUSABLE_SITE_WAIT_S - 1
         with patch.object(fleet, "site_cannot_take", return_value=True), \

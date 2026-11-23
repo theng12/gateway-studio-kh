@@ -105,7 +105,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual((summary["startup_off"], summary["startup_unknown"]), (1, 1))
 
     def test_one_issue_per_location_says_how_many_and_what_to_press(self) -> None:
-        row = {**location([{"machine": "a", "label": "terranash-1201", "reachable": True, "startup": OFF},
+        row = {**location([{"machine": "a", "label": "studio-1201", "reachable": True, "startup": OFF},
                            {"machine": "b", "reachable": True, "startup": OFF}]), "role": "controller"}
         issues = [issue for issue in fleet._issues_for(row) if issue["code"] == "services_not_auto_start"]
         self.assertEqual(len(issues), 1)

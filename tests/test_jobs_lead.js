@@ -44,7 +44,7 @@ function harness(jobs = [], apiOverride = null) {
 const job = (id, state, model = 'qwen-image') => ({
   id, short_id: id.slice(0, 8), modality: 'image', image_mode: 'text-to-image',
   submitted_reference_count: 0, state, model_id: model, model_name: model,
-  provider_name: 'terranash-1500', fleet: true, executed_by: null,
+  provider_name: 'studio-1500', fleet: true, executed_by: null,
   created_at: Date.now() / 1000, caller: 'story',
 });
 

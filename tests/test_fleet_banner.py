@@ -38,11 +38,11 @@ def _by_id(flat):
 
 class MachineLabelTests(unittest.TestCase):
     def test_a_remote_controllers_own_mac_is_never_this_mac(self) -> None:
-        row = _row([{"machine": "terranash-1100-m4-16-256", "label": "This Mac", "reachable": True},
+        row = _row([{"machine": "studio-1100-m4-16-256", "label": "This Mac", "reachable": True},
                     {"machine": "n1", "label": "This Mac", "reachable": True}],
                    nodes=[{"id": "n1", "name": "Studio B"}])
         labels = _by_id(fleet.machines_flat([row]))
-        self.assertEqual(labels["terranash-1100-m4-16-256"], "terranash-1100-m4-16-256")
+        self.assertEqual(labels["studio-1100-m4-16-256"], "studio-1100-m4-16-256")
         self.assertEqual(labels["n1"], "Studio B")   # roster name outranks the Hub's placeholder
 
     def test_a_controller_whose_own_id_is_local_uses_its_roster_label(self) -> None:
@@ -72,10 +72,10 @@ class MachineLabelTests(unittest.TestCase):
         self.assertIsNone(flat["other"]["hub_version"])
 
     def test_disk_issues_name_the_real_label(self) -> None:
-        mac = {"machine": "terranash-1106", "label": "This Mac", "reachable": True, "disk_free_gb": 3.0,
+        mac = {"machine": "studio-1106", "label": "This Mac", "reachable": True, "disk_free_gb": 3.0,
                "disk_total_gb": 460.0, "disk": {"state": "red", "free_gb": 3.0, "total_gb": 460.0}}
         issues = [i for i in fleet._issues_for(_row([mac])) if i["code"] == "disk_red"]
-        self.assertIn("terranash-1106 3 GB free", issues[0]["message"])
+        self.assertIn("studio-1106 3 GB free", issues[0]["message"])
         self.assertNotIn("This Mac", issues[0]["message"])
 
     def test_identical_warnings_are_stated_once(self) -> None:
@@ -168,7 +168,7 @@ enum GatewayAPI {
         // One Mac low on disk: the Hub's own "Only 29.8 GB free" is not repeated beside it.
         let disks = built.warnings.filter { $0.kind == "disk_space" }
         assert(disks.count == 1, "one disk line: \(disks.map { $0.text })")
-        assert(disks[0].text == "terranash-1100-m4-16-256: disk amber, 29.8 GB free (largest: other 373 GB)", disks[0].text)
+        assert(disks[0].text == "studio-1100-m4-16-256: disk amber, 29.8 GB free (largest: other 373 GB)", disks[0].text)
         assert(disks[0].hideKind == nil, "disk space must never be hideable")
         assert(built.warnings.first?.kind == "disk_space", "disk lines come first")
         assert(!built.warnings.contains { $0.text.contains("This Mac") }, "a controller's own Mac is never 'This Mac'")
@@ -247,7 +247,7 @@ def _machines():
             warnings.append("Time Machine is backing up to this disk.")
         free, state = 200.0, "green"
         if i == 5:
-            name, free, state = "terranash-1100-m4-16-256", 29.8, "amber"
+            name, free, state = "studio-1100-m4-16-256", 29.8, "amber"
             warnings.append("Only 29.8 GB free.")   # restates the disk line: must not be repeated
         disk = {"state": state, "free_gb": free, "total_gb": 460.0, "warnings": warnings,
                 "warning_items": [{"kind": fleet.warning_kind(w), "text": w} for w in warnings],

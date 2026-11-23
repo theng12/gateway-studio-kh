@@ -114,12 +114,12 @@ class SetPresetTests(RelayCase):
     def test_a_preset_is_set_with_who_asked_and_is_audited(self) -> None:
         answer, seen = self.call(
             httpx.Response(200, json={"ok": True, "preset_id": "creator-16"}),
-            startup_control.set_model_preset, "creator-16", requested_by="vengtheng")
+            startup_control.set_model_preset, "creator-16", requested_by="owner")
         self.assertEqual(answer["preset_id"], "creator-16")
         self.assertEqual((seen[0].method, seen[0].url.path),
                          ("POST", f"/api/hub/fleet/nodes/{MACHINE}/model-preset"))
         self.assertEqual(json.loads(seen[0].content),
-                         {"preset_id": "creator-16", "requested_by": "vengtheng"})
+                         {"preset_id": "creator-16", "requested_by": "owner"})
         self.assertIn("model_preset_requested", self.events())
         self.assertIn("model_preset_result", self.events())
 
@@ -136,7 +136,7 @@ class SetPresetTests(RelayCase):
     def test_a_missing_preset_id_is_refused_before_anything_is_sent(self) -> None:
         answer, seen = self.call(httpx.Response(200, json={"ok": True}),
                                  startup_control.set_model_preset, "",
-                                 requested_by="vengtheng")
+                                 requested_by="owner")
         self.assertIsInstance(answer, startup_control.StartupError)
         self.assertEqual(answer.body["code"], "BAD_PRESET")
         self.assertEqual(seen, [])
@@ -146,7 +146,7 @@ class SetPresetTests(RelayCase):
         answer, _ = self.call(httpx.Response(409, json={"ok": False, "code": "UNKNOWN_PRESET",
                                                        "detail": detail}),
                               startup_control.set_model_preset, "starter-8",
-                              requested_by="vengtheng")
+                              requested_by="owner")
         self.assertIsInstance(answer, startup_control.StartupError)
         self.assertEqual(answer.body["code"], "UNKNOWN_PRESET")
         self.assertIn("starter-8", answer.body["detail"])
@@ -154,7 +154,7 @@ class SetPresetTests(RelayCase):
     def test_a_controller_without_the_preset_route_names_the_hub_version(self) -> None:
         answer, _ = self.call(httpx.Response(404, json={"detail": "not found"}),
                               startup_control.set_model_preset, "creator-16",
-                              requested_by="vengtheng")
+                              requested_by="owner")
         self.assertIsInstance(answer, startup_control.StartupError)
         self.assertEqual(answer.body["code"], "HUB_TOO_OLD")
         self.assertIn("0.6.205", answer.body["detail"])
@@ -215,7 +215,7 @@ class AdminRouteTests(unittest.TestCase):
 
     def test_an_extra_field_is_refused_rather_than_ignored(self) -> None:
         from gateway import admin as admin_module
-        superuser = {"preset_id": "creator-16", "requested_by": "vengtheng", "packages": ["x"]}
+        superuser = {"preset_id": "creator-16", "requested_by": "owner", "packages": ["x"]}
         answer = admin_module.fleet_machine_set_model_preset("ctl1", MACHINE, superuser)
         self.assertEqual(answer.status_code, 400)
         self.assertIn("packages", answer.body.decode())

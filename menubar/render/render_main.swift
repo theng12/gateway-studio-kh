@@ -95,7 +95,7 @@ func write(_ window: NSWindow, web: WKWebView?, to path: String) {
 /// `fleet-rename`: the Fleet page's Rename sheet (an NSAlert, so not part of any page) for a sample node, and
 /// the titles of that node's "…" menu, so the sheet can be looked at without opening the app.
 func renderRenameSheet() {
-    let json = #"{"location_id":"ctl1","machine":"terranash-0108-m1-8-256-hub","label":"terranash-0108-m1-8-256","reachable":true}"#
+    let json = #"{"location_id":"ctl1","machine":"studio-0108-m1-8-256-hub","label":"studio-0108-m1-8-256","reachable":true}"#
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     guard let machine = try? decoder.decode(FleetMachine.self, from: Data(json.utf8)) else { print("no sample machine"); return }
@@ -103,7 +103,7 @@ func renderRenameSheet() {
         print("menu: \(button.itemTitles)")
     }
     let (alert, field) = FleetStartup.renameAlert(for: machine)
-    field.stringValue = "terranash-1409-m1-8-256"
+    field.stringValue = "studio-1409-m1-8-256"
     alert.layout()
     alert.window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
     alert.window.orderFront(nil)
@@ -234,7 +234,7 @@ func renderNetworkSheets() {
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     let mac = #"{"location_id":"4bb919aee2e4","machine":"imac-4","label":"Shop iMac 4","reachable":true,"node_role":"agent","network":"C","network_override":null,"installable_models":[]}"#
-    let place = #"{"id":"de7250e146a7","label":"terranash-1100","network":"A"}"#
+    let place = #"{"id":"de7250e146a7","label":"studio-1100","network":"A"}"#
     guard let machine = try? decoder.decode(FleetMachine.self, from: Data(mac.utf8)),
           let location = try? decoder.decode(FleetLocation.self, from: Data(place.utf8)) else { print("no sample"); return }
     if let button = FleetStartup.menuButton(for: machine, window: { nil }, done: {}) as? FleetMenuButton {

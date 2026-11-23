@@ -117,7 +117,7 @@ on evidence — which is worth saying plainly rather than inventing work.
 
 **Owner:**
 
-- **OWNER-1** — re-join `vengthengs-mac-studio-hub` with the controller's current Fleet token
+- **OWNER-1** — re-join `owner-mac-studio-hub` with the controller's current Fleet token
 - **OWNER-3** — 9 machines offline
 - **OWNER-4** — controllers before nodes, for the Hub's memory-policy change
 
