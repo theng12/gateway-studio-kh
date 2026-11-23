@@ -1,0 +1,52 @@
+{
+ "app": "Gateway Studio KH",
+ "version": "0.2.305",
+ "basis": "Updater release: Sparkle via the kh-sparkle shim behind the hold-before-check contract, macOS 12 floor, and CFBundleVersion made comparable so an update can actually be offered.",
+ "gate": {
+  "verdict": "GATE PASS",
+  "commit": "f95fff15f1200f42622c751457e3104501296f21",
+  "run": "2026-11-23T12:45:04Z",
+  "evidence": "$HOME/Developer/_orchestra/developer-media/gateway-studio-kh/lead/gateway-lead/0.2.305-sparkle/gate-20261123-191426-88541",
+  "gate_run_sha256_before_and_after": "bc0dbcd8c3621012aea845de04714e4295496a426b94ea928ab5c2ea0c68f8f3",
+  "steps_ok": [
+   "changed-files-are-in-scope",
+   "release-path-resolves-at-runtime",
+   "appcast-url-is-live",
+   "python-unit-one-process-each",
+   "queue-view-in-the-page",
+   "fleet-web-parity",
+   "fleet-ask-now-in-the-page",
+   "changelog-is-this-release",
+   "build",
+   "bundle-carries-the-updater",
+   "desktop-safety",
+   "commit-identity",
+   "scan-dmg"
+  ],
+  "scan": "scan-dmg: clean, bound to sha256 ecd95740fb7d42076761ed2e428d06caa5c91e71bfada0376ccfde618ce007e0 (3,163 files, scanner scan-dmg/2026-11-20)"
+ },
+ "artifact": {
+  "name": "Gateway Studio KH-0.2.305-f95fff15-202611231244.dmg",
+  "sha256": "ecd95740fb7d42076761ed2e428d06caa5c91e71bfada0376ccfde618ce007e0",
+  "bytes": 68502240
+ },
+ "public_asset": {
+  "url": "https://github.com/theng12/gateway-studio-kh/releases/download/0.2.305/ecd95740fb7d-Gateway.Studio.KH-0.2.305.dmg",
+  "anonymous_download_sha256": "ecd95740fb7d42076761ed2e428d06caa5c91e71bfada0376ccfde618ce007e0",
+  "bytes": 68502240,
+  "note": "Downloaded anonymously with curl and hashed here; identical to the gated candidate. Created by App Publisher on 2026-11-23T13:04:38Z, not by this session."
+ },
+ "signature": {
+  "tool": "vendor/bin/sign_update --ed-key-file ~/.kh-sparkle/kh.gateway.app/private.key",
+  "verified_with": "openssl pkeyutl -verify -pubin -keyform DER -rawin against the SUPublicEDKey read from the built bundle",
+  "result": "Signature Verified Successfully",
+  "note": "Proven on the candidate bytes before the public asset existed; the asset hashes identical, so the same signature applies."
+ },
+ "app_identity_checked": {
+  "path": "worktrees/0305-sparkle/menubar/build/gateway-kh.app",
+  "CFBundleShortVersionString": "0.2.305",
+  "CFBundleVersion": "0.2.305",
+  "GatewayBuild": "f95fff15-202611231244",
+  "note": "build.sh's own staged bundle from the gated commit. No app installed or launched on this Mac, so the Launcher install proof is still pending and nothing here claims one."
+ }
+}

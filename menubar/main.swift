@@ -1846,9 +1846,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // SUFeedURL, SUPublicEDKey and KHHoldURL from Info.plist, holds work on this app's own drain
         // route *before* it fetches the feed, and draws nothing. A refusal is a log line here, never
         // a dialog: an update that cannot hold is refused rather than installed over running work.
+        // The estate token moves into this app's own file once, before the updater reads anything,
+        // and whatever went wrong is said on screen rather than only in this log (0.2.306).
+        if let line = HoldToken.migrateIfNeeded() { NSLog("kh-sparkle: %@", line) }
+        if let problem = HoldToken.problem() { UpdateChecker.shared.blocked(problem) }
         kh_sparkle_set_state_callback(khSparkleStateChanged)
         if kh_sparkle_start() != 0 {
-            NSLog("kh-sparkle: refused: %@", String(cString: kh_sparkle_last_error()))
+            let reason = String(cString: kh_sparkle_last_error())
+            NSLog("kh-sparkle: refused: %@", reason)
+            UpdateChecker.shared.blocked("update blocked: " + reason)
         }
 
         // Editing shortcuts (⌘A/⌘C/⌘V/⌘X/⌘Z) are dispatched through the main

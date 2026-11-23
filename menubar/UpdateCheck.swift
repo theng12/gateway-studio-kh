@@ -8,6 +8,8 @@ enum UpdateState: Equatable {
     case upToDate(version: String)
     case available(version: String)
     case unknown(String)
+    /// The updater cannot run at all — a hold token it cannot read, said in the app's own words.
+    case blocked(String)
 }
 
 final class UpdateChecker {
@@ -16,9 +18,17 @@ final class UpdateChecker {
 
     private init() {}
 
+    /// Record why the updater cannot run, in the app's own words, so the status line says it.
+    func blocked(_ reason: String) {
+        DispatchQueue.main.async { self.state = .blocked(reason) }
+    }
+
     // This app never installs anything (owner rule 2026-11-13): it reads the signed Launcher feed and
     // hands every install to Studio Launcher KH, the only installer. It may check the feed itself.
     func check(completion: @escaping (UpdateState) -> Void) {
+        // A blocked updater stays blocked: answering "up to date" would be a false report about a
+        // path that cannot work.
+        if case .blocked = state { completion(state); return }
         DispatchQueue.main.async {
             self.state = .checking
             let currentVersion = GatewayController.shared.appVersion

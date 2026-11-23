@@ -10,6 +10,12 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.306 — 2026-11-23
+
+- **Updates can hold your work again, and stop borrowing the shared token file.** Gateway now keeps its own hold token in its own folder, copying the shared one across once the first time it starts; the old shared file is never read again. When the token cannot be read, the app says so on screen in plain words instead of quietly refusing every update.
+
+---
+
 ## 0.2.305 — 2026-11-23
 
 - **Gateway can now update itself, and it holds your work first.** The app checks a signed feed in the background and installs a new version without a window, a prompt or a click. Before it fetches anything it puts its own work on hold through the same maintenance hold an install already uses, so no running job is cut off; if the hold cannot be taken, the update is refused instead of forced. Work resumes by itself when the check finishes.

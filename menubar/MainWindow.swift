@@ -899,7 +899,7 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     private func updateStatusLine() {
-        let text: String
+        var text: String
         switch GatewayController.shared.state {
         case .running:
             statusDot.colour = Health.ok.tint
@@ -927,6 +927,12 @@ final class MainWindow: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             availableButton.isHidden = false
             availableButton.toolTip = "Gateway Studio KH \(version) is available — open Studio Launcher KH"
         case .unknown(let reason): tooltip += " · \(reason)"
+        case .blocked(let reason):
+            // An updater that can never run is a fact about this app, not a hidden tooltip: the
+            // status line carries the sentence itself, in the app's own words.
+            text = reason
+            tooltip = reason
+            statusDot.colour = Health.warn.tint
         case .idle, .checking: break
         }
         sidebarStatus.stringValue = text + suffix

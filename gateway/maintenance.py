@@ -21,15 +21,26 @@ def is_token_form(value: str) -> bool:
     return isinstance(value, str) and _HEX64.fullmatch(value) is not None
 
 
-def _token_file() -> Path:
-    return Path(os.environ.get("KHU_HOLD_TOKEN_FILE")
-                or Path.home() / "Library/KHUpdater/state/hold-token")
+def _own_token_file() -> Path:
+    """Next to the app's other state, honouring `GATEWAY_APP_SUPPORT` the way config.py does."""
+    support = os.environ.get("GATEWAY_APP_SUPPORT")
+    root = Path(support) if support else Path.home() / "Library/Application Support/gateway-kh"
+    return root / "hold-token"
 
 
-def _read_token_file() -> str | None:
-    """Use the opened descriptor for both checks and a bounded read, including during rotation."""
+def _legacy_token_file() -> Path:
+    return Path.home() / "Library/KHUpdater/state/hold-token"
+
+
+def token_path() -> Path:
+    """The file this app reads: its own, unless a test names another."""
+    return Path(os.environ.get("KHU_HOLD_TOKEN_FILE") or _own_token_file())
+
+
+def _read_guarded(path: Path) -> str | None:
+    """Read through the descriptor: 0600 regular file, ours, 64 hex — including during rotation."""
     try:
-        fd = os.open(_token_file(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except (OSError, ValueError):
         return None
     try:
@@ -47,6 +58,54 @@ def _read_token_file() -> str | None:
     except UnicodeDecodeError:
         return None
     return token if len(raw) <= 66 and is_token_form(token) else None
+
+
+def migrate_token_file() -> str | None:
+    """Copy the estate hold token into this app's own file, once, and say so.
+
+    Own file first: after the copy nothing reads the legacy path, so a half-migration cannot keep
+    working by accident. Returns the one log line when a copy is made or refused, else None.
+    """
+    own = token_path()
+    if os.environ.get("KHU_HOLD_TOKEN_FILE") or own.exists():
+        return None
+    legacy = _legacy_token_file()
+    if not legacy.exists():
+        return None
+    token = _read_guarded(legacy)
+    if token is None:
+        return (f"hold token NOT migrated: {legacy} is not a 0600 regular file of 64 hex;"
+                f" updates stay blocked until {own} exists")
+    try:
+        own.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(own, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as exc:
+        return f"hold token NOT migrated: cannot write {own}: {exc}"
+    try:
+        os.write(fd, (token + "\n").encode("ascii"))
+    finally:
+        os.close(fd)
+    return f"hold token migrated: copied {legacy} to {own}; the legacy path is no longer read"
+
+
+def token_problem() -> str | None:
+    """The sentence a person needs when an update cannot hold, or None when the token is usable."""
+    path = token_path()
+    if not path.exists():
+        return f"update blocked: this app's hold token is missing at {path}"
+    if _read_guarded(path) is None:
+        return f"update blocked: this app's hold token at {path} is not a 0600 file of 64 hex"
+    return None
+
+
+def _token_file() -> Path:
+    return token_path()
+
+
+def _read_token_file() -> str | None:
+    if (line := migrate_token_file()) is not None:
+        print(line, flush=True)
+    return _read_guarded(_token_file())
 
 
 def matches_current(token: str) -> bool:
