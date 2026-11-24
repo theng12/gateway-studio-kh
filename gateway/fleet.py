@@ -245,13 +245,37 @@ _TIMEOUT = PROBE_TIMEOUT_S
 #: next probe, and a Gateway restart simply starts from the default.
 _probe_durations: dict[str, float] = {}
 
+#: When each controller was last probed. A site nobody has asked for a while is the slowest thing
+#: the fleet does — Macs sleep, a VPN renegotiates, a controller cold-starts — so the first contact
+#: after a quiet spell gets the cap rather than the default. Measured 2026-11-24: sites that answer
+#: in 60 ms while awake took 9-14 s on the first probe after a quiet morning, which read as
+#: "unreachable — timeout" and collapsed the headline to the sites that were awake.
+QUIET_SPELL_S = 180.0
+_probe_seen: dict[str, float] = {}
+
+
+def _note_probe(controller_id: str, latency_ms: object) -> None:
+    """Record that this site was just probed, and how long a successful answer took."""
+    controller_id = str(controller_id)
+    _probe_seen[controller_id] = time.time()
+    if isinstance(latency_ms, (int, float)) and latency_ms > 0:
+        _probe_durations[controller_id] = float(latency_ms) / 1000.0
+
 
 def _probe_timeout(controller_id: str) -> float:
-    """How long this site gets: the default, or 3× its last measured probe, up to the cap."""
+    """How long this site gets on this probe.
+
+    First contact after a quiet spell gets the cap (`QUIET_SPELL_S`); after that the default, or 3×
+    its last measured probe, up to the cap.
+    """
+    controller_id = str(controller_id)
     try:
-        last = float(_probe_durations.get(str(controller_id)) or 0.0)
+        last = float(_probe_durations.get(controller_id) or 0.0)
     except (TypeError, ValueError):
         last = 0.0
+    seen = _probe_seen.get(controller_id)
+    if seen is None or (time.time() - seen) > QUIET_SPELL_S:
+        return PROBE_TIMEOUT_MAX_S
     return min(PROBE_TIMEOUT_MAX_S, max(PROBE_TIMEOUT_S, 3.0 * last))
 
 #: The best-effort reads, each with what an absent answer degrades to. **Fetched
@@ -2041,10 +2065,9 @@ def locations() -> list[dict]:
         # Stamped before the probe: one that began before a refusal must not clear it.
         local_started = time.time()
         local = _probe(local_base, local_token, timeout=_probe_timeout(LOCAL_ID))
+        _note_probe(LOCAL_ID, local.get("latency_ms"))
         if local.get("reachable"):
             _remember_live_read(LOCAL_ID, local_started)
-            if isinstance(local.get("latency_ms"), (int, float)) and local["latency_ms"] > 0:
-                _probe_durations[LOCAL_ID] = float(local["latency_ms"]) / 1000.0
         local.update({
             "id": LOCAL_ID, "label": local_label(), "url": local_base, "local": True,
             # **The provider id this location is managed under.** A dashboard row
@@ -2091,11 +2114,10 @@ def locations() -> list[dict]:
     for row, result in zip(configured, probed):
         controller_id = str(row.get("id") or "")
         reachable_now = bool(result.get("reachable"))
+        # Every probe is noted, answered or not: the quiet-spell rule follows the last *contact*.
+        _note_probe(controller_id, result.get("latency_ms") if reachable_now else None)
         if reachable_now:
             _remember_live_read(controller_id, probes_started)
-            # The next probe's bound follows what this site actually took (see `_probe_timeout`).
-            if isinstance(result.get("latency_ms"), (int, float)) and result["latency_ms"] > 0:
-                _probe_durations[controller_id] = float(result["latency_ms"]) / 1000.0
             # Remember what a live controller said about its members, so a later outage can still
             # name them (check 10 — a powered-down house must not look like an empty one).
             _remember_members(controller_id, result.get("nodes"), result.get("node_summary"))

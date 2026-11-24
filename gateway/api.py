@@ -2045,16 +2045,22 @@ def _publish_attempt_evidence(body: dict[str, Any], job: dict[str, Any]) -> None
 
     policy = concurrency.attempts_for(job)
     limit = int(policy["max_attempts"])
-    body["attempts"] = [
-        {
+    rows: list[dict[str, Any]] = []
+    for index, entry in enumerate(attempts):
+        row: dict[str, Any] = {
             "number": index + 1,
             "machine": entry.get("location"),
             "failure_code": entry.get("code"),
             "failure_reason": entry.get("detail"),
             "at": entry.get("at"),
         }
-        for index, entry in enumerate(attempts)
-    ]
+        # **Why every other site was passed over**, from the same list the placement failure names.
+        # It was written to the attempt log (0.2.290) and never published, so the Jobs view showed
+        # which machine failed and said nothing about the ones that never got the job.
+        if entry.get("rejections"):
+            row["rejections"] = entry["rejections"]
+        rows.append(row)
+    body["attempts"] = rows
     from .worker import _UNCOUNTED_ATTEMPT_CODES
 
     # **The figure is the ceiling's own count** (`worker._next_machine`): this round only, and

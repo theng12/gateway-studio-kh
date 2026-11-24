@@ -137,5 +137,25 @@ class RejectionsAreRecordedTest(unittest.TestCase):
         self.assertEqual(self.store.get(self.job["id"])["attempt_count"], 0)
 
 
+    def test_the_attempts_api_projects_them(self) -> None:
+        """The Job view reads the same evidence: refusals reach it, from the attempt log."""
+        from gateway import api
+
+        ceiling = float(concurrency.queue_wait_budget()["placement_wait_ceiling_seconds"])
+        self.worker._placement_wait_started[self.job["id"]] = time.time() - ceiling - 1
+        snap, enabled = self._patches()
+        with snap, enabled:
+            self.worker._note_waiting(self.store.get(self.job["id"]))
+        body: dict = {}
+        # The publisher reads the process's own store; point it at this test's sandbox one.
+        with patch.object(api, "store", self.store):
+            api._publish_attempt_evidence(body, self.store.get(self.job["id"]))
+        self.assertTrue(body.get("attempts"), "the attempts API published no attempt")
+        newest = body["attempts"][-1]
+        self.assertTrue(newest.get("rejections"),
+                        f"the attempts API dropped the per-site refusals: {body['attempts']}")
+        self.assertIn(OTHER, str(newest["rejections"]), "the refusal did not name the other site")
+
+
 if __name__ == "__main__":
     unittest.main()
