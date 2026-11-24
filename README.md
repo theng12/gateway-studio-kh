@@ -21,6 +21,15 @@ It fronts two classes of backend behind one facade:
   Token Harbor, Experiential Labs, fal.ai, Kie.ai, Black Forest Labs, MiniMax, ElevenLabs,
   Fish Audio.
 
+## Screenshots
+
+![The Overview screen: which providers are on, what Story Studio is offered, and the jobs that ran recently](docs/screenshots/overview-light.png)
+
+![The Jobs screen: every job with its type, provider, model and state](docs/screenshots/jobs-light.png)
+
+The [Fleet screen](docs/screenshots/fleet-groups-light.png) groups the Macs this gateway can send work
+to by site and says what each one is doing, or why it is not.
+
 ## Why this exists (and why it is the sanctioned design)
 
 Story Studio KH's own architecture contract requires that it talks to **exactly one endpoint**:
