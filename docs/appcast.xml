@@ -10,6 +10,16 @@
     <link>https://theng12.github.io/gateway-studio-kh/appcast.xml</link>
     <description>The newest Gateway Studio KH for Macs that already have it.</description>
     <language>en</language>
+    <item>
+      <title>Version 0.2.307</title>
+      <pubDate>Tue, 24 Nov 2026 10:33:18 +0000</pubDate>
+      <sparkle:version>0.2.307</sparkle:version>
+      <sparkle:shortVersionString>0.2.307</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[- **Every place a job was passed over now says why, where the job waits.** The Jobs view lists each site the Gateway tried and the reason it declined — busy, no such model, drained — instead of only naming the machine that failed.
+- **The first look at a sleeping Mac is no longer mistaken for an outage.** After a quiet spell a site gets the full 20-second window instead of ten, so a Mac that was asleep stops reading as unreachable and the fleet count stops collapsing to whichever sites happened to be awake.]]></description>
+      <enclosure url="https://github.com/theng12/gateway-studio-kh/releases/download/0.2.307/Gateway.Studio.KH-0.2.307.dmg" length="67459308" type="application/octet-stream" sparkle:edSignature="7LkXl2aTnsJZLiHMxQEE6QFqtf2lc3WcEVY0/PKSwW7S/n1teeq1maC/fkhq5GE+c6sguXFfiVEh7OFvpXXNDg==" />
+    </item>
       <item>
       <title>Version 0.2.306</title>
       <pubDate>Mon, 23 Nov 2026 15:48:51 +0000</pubDate>
