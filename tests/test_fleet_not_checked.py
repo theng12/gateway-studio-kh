@@ -167,24 +167,27 @@ class TheSilentSitesMacsAreNotLostTest(_Case):
 class TheSlowSiteIsMeasuredTest(unittest.TestCase):
     def setUp(self) -> None:
         fleet._probe_durations.clear()
+        fleet._probe_seen.clear()
         self.addCleanup(fleet._probe_durations.clear)
+        self.addCleanup(fleet._probe_seen.clear)
 
-    def test_the_bound_is_ten_seconds_for_a_site_with_no_history(self) -> None:
-        self.assertEqual(fleet._probe_timeout("never-seen"), 10.0)
+    def test_the_bound_is_the_cap_for_a_site_with_no_history(self) -> None:
+        # No history is first contact: nothing has yet proved this site answers quickly.
+        self.assertEqual(fleet._probe_timeout("never-seen"), 20.0)
         self.assertEqual(fleet.PROBE_TIMEOUT_S, 10.0)
         self.assertEqual(fleet.PROBE_TIMEOUT_MAX_S, 20.0)
 
     def test_a_previous_slow_probe_raises_that_sites_bound(self) -> None:
         # 5.9 s and 6.1 s are both inside their own 3x bound (17.7 s and 18.3 s): an answer at
         # either is measured, not "not checked".
-        fleet._probe_durations["slow-59"] = 5.9
-        fleet._probe_durations["slow-61"] = 6.1
+        fleet._note_probe("slow-59", 5900)
+        fleet._note_probe("slow-61", 6100)
         self.assertAlmostEqual(fleet._probe_timeout("slow-59"), 17.7, places=3)
         self.assertAlmostEqual(fleet._probe_timeout("slow-61"), 18.3, places=3)
 
     def test_the_bound_has_a_floor_and_a_ceiling(self) -> None:
-        fleet._probe_durations["fast"] = 0.2
-        fleet._probe_durations["very-slow"] = 9.0
+        fleet._note_probe("fast", 200)
+        fleet._note_probe("very-slow", 9000)
         self.assertEqual(fleet._probe_timeout("fast"), 10.0)
         self.assertEqual(fleet._probe_timeout("very-slow"), 20.0)
 
