@@ -31,8 +31,11 @@ trap '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; true' EXIT
 PORT=$("$PY" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 SUPPORT="$WORK/support"
 mkdir -p "$SUPPORT"
+# The Settings row inspects gatewayDir for a bundled runtime, and prints the path it looked in when
+# there is none — a render meant for the README must show the shipped layout, not the checkout, so the
+# caller can point this at the built bundle's Resources/gateway.
 printf '{"gatewayDir":"%s","port":%s,"autoStartGateway":false,"hasLaunchedBefore":true,"keepGatewayRunning":false}' \
-  "$ROOT" "$PORT" > "$SUPPORT/menubar.json"
+  "${GATEWAY_RENDER_GATEWAY_DIR:-$ROOT}" "$PORT" > "$SUPPORT/menubar.json"
 
 # `exec`, so $! is the fixture server itself: without it $! was the subshell, the trap's kill stopped only that,
 # and the server and its gateway were orphaned on every run (54 found on 2026-10-04).

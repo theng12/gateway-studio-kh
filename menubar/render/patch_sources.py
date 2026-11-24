@@ -26,8 +26,27 @@ assert marker in text, "main.swift: the entry-point comment moved; update patch_
 (work / "AppCore.swift").write_text(text[:text.index(marker)])
 # render-page.sh puts the harness entry point in main.swift, replacing this copy.
 
+# The harness does not link the updater shim, so the shipped call site is dropped from the copy only.
+# The rest of the token path stays: a blocked updater is a state the console can show.
+patch("AppCore.swift",
+      "        kh_sparkle_set_state_callback(khSparkleStateChanged)\n        if kh_sparkle_start() != 0 {\n"
+      "            let reason = String(cString: kh_sparkle_last_error())\n"
+      "            NSLog(\"kh-sparkle: refused: %@\", reason)\n"
+      "            UpdateChecker.shared.blocked(\"update blocked: \" + reason)\n        }\n",
+      "")
+
 patch("AppCore.swift",
       "private(set) var state: GatewayState = .stopped", "var state: GatewayState = .stopped")
+# The harness binary has no bundle, so the console would print "unknown" where a shipped app prints its
+# version. A render meant for the README passes the real one through the environment.
+patch("AppCore.swift",
+      'Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"',
+      'Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String'
+      ' ?? ProcessInfo.processInfo.environment["GATEWAY_RENDER_VERSION"] ?? "unknown"')
+patch("AppCore.swift",
+      'Bundle.main.object(forInfoDictionaryKey: "GatewayBuild") as? String ?? "unknown"',
+      'Bundle.main.object(forInfoDictionaryKey: "GatewayBuild") as? String'
+      ' ?? ProcessInfo.processInfo.environment["GATEWAY_RENDER_BUILD"] ?? "unknown"')
 patch("MainWindow.swift", "    private var window: NSWindow?", "    var window: NSWindow?")
 patch("MainWindow.swift", "    private var sections: [AppSection] = []", "    var sections: [AppSection] = []")
 patch("MainWindow.swift", "        window.makeKeyAndOrderFront(nil)\n        NSApp.activate(ignoringOtherApps: true)\n",

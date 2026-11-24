@@ -255,6 +255,9 @@ class Overlay(BaseHTTPRequestHandler):
             try:  # the fixture fleet has a running Hub; the isolated gateway has none
                 status = json.loads(payload)
                 status["hub"] = {"running": True, "advertised": True, "base_url": "http://127.0.0.1:47873"}
+                # A render is published: the real Computer Name is the owner's, and the console prints
+                # it on the Overview screen ("<name> · <address> · up 27s").
+                status["computer_name"] = "Studio Mac"
                 payload = json.dumps(status).encode()
             except ValueError:
                 pass
