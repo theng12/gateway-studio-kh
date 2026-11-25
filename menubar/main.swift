@@ -1855,6 +1855,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // convenience, not the whole interface. A login launch passes
         // `--background` and stays quiet.
         let backgroundLaunch = arguments.contains("--background")
+            || ProcessInfo.processInfo.environment["GATEWAY_BACKGROUND"] == "1"
         if !backgroundLaunch {
             MainWindow.shared.show(section: "overview")
         }
@@ -2363,5 +2364,6 @@ signal(SIGPIPE, SIG_IGN)
 let application = NSApplication.shared
 let delegate = AppDelegate()
 application.delegate = delegate
-application.setActivationPolicy(testMode ? .accessory : .regular)
+let quietLaunch = testMode || ProcessInfo.processInfo.environment["GATEWAY_BACKGROUND"] == "1"
+application.setActivationPolicy(quietLaunch ? .accessory : .regular)
 application.run()
