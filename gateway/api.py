@@ -989,7 +989,7 @@ def require_auth(request: Request, authorization: str | None = Header(default=No
             503, "Set GATEWAY_API_KEY before using the gateway beyond loopback.",
             "API_KEY_NOT_CONFIGURED",
         )
-    if configured and token != configured:
+    if configured and not accepts_gateway_api_key(token):
         raise GatewayError(403, "Invalid API key.", "FORBIDDEN")
 
 
@@ -1060,7 +1060,7 @@ def require_content_auth(authorization: str | None = Header(default=None)) -> st
     token = authorization[7:].strip()
     if not token:
         raise GatewayError(401, "Empty bearer token.", "UNAUTHORIZED")
-    if token != configured:
+    if not accepts_gateway_api_key(token):
         raise GatewayError(403, "Invalid API key.", "FORBIDDEN")
     return configured
 

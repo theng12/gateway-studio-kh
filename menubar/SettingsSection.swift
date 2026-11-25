@@ -130,7 +130,7 @@ final class SettingsSection: NSObject, AppSection {
         rotationLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
         section("Gateway API Key", [
             PageKit.help(
-                "The password Story Studio uses to reach this Gateway. Keep it private; Regenerate if it leaks, then paste the new one into each Story Mac."
+                "The password Story Studio uses to reach this Gateway. Keep it private; Rotate if it leaks, then paste the new one into each Story Mac."
             ),
             PageKit.formRow("Key", [keyField, keyButtons] as [NSView]),
             rotationLabel,

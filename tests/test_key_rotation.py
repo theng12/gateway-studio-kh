@@ -87,6 +87,37 @@ class RotationTest(unittest.TestCase):
         self.assertEqual(config.ENV_PATH.read_text(encoding="utf-8").count("GATEWAY_API_KEY="), 1,
                          "a refused rotation writes nothing")
 
+    def test_v1_and_content_guards_honour_the_overlap_window(self) -> None:
+        import time
+        from types import SimpleNamespace
+        from gateway import api
+
+        result = config.rotate_gateway_api_key(now=time.time())
+        new_key = str(result["key"])
+        req = SimpleNamespace(headers={}, client=SimpleNamespace(host="127.0.0.1"))
+        # Both new and previous keys pass /v1 and content auth while the window is open.
+        for candidate in (new_key, "first-key"):
+            api.require_auth(req, f"Bearer {candidate}")
+            self.assertEqual(api.require_content_auth(f"Bearer {candidate}"), new_key)
+        # Once the window closes, the old key is refused by both guards while the new one still works.
+        config.rotate_gateway_api_key(now=T0)
+        # Re-seed with first-key as expired previous and new_key as current.
+        config.ENV_PATH.write_text(
+            f"GATEWAY_API_KEY={new_key}\n"
+            f"GATEWAY_API_KEY_PREVIOUS=first-key\n"
+            f"GATEWAY_API_KEY_PREVIOUS_UNTIL={int(time.time()) - 60}\n"
+            "GATEWAY_HOST=127.0.0.1\n",
+            encoding="utf-8",
+        )
+        api.require_auth(req, f"Bearer {new_key}")
+        self.assertEqual(api.require_content_auth(f"Bearer {new_key}"), new_key)
+        with self.assertRaises(api.GatewayError) as exc1:
+            api.require_auth(req, "Bearer first-key")
+        self.assertEqual(exc1.exception.status, 403)
+        with self.assertRaises(api.GatewayError) as exc2:
+            api.require_content_auth("Bearer first-key")
+        self.assertEqual(exc2.exception.status, 403)
+
 
 if __name__ == "__main__":
     unittest.main()
