@@ -10,6 +10,16 @@
     <link>https://theng12.github.io/gateway-studio-kh/appcast.xml</link>
     <description>The newest Gateway Studio KH for Macs that already have it.</description>
     <language>en</language>
+        <item>
+          <title>Version 0.2.308</title>
+          <pubDate>Wed, 25 Nov 2026 08:21:35 +0000</pubDate>
+          <sparkle:version>0.2.308</sparkle:version>
+          <sparkle:shortVersionString>0.2.308</sparkle:shortVersionString>
+          <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
+          <description><![CDATA[- **API keys now rotate with a 24-hour overlap instead of cutting off sleeping Macs.** Settings now offers **Rotate** in place of Regenerate: pressing it writes a new key and restarts the Gateway so the new key works immediately, while the previous key keeps working across `/v1`, `/v1/content`, and admin routes until the expiry time shown in Settings (24 hours from the press). Unrelated `.env` entries are preserved, and a key inherited from the launch environment is refused plainly instead of pretending to rotate.
+- **Hidden background launches stay windowless across relaunch.** The menu-bar app now honours `GATEWAY_BACKGROUND=1` alongside `--background` so background and self-update verification launches stay windowless and Dock-less.]]></description>
+          <enclosure url="https://github.com/theng12/gateway-studio-kh/releases/download/0.2.308/Gateway.Studio.KH-0.2.308.dmg" length="66495991" type="application/octet-stream" sparkle:edSignature="ETLEegBEsnL+kEUflIkZc9Z97ybhjtdkaaWE2/04AVT+TcFKGT9fqsQ5TihFIdATEJs3duOhEr78MxTMoFa5AA==" />
+        </item>
     <item>
       <title>Version 0.2.307</title>
       <pubDate>Tue, 24 Nov 2026 10:33:18 +0000</pubDate>
