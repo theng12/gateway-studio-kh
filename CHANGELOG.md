@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.308 — 2026-11-25
+
+- **API keys now rotate with a 24-hour overlap instead of cutting off sleeping Macs.** Settings now offers **Rotate** in place of Regenerate: pressing it writes a new key and restarts the Gateway so the new key works immediately, while the previous key keeps working across `/v1`, `/v1/content`, and admin routes until the expiry time shown in Settings (24 hours from the press). Unrelated `.env` entries are preserved, and a key inherited from the launch environment is refused plainly instead of pretending to rotate.
+- **Hidden background launches stay windowless across relaunch.** The menu-bar app now honours `GATEWAY_BACKGROUND=1` alongside `--background` so background and self-update verification launches stay windowless and Dock-less.
+
+---
+
 ## 0.2.307 — 2026-11-24
 
 - **Every place a job was passed over now says why, where the job waits.** The Jobs view lists each site the Gateway tried and the reason it declined — busy, no such model, drained — instead of only naming the machine that failed.
@@ -71,10 +78,5 @@ every feature title, and they are left as they were written.
 - **A stalled job now says who acts, what they do, and by what clock.** "Job X is stalled." named none of the three, and the reasonable reading was that the machine would fix it — nothing does, on purpose: the Hub's flag is a second-hand judgement about a Mac that reports itself healthy, and restarting a studio under a running job is worse than saying so. The line now reads *"has not progressed for 34 min on Shops — 4 min past the 30 min this Hub calls stalled. Nothing restarts it by itself: a person should start that Mac's services (Fleet → Machines → Start services) or run kh-fleet-restart by hand."* The number is the Hub's own `stalled_after_s`, so the line ages visibly instead of always reading current.
 
 ---
-
-## 0.2.298 — 2026-11-20
-
-- **A revoked operator key is now refused everywhere — including on the Mac that issued it.** 0.2.297 fell through to the ordinary admin guard when a presented key did not match, and on a loopback-bound Gateway — every Mac in the fleet — that guard trusts the local machine, so a **revoked key was still accepted**. Revocation was true only away from loopback. A key that is presented but not valid is now refused where it is presented, naming that it was revoked or is wrong.
-- **A key spelled `KHO_…` is the same claim as `kho_…`.** The prefix is matched case-insensitively for recognition, so a near-miss is refused rather than quietly ignored — the same fall-through that made revocation ineffective would have let a typo through on any Mac.
 
 Older entries are in [docs/CHANGELOG-ARCHIVE.md](docs/CHANGELOG-ARCHIVE.md).
