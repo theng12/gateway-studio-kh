@@ -73,10 +73,9 @@ class AdminError(Exception):
 
 
 def _key_matches(candidate: str) -> bool:
-    from .config import gateway_api_key
+    from .config import accepts_gateway_api_key
 
-    expected = gateway_api_key()
-    return bool(expected) and hmac.compare_digest(candidate.encode(), expected.encode())
+    return accepts_gateway_api_key(candidate)
 
 
 def _refuse_worker_key(authorization: str | None) -> None:
@@ -1910,6 +1909,30 @@ def set_concurrency(payload: dict[str, Any]) -> Any:
         return concurrency.save_settings(payload)
     except concurrency.SettingsRefused as exc:
         return _error(422, exc.message, "SETTINGS_REFUSED")
+
+
+@router.post("/api/admin/key/rotate", dependencies=[Depends(require_admin)])
+def rotate_api_key() -> dict[str, Any]:
+    """Replace the Gateway API key, keeping the old one valid for the overlap window.
+
+    The publisher presses this; nothing rotates on its own. The old value keeps working for
+    `ROTATION_WINDOW_S` so a Mac that is asleep through the press still works when it wakes, and the
+    sentence returned says when it stops — a refusal that lived only in a log would be the silent
+    control the owner keeps reporting.
+    """
+    from .config import ROTATION_WINDOW_S, gateway_api_key_previous, rotate_gateway_api_key
+
+    try:
+        result = rotate_gateway_api_key()
+    except RuntimeError as problem:
+        raise AdminError(409, str(problem), "KEY_ROTATION_UNAVAILABLE")
+    previous, until = gateway_api_key_previous()
+    return {
+        "key": result["key"],
+        "previous_works_until": until,
+        "window_seconds": ROTATION_WINDOW_S,
+        "previous_set": bool(previous),
+    }
 
 
 @router.get("/api/settings/model-limits", dependencies=[Depends(require_admin)])

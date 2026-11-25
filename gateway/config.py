@@ -24,10 +24,13 @@ file would be the worst failure mode in the codebase.
 from __future__ import annotations
 
 import os
+import hmac
 import ipaddress
+import secrets
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 
 from .os_metadata import is_os_metadata
@@ -286,6 +289,88 @@ def gateway_api_key() -> str:
     beyond loopback, or the request carries proxy forwarding headers.
     """
     return get("GATEWAY_API_KEY", "").strip()
+
+
+#: **A rotation keeps the old key working for a day** (owner 2026-11-25: "the old and new values both
+#: work for 24 hours, so already-paired Macs and extensions pick up the change, and after that the old
+#: one stops"). Measured from the press, never from first use: a Mac asleep through the rotation still
+#: works when it wakes inside the window.
+ROTATION_WINDOW_S = 24 * 60 * 60.0
+
+
+def gateway_api_key_previous() -> tuple[str, float]:
+    """The key the last rotation replaced, and the moment it stops working (`0.0` when there is none)."""
+    previous = get("GATEWAY_API_KEY_PREVIOUS", "").strip()
+    try:
+        until = float(get("GATEWAY_API_KEY_PREVIOUS_UNTIL", "0") or 0.0)
+    except ValueError:
+        until = 0.0
+    return previous, until
+
+
+def accepts_gateway_api_key(candidate: str, now: float | None = None) -> bool:
+    """The current key, or the one a rotation replaced while its window is still open.
+
+    An empty candidate is never a pass: keyless mode is loopback-only, and a rotation must not open a
+    second way in.
+    """
+    candidate = (candidate or "").strip()
+    if not candidate:
+        return False
+    current = gateway_api_key()
+    if current and hmac.compare_digest(candidate.encode(), current.encode()):
+        return True
+    previous, until = gateway_api_key_previous()
+    if not previous or until <= 0.0:
+        return False
+    if (time.time() if now is None else now) >= until:
+        return False
+    return hmac.compare_digest(candidate.encode(), previous.encode())
+
+
+def rotate_gateway_api_key(now: float | None = None) -> dict[str, object]:
+    """Replace the key and keep the old one valid until `ROTATION_WINDOW_S` has passed.
+
+    Refuses instead of guessing when the running value comes from the process environment: the app
+    hands `GATEWAY_API_KEY` to the child, so a `.env` write would change nothing and the button would
+    look like it worked while the old key kept working.
+    """
+    if "GATEWAY_API_KEY" in os.environ:
+        raise RuntimeError(
+            "the running gateway was given its key by the app, so rotating here would change nothing "
+            "— rotate from the app, which owns that value")
+    current = gateway_api_key()
+    if not current:
+        raise RuntimeError("there is no key to rotate; set GATEWAY_API_KEY first")
+    new = secrets.token_urlsafe(32)
+    until = (time.time() if now is None else now) + ROTATION_WINDOW_S
+    _write_env_values({"GATEWAY_API_KEY": new,
+                       "GATEWAY_API_KEY_PREVIOUS": current,
+                       "GATEWAY_API_KEY_PREVIOUS_UNTIL": f"{until:.0f}"})
+    return {"key": new, "previous_until": until}
+
+
+def _write_env_values(values: dict[str, str]) -> None:
+    """Update named lines in `.env`, leaving every other line exactly as it is."""
+    existing = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
+    written: set[str] = set()
+    lines: list[str] = []
+    for line in existing:
+        if "=" not in line or line.lstrip().startswith("#"):
+            lines.append(line)
+            continue
+        name = line.split("=", 1)[0].strip()
+        if name.startswith("export "):
+            name = name[7:].strip()
+        if name in values:
+            lines.append(f"{name}={values[name]}")
+            written.add(name)
+        else:
+            lines.append(line)
+    for name, value in values.items():
+        if name not in written:
+            lines.append(f"{name}={value}")
+    write_secret(ENV_PATH, "\n".join(lines) + "\n")
 
 
 def bind_host() -> str:

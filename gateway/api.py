@@ -61,7 +61,8 @@ from .catalog import (
     encode_model_id,
     published_output_cap,
 )
-from .config import ARTIFACT_DIR, gateway_api_key, is_loopback, request_is_loopback
+from .config import (ARTIFACT_DIR, accepts_gateway_api_key, gateway_api_key, is_loopback,
+                     request_is_loopback)
 from .constants import CREDIT_BALANCE, ZERO_SETTLEMENT, admission
 from .pricing import definition_chargeable, job_cost
 from .providers import registry
@@ -365,9 +366,8 @@ def _upload_credentials_ok(scope: Any) -> bool:
             pass
     authorization = (headers.get(b"authorization") or b"").decode("latin-1").strip()
     if authorization.lower().startswith("bearer "):
-        expected = gateway_api_key()
         token = authorization[7:].strip()
-        if expected and hmac.compare_digest(token.encode(), expected.encode()):
+        if accepts_gateway_api_key(token):
             return True
         # A guest's API key is a credential for the Create door, which is an upload door.
         # **Only those two doors**: elsewhere the route refuses the key anyway, and the body
@@ -1007,7 +1007,7 @@ def require_private_render(
     token = authorization[7:].strip()
     if not token or x_story_instance is None or _UUID.fullmatch(x_story_instance) is None:
         raise RenderServiceError("UNAUTHORIZED", 401)
-    if not hmac.compare_digest(token.encode("utf-8"), configured.encode("utf-8")):
+    if not accepts_gateway_api_key(token):
         raise RenderServiceError("FORBIDDEN", 403)
     installation = store.render_installation()
     return AuthenticatedPrivateRender(
