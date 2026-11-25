@@ -27,6 +27,7 @@ final class SettingsSection: NSObject, AppSection {
     private var dataLabel: NSTextField!
     private var portField: NSTextField!
     private var keyField: SecretField!
+    private var rotationLabel: NSTextField!
     private var storyBaseField: NSTextField!
     private var retentionDaysField: NSTextField!
     private var retentionGBField: NSTextField!
@@ -124,13 +125,15 @@ final class SettingsSection: NSObject, AppSection {
         keyField = SecretField(EnvFile.apiKey(), width: Self.fieldWidth)
         let keyButtons = PageKit.row([
             PageKit.button("Copy", target: self, action: #selector(copyKey)),
-            PageKit.button("Regenerate", target: self, action: #selector(regenerateKey)),
+            PageKit.button("Rotate", target: self, action: #selector(rotateKey)),
         ])
+        rotationLabel = PageKit.label("", .secondary, colour: .secondaryLabelColor, wrapping: true)
         section("Gateway API Key", [
             PageKit.help(
                 "The password Story Studio uses to reach this Gateway. Keep it private; Regenerate if it leaks, then paste the new one into each Story Mac."
             ),
             PageKit.formRow("Key", [keyField, keyButtons] as [NSView]),
+            rotationLabel,
         ], in: root)
 
         // ---- where Story Studio should point
@@ -310,6 +313,7 @@ final class SettingsSection: NSObject, AppSection {
         autoStartCheck?.state = ConfigStore.shared.config.autoStartGateway ? .on : .off
         keepRunningCheck?.state = ConfigStore.shared.config.keepGatewayRunning == true ? .on : .off
         fill(keyField, EnvFile.apiKey())
+        rotationLabel?.stringValue = Self.rotationSentence(EnvFile.rotationUntil())
         storyBaseField?.stringValue = LocalAddresses.storyBaseURL(port: ConfigStore.shared.config.port)
         runtimeLabel?.stringValue = GatewayController.shared.runtimeDescription
         dataLabel?.stringValue = AppPaths.data.path
@@ -566,20 +570,58 @@ final class SettingsSection: NSObject, AppSection {
         statusLabel.stringValue = "Story Studio Base URL copied to the clipboard."
     }
 
-    @objc private func regenerateKey() {
+    /// **Rotate, not regenerate** (owner 2026-11-25): the new value works now and the old one keeps
+    /// working for a day, so Macs and extensions that are asleep through the press pick it up when
+    /// they wake. The old value's expiry is shown as a time, so tomorrow he can see which side of it
+    /// he is on. Nothing rotates on its own.
+    @objc private func rotateKey() {
+        // A key this app inherited from its own environment is not in `.env`, so writing one there
+        // would look like it worked while the old value kept working. Say which value decided it.
+        if ProcessInfo.processInfo.environment["GATEWAY_API_KEY"] != nil {
+            statusLabel.stringValue =
+                "The key is set by the environment this app launched with, so it cannot be rotated "
+                + "from here — rotate it where that environment sets it."
+            return
+        }
+        let until = Date().addingTimeInterval(EnvFile.rotationWindow)
         guard PageKit.confirm(
-            "Generate a new Gateway API Key?",
-            "Story Studio presents this key. It stops working the moment the new one is written, "
-                + "and the old key cannot be recovered. Paste the new key into Story Studio → Settings afterwards.",
-            ok: "Generate"
+            "Rotate the Gateway API Key?",
+            "The new key works now. The current one keeps working until "
+                + "\(Self.when(until)) — about a day — so Macs that are asleep pick the new one up; "
+                + "after that it stops. Paste the new key into Story Studio → Settings.",
+            ok: "Rotate"
         ) else { return }
+        let old = EnvFile.apiKey()
         let key = EnvFile.generateKey()
-        EnvFile.writeApiKey(key)
-        ConsoleSection.refreshCredentials()
-        keyField.stringValue = key
-        written = [:]
-        statusLabel.stringValue =
-            "New key written. New requests use it immediately; update Story Studio if it has the old key."
+        // Restart first: while the gateway runs it holds the key it was launched with, so writing
+        // `.env` alone would leave the new value inactive until the next start.
+        GatewayController.shared.confirmIfBusy("Rotate the key") { [weak self] ok in
+            guard ok, let self else { return }
+            EnvFile.writeRotation(key, previous: old, until: until)
+            ConsoleSection.refreshCredentials()
+            self.keyField.stringValue = key
+            self.written = [:]
+            self.rotationLabel.stringValue = Self.rotationSentence(EnvFile.rotationUntil())
+            GatewayController.shared.restartCleanly()
+            self.statusLabel.stringValue =
+                "Rotated. The old key keeps working until \(Self.when(until))."
+        }
+    }
+
+    private static func when(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+
+    /// What the row says about the key a rotation replaced — before, during and after its window.
+    private static func rotationSentence(_ until: Date?) -> String {
+        guard let until else { return "" }
+        if until > Date() {
+            return "The previous key still works, until \(when(until))."
+        }
+        return "The previous key stopped working at \(when(until))."
     }
 
     @objc private func toggleLogin() {

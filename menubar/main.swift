@@ -318,14 +318,40 @@ enum EnvFile {
     /// A `GATEWAY_HOST` the owner set by hand is left as it is; the app writes
     /// loopback only when nothing states a host.
     static func writeApiKey(_ key: String) {
-        var owned: [String: String] = [
+        writeEnv(["GATEWAY_API_KEY": key])
+    }
+
+    /// **A rotation keeps the old key working for a day** (owner 2026-11-25): the new value works
+    /// now, the old one until `until`, so a Mac asleep through the press still works when it wakes.
+    /// The window is counted from the press, never from the first time someone presents the old key.
+    static let rotationWindow: TimeInterval = 24 * 60 * 60
+
+    static func writeRotation(_ key: String, previous: String, until: Date) {
+        writeEnv([
             "GATEWAY_API_KEY": key,
+            "GATEWAY_API_KEY_PREVIOUS": previous,
+            "GATEWAY_API_KEY_PREVIOUS_UNTIL": String(Int(until.timeIntervalSince1970)),
+        ])
+    }
+
+    /// When the key a rotation replaced stops working, or `nil` when there is no such key.
+    static func rotationUntil() -> Date? {
+        let values = read()
+        guard let previous = values["GATEWAY_API_KEY_PREVIOUS"], !previous.isEmpty,
+              let raw = values["GATEWAY_API_KEY_PREVIOUS_UNTIL"], let epoch = Double(raw), epoch > 0
+        else { return nil }
+        return Date(timeIntervalSince1970: epoch)
+    }
+
+    private static func writeEnv(_ extra: [String: String]) {
+        var owned: [String: String] = [
             "GATEWAY_PORT": "\(ConfigStore.shared.config.port)",
             // Point the gateway at the same data directory the app uses, so both
             // halves agree without either having to guess.
             "GATEWAY_DATA": AppPaths.data.path,
             "GATEWAY_ENV_FILE": AppPaths.env.path,
         ]
+        owned.merge(extra) { _, new in new }
 
         let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         let lines = existing.isEmpty
