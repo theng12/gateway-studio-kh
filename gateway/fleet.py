@@ -5262,15 +5262,22 @@ def model_supply_state(row: dict, model_id: str, now: float | None = None) -> tu
         if listed:
             return _listed_model_state(local, workers)
         return "cannot", "the location's model supply leaves this model out"
+    if not isinstance(entry, dict):
+        return "unknown", "the location's model_supply is incomplete"
     eligible_value = entry.get("eligible")
     available_value = entry.get("available")
     if (isinstance(eligible_value, bool) or isinstance(available_value, bool)
             or _num(eligible_value) is None or _num(available_value) is None):
         return "unknown", "the location's model_supply is incomplete"
     eligible = int(_num(eligible_value))
-    if eligible == 0:
-        if states_no_mac(row, model_id, now):
-            return "cannot", "the location states it has no Mac that can run this model"
+    available = int(_num(available_value))
+    if eligible < 0 or available < 0:
+        return "unknown", "the location's model_supply is incomplete"
+    if eligible > 0:
+        states_no_mac(row, model_id, now)  # remember the last positive reading for the zero grace
+    elif states_no_mac(row, model_id, now):
+        return "cannot", "the location states it has no Mac that can run this model"
+    else:
         return "live", "the location's last reading still has a Mac for it"
     if per_mac:
         if not listed:

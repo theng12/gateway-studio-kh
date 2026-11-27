@@ -131,6 +131,37 @@ class IncompleteSupplyTest(_Base):
         self.assertFalse(cannot)
         self.assertIn("fresh reading", reason)
 
+    def test_a_non_object_entry_is_incomplete_not_a_crash(self) -> None:
+        row = _row(supply={MODEL: []}, local_models=_local(MODEL))
+        found, rejections = self.candidates(row)
+        self.assertEqual(found, [])
+        self.assertEqual([r["reason"] for r in rejections], ["unknown"])
+        self.assertIn("incomplete", rejections[0]["detail"])
+
+    def test_a_negative_count_is_incomplete_not_a_live_reading(self) -> None:
+        row = _row(supply={MODEL: {"eligible": -1, "available": 1}},
+                   local_models=_local(MODEL))
+        found, rejections = self.candidates(row)
+        self.assertEqual(found, [])
+        self.assertEqual([r["reason"] for r in rejections], ["unknown"])
+
+
+class ZeroReadGraceTest(_Base):
+    def test_a_positive_reading_still_arms_the_transient_zero_grace(self) -> None:
+        fleet._ELIGIBLE_AT.clear()
+        now = time.time()
+        healthy = _row(supply={MODEL: {"eligible": 2, "available": 2}},
+                       local_models=_local(MODEL), answered_at=now)
+        self.assertEqual(fleet.model_supply_state(healthy, MODEL, now)[0], "live")
+        blip = _row(supply={MODEL: {"eligible": 0, "available": 0}},
+                    local_models=_local(MODEL), answered_at=now + 10)
+        self.assertEqual(fleet.model_supply_state(blip, MODEL, now + 10)[0], "live")
+        later = _row(supply={MODEL: {"eligible": 0, "available": 0}},
+                     local_models=_local(MODEL),
+                     answered_at=now + fleet.LOCK_ANSWER_GRACE_S + 1)
+        self.assertEqual(fleet.model_supply_state(
+            later, MODEL, now + fleet.LOCK_ANSWER_GRACE_S + 1)[0], "cannot")
+
 
 class MacDoesNotHoldModelTest(_Base):
     def test_a_supply_entry_without_a_mac_holding_the_model_cannot_take(self) -> None:
