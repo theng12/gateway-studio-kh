@@ -174,7 +174,7 @@ class EligibilityTests(_Base):
             _site("offline", reachable=False),
             _site("paused", paused=True),
             _site("draining", drained=True),
-            _site("noinstall", supply={MODEL: {"eligible": 0}},
+            _site("noinstall", supply={MODEL: {"eligible": 0, "available": 0}},
                  models=[MODEL, "another-model"]),
             _site("published"),  # this one is a candidate
             _site("other", models=["different-model"]),  # does not publish the model at all

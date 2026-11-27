@@ -5,6 +5,14 @@ exactly as it was when it lived in the main file.
 
 ---
 
+## 0.2.299 — 2026-11-20
+
+- **"Used" and "Offered" are now the same unit: Macs.** Found live on the publisher — the tts lane read 26 offered and 43 used, which is not a lane over capacity, it is two numbers counting different things. `offered` counts fleet Macs; `used` counted every running job in the lane, cloud work included, and cloud work never occupies one of those Macs. A lane running only on the cloud now reads `used 0`, and `idle` is `offered − used` in one unit.
+- **A refused operator-key call no longer says a Trash delete failed.** One guard serves several routes and carried a fixed sentence, so asking for the key list on a Mac that did not start the gateway answered "Permanent delete works only from the Gateway app…". The guard now takes the action as a parameter; the key routes answer for themselves and the delete route keeps its own words.
+- **A stalled job now says who acts, what they do, and by what clock.** "Job X is stalled." named none of the three, and the reasonable reading was that the machine would fix it — nothing does, on purpose: the Hub's flag is a second-hand judgement about a Mac that reports itself healthy, and restarting a studio under a running job is worse than saying so. The line now reads *"has not progressed for 34 min on Shops — 4 min past the 30 min this Hub calls stalled. Nothing restarts it by itself: a person should start that Mac's services (Fleet → Machines → Start services) or run kh-fleet-restart by hand."* The number is the Hub's own `stalled_after_s`, so the line ages visibly instead of always reading current.
+
+---
+
 ## 0.2.298 — 2026-11-20
 
 - **A revoked operator key is now refused everywhere — including on the Mac that issued it.** 0.2.297 fell through to the ordinary admin guard when a presented key did not match, and on a loopback-bound Gateway — every Mac in the fleet — that guard trusts the local machine, so a **revoked key was still accepted**. Revocation was true only away from loopback. A key that is presented but not valid is now refused where it is presented, naming that it was revoked or is wrong.
