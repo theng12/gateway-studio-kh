@@ -9,7 +9,7 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
 ## Where it runs
 
 - **This Mac** — development and isolated tests; no installed Gateway is claimed here.
-- **1301** (`127.0.0.1`) — the live gateway and updater feed host. Intended-host updates belong to the Launcher's safe automatic install path; never restart live work to manufacture proof.
+- **1301** — the live gateway and updater feed host. Intended-host updates belong to the Launcher's safe automatic install path; never restart live work to manufacture proof.
 
 ## Versions
 
@@ -82,8 +82,8 @@ A macOS menubar app (`/Applications/gateway-kh.app`, bundle id `kh.gateway.menub
   2026-11-15 by `launchctl bootout` + `bootstrap` of the bundled plist; `/health` stayed up.
   Remaining proof (quiet point only): fully quit the app or reboot 1301 and confirm `/health`
   without a kickstart. See `_orchestra/gateway-lead/release-0257-20261114/1301-login-item-finding.md`.
-- **1301 route:** the live Gateway answers at `http://127.0.0.1:8787`, and the authoritative
-  feed at `http://127.0.0.1:8790/release.json`. Use the existing pinned publisher SSH identity;
+- **1301 route:** the live Gateway answers on 1301 at port 8787, and the authoritative feed on 1301 at
+  port 8790. Use the existing pinned publisher SSH identity;
   do not copy credentials between apps or change network settings.
 - Release builds come from `menubar/build.sh --no-install` and stage exact candidates under
   `dist/.candidates/`. Preserve retained stable installers and caches; no automatic cleanup here.
