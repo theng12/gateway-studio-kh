@@ -5277,8 +5277,6 @@ def model_supply_state(row: dict, model_id: str, now: float | None = None) -> tu
         states_no_mac(row, model_id, now)  # remember the last positive reading for the zero grace
     elif states_no_mac(row, model_id, now):
         return "cannot", "the location states it has no Mac that can run this model"
-    else:
-        return "live", "the location's last reading still has a Mac for it"
     if per_mac:
         if not listed:
             return "cannot", "the Macs at this location do not hold this model"

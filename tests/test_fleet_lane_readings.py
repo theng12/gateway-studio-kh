@@ -162,6 +162,16 @@ class ZeroReadGraceTest(_Base):
         self.assertEqual(fleet.model_supply_state(
             later, MODEL, now + fleet.LOCK_ANSWER_GRACE_S + 1)[0], "cannot")
 
+    def test_the_zero_grace_does_not_rescue_a_site_whose_macs_do_not_hold_the_model(self) -> None:
+        fleet._ELIGIBLE_AT.clear()
+        now = time.time()
+        healthy = _row(supply={MODEL: {"eligible": 1, "available": 1}},
+                       local_models=_local(MODEL), answered_at=now)
+        fleet.model_supply_state(healthy, MODEL, now)
+        wrong_mac = _row(supply={MODEL: {"eligible": 0, "available": 0}},
+                         local_models=_local(OTHER), answered_at=now + 10)
+        self.assertEqual(fleet.model_supply_state(wrong_mac, MODEL, now + 10)[0], "cannot")
+
 
 class MacDoesNotHoldModelTest(_Base):
     def test_a_supply_entry_without_a_mac_holding_the_model_cannot_take(self) -> None:
