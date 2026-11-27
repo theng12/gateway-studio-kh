@@ -1,0 +1,9 @@
+# Open work — gateway-studio-kh
+
+Open tasks and known defects for this repository only; updated in the same commit whenever work starts, changes, or closes. Shipped work lives in `CHANGELOG.md`.
+
+- [ ] **0.2.308 shipped without an idle-footprint number** — the gate printed `UNMEASURED` because `IDLE_PID` was unset in that release's gate config, so no measured idle memory figure exists for 0.2.308. **Next:** set `IDLE_PID` in the next gate config and quote the measured figure on that receipt.
+- [ ] **The RAM-fit gate, riding 0.2.309** — a model that fits the Mac but is not installed must not read as "no Mac able to run it"; Hub 0.6.260 now serves `needs_gb`/`needs_source`, so the source data exists, but Gateway's own refusal path is unchanged. **Next:** open 0.2.309 with the RAM-fit gate and a test that a fitting-but-uninstalled model is reported as installable, not unreachable.
+- [ ] **Screenshots are light-mode only** — `docs/screenshots/` holds three light captures (overview, jobs, fleet groups), which meets the three-image floor, but the four-image target with dark-mode pairs is not met. **Next:** capture the dark-mode counterparts from the build being released and update `README.md` to reference them.
+- [ ] **Gateway has no `app-meta.json` at any commit** — feed row metadata therefore can only come from the feed registry, so a field the registry lacks cannot be corrected at the point of release. **Next:** add `app-meta.json` with name, bundle id, type, tagline, description and the hold pair, and have the feed generator read it as the other apps do.
+- [ ] **The hardened runtime is not enabled, so the library-validation entitlement is inert** — the app carries `com.apple.security.cs.disable-library-validation` and ships `Sparkle.framework`, but without the hardened runtime the entitlement does nothing. **Next:** either enable the runtime and re-prove Sparkle launch and self-update under it, or record the decision to stay unhardened.
