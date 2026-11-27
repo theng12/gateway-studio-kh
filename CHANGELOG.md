@@ -10,6 +10,13 @@ every feature title, and they are left as they were written.
 
 ---
 
+## 0.2.309 — 2026-11-27
+
+- **A site that has not answered for a model is no longer offered for it.** Routing and admission now require a live, complete per-model reading. A missing, stale or incomplete `model_supply`, or Macs that do not hold the model, keep the job off that site; it moves elsewhere or waits with a sentence that says which. "We cannot tell" and "this site cannot run it" still read differently.
+- **A Mac with no live reading no longer counts as capacity.** `_eligible_macs` requires the site to list the machine and its heartbeat to be inside the 15-minute window, so a Mac that has gone quiet stops inflating the offered figure.
+
+---
+
 ## 0.2.308 — 2026-11-25
 
 - **API keys now rotate with a 24-hour overlap instead of cutting off sleeping Macs.** Settings now offers **Rotate** in place of Regenerate: pressing it writes a new key and restarts the Gateway so the new key works immediately, while the previous key keeps working across `/v1`, `/v1/content`, and admin routes until the expiry time shown in Settings (24 hours from the press). Unrelated `.env` entries are preserved, and a key inherited from the launch environment is refused plainly instead of pretending to rotate.
@@ -68,14 +75,6 @@ every feature title, and they are left as they were written.
 - **The app no longer stops itself when it clears an old login item.** Found the hard way on the publisher: 0.2.299 was installed, the app was started through its own launch job, and it quit **0.14 s later** — `launchservicesd` recorded `QUITTING: pid=13878` right after the one-time cleanup that removes an old `SMAppService` registration. Clearing that label stops the process wearing it, and the process wearing it was the job that had just started the app. The updater saw a process appear and never become healthy, rolled back, and the Mac was left with **no job and nothing running** for 17 minutes.
 - **The cleanup now follows the rule the rest of the login-item code already follows:** the copy launchd started never touches its own job. A launch that is not the job still clears the row — that is the case the cleanup was written for, and a Mac in that state cannot be running under the job at all, because the job could not be imported while the label was taken. Both directions are tested natively.
 - **A skipped cleanup is said out loud**, with its reason, so a Mac that legitimately still carries the row is visible in the log rather than silently doing nothing.
-
----
-
-## 0.2.299 — 2026-11-20
-
-- **"Used" and "Offered" are now the same unit: Macs.** Found live on the publisher — the tts lane read 26 offered and 43 used, which is not a lane over capacity, it is two numbers counting different things. `offered` counts fleet Macs; `used` counted every running job in the lane, cloud work included, and cloud work never occupies one of those Macs. A lane running only on the cloud now reads `used 0`, and `idle` is `offered − used` in one unit.
-- **A refused operator-key call no longer says a Trash delete failed.** One guard serves several routes and carried a fixed sentence, so asking for the key list on a Mac that did not start the gateway answered "Permanent delete works only from the Gateway app…". The guard now takes the action as a parameter; the key routes answer for themselves and the delete route keeps its own words.
-- **A stalled job now says who acts, what they do, and by what clock.** "Job X is stalled." named none of the three, and the reasonable reading was that the machine would fix it — nothing does, on purpose: the Hub's flag is a second-hand judgement about a Mac that reports itself healthy, and restarting a studio under a running job is worse than saying so. The line now reads *"has not progressed for 34 min on Shops — 4 min past the 30 min this Hub calls stalled. Nothing restarts it by itself: a person should start that Mac's services (Fleet → Machines → Start services) or run kh-fleet-restart by hand."* The number is the Hub's own `stalled_after_s`, so the line ages visibly instead of always reading current.
 
 ---
 

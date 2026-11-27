@@ -5231,6 +5231,69 @@ def location_has_no_free_mac(provider_id: str, model_id: str) -> bool:
                for row in rows)
 
 
+def model_supply_state(row: dict, model_id: str, now: float | None = None) -> tuple[str, str]:
+    """This location's per-model reading: `live`, `unknown`, `cannot`, or `unstated`.
+
+    `live` is a complete reading for this model; `cannot` is the site's own answer that it has no
+    Mac for it; `unknown` is a reading that exists but cannot answer the question (missing, stale
+    or incomplete); `unstated` is a Hub that publishes no per-Mac facts at all, which keeps every
+    older-Hub fallback. The four stay four because "we cannot tell" must not read as "this site
+    cannot run it".
+    """
+    if not isinstance(row, dict) or not row:
+        return "unknown", "no reading from this location"
+    now = time.time() if now is None else now
+    answered = _num(row.get("answered_at"))
+    if answered is not None and now - answered > _ROUTING_VIEW_MAX_AGE_S:
+        return "unknown", f"the last reading is {int(now - answered)} s old"
+    supply = row.get("model_supply")
+    entry = supply.get(str(model_id)) if isinstance(supply, dict) else None
+    local = [m for m in row.get("local_models") or [] if isinstance(m, dict)
+             and model_id in (m.get("model_id"), m.get("model"))]
+    workers = [w for w in row.get("workers") or [] if isinstance(w, dict)
+               and model_id in (w.get("models") or [])]
+    listed = local or workers
+    per_mac = bool(row.get("local_models") or row.get("workers"))
+    if entry is None:
+        if not isinstance(supply, dict) or not supply:
+            if per_mac:
+                return "unknown", "the location publishes no model_supply for this model"
+            return "unstated", "no per-model supply published"
+        if listed:
+            return _listed_model_state(local, workers)
+        return "cannot", "the location's model supply leaves this model out"
+    eligible_value = entry.get("eligible")
+    available_value = entry.get("available")
+    if (isinstance(eligible_value, bool) or isinstance(available_value, bool)
+            or _num(eligible_value) is None or _num(available_value) is None):
+        return "unknown", "the location's model_supply is incomplete"
+    eligible = int(_num(eligible_value))
+    if eligible == 0:
+        if states_no_mac(row, model_id, now):
+            return "cannot", "the location states it has no Mac that can run this model"
+        return "live", "the location's last reading still has a Mac for it"
+    if per_mac:
+        if not listed:
+            return "cannot", "the Macs at this location do not hold this model"
+        state, detail = _listed_model_state(local, workers)
+        if state != "live":
+            return state, detail
+    return "live", "the location states a Mac for this model"
+
+
+def _listed_model_state(local: list[dict], workers: list[dict]) -> tuple[str, str]:
+    """What the Hub's per-Mac rows say about a model its reduction left out."""
+    if local:
+        if any(m.get("memory_eligible") is True for m in local):
+            return "live", "a Mac here lists the model"
+        if any(m.get("memory_eligible") is False for m in local):
+            return "cannot", "no Mac here can fit this model"
+        return "unknown", "a Mac here lists the model but not whether it fits"
+    if any(w.get("online") is not False for w in workers):
+        return "live", "a worker here lists the model"
+    return "cannot", "no Mac here that holds this model is online"
+
+
 def publishes_model(row: dict, model_id: str) -> bool | None:
     """Whether this location states that it has the model at all — **not** whether it is free now.
 
@@ -5243,30 +5306,20 @@ def publishes_model(row: dict, model_id: str) -> bool | None:
 
     Three answers, never two:
 
-      * `True` — the Hub names eligible Macs for it, or a Mac at the site lists it;
-      * `False` — the Hub publishes a per-model supply that leaves it out with no Mac listing it,
-        or gives it no eligible Mac: the site cannot run it and a submit would be refused;
-      * `None` — the location publishes no per-model evidence at all (an older Hub). Unstated is
-        unknown, and unknown never becomes "cannot" (§6 of the house rules).
+      * `True` — a live, complete reading names eligible Macs for it, or a Mac at the site lists it;
+      * `False` — the Hub states it cannot run it: its supply leaves the model out, gives it no
+        eligible Mac, or the Macs it lists do not hold it;
+      * `None` — the reading is unknown (an older Hub, or one that has not answered for this model).
+        Unstated is unknown, and unknown never becomes "cannot" (§6 of the house rules).
 
-    A Mac that lists the model rescues a model missing from the reduction, because `model_supply`
-    is a reduction of the Hub's own rows and a companion model the Hub does not reduce as a row is
-    still runnable there.
+    `model_supply_state` carries the fourth distinction routing and admission need.
     """
-    supply = row.get("model_supply")
-    if not isinstance(supply, dict) or not supply:
-        return None
-    entry = supply.get(str(model_id))
-    if isinstance(entry, dict):
-        return _as_int(entry.get("eligible")) > 0
-    named = [m for m in row.get("local_models") or []
-             if isinstance(m, dict) and model_id in (m.get("model_id"), m.get("model"))]
-    if any(m.get("memory_eligible") is not False for m in named):
+    state, _ = model_supply_state(row, model_id)
+    if state == "live":
         return True
-    if any(model_id in (w.get("models") or []) for w in row.get("workers") or []
-           if isinstance(w, dict)):
-        return True
-    return False
+    if state == "cannot":
+        return False
+    return None
 
 
 def site_wait_reason(provider_id: str, model_id: str) -> str:
@@ -5290,8 +5343,11 @@ def site_wait_reason(provider_id: str, model_id: str) -> str:
     if row.get("reachable") is False:
         error = str(row.get("error") or "").strip() or "it is not answering"
         return f"waiting for {label} to answer — {error}"
-    if publishes_model(row, model_id) is False:
+    state, detail = model_supply_state(row, model_id)
+    if state == "cannot":
         return f"waiting for a Mac at {label} that can run {model_id}"
+    if state == "unknown":
+        return f"waiting for a fresh reading from {label} about {model_id} — {detail}"
     return f"waiting for a free Mac at {label}"
 
 
@@ -5321,10 +5377,11 @@ def site_cannot_take(provider_id: str, model_id: str) -> bool:
         return False
     if row.get("reachable") is False:
         return True
-    if publishes_model(row, model_id) is False:
+    state, _ = model_supply_state(row, model_id)
+    if state == "cannot":
         return True
     supply = (row.get("model_supply") or {}).get(model_id)
-    if not isinstance(supply, dict) or _as_optional_int(supply.get("available")) != 0:
+    if state != "live" or not isinstance(supply, dict) or _as_optional_int(supply.get("available")) != 0:
         return False
     # **A busy site is a queue worth standing in — this is not that.** `routing_candidates` keeps
     # a site whose eligible Macs are all busy, deliberately (`test_a_busy_mac_stays_a_candidate`),
@@ -6002,7 +6059,9 @@ def _eligible_macs(row: dict, model_id: str, modality: str) -> dict[str, dict]:
     """`machine -> local model row` for the Macs at this site that may run `model_id` now.
 
     Ready, memory-eligible, not paused, not resting after a memory refusal, serving it, reachable,
-    enabled and not a resting workstation: the rule `_routing_preference` scores by.
+    enabled, live and not a resting workstation: the rule `_routing_preference` scores by. A Mac
+    the site did not list, or whose heartbeat is past `ONLINE_WINDOW_S`, is not a live reading and
+    is not counted.
     """
     function = _PRIORITY_FUNCTION_BY_MODALITY.get(modality, modality)
     machines = {str(machine.get("machine") or ""): machine for machine in row.get("machines") or []
@@ -6016,6 +6075,7 @@ def _eligible_macs(row: dict, model_id: str, modality: str) -> dict[str, dict]:
                if worker.get("online") is not False and worker.get("drained") is not True
                and not _truthy(worker.get("maintenance")) and not _truthy(worker.get("quarantined"))}
     cooled = memory_cooled_machine_ids(row, model_id)
+    now = time.time()
     eligible: dict[str, dict] = {}
     for model in row.get("local_models") or []:
         if not isinstance(model, dict):
@@ -6029,7 +6089,18 @@ def _eligible_macs(row: dict, model_id: str, modality: str) -> dict[str, dict]:
                 and stated_function == function
                 and machine not in paused and machine not in cooled
                 and (not workers or machine in working)):
-            fact = machines.get(machine) or {}
+            fact = machines.get(machine)
+            if fact is None:
+                if machines:
+                    continue  # the site listed its Macs and this model names none of them
+                fact = {}
+            node_seen = _num(fact.get("node_last_seen_at"))
+            if node_seen is not None and now - node_seen > ONLINE_WINDOW_S:
+                continue  # a stale heartbeat is not a live reading
+            worker = next((w for w in workers if str(w.get("machine") or "") == machine), None)
+            worker_seen = _num((worker or {}).get("last_seen_at"))
+            if worker_seen is not None and now - worker_seen > ONLINE_WINDOW_S:
+                continue
             node = nodes.get(machine) or {}
             workstation = _workstation_fact(fact, node)
             if (fact.get("reachable") is not False and fact.get("enabled") is not False
@@ -6654,19 +6725,21 @@ def routing_candidates(
                    last_seen_at=_last_machine_seen(row))
             continue
 
-        # **A site that states it has no Mac for this model is not a candidate.** Its controller
-        # may answer perfectly — 1600 answers with nine Macs up and still has none for Gemma 4 —
-        # so "the site is reachable" is not the question. Falling through to `by_operation`, the
-        # site total and the reachable machine count would override the Hub's own statement and
-        # hand the job to a site that has no Mac to run it on; it then sits until the 3-hour
-        # ceiling. Skipping it here is what makes `route` return nothing when no site can take
-        # the model, and `catalog.resolve` return no route, so the submit is refused at the door.
-        # Unstated supply is unknown, never "none" (see `states_no_mac`), so an older Hub keeps
-        # every fallback below.
-        if respect_model_supply and states_no_mac(row, model_id):
-            reject(definition, location_id, row, "model_not_installed",
-                   "the location states it has no Mac that can run this model")
-            continue
+        # **A site that cannot answer for this model is not a candidate.** Its controller may
+        # answer perfectly — 1600 answers with nine Macs up and still has none for Gemma 4 — so
+        # "the site is reachable" is not the question. A missing, stale or incomplete reading is
+        # `unknown`, never a route; a site that states it has none is `model_not_installed`.
+        # Falling through to `by_operation`, the site total and the reachable machine count would
+        # override the Hub's own statement and hand the job to a site with no Mac to run it on.
+        # `unstated` (a Hub with no per-Mac facts) keeps every fallback below.
+        if respect_model_supply:
+            state, detail = model_supply_state(row, model_id)
+            if state == "cannot":
+                reject(definition, location_id, row, "model_not_installed", detail)
+                continue
+            if state == "unknown":
+                reject(definition, location_id, row, "unknown", detail)
+                continue
 
         from . import image_limits
         limits = image_limits.assess(model.get("raw") or {}, model_id, image_params) if modality == "image" and image_params is not None else None

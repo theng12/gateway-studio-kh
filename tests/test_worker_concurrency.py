@@ -269,6 +269,7 @@ class ProviderBudgetsTest(unittest.TestCase):
     def test_a_hub_site_runs_as_many_as_its_own_free_slots(self) -> None:
         locations = [{
             "provider_id": "studio-hub-abc",
+            "reachable": True,
             "capacity": {"by_operation": {"image.text_to_image": {"available_worker_slots": 3}}},
         }]
         jobs = [_job(f"job-{n}", provider="studio-hub-abc") for n in range(5)]
@@ -282,6 +283,7 @@ class ProviderBudgetsTest(unittest.TestCase):
         # jobs due for ever with nothing wrong and nothing to see.
         locations = [{
             "provider_id": "studio-hub-abc",
+            "reachable": True,
             "capacity": {"by_operation": {"image.text_to_image": {"available_worker_slots": 0}}},
         }]
         jobs = [_job(f"job-{n}", provider="studio-hub-abc") for n in range(2)]

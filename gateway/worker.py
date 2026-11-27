@@ -3046,7 +3046,7 @@ class Worker:
             for row in fleet.snapshot(allow_stale=True).get("locations") or []:
                 if str(row.get("provider_id") or "") == provider_id:
                     facts["row"] = row
-                    facts["reachable"] = row.get("reachable") is not False
+                    facts["reachable"] = row.get("reachable")
                     facts["supply"] = {
                         str(model): fleet.usable_slots(row, str(model), int(entry.get("eligible") or 0))
                         for model, entry in (row.get("model_supply") or {}).items()
@@ -3114,14 +3114,15 @@ class Worker:
         `reads` is `_admission_reads`'s bundle. A caller holding `_budget_lock` must pass one; a
         caller that is not (`_rebind`) gets it built here, where the fleet may be read.
 
-        **A site that cannot run this model gets no room for it, whatever the budget says.** The
-        operation budget is a count of slots, not of Macs that have the model: at a location whose
-        `model_supply` leaves the model out (or gives it no eligible Mac) the budget still answered
-        "yes", so a job stayed bound there and replayed "hub submit failed: timed out" until its
-        queue ceiling. An unreachable location is the same answer for the same reason (`fleet.
-        routing_candidates` never offers one), and both refusals let `_rebind` look elsewhere.
-        Unstated supply stays unknown and changes nothing (§6: a zero that means "not stated" must
-        not read as "none").
+        **A site that cannot answer for this model gets no room for it, whatever the budget says.**
+        The operation budget is a count of slots, not of Macs that have the model: at a location
+        whose `model_supply` leaves the model out (or gives it no eligible Mac) the budget still
+        answered "yes", so a job stayed bound there and replayed "hub submit failed: timed out"
+        until its queue ceiling. An unreachable location, a missing/stale/incomplete reading and a
+        site whose Macs do not hold the model are the same answer for the same reason (`fleet.
+        routing_candidates` never offers one), and every refusal lets `_rebind` look elsewhere.
+        Only a Hub that publishes no per-Mac facts at all keeps its old fallback (§6: unstated is
+        not "none").
 
         **A pool job is exempt, and that is not a hole.** Its `model_id` is the member it is bound
         to, while `fleet.pool_candidates` picks the next site through **any** member of the pool, so
@@ -3137,9 +3138,10 @@ class Worker:
         fleet_site = provider_id.startswith(fleet.PROVIDER_PREFIX)
         if room > 0 and fleet_site and not _job_params(job).get("_pool_id"):
             site = reads.get("site") or {}
-            if site.get("reachable") is False:
+            if site.get("reachable") is not True or site.get("row") is None:
                 return 0
-            if site.get("row") is not None and fleet.publishes_model(site["row"], model_id) is False:
+            state, _ = fleet.model_supply_state(site["row"], model_id)
+            if state in {"cannot", "unknown"}:
                 return 0
         limits = reads.get("image_limits")
         if limits is not None:
